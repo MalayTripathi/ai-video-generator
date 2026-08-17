@@ -1,6 +1,9 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { signOut } from './actions'
+import { ProjectGrid } from './project-grid'
+import { Rail } from './rail'
+import { TopBar } from './top-bar'
+import type { Project } from './types'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -12,14 +15,19 @@ export default async function DashboardPage() {
     redirect('/login')
   }
 
+  const { data: projects } = await supabase
+    .from('projects')
+    .select('id, title, status, created_at')
+    .eq('user_id', user.id)
+    .order('created_at', { ascending: false })
+
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6">
-      <p className="text-lg">Welcome, {user.email}</p>
-      <form action={signOut}>
-        <button type="submit" className="rounded bg-black px-4 py-2 text-white">
-          Sign out
-        </button>
-      </form>
+    <div className="flex min-h-0 flex-1">
+      <Rail />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TopBar user={user} />
+        <ProjectGrid projects={(projects ?? []) as Project[]} />
+      </div>
     </div>
   )
 }

@@ -257,14 +257,21 @@
   --shadow-card-hover: var(--elevation-card-hover);
   --shadow-focus-halo: var(--focus-halo);
 
-  --spacing-3xs: var(--space-3xs);
-  --spacing-2xs: var(--space-2xs);
-  --spacing-xs: var(--space-xs);
-  --spacing-sm: var(--space-sm);
-  --spacing-md: var(--space-md);
-  --spacing-lg: var(--space-lg);
-  --spacing-xl: var(--space-xl);
-  --spacing-2xl: var(--space-2xl);
+  /* Named --spacing-rc-* (not --spacing-3xs/sm/md/...) because Tailwind's
+     own width/height/max-width/min-width utilities resolve bare t-shirt
+     keys through ["--max-width", "--spacing", "--container"] in that
+     order — a plain --spacing-sm here would silently hijack max-w-sm/w-sm/
+     etc. project-wide before Tailwind's real --container-sm (24rem) is
+     ever reached. The rc- prefix guarantees no collision with Tailwind's
+     reserved container-scale vocabulary (3xs/2xs/xs/sm/md/lg/xl/2xl/3xl...). */
+  --spacing-rc-3xs: var(--space-3xs);
+  --spacing-rc-2xs: var(--space-2xs);
+  --spacing-rc-xs: var(--space-xs);
+  --spacing-rc-sm: var(--space-sm);
+  --spacing-rc-md: var(--space-md);
+  --spacing-rc-lg: var(--space-lg);
+  --spacing-rc-xl: var(--space-xl);
+  --spacing-rc-2xl: var(--space-2xl);
 }
 
 body {

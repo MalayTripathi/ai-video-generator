@@ -48,9 +48,9 @@ export function LoginForm() {
     <form
       onSubmit={handleSubmit}
       noValidate
-      className="flex w-full max-w-[392px] flex-col gap-[26px] rounded-frame border border-border-subtle bg-bg-surface px-[34px] pt-9 pb-xl shadow-card"
+      className="flex w-full max-w-[392px] flex-col gap-[26px] rounded-frame border border-border-subtle bg-bg-surface px-[34px] pt-9 pb-rc-xl shadow-card"
     >
-      <div className="flex flex-col gap-xs">
+      <div className="flex flex-col gap-rc-xs">
         <div className="flex items-center gap-[9px]">
           <span className="block h-4 w-4 rounded-[3px] bg-accent" />
           <span className="text-body font-medium tracking-micro text-text-primary">
@@ -65,8 +65,8 @@ export function LoginForm() {
         </p>
       </div>
 
-      <div className="flex flex-col gap-md">
-        <label htmlFor="email" className="flex flex-col gap-2xs">
+      <div className="flex flex-col gap-rc-md">
+        <label htmlFor="email" className="flex flex-col gap-rc-2xs">
           <span className="text-meta text-text-secondary">Email</span>
           <input
             id="email"
@@ -86,7 +86,7 @@ export function LoginForm() {
           />
           {emailError && <span className="text-chip text-status-failed-fg">{emailError}</span>}
         </label>
-        <label htmlFor="password" className="flex flex-col gap-2xs">
+        <label htmlFor="password" className="flex flex-col gap-rc-2xs">
           <span className="text-meta text-text-secondary">Password</span>
           <input
             id="password"
