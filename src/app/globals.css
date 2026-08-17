@@ -1,26 +1,275 @@
 @import "tailwindcss";
 
+/* Class-based dark mode: `dark:` utilities key off .dark, not OS preference.
+   Light stays the default on load — dark is an explicit opt-in. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ============================================================
+   Reelcraft tokens, pulled from the Reelcraft.dc.html design canvas.
+   Mode-independent tokens that also double as Tailwind theme keys
+   (--font-*, --text-*, --tracking-*, --radius-*) are declared directly in
+   the plain @theme block below rather than here — declaring them under both
+   :root and an @theme inline mapping of the identical name would make the
+   custom property reference itself (invalid at compute time). Spacing and
+   motion don't have that name collision, so they stay here.
+   ============================================================ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --space-3xs: 3px;
+  --space-2xs: 6px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 22px;
+  --space-xl: 32px;
+  --space-2xl: 44px; /* screen gutter */
+
+  --motion: 120ms ease-out;
 }
 
+@theme {
+  /* var(--font-inter) comes from next/font/google's Inter loader (see
+     layout.tsx), which self-hosts the font and handles fallback metrics —
+     the system-ui/sans-serif here is only a last-resort if that fails. */
+  --font-body: var(--font-inter), system-ui, sans-serif;
+  --font-ui: var(--font-inter), system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-display: 30px; /* screen h1 · 30/33 · 500 */
+  --text-display--line-height: 33px;
+  --text-h2: 24px; /* spec-sheet section head */
+  --text-screen: 26px; /* in-app page title */
+  --text-title: 22px; /* project title · 22/26 */
+  --text-title--line-height: 26px;
+  --text-section: 17px; /* pane heading · 17/22 */
+  --text-body: 15px; /* script + prose · 15/23 */
+  --text-body--line-height: 23px;
+  --text-control: 14px; /* buttons, inputs, chat */
+  --text-ui: 13.5px; /* rail items, dense controls */
+  --text-small: 13px; /* meta · 13/19 */
+  --text-meta: 12.5px; /* timestamps, save state */
+  --text-chip: 12px; /* status chips */
+  --text-label: 11.5px; /* caps label · 0.09em */
+  --text-mono: 11px; /* token annotations */
+
+  --tracking-tight: -0.02em;
+  --tracking-snug: -0.015em;
+  --tracking-micro: -0.01em;
+  --tracking-label: 0.09em;
+
+  /* Resolved literals: Reelcraft's file aliases these to Nocturne's
+     --radius-sm/-md/-lg, which Nocturne alone defines. Since Nocturne isn't
+     pulled in as a source here, the resolved pixel values are inlined. */
+  --radius-badge: 4px;
+  --radius-control: 8px;
+  --radius-frame: 14px;
+}
+
+/* ---------- light — the primary assignment: the product ships light ---------- */
+:root,
+.light {
+  --bg-canvas: #f4f4f8;
+  --bg-rail: #efeff5;
+  --bg-surface: #fbfbfe;
+  --bg-surface-hover: #f5f5fb;
+  --bg-inset: #e9e9f1;
+  --bg-selected: #e4e4ee;
+  --bg-pressed: #e2e2ea;
+
+  --text-primary: #1c1d29;
+  --text-secondary: #5c5f70;
+  --text-tertiary: #85889a;
+  --text-quiet: #c6c8d4;
+
+  --accent: #5b5bd6;
+  --accent-hover: #4a4ac4;
+  --accent-active: #3e3eab;
+  --accent-wash: #edecfb;
+  --accent-wash-strong: #e2e0f8;
+  --accent-faint: rgba(91, 91, 214, 0.3);
+  --focus-halo: 0 0 0 3px rgba(91, 91, 214, 0.18);
+
+  --border-subtle: #e5e5ee;
+  --border-strong: #d2d3df;
+  --border-strong-hover: #c6c8d4;
+  --border-muted: #dcdce8;
+  --border-hairline: #f0f0f6;
+
+  --skeleton-base: #eeeef4;
+  --skeleton-hi: #e3e3ee;
+  --stripe-a: #e9e9f1;
+  --stripe-b: #e3e3ee;
+
+  /* Named --elevation-* rather than --shadow-* so the @theme inline mapping
+     below (which needs the --shadow-card Tailwind key) doesn't reference a
+     source variable of the exact same name. */
+  --elevation-card: 0 1px 2px rgba(28, 29, 41, 0.06);
+  --elevation-card-hover: 0 4px 14px rgba(28, 29, 41, 0.1);
+
+  --status-draft-fg: #5c5f70;
+  --status-draft-bg: #ececf1;
+  --status-active-fg: #8a5a06;
+  --status-active-bg: #fbf0d6;
+  --status-active-bg-hover: #f4ead0;
+  --status-done-fg: #1c6b47;
+  --status-done-bg: #dcefe3;
+  --status-failed-fg: #a3322a;
+  --status-failed-bg: #fae2df;
+  --status-failed-bg-hover: #f6e6e8;
+  --status-failed-line: #f0c8c3;
+
+  --bg-well: #f0f0f6; /* empty thumbnail well */
+  --accent-quiet: #6560a6; /* timecode under an accent scene label */
+  --banner-failed-title: #8f2b24;
+  --banner-failed-body: #7d3b36;
+  --banner-active-title: #7a4f05;
+  --banner-active-body: #6f5320;
+
+  /* Nocturne-compat aliases: kept for any Nocturne component CSS vendored
+     later (.btn/.input/.card read these names directly). Not Tailwind-mapped
+     in this pass — the richer bg/text/accent/border token set above covers
+     the actual product tokens. */
+  --color-bg: #f4f4f8;
+  --color-surface: #fbfbfe;
+  --color-text: #1c1d29;
+  --color-accent: #5b5bd6;
+  --color-divider: #e5e5ee;
+}
+
+/* ---------- dark — the secondary assignment, kept in full step with light ---------- */
+.dark {
+  --bg-canvas: #161826;
+  --bg-rail: #12141f;
+  --bg-surface: #1d2030;
+  --bg-surface-hover: #232532;
+  --bg-inset: #0f1120;
+  --bg-selected: #232532;
+  --bg-pressed: #2a2c39;
+
+  --text-primary: #e9e9ed;
+  --text-secondary: #9397ab;
+  --text-tertiary: #75798c;
+  --text-quiet: #4e5265;
+
+  --accent: #9184d9;
+  --accent-hover: #a79cea;
+  --accent-active: #b5abfc;
+  --accent-wash: #241f3d;
+  --accent-wash-strong: #2b2547;
+  --accent-faint: rgba(145, 132, 217, 0.3);
+  --focus-halo: 0 0 0 3px rgba(145, 132, 217, 0.22);
+
+  --border-subtle: #262838;
+  --border-strong: #363949;
+  --border-strong-hover: #4a4e60;
+  --border-muted: #2f3242;
+  --border-hairline: #232532;
+
+  --skeleton-base: #22253a;
+  --skeleton-hi: #2c3047;
+  --stripe-a: #0f1120;
+  --stripe-b: #141628;
+
+  --elevation-card: none;
+  --elevation-card-hover: 0 6px 18px rgba(0, 0, 0, 0.55);
+
+  --status-draft-fg: #b2b6ca;
+  --status-draft-bg: #2a2c39;
+  --status-active-fg: #e0b25f;
+  --status-active-bg: #3a2d12;
+  --status-active-bg-hover: #463719;
+  --status-done-fg: #78c79b;
+  --status-done-bg: #153024;
+  --status-failed-fg: #e8897f;
+  --status-failed-bg: #3a1e1c;
+  --status-failed-bg-hover: #48282a;
+  --status-failed-line: #4d2926;
+
+  --bg-well: #16182a;
+  --accent-quiet: #9188c4;
+  --banner-failed-title: #f0aaa2;
+  --banner-failed-body: #cfa39d;
+  --banner-active-title: #eec684;
+  --banner-active-body: #c8b28a;
+
+  --color-bg: #161826;
+  --color-surface: #232532;
+  --color-text: #e9e9ed;
+  --color-accent: #9184d9;
+  --color-divider: color-mix(in srgb, #e9e9ed 16%, transparent);
+}
+
+/* ============================================================
+   Tailwind theme mapping — every utility-generating token below reads
+   through `var()` to the tokens above, so light/.dark switching just works.
+   ============================================================ */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-bg-canvas: var(--bg-canvas);
+  --color-bg-rail: var(--bg-rail);
+  --color-bg-surface: var(--bg-surface);
+  --color-bg-surface-hover: var(--bg-surface-hover);
+  --color-bg-inset: var(--bg-inset);
+  --color-bg-selected: var(--bg-selected);
+  --color-bg-pressed: var(--bg-pressed);
+  --color-bg-well: var(--bg-well);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-text-quiet: var(--text-quiet);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-active: var(--accent-active);
+  --color-accent-wash: var(--accent-wash);
+  --color-accent-wash-strong: var(--accent-wash-strong);
+  --color-accent-faint: var(--accent-faint);
+  --color-accent-quiet: var(--accent-quiet);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-border-strong-hover: var(--border-strong-hover);
+  --color-border-muted: var(--border-muted);
+  --color-border-hairline: var(--border-hairline);
+
+  --color-status-draft-fg: var(--status-draft-fg);
+  --color-status-draft-bg: var(--status-draft-bg);
+  --color-status-active-fg: var(--status-active-fg);
+  --color-status-active-bg: var(--status-active-bg);
+  --color-status-active-bg-hover: var(--status-active-bg-hover);
+  --color-status-done-fg: var(--status-done-fg);
+  --color-status-done-bg: var(--status-done-bg);
+  --color-status-failed-fg: var(--status-failed-fg);
+  --color-status-failed-bg: var(--status-failed-bg);
+  --color-status-failed-bg-hover: var(--status-failed-bg-hover);
+  --color-status-failed-line: var(--status-failed-line);
+
+  --color-banner-failed-title: var(--banner-failed-title);
+  --color-banner-failed-body: var(--banner-failed-body);
+  --color-banner-active-title: var(--banner-active-title);
+  --color-banner-active-body: var(--banner-active-body);
+
+  --color-skeleton-base: var(--skeleton-base);
+  --color-skeleton-hi: var(--skeleton-hi);
+  --color-stripe-a: var(--stripe-a);
+  --color-stripe-b: var(--stripe-b);
+
+  --shadow-card: var(--elevation-card);
+  --shadow-card-hover: var(--elevation-card-hover);
+  --shadow-focus-halo: var(--focus-halo);
+
+  --spacing-3xs: var(--space-3xs);
+  --spacing-2xs: var(--space-2xs);
+  --spacing-xs: var(--space-xs);
+  --spacing-sm: var(--space-sm);
+  --spacing-md: var(--space-md);
+  --spacing-lg: var(--space-lg);
+  --spacing-xl: var(--space-xl);
+  --spacing-2xl: var(--space-2xl);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-body);
 }
