@@ -42,16 +42,6 @@ then generate a voiceover, scene images, and a short video from it.
   resumable — generation is slow and costs money.
 - Claude returns scripts as structured scenes (JSON), not prose. One scene
   = one image = one voiceover segment.
-- Provider URLs expire (OpenAI, fal.ai). Always download artefacts and
-  store them in the private `artifacts` Supabase Storage bucket; persist
-  the storage path in the DB, never the provider URL. Serve via signed URLs.
-- Long-running generations (fal.ai: 30–120s+) never block a request.
-  Pattern: submit → store `external_id` in `jobs` → webhook updates the
-  row → poll as fallback. Vercel functions can't stay open that long.
-- Failures are per-scene, not per-project. A failed image or video retries
-  that scene alone.
-- Generation costs real money (~$0.07/sec of fal.ai video; a 96s project
-  ≈ $6.70). When testing, use 2–3 scenes, not a full script.
 - Model and provider config lives in `src/lib/config/models.ts`, read from
   env with defaults. Never hard-code a model name at a call site. Config
   sections are added when a step is built, not ahead of it.
@@ -63,26 +53,21 @@ then generate a voiceover, scene images, and a short video from it.
   mint a real throwaway Supabase user via `tests/supabase-test-session.ts`
   (`createTestSession`/`deleteTestUser`, admin-API magic-link session)
   rather than mocking auth — see `tests/dashboard-new-project.spec.ts`.
+- Schema changes go in `supabase/migrations/` via `supabase migration new`,
+  applied with `db push` — never pasted into the dashboard SQL editor.
+  Re-run `npm run types:db` after any change; `src/lib/database.types.ts`
+  is generated, never hand-edited.
+- Supabase clients are typed with the generated `Database` type. Don't
+  infer schema from usage — read the types file.
 
 ## Database
-- `projects` — id, user_id, title, prompt, script, status, current_step,
-  audio_path, total_duration_sec, timestamps. RLS on.
-  `status` is unconstrained `text` (default `'draft'`, no DB enum/CHECK) —
-  app-level convention is draft / in_progress / completed / failed. Keep
-  any code writing this column consistent with those four.
-  `current_step` is one of script / voiceover / images / video.
-- `scenes` — id, project_id, position, scene_key ('s001'), voice_over
-  (includes the inline `[tag]` cue), image_prompt, video_prompt,
-  duration_sec (null until ElevenLabs reports it — Claude does NOT
-  estimate duration), audio_path, image_path, video_path, image_status,
-  video_status. Unique on (project_id, position).
-  RLS via `exists` subquery on parent project ownership.
-- `jobs` — id, project_id, scene_id, kind (audio|image|video), provider
-  (elevenlabs|openai|fal), external_id, status, error, timestamps.
-  RLS via the same `exists` pattern.
-- Storage: private `artifacts` bucket.
-- `messages` — id, project_id, role, content, timestamps. The script-step
-  chat transcript. RLS via the same `exists` pattern.
+Tables: `projects`, `scenes`, `messages`, `jobs`. All RLS-protected;
+child tables via an `exists` subquery on project ownership.
+Private `artifacts` Storage bucket.
+Read `src/lib/database.types.ts` for columns — don't rely on this file.
+Conventions not visible in the types: `projects.status` is unconstrained
+text (draft / in_progress / completed / failed); `current_step` is
+script / voiceover / images / video.
 
 ## Done
 - Supabase email/password auth: signup, login, sign-out, protected dashboard
@@ -112,4 +97,7 @@ then generate a voiceover, scene images, and a short video from it.
   without a refetch.
 
 ## Current focus
-TBD
+Splitting scene generation: the chat loop produces voice_over only;
+image_prompt and video_prompt are generated in one pass via a new
+/api/projects/[id]/prompts route when the user clicks Continue to
+voiceover. Then prompt caching and a history window on both routes.
