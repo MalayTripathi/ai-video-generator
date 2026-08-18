@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { ProjectGrid } from './project-grid'
 import { Rail } from './rail'
-import { TopBar } from './top-bar'
+import { SearchButton, TopBar } from './top-bar'
 import type { Project } from './types'
 
 export default async function DashboardPage() {
@@ -17,7 +17,7 @@ export default async function DashboardPage() {
 
   const { data: projects } = await supabase
     .from('projects')
-    .select('id, title, status, created_at')
+    .select('id, title, status, current_step, created_at')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
 
@@ -25,7 +25,15 @@ export default async function DashboardPage() {
     <div className="flex min-h-0 flex-1">
       <Rail />
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar user={user} />
+        <TopBar
+          user={user}
+          left={
+            <h1 className="text-screen font-medium tracking-tight text-text-primary">
+              Your projects
+            </h1>
+          }
+          right={<SearchButton />}
+        />
         <ProjectGrid projects={(projects ?? []) as Project[]} />
       </div>
     </div>

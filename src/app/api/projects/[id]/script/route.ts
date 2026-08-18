@@ -13,7 +13,7 @@ type Scene = {
 
 const SYSTEM_PROMPT = `You are scripting a short narrated video with Claude's help.
 
-Write scenes as structured data via the write_scenes tool - never as free-text JSON in your reply. Whenever you are generating a new script or revising the existing one, call write_scenes with the complete, current set of scenes (not just the ones that changed) and a brief message explaining what you did.
+Write scenes as structured data via the write_scenes tool - never as free-text JSON in your reply. Whenever you are generating a new script or revising the existing one, call write_scenes with the complete, current set of scenes (not just the ones that changed), a short title (3-6 words) summarizing the video's topic, and a brief message explaining what you did.
 
 Each scene's voice_over starts with an inline delivery tag in square brackets, chosen from: [slowly], [warmly], [excited], [serious], [emotional], [calmly], [worried]. The tag is the first thing in the string.
 
@@ -62,13 +62,18 @@ const WRITE_SCENES_TOOL: Anthropic.Tool = {
           additionalProperties: false,
         },
       },
+      title: {
+        type: 'string',
+        description:
+          "A short project title (3-6 words) derived from the topic, in the same language as the script.",
+      },
       message: {
         type: 'string',
         description:
           'A brief, conversational reply to the user explaining what changed - 1-2 sentences.',
       },
     },
-    required: ['scenes', 'message'],
+    required: ['scenes', 'title', 'message'],
     additionalProperties: false,
   },
   strict: true,
@@ -178,7 +183,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (toolUseBlock) {
     const toolMessage = (toolUseBlock.input as { message?: unknown }).message
     assistantMessage = typeof toolMessage === 'string' ? toolMessage : ''
-  } else {
+  }
+
+  let title = ''
+  if (toolUseBlock) {
+    const toolTitle = (toolUseBlock.input as { title?: unknown }).title
+    title = typeof toolTitle === 'string' ? toolTitle.trim() : ''
+  }
+
+  if (!toolUseBlock) {
     const textBlock = response.content.find(
       (block): block is Anthropic.TextBlock => block.type === 'text'
     )
@@ -186,6 +199,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   let finalScenes: unknown[] = existingScenes ?? []
+  let appliedTitle: string | null = null
 
   if (toolUseBlock) {
     const input = toolUseBlock.input as { scenes?: unknown }
@@ -207,6 +221,23 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
       if (upsertError) {
         return NextResponse.json({ error: upsertError.message }, { status: 500 })
+      }
+    }
+
+    if (title) {
+      const { data: updatedProjects, error: titleError } = await supabase
+        .from('projects')
+        .update({ title })
+        .eq('id', projectId)
+        .eq('title', 'Untitled project')
+        .select('title')
+
+      if (titleError) {
+        return NextResponse.json({ error: titleError.message }, { status: 500 })
+      }
+
+      if (updatedProjects && updatedProjects.length > 0) {
+        appliedTitle = updatedProjects[0]!.title
       }
     }
 
@@ -247,5 +278,5 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     )
   }
 
-  return NextResponse.json({ message: assistantMessage, scenes: finalScenes })
+  return NextResponse.json({ message: assistantMessage, scenes: finalScenes, title: appliedTitle })
 }

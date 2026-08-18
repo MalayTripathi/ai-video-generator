@@ -59,7 +59,10 @@ then generate a voiceover, scene images, and a short video from it.
   free-text alongside it. Models frequently return tool_use with no text
   block.
 - Playwright uses `channel: 'chrome'` (macOS 12 has no bundled chromium
-  build). Don't run `npx playwright install chromium`.
+  build). Don't run `npx playwright install chromium`. Integration tests
+  mint a real throwaway Supabase user via `tests/supabase-test-session.ts`
+  (`createTestSession`/`deleteTestUser`, admin-API magic-link session)
+  rather than mocking auth — see `tests/dashboard-new-project.spec.ts`.
 
 ## Database
 - `projects` — id, user_id, title, prompt, script, status, current_step,
@@ -89,13 +92,24 @@ then generate a voiceover, scene images, and a short video from it.
 - Deployed to Vercel
 - Dashboard: left rail, top bar with user dropdown (real sign-out), status
   filter chips, project card grid reading live `projects` rows, empty
-  state. Card thumbnails, in-progress step detail, and several nav items
-  (New project, Assets, Usage, Settings, search) are visual-only pending
-  real data/routes.
+  state. "New project" (rail + empty state) is a real server action
+  (`createProject`) that inserts a row and redirects into the wizard.
+  Cards link to `/projects/[id]/{current_step}` — resumes wherever the
+  project left off. Card thumbnails and the remaining nav items (Assets,
+  Usage, Settings, search) are still visual-only pending real data/routes.
+- Script step (`/projects/[id]/script`): dashboard shell reused (`Rail` +
+  `TopBar`'s `left`/`right` slots), step indicator row (Script/Voiceover/
+  Images/Video), inline-editable project title kept in sync between manual
+  edits and Claude's auto-title update, 42/58 chat/scene-document split.
+  Chat: message history, empty state, composer, busy/drafting indicator,
+  posts to `/api/projects/[id]/script`. Scene document is **read-only**:
+  scene rows (`Scene N` + voice-over text), empty/skeleton-loading states,
+  a "just changed" highlight diffed after each turn, word count, and a
+  "Continue to voiceover" link gated on scenes existing (target route
+  doesn't exist yet). The API route itself drives a Claude `write_scenes`
+  tool call, persists `scenes`/`messages`/a guarded `projects.title`
+  update, and returns the applied title so the client stays in sync
+  without a refetch.
 
 ## Current focus
-Step 1 — script generation. `/projects/[id]/script`: split view, chat
-column left, editable scene document right. Claude API returns structured
-scenes (scene_key, voice_over, image_prompt, video_prompt) as JSON,
-persisted to `scenes`. Conversational refinement updates existing scenes
-rather than replacing the set.
+TBD

@@ -280,3 +280,12 @@ body {
   color: var(--text-primary);
   font-family: var(--font-body);
 }
+
+@keyframes rc-shimmer {
+  0% {
+    background-position: -240px 0;
+  }
+  100% {
+    background-position: 280px 0;
+  }
+}

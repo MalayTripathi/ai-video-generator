@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { formatRelativeTime } from '@/lib/format-relative-time'
 import type { Project } from './types'
 
@@ -95,7 +96,10 @@ export function ProjectCard({ project }: { project: Project }) {
   }
 
   return (
-    <div className="flex cursor-pointer flex-col gap-rc-sm rounded-control border border-border-subtle bg-bg-surface p-rc-sm pb-[14px] shadow-card hover:border-border-strong hover:shadow-card-hover">
+    <Link
+      href={`/projects/${project.id}/${project.current_step}`}
+      className="flex flex-col gap-rc-sm rounded-control border border-border-subtle bg-bg-surface p-rc-sm pb-[14px] shadow-card hover:border-border-strong hover:shadow-card-hover"
+    >
       {thumbnail}
       <div className="flex flex-col gap-[10px]">
         <div className="truncate text-body font-medium tracking-micro text-text-primary">{title}</div>
@@ -104,6 +108,6 @@ export function ProjectCard({ project }: { project: Project }) {
           {footer}
         </div>
       </div>
-    </div>
+    </Link>
   )
 }
