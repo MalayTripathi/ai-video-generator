@@ -1,3 +1,5 @@
+import { createProject } from './actions'
+
 export function Rail() {
   return (
     <aside className="flex w-[244px] flex-none flex-col bg-bg-rail border-r border-border-subtle px-rc-md pb-rc-md pt-rc-lg">
@@ -6,16 +8,19 @@ export function Rail() {
         <span className="text-body font-medium tracking-micro text-text-primary">Reelcraft</span>
       </div>
 
-      <button
-        type="button"
-        className="mb-rc-lg flex h-[38px] items-center justify-center gap-rc-xs rounded-control border border-accent bg-transparent text-ui font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
-      >
-        <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
-          <rect x="5.75" y="1" width="1.5" height="11" fill="currentColor" />
-          <rect x="1" y="5.75" width="11" height="1.5" fill="currentColor" />
-        </svg>
-        New project
-      </button>
+      <form action={createProject} className="mb-rc-lg">
+        <button
+          type="submit"
+          data-testid="new-project-rail"
+          className="flex h-[38px] w-full items-center justify-center gap-rc-xs rounded-control border border-accent bg-transparent text-ui font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
+        >
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+            <rect x="5.75" y="1" width="1.5" height="11" fill="currentColor" />
+            <rect x="1" y="5.75" width="11" height="1.5" fill="currentColor" />
+          </svg>
+          New project
+        </button>
+      </form>
 
       <nav className="flex flex-col gap-[2px]">
         <div className="relative flex h-[34px] items-center gap-[10px] rounded-control bg-bg-selected px-[10px] text-ui font-medium text-text-primary">

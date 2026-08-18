@@ -58,6 +58,8 @@ then generate a voiceover, scene images, and a short video from it.
 - Anything the UI needs from a Claude call goes in the tool schema, not in
   free-text alongside it. Models frequently return tool_use with no text
   block.
+- Playwright uses `channel: 'chrome'` (macOS 12 has no bundled chromium
+  build). Don't run `npx playwright install chromium`.
 
 ## Database
 - `projects` — id, user_id, title, prompt, script, status, current_step,
