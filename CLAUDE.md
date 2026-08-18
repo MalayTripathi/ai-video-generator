@@ -6,12 +6,12 @@ Users describe a topic, get an AI-generated script, edit it conversationally,
 then generate a voiceover, scene images, and a short video from it.
 
 ## Stack
-- Next.js 16 (App Router, TypeScript, `src/` dir) on Vercel
-- Supabase: Postgres, auth, file storage
-- Claude API: script generation/editing, voiceover segmenting
-- ElevenLabs API: text-to-speech voiceover, with timestamps
-- OpenAI Images API: scene image generation
-- fal.ai: image-to-video generation
+- Claude API: script generation/editing; outputs structured scenes
+- ElevenLabs API (`eleven_v3`): text-to-speech. v3 is required — the
+  scripts carry inline audio tags (`[slowly]`, `[warmly]`) that older
+  models would read aloud as words. Also covers Hindi.
+- OpenAI Images API: per-scene image generation, individually regenerable
+- fal.ai: image + video prompt → per-scene video, all scenes in parallel
 
 ## Conventions
 - All external API calls happen server-side only (API routes / server
@@ -42,14 +42,42 @@ then generate a voiceover, scene images, and a short video from it.
   resumable — generation is slow and costs money.
 - Claude returns scripts as structured scenes (JSON), not prose. One scene
   = one image = one voiceover segment.
+- Provider URLs expire (OpenAI, fal.ai). Always download artefacts and
+  store them in the private `artifacts` Supabase Storage bucket; persist
+  the storage path in the DB, never the provider URL. Serve via signed URLs.
+- Long-running generations (fal.ai: 30–120s+) never block a request.
+  Pattern: submit → store `external_id` in `jobs` → webhook updates the
+  row → poll as fallback. Vercel functions can't stay open that long.
+- Failures are per-scene, not per-project. A failed image or video retries
+  that scene alone.
+- Generation costs real money (~$0.07/sec of fal.ai video; a 96s project
+  ≈ $6.70). When testing, use 2–3 scenes, not a full script.
+- Model and provider config lives in `src/lib/config/models.ts`, read from
+  env with defaults. Never hard-code a model name at a call site. Config
+  sections are added when a step is built, not ahead of it.
+- Anything the UI needs from a Claude call goes in the tool schema, not in
+  free-text alongside it. Models frequently return tool_use with no text
+  block.
 
 ## Database
-- `projects` — id, user_id, title, prompt, script, status, timestamps. RLS on.
+- `projects` — id, user_id, title, prompt, script, status, current_step,
+  audio_path, total_duration_sec, timestamps. RLS on.
   `status` is unconstrained `text` (default `'draft'`, no DB enum/CHECK) —
   app-level convention is draft / in_progress / completed / failed. Keep
   any code writing this column consistent with those four.
-- `scenes` — id, project_id, position, text, visual_description, image_url.
+  `current_step` is one of script / voiceover / images / video.
+- `scenes` — id, project_id, position, scene_key ('s001'), voice_over
+  (includes the inline `[tag]` cue), image_prompt, video_prompt,
+  duration_sec (null until ElevenLabs reports it — Claude does NOT
+  estimate duration), audio_path, image_path, video_path, image_status,
+  video_status. Unique on (project_id, position).
   RLS via `exists` subquery on parent project ownership.
+- `jobs` — id, project_id, scene_id, kind (audio|image|video), provider
+  (elevenlabs|openai|fal), external_id, status, error, timestamps.
+  RLS via the same `exists` pattern.
+- Storage: private `artifacts` bucket.
+- `messages` — id, project_id, role, content, timestamps. The script-step
+  chat transcript. RLS via the same `exists` pattern.
 
 ## Done
 - Supabase email/password auth: signup, login, sign-out, protected dashboard
@@ -64,4 +92,8 @@ then generate a voiceover, scene images, and a short video from it.
   real data/routes.
 
 ## Current focus
-TBD.
+Step 1 — script generation. `/projects/[id]/script`: split view, chat
+column left, editable scene document right. Claude API returns structured
+scenes (scene_key, voice_over, image_prompt, video_prompt) as JSON,
+persisted to `scenes`. Conversational refinement updates existing scenes
+rather than replacing the set.
