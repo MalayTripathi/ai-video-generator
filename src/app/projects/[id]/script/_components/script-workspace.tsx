@@ -53,7 +53,10 @@ export function ScriptWorkspace({
         body: JSON.stringify({ message: text }),
       })
 
-      if (!res.ok) throw new Error('Request failed')
+      if (!res.ok) {
+        const body: { error?: string } | null = await res.json().catch(() => null)
+        throw new Error(body?.error ?? 'Request failed')
+      }
 
       const data: { message: string; scenes: Scene[]; title: string | null } = await res.json()
 
@@ -145,7 +148,7 @@ export function ScriptWorkspace({
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-[42fr_58fr]">
-      <ChatPanel messages={messages} pending={pending} onSend={handleSend} />
+      <ChatPanel messages={messages} pending={pending} locked={promptsPending} onSend={handleSend} />
       <ScenePanel
         projectId={projectId}
         scenes={scenes}

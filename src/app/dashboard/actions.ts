@@ -19,6 +19,22 @@ export async function createProject() {
     redirect('/login')
   }
 
+  const { data: recent } = await supabase
+    .from('projects')
+    .select('id')
+    .eq('user_id', user.id)
+    .eq('status', 'draft')
+    .eq('title', 'Untitled project')
+    .eq('current_step', 'script')
+    .gt('created_at', new Date(Date.now() - 5000).toISOString())
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (recent) {
+    redirect(`/projects/${recent.id}/script`)
+  }
+
   const { data: project, error } = await supabase
     .from('projects')
     .insert({

@@ -66,4 +66,26 @@ test.describe('New project button', () => {
       await deleteTestUser(user.id)
     }
   })
+
+  test('double-clicking the rail button only creates one project', async ({ page, context }) => {
+    const { user, cookie } = await createTestSession()
+    try {
+      await context.addCookies([cookie])
+      await page.goto('/dashboard')
+
+      const button = page.getByTestId('new-project-rail')
+      await Promise.all([button.click(), button.click({ force: true })])
+      await page.waitForURL(/\/projects\/[0-9a-f-]+\/script$/, { waitUntil: 'commit' })
+
+      const { data: projects, error } = await admin
+        .from('projects')
+        .select('id')
+        .eq('user_id', user.id)
+
+      expect(error).toBeNull()
+      expect(projects).toHaveLength(1)
+    } finally {
+      await deleteTestUser(user.id)
+    }
+  })
 })

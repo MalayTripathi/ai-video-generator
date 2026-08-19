@@ -3,6 +3,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@/lib/supabase/server'
 import { createClaudeClient, logClaudeUsage } from '@/lib/claude'
 import { modelsConfig } from '@/lib/config/models'
+import { acquireGenerationLock, releaseGenerationLock } from '@/lib/generation-lock'
 import { callClaudeOrCleanup } from './logic'
 
 const MESSAGE_HISTORY_LIMIT = 20
@@ -114,6 +115,26 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Project not found' }, { status: 404 })
   }
 
+  const lockAcquired = await acquireGenerationLock(supabase, projectId, user.id)
+  if (!lockAcquired) {
+    return NextResponse.json(
+      { error: 'A generation is already in progress for this project.' },
+      { status: 409 }
+    )
+  }
+
+  try {
+    return await handleScriptTurn(supabase, projectId, message)
+  } finally {
+    await releaseGenerationLock(supabase, projectId)
+  }
+}
+
+async function handleScriptTurn(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  projectId: string,
+  message: string
+) {
   const { data: insertedMessage, error: insertUserMessageError } = await supabase
     .from('messages')
     .insert({ project_id: projectId, role: 'user', content: message })

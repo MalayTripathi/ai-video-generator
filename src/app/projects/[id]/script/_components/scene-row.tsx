@@ -71,6 +71,7 @@ export function SceneRow({
   }
 
   function startEditing() {
+    if (saveState === 'saving') return
     setValue(optimisticVoiceOver ?? scene.voice_over)
     setEditing(true)
     requestAnimationFrame(() => {
@@ -96,7 +97,7 @@ export function SceneRow({
     setEditing(false)
     const trimmed = value.trim()
     const current = optimisticVoiceOver ?? scene.voice_over
-    if (!trimmed || trimmed === current) return
+    if (!trimmed || trimmed === current || saveState === 'saving') return
     setOptimisticVoiceOver(trimmed)
     void attemptSave(trimmed)
   }
@@ -138,13 +139,15 @@ export function SceneRow({
           }}
           autoFocus
           rows={1}
-          className="m-0 flex-1 resize-none rounded-control bg-transparent text-control leading-[1.6] text-text-primary outline-none focus-visible:shadow-[var(--focus-halo)]"
+          disabled={saveState === 'saving'}
+          className="m-0 flex-1 resize-none rounded-control bg-transparent text-control leading-[1.6] text-text-primary outline-none focus-visible:shadow-[var(--focus-halo)] disabled:cursor-not-allowed"
         />
       ) : (
         <button
           type="button"
           onClick={startEditing}
-          className="m-0 flex-1 cursor-pointer rounded-control text-left text-control leading-[1.6] text-text-primary outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          disabled={saveState === 'saving'}
+          className="m-0 flex-1 cursor-pointer rounded-control text-left text-control leading-[1.6] text-text-primary outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed"
         >
           {displayValue}
         </button>

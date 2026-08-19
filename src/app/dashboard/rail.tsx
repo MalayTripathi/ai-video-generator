@@ -1,4 +1,5 @@
 import { createProject } from './actions'
+import { NewProjectButton } from './new-project-button'
 
 export function Rail() {
   return (
@@ -9,9 +10,8 @@ export function Rail() {
       </div>
 
       <form action={createProject} className="mb-rc-lg">
-        <button
-          type="submit"
-          data-testid="new-project-rail"
+        <NewProjectButton
+          testId="new-project-rail"
           className="flex h-[38px] w-full cursor-pointer items-center justify-center gap-rc-xs rounded-control border border-accent bg-transparent text-ui font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
         >
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
@@ -19,7 +19,7 @@ export function Rail() {
             <rect x="1" y="5.75" width="11" height="1.5" fill="currentColor" />
           </svg>
           New project
-        </button>
+        </NewProjectButton>
       </form>
 
       <nav className="flex flex-col gap-[2px]">

@@ -123,7 +123,7 @@ export function ScenePanel({
           <button
             type="button"
             onClick={onContinue}
-            disabled={promptsPending}
+            disabled={promptsPending || pending}
             className="flex h-10 cursor-pointer items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active disabled:cursor-not-allowed disabled:opacity-45"
           >
             {promptsPending ? 'Preparing prompts…' : 'Continue to voiceover'}

@@ -51,17 +51,20 @@ function WritingIndicator() {
 export function ChatPanel({
   messages,
   pending,
+  locked,
   onSend,
 }: {
   messages: Message[]
   pending: boolean
+  locked: boolean
   onSend: (text: string) => Promise<boolean>
 }) {
   const [text, setText] = useState('')
+  const disabled = pending || locked
 
   async function handleSend() {
     const trimmed = text.trim()
-    if (!trimmed || pending) return
+    if (!trimmed || disabled) return
     const sent = await onSend(trimmed)
     if (sent) setText('')
   }
@@ -119,14 +122,14 @@ export function ChatPanel({
           onKeyDown={(e) => {
             if (e.key === 'Enter') handleSend()
           }}
-          disabled={pending}
+          disabled={disabled}
           placeholder="Ask for a change…"
           className="h-10 flex-1 rounded-control border border-border-strong bg-bg-surface px-[13px] text-control text-text-primary outline-none placeholder:text-text-tertiary focus-visible:shadow-[var(--focus-halo)] disabled:opacity-45"
         />
         <button
           type="button"
           onClick={handleSend}
-          disabled={pending || !text.trim()}
+          disabled={disabled || !text.trim()}
           className="flex h-10 w-10 flex-none cursor-pointer items-center justify-center rounded-control border border-accent text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active disabled:cursor-not-allowed disabled:opacity-45"
         >
           {pending ? <Spinner /> : <SendIcon />}

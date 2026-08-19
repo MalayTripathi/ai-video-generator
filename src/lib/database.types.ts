@@ -105,6 +105,7 @@ export type Database = {
           audio_path: string | null
           created_at: string
           current_step: string
+          generating_at: string | null
           id: string
           prompt: string | null
           script: string | null
@@ -118,6 +119,7 @@ export type Database = {
           audio_path?: string | null
           created_at?: string
           current_step?: string
+          generating_at?: string | null
           id?: string
           prompt?: string | null
           script?: string | null
@@ -131,6 +133,7 @@ export type Database = {
           audio_path?: string | null
           created_at?: string
           current_step?: string
+          generating_at?: string | null
           id?: string
           prompt?: string | null
           script?: string | null

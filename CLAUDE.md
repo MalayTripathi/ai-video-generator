@@ -118,5 +118,16 @@ script / voiceover / images / video.
   entries stay null and are regenerable. Partial failure returns 422 and
   does not advance current_step.
 - Prompt caching and history window on /script and /prompts.
+- Double-submit guards on script/prompts generation, project creation, and
+  inline edits. `/script` and `/prompts` acquire a DB-level CAS lock
+  (`projects.generating_at`, `src/lib/generation-lock.ts`) before doing any
+  work and release it in a `finally` on every exit path; a concurrent
+  request gets a 409, and a stale lock (crashed/killed request) self-heals
+  after 3 minutes rather than wedging the project. `createProject` disables
+  both "New project" buttons via `useFormStatus` (`NewProjectButton`) and
+  dedupes on the server against a just-created untouched draft. Inline
+  title/scene edits gained real re-entrancy guards — `saving`/`saveState`
+  now actually block re-opening a field mid-save instead of only
+  decorating the UI.
 
 ## Current focus

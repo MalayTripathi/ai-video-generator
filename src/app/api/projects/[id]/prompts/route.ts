@@ -3,6 +3,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@/lib/supabase/server'
 import { createClaudeClient, logClaudeUsage } from '@/lib/claude'
 import { modelsConfig } from '@/lib/config/models'
+import { acquireGenerationLock, releaseGenerationLock } from '@/lib/generation-lock'
 import { needsPrompts, resolvePromptResults } from './logic'
 
 const PROMPTS_SYSTEM_PROMPT = `You are writing per-scene image and video prompts for a short narrated video, based on its script.
@@ -81,6 +82,25 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Project not found' }, { status: 404 })
   }
 
+  const lockAcquired = await acquireGenerationLock(supabase, projectId, user.id)
+  if (!lockAcquired) {
+    return NextResponse.json(
+      { error: 'A generation is already in progress for this project.' },
+      { status: 409 }
+    )
+  }
+
+  try {
+    return await handlePromptsGeneration(supabase, projectId)
+  } finally {
+    await releaseGenerationLock(supabase, projectId)
+  }
+}
+
+async function handlePromptsGeneration(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  projectId: string
+) {
   const { data: allScenes, error: scenesError } = await supabase
     .from('scenes')
     .select('id, scene_key, voice_over, image_prompt, video_prompt')

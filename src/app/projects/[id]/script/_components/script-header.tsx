@@ -56,9 +56,11 @@ export function ScriptHeader({
 }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(title)
+  const [saving, setSaving] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   function startEditing() {
+    if (saving) return
     setValue(title)
     setEditing(true)
     requestAnimationFrame(() => inputRef.current?.select())
@@ -67,9 +69,12 @@ export function ScriptHeader({
   async function save() {
     setEditing(false)
     const trimmed = value.trim()
-    if (!trimmed || trimmed === title) return
+    if (!trimmed || trimmed === title || saving) return
+    setSaving(true)
     onTitleChange(trimmed)
-    await updateProjectTitle(projectId, trimmed)
+    const result = await updateProjectTitle(projectId, trimmed)
+    if (result?.error) console.error('[script-header] failed to save title', result.error)
+    setSaving(false)
   }
 
   return (
@@ -104,7 +109,8 @@ export function ScriptHeader({
         <button
           type="button"
           onClick={startEditing}
-          className="cursor-pointer rounded-control text-body font-medium tracking-micro text-text-primary outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          disabled={saving}
+          className="cursor-pointer rounded-control text-body font-medium tracking-micro text-text-primary outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed"
         >
           {title || 'Untitled project'}
         </button>

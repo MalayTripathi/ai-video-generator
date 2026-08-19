@@ -1,4 +1,5 @@
 import { createProject } from './actions'
+import { NewProjectButton } from './new-project-button'
 
 export function EmptyState() {
   return (
@@ -13,9 +14,8 @@ export function EmptyState() {
           </p>
         </div>
         <form action={createProject} className="mt-rc-xs">
-          <button
-            type="submit"
-            data-testid="new-project-empty"
+          <NewProjectButton
+            testId="new-project-empty"
             className="flex h-10 cursor-pointer items-center justify-center gap-rc-xs rounded-control border border-accent bg-transparent px-rc-md text-control font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
           >
             <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
@@ -23,7 +23,7 @@ export function EmptyState() {
               <rect x="1" y="5.75" width="11" height="1.5" fill="currentColor" />
             </svg>
             New project
-          </button>
+          </NewProjectButton>
         </form>
       </div>
     </div>
