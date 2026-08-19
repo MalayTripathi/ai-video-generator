@@ -1,4 +1,3 @@
-import Link from 'next/link'
 import type { Scene } from '../../types'
 
 function ContinueIcon() {
@@ -6,6 +5,15 @@ function ContinueIcon() {
     <svg width="11" height="9" viewBox="0 0 11 9" fill="none" aria-hidden="true">
       <path d="M0.75 4.5h8.5M6.25 1.25 9.5 4.5 6.25 7.75" stroke="currentColor" strokeWidth="1.3" />
     </svg>
+  )
+}
+
+function Spinner() {
+  return (
+    <span
+      className="block h-[13px] w-[13px] animate-spin rounded-full border-[1.5px] border-accent-faint border-t-accent"
+      aria-hidden
+    />
   )
 }
 
@@ -37,15 +45,19 @@ function EmptyScenePanel() {
 }
 
 export function ScenePanel({
-  projectId,
   scenes,
   pending,
   justChangedKeys,
+  onContinue,
+  promptsPending,
+  promptsError,
 }: {
-  projectId: string
   scenes: Scene[]
   pending: boolean
   justChangedKeys: Set<string>
+  onContinue: () => void
+  promptsPending: boolean
+  promptsError: string | null
 }) {
   const hasScenes = scenes.length > 0
   const wordCount = scenes.reduce(
@@ -103,17 +115,22 @@ export function ScenePanel({
       )}
 
       <div className="flex flex-none items-center justify-between px-rc-lg pt-rc-lg pb-rc-2xl lg:px-rc-xl xl:px-rc-2xl">
-        <span className="text-small text-text-tertiary">
-          {hasScenes ? `${scenes.length} scene${scenes.length === 1 ? '' : 's'}` : ''}
-        </span>
+        <div className="flex items-center gap-rc-md">
+          <span className="text-small text-text-tertiary">
+            {hasScenes ? `${scenes.length} scene${scenes.length === 1 ? '' : 's'}` : ''}
+          </span>
+          {promptsError && <p className="m-0 text-small text-status-failed-fg">{promptsError}</p>}
+        </div>
         {hasScenes ? (
-          <Link
-            href={`/projects/${projectId}/voiceover`}
-            className="flex h-10 items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
+          <button
+            type="button"
+            onClick={onContinue}
+            disabled={promptsPending}
+            className="flex h-10 items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active disabled:opacity-45"
           >
-            Continue to voiceover
-            <ContinueIcon />
-          </Link>
+            {promptsPending ? 'Preparing prompts…' : 'Continue to voiceover'}
+            {promptsPending ? <Spinner /> : <ContinueIcon />}
+          </button>
         ) : (
           <span
             aria-disabled

@@ -95,9 +95,11 @@ script / voiceover / images / video.
   tool call, persists `scenes`/`messages`/a guarded `projects.title`
   update, and returns the applied title so the client stays in sync
   without a refetch.
+- Two-phase scene generation: chat produces voice_over only; image_prompt
+  and video_prompt generated on Continue via /api/projects/[id]/prompts.
+  Prompts validated (min 50 chars, non-empty) before persistence — invalid
+  entries stay null and are regenerable. Partial failure returns 422 and
+  does not advance current_step.
 
 ## Current focus
-Splitting scene generation: the chat loop produces voice_over only;
-image_prompt and video_prompt are generated in one pass via a new
-/api/projects/[id]/prompts route when the user clicks Continue to
-voiceover. Then prompt caching and a history window on both routes.
+Prompt caching and history window on /script and /prompts.

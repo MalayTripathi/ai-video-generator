@@ -14,8 +14,8 @@ export type Scene = {
   position: number
   scene_key: string
   voice_over: string
-  image_prompt: string
-  video_prompt: string
+  image_prompt: string | null
+  video_prompt: string | null
 }
 
 export type Message = {

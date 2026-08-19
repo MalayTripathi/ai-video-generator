@@ -7,8 +7,6 @@ import { modelsConfig } from '@/lib/config/models'
 type Scene = {
   scene_key: string
   voice_over: string
-  image_prompt: string
-  video_prompt: string
 }
 
 const SYSTEM_PROMPT = `You are scripting a short narrated video with Claude's help.
@@ -16,10 +14,6 @@ const SYSTEM_PROMPT = `You are scripting a short narrated video with Claude's he
 Write scenes as structured data via the write_scenes tool - never as free-text JSON in your reply. Whenever you are generating a new script or revising the existing one, call write_scenes with the complete, current set of scenes (not just the ones that changed), a short title (3-6 words) summarizing the video's topic, and a brief message explaining what you did.
 
 Each scene's voice_over starts with an inline delivery tag in square brackets, chosen from: [slowly], [warmly], [excited], [serious], [emotional], [calmly], [worried]. The tag is the first thing in the string.
-
-image_prompt is a detailed, self-contained description of that scene's image (~800-1200 characters) - it must make sense with no other context, since it goes straight to an image generation model.
-
-video_prompt describes the motion within that scene's image (~400-700 characters) - what moves, how the camera behaves - not a new scene.
 
 Voiceover may be written in any language the user asks for.
 
@@ -48,17 +42,8 @@ const WRITE_SCENES_TOOL: Anthropic.Tool = {
               description:
                 'Narration for this scene, starting with an inline delivery tag like [slowly].',
             },
-            image_prompt: {
-              type: 'string',
-              description: 'Detailed, self-contained image description (~800-1200 characters).',
-            },
-            video_prompt: {
-              type: 'string',
-              description:
-                "Describes motion within this scene's image (~400-700 characters).",
-            },
           },
-          required: ['scene_key', 'voice_over', 'image_prompt', 'video_prompt'],
+          required: ['scene_key', 'voice_over'],
           additionalProperties: false,
         },
       },
@@ -91,12 +76,7 @@ function buildSystemPrompt(currentScenes: Scene[]) {
 function isScene(value: unknown): value is Scene {
   if (typeof value !== 'object' || value === null) return false
   const v = value as Record<string, unknown>
-  return (
-    typeof v.scene_key === 'string' &&
-    typeof v.voice_over === 'string' &&
-    typeof v.image_prompt === 'string' &&
-    typeof v.video_prompt === 'string'
-  )
+  return typeof v.scene_key === 'string' && typeof v.voice_over === 'string'
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -166,7 +146,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const response = await claude.messages.create({
     model: modelsConfig.script.model,
     max_tokens: modelsConfig.script.maxTokens,
-    system: buildSystemPrompt(existingScenes ?? []),
+    system: buildSystemPrompt(
+      (existingScenes ?? []).map(({ scene_key, voice_over }) => ({ scene_key, voice_over }))
+    ),
     tools: [WRITE_SCENES_TOOL],
     messages: (history ?? []).map((m) => ({
       role: m.role as 'user' | 'assistant',
@@ -205,14 +187,27 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const input = toolUseBlock.input as { scenes?: unknown }
     const scenes = Array.isArray(input.scenes) ? input.scenes.filter(isScene) : []
 
-    const rows = scenes.map((scene, index) => ({
-      project_id: projectId,
-      position: index + 1,
-      scene_key: scene.scene_key,
-      voice_over: scene.voice_over,
-      image_prompt: scene.image_prompt,
-      video_prompt: scene.video_prompt,
-    }))
+    const previousByKey = new Map(
+      (existingScenes ?? [])
+        .filter((s): s is typeof s & { scene_key: string } => s.scene_key !== null)
+        .map((s) => [
+          s.scene_key,
+          { voice_over: s.voice_over, image_prompt: s.image_prompt, video_prompt: s.video_prompt },
+        ])
+    )
+
+    const rows = scenes.map((scene, index) => {
+      const previous = previousByKey.get(scene.scene_key)
+      const unchanged = previous !== undefined && previous.voice_over === scene.voice_over
+      return {
+        project_id: projectId,
+        position: index + 1,
+        scene_key: scene.scene_key,
+        voice_over: scene.voice_over,
+        image_prompt: unchanged ? previous.image_prompt : null,
+        video_prompt: unchanged ? previous.video_prompt : null,
+      }
+    })
 
     if (rows.length > 0) {
       const { error: upsertError } = await supabase
