@@ -32,7 +32,6 @@ export function ScriptShell({
       <TopBar
         user={user}
         left={<ScriptHeader projectId={projectId} title={title} onTitleChange={setTitle} status={status} />}
-        right={<span className="text-meta text-text-tertiary">Saved</span>}
       />
       <StepIndicator currentStep={currentStep} />
       <ScriptWorkspace

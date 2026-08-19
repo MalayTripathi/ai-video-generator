@@ -91,7 +91,7 @@ export function ScriptWorkspace({
         ...prev.filter((m) => m.id !== localId),
         {
           id: `local-error-${Date.now()}`,
-          role: 'assistant',
+          role: 'error',
           content: 'Something went wrong sending that. Try again.',
           created_at: new Date().toISOString(),
         },
@@ -100,6 +100,16 @@ export function ScriptWorkspace({
     } finally {
       setPending(false)
     }
+  }
+
+  function handleSceneSaved(sceneId: string, voiceOver: string) {
+    setScenes((prev) =>
+      prev.map((scene) =>
+        scene.id === sceneId
+          ? { ...scene, voice_over: voiceOver, image_prompt: null, video_prompt: null }
+          : scene
+      )
+    )
   }
 
   async function handleContinue() {
@@ -137,9 +147,11 @@ export function ScriptWorkspace({
     <div className="grid min-h-0 flex-1 grid-cols-[42fr_58fr]">
       <ChatPanel messages={messages} pending={pending} onSend={handleSend} />
       <ScenePanel
+        projectId={projectId}
         scenes={scenes}
         pending={pending}
         justChangedKeys={justChangedKeys}
+        onSceneSaved={handleSceneSaved}
         onContinue={handleContinue}
         promptsPending={promptsPending}
         promptsError={promptsError}

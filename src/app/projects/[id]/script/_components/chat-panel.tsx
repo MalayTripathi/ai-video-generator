@@ -11,6 +11,23 @@ function SendIcon() {
   )
 }
 
+function ErrorIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      fill="none"
+      aria-hidden="true"
+      className="flex-none"
+    >
+      <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M7 4v3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <circle cx="7" cy="9.75" r="0.75" fill="currentColor" />
+    </svg>
+  )
+}
+
 function Spinner() {
   return (
     <span
@@ -61,20 +78,36 @@ export function ChatPanel({
             Describe the video you want to make, and Claude will draft a script.
           </p>
         ) : (
-          messages.map((message) =>
-            message.role === 'user' ? (
-              <div
-                key={message.id}
-                className="max-w-[82%] self-end rounded-control bg-bg-inset px-[13px] py-[10px] text-control leading-[1.55] text-text-primary"
-              >
-                {message.content}
-              </div>
-            ) : (
+          messages.map((message) => {
+            if (message.role === 'user') {
+              return (
+                <div
+                  key={message.id}
+                  className="max-w-[82%] self-end rounded-control bg-bg-inset px-[13px] py-[10px] text-control leading-[1.55] text-text-primary"
+                >
+                  {message.content}
+                </div>
+              )
+            }
+
+            if (message.role === 'error') {
+              return (
+                <div
+                  key={message.id}
+                  className="flex max-w-[88%] items-center gap-rc-xs text-control leading-[1.6] text-status-failed-fg"
+                >
+                  <ErrorIcon />
+                  {message.content}
+                </div>
+              )
+            }
+
+            return (
               <div key={message.id} className="max-w-[88%] text-control leading-[1.6] text-text-primary">
                 {message.content}
               </div>
             )
-          )
+          })
         )}
         {pending && <WritingIndicator />}
       </div>
@@ -94,7 +127,7 @@ export function ChatPanel({
           type="button"
           onClick={handleSend}
           disabled={pending || !text.trim()}
-          className="flex h-10 w-10 flex-none items-center justify-center rounded-control border border-accent text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active disabled:opacity-45"
+          className="flex h-10 w-10 flex-none cursor-pointer items-center justify-center rounded-control border border-accent text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active disabled:cursor-not-allowed disabled:opacity-45"
         >
           {pending ? <Spinner /> : <SendIcon />}
         </button>

@@ -104,7 +104,7 @@ export function ScriptHeader({
         <button
           type="button"
           onClick={startEditing}
-          className="rounded-control text-body font-medium tracking-micro text-text-primary outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="cursor-pointer rounded-control text-body font-medium tracking-micro text-text-primary outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {title || 'Untitled project'}
         </button>

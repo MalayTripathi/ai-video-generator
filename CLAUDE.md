@@ -63,6 +63,10 @@ then generate a voiceover, scene images, and a short video from it.
   static prompts (~400-450 tokens with tool schemas) sit under the
   minimum cacheable prefix (2048 Haiku / 1024 Sonnet). Don't pad prompts
   to reach it. It will activate on its own as prompts grow.
+- Tailwind v4 gotcha: `<button>` has no default `cursor: pointer` in
+  preflight (unlike v3). Every clickable button needs `cursor-pointer`
+  added explicitly, plus `disabled:cursor-not-allowed` where the button
+  toggles `disabled`.
 
 ## Database
 Tables: `projects`, `scenes`, `messages`, `jobs`. All RLS-protected;
@@ -91,14 +95,23 @@ script / voiceover / images / video.
   Images/Video), inline-editable project title kept in sync between manual
   edits and Claude's auto-title update, 42/58 chat/scene-document split.
   Chat: message history, empty state, composer, busy/drafting indicator,
-  posts to `/api/projects/[id]/script`. Scene document is **read-only**:
+  posts to `/api/projects/[id]/script`. Chat failures render as a distinct
+  `role: 'error'` message (icon + `status-failed-fg`, local-only — never
+  persisted to `messages`), not a plain assistant bubble. Scene document:
   scene rows (`Scene N` + voice-over text), empty/skeleton-loading states,
   a "just changed" highlight diffed after each turn, word count, and a
-  "Continue to voiceover" link gated on scenes existing (target route
-  doesn't exist yet). The API route itself drives a Claude `write_scenes`
-  tool call, persists `scenes`/`messages`/a guarded `projects.title`
-  update, and returns the applied title so the client stays in sync
-  without a refetch.
+  "Continue to voiceover" link gated on scenes existing. The API route
+  itself drives a Claude `write_scenes` tool call, persists
+  `scenes`/`messages`/a guarded `projects.title` update, and returns the
+  applied title so the client stays in sync without a refetch.
+- Scene voice-over text is inline-editable: click a scene row to edit,
+  save on blur/Enter, Escape cancels (`SceneRow`, mirrors the title-edit
+  pattern). Saved via `updateSceneVoiceOver` (`projects/[id]/actions.ts`)
+  — a plain server action, no Claude call — which verifies project
+  ownership and nulls `image_prompt`/`video_prompt` on change. Each row
+  shows its own Saving…/Saved/Save failed+Retry indicator per the
+  Reelcraft canvas's "Save indicator" spec; the old static "Saved" text
+  in the TopBar was removed in favor of this per-row indicator.
 - Two-phase scene generation: chat produces voice_over only; image_prompt
   and video_prompt generated on Continue via /api/projects/[id]/prompts.
   Prompts validated (min 50 chars, non-empty) before persistence — invalid

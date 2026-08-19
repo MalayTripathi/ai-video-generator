@@ -1,4 +1,5 @@
 import type { Scene } from '../../types'
+import { SceneRow } from './scene-row'
 
 function ContinueIcon() {
   return (
@@ -45,16 +46,20 @@ function EmptyScenePanel() {
 }
 
 export function ScenePanel({
+  projectId,
   scenes,
   pending,
   justChangedKeys,
+  onSceneSaved,
   onContinue,
   promptsPending,
   promptsError,
 }: {
+  projectId: string
   scenes: Scene[]
   pending: boolean
   justChangedKeys: Set<string>
+  onSceneSaved: (sceneId: string, voiceOver: string) => void
   onContinue: () => void
   promptsPending: boolean
   promptsError: string | null
@@ -92,22 +97,13 @@ export function ScenePanel({
             {scenes.map((scene) => {
               const changed = justChangedKeys.has(scene.scene_key)
               return (
-                <div
+                <SceneRow
                   key={scene.id ?? scene.scene_key}
-                  className={`relative flex items-baseline gap-[18px] border-b border-border-hairline px-rc-lg py-rc-md last:border-b-0 ${
-                    changed ? 'bg-accent-wash' : ''
-                  }`}
-                >
-                  {changed && (
-                    <span className="absolute bottom-[18px] left-0 top-[18px] w-[2px] rounded-[1px] bg-accent" />
-                  )}
-                  <span
-                    className={`w-16 flex-none text-label uppercase tracking-label ${changed ? 'text-accent' : 'text-text-tertiary'}`}
-                  >
-                    Scene {scene.position}
-                  </span>
-                  <p className="m-0 text-control leading-[1.6] text-text-primary">{scene.voice_over}</p>
-                </div>
+                  projectId={projectId}
+                  scene={scene}
+                  changed={changed}
+                  onSaved={onSceneSaved}
+                />
               )
             })}
           </div>
@@ -117,7 +113,9 @@ export function ScenePanel({
       <div className="flex flex-none items-center justify-between px-rc-lg pt-rc-lg pb-rc-2xl lg:px-rc-xl xl:px-rc-2xl">
         <div className="flex items-center gap-rc-md">
           <span className="text-small text-text-tertiary">
-            {hasScenes ? `${scenes.length} scene${scenes.length === 1 ? '' : 's'}` : ''}
+            {hasScenes
+              ? `Click any scene to edit · ${scenes.length} scene${scenes.length === 1 ? '' : 's'}`
+              : ''}
           </span>
           {promptsError && <p className="m-0 text-small text-status-failed-fg">{promptsError}</p>}
         </div>
@@ -126,7 +124,7 @@ export function ScenePanel({
             type="button"
             onClick={onContinue}
             disabled={promptsPending}
-            className="flex h-10 items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active disabled:opacity-45"
+            className="flex h-10 cursor-pointer items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active disabled:cursor-not-allowed disabled:opacity-45"
           >
             {promptsPending ? 'Preparing prompts…' : 'Continue to voiceover'}
             {promptsPending ? <Spinner /> : <ContinueIcon />}

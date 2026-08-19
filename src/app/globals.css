@@ -289,3 +289,9 @@ body {
     background-position: 280px 0;
   }
 }
+
+@keyframes rc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

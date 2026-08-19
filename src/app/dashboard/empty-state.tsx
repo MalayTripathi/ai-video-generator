@@ -16,7 +16,7 @@ export function EmptyState() {
           <button
             type="submit"
             data-testid="new-project-empty"
-            className="flex h-10 items-center justify-center gap-rc-xs rounded-control border border-accent bg-transparent px-rc-md text-control font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
+            className="flex h-10 cursor-pointer items-center justify-center gap-rc-xs rounded-control border border-accent bg-transparent px-rc-md text-control font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
           >
             <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
               <rect x="5.75" y="1" width="1.5" height="11" fill="currentColor" />

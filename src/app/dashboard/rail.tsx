@@ -12,7 +12,7 @@ export function Rail() {
         <button
           type="submit"
           data-testid="new-project-rail"
-          className="flex h-[38px] w-full items-center justify-center gap-rc-xs rounded-control border border-accent bg-transparent text-ui font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
+          className="flex h-[38px] w-full cursor-pointer items-center justify-center gap-rc-xs rounded-control border border-accent bg-transparent text-ui font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
         >
           <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
             <rect x="5.75" y="1" width="1.5" height="11" fill="currentColor" />

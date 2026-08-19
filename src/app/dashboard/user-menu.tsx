@@ -47,7 +47,7 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="menu"
-        className="flex items-center gap-rc-xs rounded-control py-[4px] pl-[4px] pr-rc-xs outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="flex cursor-pointer items-center gap-rc-xs rounded-control py-[4px] pl-[4px] pr-rc-xs outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <span className="flex h-[26px] w-[26px] items-center justify-center rounded-full bg-accent-wash-strong text-mono font-medium tracking-[0.02em] text-accent-active">
           {initials}
@@ -72,7 +72,7 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
             <button
               type="submit"
               role="menuitem"
-              className="w-full rounded-badge px-rc-xs py-rc-2xs text-left text-small text-text-primary outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              className="w-full cursor-pointer rounded-badge px-rc-xs py-rc-2xs text-left text-small text-text-primary outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               Sign out
             </button>

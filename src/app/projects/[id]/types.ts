@@ -20,7 +20,7 @@ export type Scene = {
 
 export type Message = {
   id: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'error'
   content: string
   created_at: string
 }
