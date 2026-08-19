@@ -59,6 +59,10 @@ then generate a voiceover, scene images, and a short video from it.
   is generated, never hand-edited.
 - Supabase clients are typed with the generated `Database` type. Don't
   infer schema from usage — read the types file.
+- Prompt caching is wired on /script and /prompts but currently inert —
+  static prompts (~400-450 tokens with tool schemas) sit under the
+  minimum cacheable prefix (2048 Haiku / 1024 Sonnet). Don't pad prompts
+  to reach it. It will activate on its own as prompts grow.
 
 ## Database
 Tables: `projects`, `scenes`, `messages`, `jobs`. All RLS-protected;
@@ -100,6 +104,6 @@ script / voiceover / images / video.
   Prompts validated (min 50 chars, non-empty) before persistence — invalid
   entries stay null and are regenerable. Partial failure returns 422 and
   does not advance current_step.
+- Prompt caching and history window on /script and /prompts.
 
 ## Current focus
-Prompt caching and history window on /script and /prompts.

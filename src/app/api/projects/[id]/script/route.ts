@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server'
 import type Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@/lib/supabase/server'
-import { createClaudeClient } from '@/lib/claude'
+import { createClaudeClient, logClaudeUsage } from '@/lib/claude'
 import { modelsConfig } from '@/lib/config/models'
+
+const MESSAGE_HISTORY_LIMIT = 20
 
 type Scene = {
   scene_key: string
@@ -62,15 +64,13 @@ const WRITE_SCENES_TOOL: Anthropic.Tool = {
     additionalProperties: false,
   },
   strict: true,
+  cache_control: { type: 'ephemeral' },
 }
 
-function buildSystemPrompt(currentScenes: Scene[]) {
-  const scenesBlock =
-    currentScenes.length > 0
-      ? JSON.stringify(currentScenes, null, 2)
-      : 'No scenes yet - this is the first script generation for this project.'
-
-  return `${SYSTEM_PROMPT}\n\nCurrent scenes:\n${scenesBlock}`
+function buildScenesBlock(currentScenes: Scene[]) {
+  return currentScenes.length > 0
+    ? JSON.stringify(currentScenes, null, 2)
+    : 'No scenes yet - this is the first script generation for this project.'
 }
 
 function isScene(value: unknown): value is Scene {
@@ -127,7 +127,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         .from('messages')
         .select('role, content')
         .eq('project_id', projectId)
-        .order('created_at', { ascending: true }),
+        .order('created_at', { ascending: false })
+        .limit(MESSAGE_HISTORY_LIMIT),
       supabase
         .from('scenes')
         .select('position, scene_key, voice_over, image_prompt, video_prompt')
@@ -146,15 +147,23 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const response = await claude.messages.create({
     model: modelsConfig.script.model,
     max_tokens: modelsConfig.script.maxTokens,
-    system: buildSystemPrompt(
-      (existingScenes ?? []).map(({ scene_key, voice_over }) => ({ scene_key, voice_over }))
-    ),
+    system: [
+      { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+      {
+        type: 'text',
+        text: `Current scenes:\n${buildScenesBlock(
+          (existingScenes ?? []).map(({ scene_key, voice_over }) => ({ scene_key, voice_over }))
+        )}`,
+      },
+    ],
     tools: [WRITE_SCENES_TOOL],
-    messages: (history ?? []).map((m) => ({
+    messages: [...(history ?? [])].reverse().map((m) => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
     })),
   })
+
+  logClaudeUsage('script', response.usage)
 
   const toolUseBlock = response.content.find(
     (block): block is Anthropic.ToolUseBlock =>
