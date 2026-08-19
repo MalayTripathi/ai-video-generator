@@ -30,7 +30,7 @@ export function SearchButton() {
     <button
       type="button"
       aria-label="Search"
-      className="flex h-8 w-8 items-center justify-center rounded-control text-text-secondary outline-none hover:bg-bg-inset hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-control text-text-secondary outline-none hover:bg-bg-inset hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
       <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
         <circle cx="6.5" cy="6.5" r="4.75" stroke="currentColor" strokeWidth="1.4" />

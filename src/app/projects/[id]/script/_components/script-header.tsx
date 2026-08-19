@@ -103,14 +103,14 @@ export function ScriptHeader({
             }
           }}
           autoFocus
-          className="rounded-control bg-transparent text-body font-medium tracking-micro text-text-primary outline-none focus-visible:shadow-[var(--focus-halo)]"
+          className="rounded-control bg-transparent text-[19px] leading-[23px] font-medium text-text-primary outline-none focus-visible:shadow-[var(--focus-halo)]"
         />
       ) : (
         <button
           type="button"
           onClick={startEditing}
           disabled={saving}
-          className="cursor-pointer rounded-control text-body font-medium tracking-micro text-text-primary outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed"
+          className="cursor-pointer rounded-control text-[19px] leading-[23px] font-medium text-text-primary outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed"
         >
           {title || 'Untitled project'}
         </button>

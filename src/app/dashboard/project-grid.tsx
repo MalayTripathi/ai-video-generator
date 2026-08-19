@@ -77,7 +77,7 @@ function FilterRow({
             key={key}
             type="button"
             onClick={() => onChange(key)}
-            className={`rounded-control px-rc-sm py-rc-2xs text-small outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+            className={`cursor-pointer rounded-control px-rc-sm py-rc-2xs text-small outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
               active
                 ? 'bg-bg-selected font-medium text-text-primary'
                 : 'text-text-secondary hover:bg-bg-inset hover:text-text-primary'

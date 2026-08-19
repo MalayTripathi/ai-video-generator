@@ -3,18 +3,9 @@
 import { useRef, useState } from 'react'
 import { updateSceneVoiceOver } from '../../actions'
 import type { Scene } from '../../types'
+import { Spinner } from '@/components/spinner'
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'failed'
-
-function Spinner() {
-  return (
-    <span
-      className="block h-3 w-3 flex-none rounded-full border-[1.5px] border-border-muted border-t-accent"
-      style={{ animation: 'rc-spin 0.7s linear infinite' }}
-      aria-hidden
-    />
-  )
-}
 
 function SaveIndicator({ state, onRetry }: { state: SaveState; onRetry: () => void }) {
   if (state === 'saving') {

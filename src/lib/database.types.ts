@@ -107,8 +107,6 @@ export type Database = {
           current_step: string
           generating_at: string | null
           id: string
-          prompt: string | null
-          script: string | null
           status: string
           title: string
           total_duration_sec: number | null
@@ -121,8 +119,6 @@ export type Database = {
           current_step?: string
           generating_at?: string | null
           id?: string
-          prompt?: string | null
-          script?: string | null
           status?: string
           title?: string
           total_duration_sec?: number | null
@@ -135,8 +131,6 @@ export type Database = {
           current_step?: string
           generating_at?: string | null
           id?: string
-          prompt?: string | null
-          script?: string | null
           status?: string
           title?: string
           total_duration_sec?: number | null

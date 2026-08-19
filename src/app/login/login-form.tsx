@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useState } from 'react'
 import { isValidEmail } from '@/lib/validation'
+import { Spinner } from '@/components/spinner'
 import { login } from './actions'
 
 export function LoginForm() {
@@ -115,8 +116,9 @@ export function LoginForm() {
         <button
           type="submit"
           disabled={loading}
-          className="h-10 w-full rounded-control border border-accent bg-transparent text-control font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active disabled:opacity-[.45]"
+          className="flex h-10 w-full cursor-pointer items-center justify-center gap-[7px] rounded-control border border-accent bg-transparent text-control font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active disabled:cursor-not-allowed disabled:opacity-[.45]"
         >
+          {loading && <Spinner className="h-3.5 w-3.5 border-accent/30 border-t-accent" />}
           {loading ? 'Signing in…' : 'Sign in'}
         </button>
         <div className="flex items-center justify-between text-small">
