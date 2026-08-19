@@ -3,6 +3,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@/lib/supabase/server'
 import { createClaudeClient, logClaudeUsage } from '@/lib/claude'
 import { modelsConfig } from '@/lib/config/models'
+import { callClaudeOrCleanup } from './logic'
 
 const MESSAGE_HISTORY_LIMIT = 20
 
@@ -113,12 +114,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Project not found' }, { status: 404 })
   }
 
-  const { error: insertUserMessageError } = await supabase
+  const { data: insertedMessage, error: insertUserMessageError } = await supabase
     .from('messages')
     .insert({ project_id: projectId, role: 'user', content: message })
+    .select('id')
+    .single()
 
-  if (insertUserMessageError) {
-    return NextResponse.json({ error: insertUserMessageError.message }, { status: 500 })
+  if (insertUserMessageError || !insertedMessage) {
+    return NextResponse.json(
+      { error: insertUserMessageError?.message ?? 'Failed to save message' },
+      { status: 500 }
+    )
   }
 
   const [{ data: history, error: historyError }, { data: existingScenes, error: scenesError }] =
@@ -144,7 +150,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   const claude = createClaudeClient()
-  const response = await claude.messages.create({
+  const claudeParams: Anthropic.MessageCreateParamsNonStreaming = {
     model: modelsConfig.script.model,
     max_tokens: modelsConfig.script.maxTokens,
     system: [
@@ -161,8 +167,25 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       role: m.role as 'user' | 'assistant',
       content: m.content,
     })),
-  })
+  }
 
+  const result = await callClaudeOrCleanup(
+    { createMessage: (p) => claude.messages.create(p) },
+    {
+      deleteMessage: async (id) => {
+        const { error } = await supabase.from('messages').delete().eq('id', id)
+        return { error: error?.message ?? null }
+      },
+    },
+    insertedMessage.id,
+    claudeParams
+  )
+
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: 500 })
+  }
+
+  const response = result.response
   logClaudeUsage('script', response.usage)
 
   const toolUseBlock = response.content.find(

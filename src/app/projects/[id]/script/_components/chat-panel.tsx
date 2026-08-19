@@ -38,15 +38,15 @@ export function ChatPanel({
 }: {
   messages: Message[]
   pending: boolean
-  onSend: (text: string) => void
+  onSend: (text: string) => Promise<boolean>
 }) {
   const [text, setText] = useState('')
 
-  function handleSend() {
+  async function handleSend() {
     const trimmed = text.trim()
     if (!trimmed || pending) return
-    onSend(trimmed)
-    setText('')
+    const sent = await onSend(trimmed)
+    if (sent) setText('')
   }
 
   return (

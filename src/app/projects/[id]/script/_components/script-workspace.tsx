@@ -37,10 +37,11 @@ export function ScriptWorkspace({
   const [promptsPending, setPromptsPending] = useState(false)
   const [promptsError, setPromptsError] = useState<string | null>(null)
 
-  async function handleSend(text: string) {
+  async function handleSend(text: string): Promise<boolean> {
+    const localId = `local-${Date.now()}`
     setMessages((prev) => [
       ...prev,
-      { id: `local-${Date.now()}`, role: 'user', content: text, created_at: new Date().toISOString() },
+      { id: localId, role: 'user', content: text, created_at: new Date().toISOString() },
     ])
     setPending(true)
     setJustChangedKeys(new Set())
@@ -83,9 +84,11 @@ export function ScriptWorkspace({
           },
         ])
       }
+
+      return true
     } catch {
       setMessages((prev) => [
-        ...prev,
+        ...prev.filter((m) => m.id !== localId),
         {
           id: `local-error-${Date.now()}`,
           role: 'assistant',
@@ -93,6 +96,7 @@ export function ScriptWorkspace({
           created_at: new Date().toISOString(),
         },
       ])
+      return false
     } finally {
       setPending(false)
     }
