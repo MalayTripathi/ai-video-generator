@@ -129,7 +129,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     messages: [{ role: 'user', content: 'Generate the image and video prompts now.' }],
   })
 
-  logClaudeUsage('prompts', response.usage)
+  await logClaudeUsage(supabase, projectId, 'prompts', modelsConfig.prompts.model, response.usage)
 
   const toolUseBlock = response.content.find(
     (block): block is Anthropic.ToolUseBlock =>

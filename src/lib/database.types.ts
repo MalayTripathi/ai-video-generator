@@ -201,6 +201,53 @@ export type Database = {
           },
         ]
       }
+      usage: {
+        Row: {
+          cache_creation_units: number
+          cache_read_units: number
+          created_at: string
+          estimated_cost: number | null
+          id: string
+          input_units: number
+          kind: string
+          output_units: number
+          project_id: string
+          provider: string
+        }
+        Insert: {
+          cache_creation_units?: number
+          cache_read_units?: number
+          created_at?: string
+          estimated_cost?: number | null
+          id?: string
+          input_units?: number
+          kind: string
+          output_units?: number
+          project_id: string
+          provider: string
+        }
+        Update: {
+          cache_creation_units?: number
+          cache_read_units?: number
+          created_at?: string
+          estimated_cost?: number | null
+          id?: string
+          input_units?: number
+          kind?: string
+          output_units?: number
+          project_id?: string
+          provider?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "usage_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never

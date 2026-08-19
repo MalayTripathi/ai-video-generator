@@ -186,7 +186,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   const response = result.response
-  logClaudeUsage('script', response.usage)
+  await logClaudeUsage(supabase, projectId, 'script', modelsConfig.script.model, response.usage)
 
   const toolUseBlock = response.content.find(
     (block): block is Anthropic.ToolUseBlock =>
