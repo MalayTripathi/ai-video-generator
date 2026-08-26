@@ -115,7 +115,7 @@ export type Database = {
           source_text: string | null
           status: string
           template_source_id: string | null
-          title: string
+          title: string | null
           total_duration_sec: number | null
           tts_model: string | null
           updated_at: string
@@ -138,7 +138,7 @@ export type Database = {
           source_text?: string | null
           status?: string
           template_source_id?: string | null
-          title?: string
+          title?: string | null
           total_duration_sec?: number | null
           tts_model?: string | null
           updated_at?: string
@@ -161,7 +161,7 @@ export type Database = {
           source_text?: string | null
           status?: string
           template_source_id?: string | null
-          title?: string
+          title?: string | null
           total_duration_sec?: number | null
           tts_model?: string | null
           updated_at?: string
