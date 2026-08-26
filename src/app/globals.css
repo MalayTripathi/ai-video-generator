@@ -124,6 +124,15 @@
   --banner-active-title: #7a4f05;
   --banner-active-body: #6f5320;
 
+  /* The rail is dark in both app modes (near-black here in light mode) —
+     only the Rail component reads these. See the .dark block below for why
+     the dark-mode value differs (elevated, not inverted). */
+  --rail-bg: #0b0b10;
+  --rail-fg: #e4e4ea;
+  --rail-fg-muted: #8b8b98;
+  --rail-item-active-bg: #1c1c24;
+  --rail-border: #1e1e26;
+
   /* Nocturne-compat aliases: kept for any Nocturne component CSS vendored
      later (.btn/.input/.card read these names directly). Not Tailwind-mapped
      in this pass — the richer bg/text/accent/border token set above covers
@@ -191,6 +200,14 @@
   --banner-active-title: #eec684;
   --banner-active-body: #c8b28a;
 
+  /* One step lighter than --bg-canvas so the rail reads as elevated above
+     the page, not inverted into a glowing white slab. */
+  --rail-bg: #1b1d2c;
+  --rail-fg: #e9e9ed;
+  --rail-fg-muted: #9397ab;
+  --rail-item-active-bg: #262a3c;
+  --rail-border: #2a2c3c;
+
   --color-bg: #161826;
   --color-surface: #232532;
   --color-text: #e9e9ed;
@@ -247,6 +264,12 @@
   --color-banner-failed-body: var(--banner-failed-body);
   --color-banner-active-title: var(--banner-active-title);
   --color-banner-active-body: var(--banner-active-body);
+
+  --color-rail-bg: var(--rail-bg);
+  --color-rail-fg: var(--rail-fg);
+  --color-rail-fg-muted: var(--rail-fg-muted);
+  --color-rail-item-active-bg: var(--rail-item-active-bg);
+  --color-rail-border: var(--rail-border);
 
   --color-skeleton-base: var(--skeleton-base);
   --color-skeleton-hi: var(--skeleton-hi);

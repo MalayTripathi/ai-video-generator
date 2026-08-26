@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { displayTitle } from '@/lib/display-title'
 import { formatRelativeTime } from '@/lib/format-relative-time'
 import type { Project } from './types'
 
@@ -36,7 +37,7 @@ function ResumeIcon() {
 
 export function ProjectCard({ project }: { project: Project }) {
   const timeLabel = formatRelativeTime(project.created_at)
-  const title = project.title || 'Untitled project'
+  const title = displayTitle(project)
 
   let thumbnail: React.ReactNode
   let badge: React.ReactNode

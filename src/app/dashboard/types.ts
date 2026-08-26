@@ -1,9 +1,8 @@
-import type { WizardStep } from '@/app/projects/[id]/types'
-
 export type Project = {
   id: string
-  title: string
+  title: string | null
+  source_text: string | null
   status: string
-  current_step: WizardStep
+  current_step: string
   created_at: string
 }

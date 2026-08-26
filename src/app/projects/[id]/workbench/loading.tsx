@@ -1,7 +1,7 @@
 import { Rail } from '@/app/dashboard/rail'
 import { Spinner } from '@/components/spinner'
 
-export default function ScriptLoading() {
+export default function WorkbenchLoading() {
   return (
     <div className="flex h-screen">
       <Rail />
