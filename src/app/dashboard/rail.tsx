@@ -17,7 +17,7 @@ export function Rail() {
           <rect x="5.75" y="1" width="1.5" height="11" fill="currentColor" />
           <rect x="1" y="5.75" width="11" height="1.5" fill="currentColor" />
         </svg>
-        New project
+        New Project
       </Link>
 
       <nav className="flex flex-col gap-[2px]">

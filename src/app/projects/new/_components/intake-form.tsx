@@ -18,11 +18,11 @@ const DEFAULTS = {
 
 const VIDEO_TYPES: { value: string; label: string }[] = [
   { value: 'auto', label: 'Detect from my text' },
-  { value: 'narrated_story', label: 'Narrated story' },
+  { value: 'narrated_story', label: 'Narrated Story' },
   { value: 'explainer', label: 'Explainer' },
-  { value: 'facts_listicle', label: 'Facts & listicle' },
-  { value: 'character_drama', label: 'Character drama' },
-  { value: 'product_ad', label: 'Product ad' },
+  { value: 'facts_listicle', label: 'Facts & Listicle' },
+  { value: 'character_drama', label: 'Character Drama' },
+  { value: 'product_ad', label: 'Product Ad' },
   { value: 'trailer', label: 'Trailer' },
 ]
 
@@ -85,7 +85,7 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
           Start from an earlier project
         </span>
         <div role="radiogroup" aria-label="Start from an earlier project" className="flex flex-wrap gap-rc-xs">
-          <Chip label="Start fresh" selected={!template} onSelect={() => selectTemplate(null)} />
+          <Chip label="Start Fresh" selected={!template} onSelect={() => selectTemplate(null)} />
           {recentProjects.map((project) => (
             <Chip
               key={project.id}

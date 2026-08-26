@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
 
-test.describe('New project intake', () => {
+test.describe('New Project intake', () => {
   test('filling the brief and submitting creates a project and lands on workbench', async ({
     page,
     context,
@@ -58,7 +58,7 @@ test.describe('New project intake', () => {
     }
   })
 
-  test('rail and empty-state "New project" links navigate to the intake screen', async ({
+  test('rail and empty-state "New Project" links navigate to the intake screen', async ({
     page,
     context,
   }) => {
