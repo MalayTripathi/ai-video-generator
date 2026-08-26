@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.15"
+    PostgrestVersion: "14.17"
   }
   public: {
     Tables: {
@@ -102,42 +102,83 @@ export type Database = {
       }
       projects: {
         Row: {
+          aspect_ratio: string | null
           audio_path: string | null
           created_at: string
           current_step: string
+          duration_target: string | null
+          furthest_step: number
           generating_at: string | null
           id: string
+          language: string | null
+          language_code: string | null
+          source_text: string | null
           status: string
+          template_source_id: string | null
           title: string
           total_duration_sec: number | null
+          tts_model: string | null
           updated_at: string
           user_id: string
+          video_model: string | null
+          video_type: string | null
+          voice_id: string | null
         }
         Insert: {
+          aspect_ratio?: string | null
           audio_path?: string | null
           created_at?: string
           current_step?: string
+          duration_target?: string | null
+          furthest_step?: number
           generating_at?: string | null
           id?: string
+          language?: string | null
+          language_code?: string | null
+          source_text?: string | null
           status?: string
+          template_source_id?: string | null
           title?: string
           total_duration_sec?: number | null
+          tts_model?: string | null
           updated_at?: string
           user_id: string
+          video_model?: string | null
+          video_type?: string | null
+          voice_id?: string | null
         }
         Update: {
+          aspect_ratio?: string | null
           audio_path?: string | null
           created_at?: string
           current_step?: string
+          duration_target?: string | null
+          furthest_step?: number
           generating_at?: string | null
           id?: string
+          language?: string | null
+          language_code?: string | null
+          source_text?: string | null
           status?: string
+          template_source_id?: string | null
           title?: string
           total_duration_sec?: number | null
+          tts_model?: string | null
           updated_at?: string
           user_id?: string
+          video_model?: string | null
+          video_type?: string | null
+          voice_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "projects_template_source_id_fkey"
+            columns: ["template_source_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       scenes: {
         Row: {
