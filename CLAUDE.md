@@ -210,6 +210,22 @@ routing can't be verified from the ledger), no `status` column (so a
 failed-but-billed call can't be recorded), and `kind` is unconstrained
 text.
 
+`projects.shots_generation` (text, CHECK-constrained, default `'pending'`)
+is the shot-generation state machine:
+- `pending` — intake has created the row, shot generation has not run yet.
+- `generating` — a claim is held; `generating_at` holds the claim
+  timestamp.
+- `ready` — shots exist and are committed.
+- `failed` — the last attempt failed. `pending_shots_payload` (jsonb,
+  nullable) is non-null if and only if Claude already returned
+  successfully and only the database writes failed, in which case
+  recovery must replay the payload and MUST NOT call Claude again.
+`pending_shots_payload` is always cleared once shots and shot_elements are
+committed. `generating_at` is unchanged in role — still the claim
+timestamp — and is now written in the same UPDATE that transitions
+`shots_generation` to `'generating'`. `shots_generation` — not "the shots
+table is empty" — is now the only trigger for shot generation.
+
 Read `src/lib/database.types.ts` for columns — don't rely on this file.
 Conventions not visible in the types: `projects.status` is unconstrained
 text (draft / in_progress / completed / failed). `current_step` is one of
@@ -310,6 +326,11 @@ today:
   `assembly` / `social_metadata`). Then a per-user monthly cap checked
   server-side before any expensive call, and real data behind the Usage
   screen and Queue rail item.
+- Wire `/api/projects/[id]/shots`, `generation-lock.ts`, and
+  `shots-context.tsx`/`workbench/page.tsx` to read/write
+  `shots_generation` and `pending_shots_payload` instead of the current
+  "does the shots table have zero rows" check — the migration adds the
+  columns but nothing reads or writes them yet.
 
 ## Open questions
 - **Per-step model selection.** `projects.video_model` is a single column
