@@ -16,7 +16,12 @@ function getShortName(name: string) {
   return `${parts[0]} ${parts[parts.length - 1]![0]}.`
 }
 
-export function UserMenu({ name, email }: { name: string; email: string }) {
+function getFirstName(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  return parts[0] ?? name
+}
+
+export function UserMenu({ name, email, rail = false }: { name: string; email: string; rail?: boolean }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -39,21 +44,35 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
 
   const initials = getInitials(name)
   const shortName = getShortName(name)
+  const firstName = getFirstName(name)
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className={rail ? 'relative mt-rc-sm' : 'relative'}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="menu"
-        className="flex cursor-pointer items-center gap-rc-xs rounded-control py-[4px] pl-[4px] pr-rc-xs outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className={
+          rail
+            ? 'flex h-[34px] w-full min-w-0 cursor-pointer items-center gap-[10px] rounded-control px-rc-xs text-left outline-none hover:bg-rail-item-active-bg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
+            : 'flex cursor-pointer items-center gap-rc-xs rounded-control py-[4px] pl-[4px] pr-rc-xs outline-none hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
+        }
       >
-        <span className="flex h-[26px] w-[26px] items-center justify-center rounded-full bg-accent-wash-strong text-mono font-medium tracking-[0.02em] text-accent-active">
+        <span className="flex h-[26px] w-[26px] flex-none items-center justify-center rounded-full bg-accent-wash-strong text-mono font-medium tracking-[0.02em] text-accent-active">
           {initials}
         </span>
-        <span className="text-small text-text-secondary">{shortName}</span>
-        <svg width="9" height="6" viewBox="0 0 9 6" fill="none" aria-hidden="true">
+        <span className={`min-w-0 flex-1 truncate text-small ${rail ? 'text-rail-fg' : 'text-text-secondary'}`}>
+          {rail ? firstName : shortName}
+        </span>
+        <svg
+          width="9"
+          height="6"
+          viewBox="0 0 9 6"
+          fill="none"
+          aria-hidden="true"
+          className={rail ? 'flex-none text-rail-fg-muted' : 'flex-none'}
+        >
           <path d="M1 1.25 4.5 4.75 8 1.25" stroke="currentColor" strokeWidth="1.3" />
         </svg>
       </button>
@@ -61,7 +80,11 @@ export function UserMenu({ name, email }: { name: string; email: string }) {
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-[calc(100%+6px)] z-10 w-56 rounded-control border border-border-subtle bg-bg-surface p-rc-2xs shadow-card-hover"
+          className={`absolute z-10 rounded-control border border-border-subtle bg-bg-surface p-rc-2xs shadow-card-hover ${
+            rail
+              ? 'bottom-[calc(100%+6px)] inset-x-0'
+              : 'top-[calc(100%+6px)] right-0 w-56 max-w-[calc(100vw-16px)]'
+          }`}
         >
           <div className="px-rc-xs py-rc-2xs">
             <p className="truncate text-small font-medium text-text-primary">{name}</p>

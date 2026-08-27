@@ -16,7 +16,7 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 export async function logClaudeUsage(
   supabase: SupabaseServerClient,
   projectId: string,
-  kind: 'script' | 'prompts',
+  kind: 'script' | 'prompts' | 'shots',
   model: string,
   usage: Anthropic.Usage
 ) {

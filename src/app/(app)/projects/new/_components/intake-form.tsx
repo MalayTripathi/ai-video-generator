@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { displayTitle } from '@/lib/display-title'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import { VIDEO_TYPES } from '@/lib/video-type-labels'
 import { createProjectFromIntake } from '../actions'
 import type { TemplateProject } from '../types'
 import { BuildButton } from './build-button'
@@ -15,16 +16,6 @@ const DEFAULTS = {
   aspectRatio: '9:16' as AspectRatio,
   durationTarget: '1-2min' as DurationTarget,
 }
-
-const VIDEO_TYPES: { value: string; label: string }[] = [
-  { value: 'auto', label: 'Detect from my text' },
-  { value: 'narrated_story', label: 'Narrated Story' },
-  { value: 'explainer', label: 'Explainer' },
-  { value: 'facts_listicle', label: 'Facts & Listicle' },
-  { value: 'character_drama', label: 'Character Drama' },
-  { value: 'product_ad', label: 'Product Ad' },
-  { value: 'trailer', label: 'Trailer' },
-]
 
 const FORMATS: { value: AspectRatio; label: string; sublabel: string; width: number; height: number }[] = [
   { value: '9:16', label: '9:16', sublabel: 'Reels, Shorts', width: 16, height: 24 },

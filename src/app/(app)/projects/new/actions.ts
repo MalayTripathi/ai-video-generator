@@ -3,6 +3,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import { modelsConfig } from '@/lib/config/models'
 
 const VIDEO_TYPES = [
   'auto',
@@ -41,7 +42,7 @@ export async function createProjectFromIntake(formData: FormData) {
     durationTargetRaw && durationTargetRaw in durationConfig ? (durationTargetRaw as DurationTarget) : '1-2min'
 
   const language = (formData.get('language') as string | null)?.trim() || 'en'
-  const videoModel = (formData.get('video_model') as string | null)?.trim() || null
+  const videoModel = (formData.get('video_model') as string | null)?.trim() || modelsConfig.video.model
   const templateSourceId = (formData.get('template_source_id') as string | null)?.trim() || null
 
   const { data: project, error } = await supabase

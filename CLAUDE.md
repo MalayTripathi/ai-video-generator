@@ -6,7 +6,7 @@ Users describe a topic, get an AI-generated script, edit it conversationally,
 then generate a voiceover, scene images, and a short video from it.
 
 ## Stack
-- Claude API: script generation/editing; outputs structured scenes
+- Claude API: script generation/editing; outputs structured shots
 - ElevenLabs API (`eleven_v3`): text-to-speech. v3 is required — the
   scripts carry inline audio tags (`[slowly]`, `[warmly]`) that older
   models would read aloud as words. Also covers Hindi.
@@ -56,7 +56,7 @@ then generate a voiceover, scene images, and a short video from it.
   `duration_target`, `language`, `status: 'draft'`,
   `current_step: 'workbench'`, `furthest_step: 2`), before redirecting into
   `/projects/[id]/workbench`.
-- Claude returns scripts as structured scenes (JSON), not prose. One scene
+- Claude returns scripts as structured shots (JSON), not prose. One shot
   = one image = one voiceover segment.
 - Model and provider config lives in `src/lib/config/models.ts`, read from
   env with defaults. Never hard-code a model name at a call site. Config
@@ -92,15 +92,71 @@ then generate a voiceover, scene images, and a short video from it.
   preflight (unlike v3). Every clickable button needs `cursor-pointer`
   added explicitly, plus `disabled:cursor-not-allowed` where the button
   toggles `disabled`.
+- Shot keys are stable and immutable. `shots.shot_key` is 5 lowercase
+  characters from `23456789bcdfghjkmnpqrstvwxz` (no vowels, no
+  `0/1/i/l/o`), generated server-side in TypeScript
+  (`src/lib/shot-key.ts`, `generateUniqueShotKeys`) with
+  retry-on-collision against the `(project_id, shot_key)` unique
+  constraint — never a Postgres function, never reused after delete,
+  never shown in the UI (card headers show `order_index + 1` instead).
+- `workbench-shell.tsx` (`src/components/workbench-shell.tsx`) is the
+  shared chrome for Steps 2–8: rail, a top bar trimmed to just the back
+  link and user menu, a `header` slot, the 8-step indicator, the agent
+  panel, a `children` content slot, and an optional `footer` slot.
+  Step-specific UI (sub-tabs, tab bodies, what actually goes in the
+  footer) is deliberately not in the shell — only Step 2 exists so far;
+  don't hoist a step's specifics into the shell ahead of the step that
+  needs them.
+- The agent panel's message list has a fixed six-kind taxonomy across all
+  steps: `assistant` (accent-wash bubble), `user` (inset bubble,
+  right-aligned), `tool_run` (amber dot + credit cost), `success` (green
+  dot), `error` (failed-hue rule + Retry), `working` (pulsing dot + Stop)
+  — see `src/components/workbench/agent-message.tsx`. Only `assistant` is
+  populated today (from `write_shots`'s `message` field); the other five
+  render structurally but have no real caller yet.
+- The step indicator (`workbench-step-indicator.tsx`) only links a step
+  if it's actually built and has a real per-project route
+  (`/projects/[id]/{step}`); `intake` has no such route (`/projects/new`
+  is a pre-project screen) and always renders inert even when shown
+  complete. Complete/current/locked is derived from `current_step`'s
+  position alone — it does not consult `furthest_step` yet (see Current
+  focus).
+- `src/lib/video-type-labels.ts` and `src/lib/language-labels.ts` are the
+  single source for turning raw `video_type`/`language` codes into
+  display labels — used by both the intake picker and the workbench
+  header chips. Don't inline a second copy of either mapping.
+- A system prompt that's been explicitly pulled out of its route gets its
+  own versioned module under `src/lib/prompts/` (e.g.
+  `shot-generation.ts`, exporting a `_V1`-suffixed constant bumped on any
+  content change). Not every route follows this yet — `/prompts`'s
+  `PROMPTS_SYSTEM_PROMPT` is still inline — check the specific route
+  rather than assuming.
 
 ## Database
-Tables: `projects`, `scenes`, `messages`, `jobs`. All RLS-protected;
-child tables via an `exists` subquery on project ownership.
-Private `artifacts` Storage bucket. `scenes` will be renamed to `shots` in
-an upcoming migration — the table itself is still `scenes` today, but
-UI/config language (e.g. `targetShots` in `src/lib/config/duration.ts`) has
-already moved to "shots"; check which side of the rename you're touching
-before assuming the vocabulary matches.
+Tables: `projects`, `shots` (renamed from `scenes`), `elements`,
+`shot_elements`, `messages`, `jobs`, `usage`. All RLS-protected;
+`shot_elements` resolves ownership through a two-level join (shots →
+projects), unlike every other child table's single-level `exists`
+subquery. Private `artifacts` Storage bucket.
+
+`shots.shot_key` is a stable, immutable 5-character key (see Conventions)
+with a `(project_id, shot_key)` unique constraint — not the ordinal
+`s001`-style values it originally shipped with.
+
+`shots` craft fields: `visual_description`; `dialogue` (jsonb
+`{element_id, line}[]`, resolved against `elements` for display — never
+raw speaker names); `shot_size` / `camera_angle` / `camera_movement`
+(each DB-CHECK-constrained to a fixed enum — read the migration, not just
+the types file, for the allowed values); `section_label`;
+`camera_overridden` / `duration_locked` (booleans marking a field as
+user-set vs. still free to regenerate).
+
+`elements` (character / location / prop) are deduped per project by
+`lower(name)` (unique index), so a recurring character reuses one row —
+and eventually one reference image — across every shot it appears in.
+`reference_image_path` is null and `status` is `'pending'` until a later
+step generates one.
+
 Read `src/lib/database.types.ts` for columns — don't rely on this file.
 Conventions not visible in the types: `projects.status` is unconstrained
 text (draft / in_progress / completed / failed). `current_step` is one of
@@ -138,6 +194,24 @@ same vocabulary (intake=1 ... assembly=8).
   stale lock (crashed/killed request) self-heals after 3 minutes rather
   than wedging the project. The intake screen's `BuildButton` disables
   itself via `useFormStatus` while `createProjectFromIntake` is in flight.
+- Step 2 Workbench (`/projects/[id]/workbench`): built on
+  `workbench-shell.tsx` (see Conventions), read-only shot list. On first
+  load with zero shots, the client triggers `POST
+  /api/projects/[id]/shots`, which drives one `write_shots` Claude tool
+  call (system prompt in `src/lib/prompts/shot-generation.ts`, target shot
+  count from `durationConfig`), persists shots/elements/`shot_elements`/
+  dialogue, guards the `projects.title` write (only if still null), and
+  inserts an `assistant` message — same CAS-lock/409/stale-self-heal
+  pattern as `/prompts`. Shot cards are grouped by `section_label`,
+  collapsed only (no editing yet). A `ShotsProvider` client context keeps
+  the header's Target/Current readout, the Shots/Assets tab counts, and
+  the footer's "N elements without a reference image" banner in sync with
+  the client-fetched result once generation completes — none of it is
+  server-rendered-once-and-forgotten. Assets and Script tabs render fixed
+  empty states this task regardless of whether elements already exist
+  (deliberate scope line, not an oversight). Explicitly deferred: shot
+  editing, agent chat mutations, element upload/generation, step-guard
+  navigation (see Current focus).
 
 ## Superseded
 The old 4-step wizard (`script`/`voiceover`/`images`/`video`, driven by a
@@ -183,3 +257,10 @@ here as a historical record, not current behavior:
   workbench title editor.
 
 ## Current focus
+- Shot editing: expand/collapse a shot card, edit voice_over / visual
+  description / camera fields, duration stepper, delete
+- Agent chat mutations on the workbench (composer is rendered but disabled
+  today)
+- Element upload/generation (reference images) from the Assets tab
+- Step-guard navigation: gate step-to-step links on `furthest_step`, not
+  just `current_step` position

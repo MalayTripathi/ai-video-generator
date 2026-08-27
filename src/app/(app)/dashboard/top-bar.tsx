@@ -1,26 +1,10 @@
 import type { ReactNode } from 'react'
-import type { User } from '@supabase/supabase-js'
-import { UserMenu } from './user-menu'
 
-export function TopBar({
-  user,
-  left,
-  right,
-}: {
-  user: User
-  left: ReactNode
-  right?: ReactNode
-}) {
-  const name = (user.user_metadata?.full_name as string | undefined)?.trim() || user.email || 'Account'
-  const email = user.email ?? ''
-
+export function TopBar({ left, right }: { left: ReactNode; right?: ReactNode }) {
   return (
     <header className="flex h-[68px] flex-none items-center justify-between border-b border-border-subtle px-rc-lg lg:px-rc-xl xl:px-rc-2xl">
       {left}
-      <div className="flex items-center gap-rc-xs">
-        {right}
-        <UserMenu name={name} email={email} />
-      </div>
+      {right && <div className="flex items-center gap-rc-xs">{right}</div>}
     </header>
   )
 }

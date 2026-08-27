@@ -1,6 +1,16 @@
-import Link from 'next/link'
+'use client'
 
-export function Rail() {
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+import type { User } from '@supabase/supabase-js'
+import { UserMenu } from './user-menu'
+
+export function Rail({ user }: { user?: User }) {
+  const pathname = usePathname()
+  const active = pathname === '/dashboard'
+  const name = (user?.user_metadata?.full_name as string | undefined)?.trim() || user?.email || 'Account'
+  const email = user?.email ?? ''
+
   return (
     <aside className="flex w-[244px] flex-none flex-col bg-rail-bg border-r border-rail-border px-rc-md pb-rc-md pt-rc-lg">
       <div className="flex items-center gap-[9px] px-rc-xs pb-rc-lg">
@@ -21,8 +31,15 @@ export function Rail() {
       </Link>
 
       <nav className="flex flex-col gap-[2px]">
-        <div className="relative flex h-[34px] items-center gap-[10px] rounded-control bg-rail-item-active-bg px-[10px] text-ui font-medium text-rail-fg">
-          <span className="absolute left-0 top-[11px] h-3 w-[2px] rounded-[1px] bg-accent" />
+        <Link
+          href="/dashboard"
+          className={
+            active
+              ? 'relative flex h-[34px] items-center gap-[10px] rounded-control bg-rail-item-active-bg px-rc-xs text-ui font-medium text-rail-fg'
+              : 'flex h-[34px] items-center gap-[10px] rounded-control px-rc-xs text-ui text-rail-fg-muted hover:bg-rail-item-active-bg hover:text-rail-fg'
+          }
+        >
+          {active && <span className="absolute left-0 top-[11px] h-3 w-[2px] rounded-[1px] bg-accent" />}
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <rect x="0.75" y="0.75" width="5" height="5" stroke="currentColor" strokeWidth="1.3" />
             <rect x="8.25" y="0.75" width="5" height="5" stroke="currentColor" strokeWidth="1.3" />
@@ -30,23 +47,23 @@ export function Rail() {
             <rect x="8.25" y="8.25" width="5" height="5" stroke="currentColor" strokeWidth="1.3" />
           </svg>
           Projects
-        </div>
+        </Link>
 
-        <div className="flex h-[34px] items-center gap-[10px] rounded-control px-[10px] text-ui text-rail-fg-muted">
+        <div className="flex h-[34px] items-center gap-[10px] rounded-control px-rc-xs text-ui text-rail-fg-muted">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <rect x="0.75" y="3.75" width="8" height="8" stroke="currentColor" strokeWidth="1.3" />
             <path d="M4 3V1.25h8.25V10" stroke="currentColor" strokeWidth="1.3" />
           </svg>
           Assets
         </div>
-        <div className="flex h-[34px] items-center gap-[10px] rounded-control px-[10px] text-ui text-rail-fg-muted">
+        <div className="flex h-[34px] items-center gap-[10px] rounded-control px-rc-xs text-ui text-rail-fg-muted">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <rect x="0.75" y="0.75" width="4.5" height="4.5" rx="1" stroke="currentColor" strokeWidth="1.3" />
             <path d="M4.5 7h7M4.5 10.25h7" stroke="currentColor" strokeWidth="1.3" />
           </svg>
           Queue
         </div>
-        <div className="flex h-[34px] items-center gap-[10px] rounded-control px-[10px] text-ui text-rail-fg-muted">
+        <div className="flex h-[34px] items-center gap-[10px] rounded-control px-rc-xs text-ui text-rail-fg-muted">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <rect x="1" y="8" width="2.5" height="5" fill="currentColor" />
             <rect x="5.75" y="4.5" width="2.5" height="8.5" fill="currentColor" />
@@ -54,7 +71,7 @@ export function Rail() {
           </svg>
           Usage
         </div>
-        <div className="flex h-[34px] items-center gap-[10px] rounded-control px-[10px] text-ui text-rail-fg-muted">
+        <div className="flex h-[34px] items-center gap-[10px] rounded-control px-rc-xs text-ui text-rail-fg-muted">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <circle cx="7" cy="7" r="2.25" stroke="currentColor" strokeWidth="1.3" />
             <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.3" strokeDasharray="2.6 2.2" />
@@ -74,12 +91,27 @@ export function Rail() {
         }}
       />
 
-      <div className="flex flex-col gap-rc-3xs px-[10px] pb-rc-2xs">
+      <div className="flex flex-col gap-rc-3xs px-rc-xs pb-rc-2xs">
         <span className="text-label uppercase tracking-label text-rail-fg-muted">Credits used</span>
         <span className="text-body font-medium text-rail-fg">
           $4.20 <span className="text-meta font-normal text-rail-fg-muted">this month</span>
         </span>
       </div>
+
+      {user && (
+        <>
+          <div
+            aria-hidden
+            className="mt-rc-sm h-px"
+            style={{
+              backgroundImage:
+                'linear-gradient(to right, transparent, var(--rail-border) 20px, var(--rail-border) calc(100% - 20px), transparent)',
+            }}
+          />
+
+          <UserMenu name={name} email={email} rail />
+        </>
+      )}
     </aside>
   )
 }

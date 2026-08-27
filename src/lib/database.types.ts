@@ -267,7 +267,7 @@ export type Database = {
           order_index: number
           project_id: string
           section_label: string | null
-          shot_key: string | null
+          shot_key: string
           shot_size: string | null
           updated_at: string
           video_path: string | null
@@ -291,7 +291,7 @@ export type Database = {
           order_index: number
           project_id: string
           section_label?: string | null
-          shot_key?: string | null
+          shot_key: string
           shot_size?: string | null
           updated_at?: string
           video_path?: string | null
@@ -315,7 +315,7 @@ export type Database = {
           order_index?: number
           project_id?: string
           section_label?: string | null
-          shot_key?: string | null
+          shot_key?: string
           shot_size?: string | null
           updated_at?: string
           video_path?: string | null
