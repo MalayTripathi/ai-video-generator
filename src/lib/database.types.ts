@@ -14,6 +14,47 @@ export type Database = {
   }
   public: {
     Tables: {
+      elements: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+          project_id: string
+          reference_image_path: string | null
+          status: string
+          type: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+          project_id: string
+          reference_image_path?: string | null
+          status?: string
+          type: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+          project_id?: string
+          reference_image_path?: string | null
+          status?: string
+          type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "elements_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       jobs: {
         Row: {
           created_at: string
@@ -23,7 +64,7 @@ export type Database = {
           kind: string
           project_id: string
           provider: string
-          scene_id: string | null
+          shot_id: string | null
           status: string
           updated_at: string
         }
@@ -35,7 +76,7 @@ export type Database = {
           kind: string
           project_id: string
           provider: string
-          scene_id?: string | null
+          shot_id?: string | null
           status?: string
           updated_at?: string
         }
@@ -47,7 +88,7 @@ export type Database = {
           kind?: string
           project_id?: string
           provider?: string
-          scene_id?: string | null
+          shot_id?: string | null
           status?: string
           updated_at?: string
         }
@@ -60,10 +101,10 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "jobs_scene_id_fkey"
-            columns: ["scene_id"]
+            foreignKeyName: "jobs_shot_id_fkey"
+            columns: ["shot_id"]
             isOneToOne: false
-            referencedRelation: "scenes"
+            referencedRelation: "shots"
             referencedColumns: ["id"]
           },
         ]
@@ -112,6 +153,8 @@ export type Database = {
           id: string
           language: string | null
           language_code: string | null
+          pending_shots_payload: Json | null
+          shots_generation: string
           source_text: string | null
           status: string
           template_source_id: string | null
@@ -135,6 +178,8 @@ export type Database = {
           id?: string
           language?: string | null
           language_code?: string | null
+          pending_shots_payload?: Json | null
+          shots_generation?: string
           source_text?: string | null
           status?: string
           template_source_id?: string | null
@@ -158,6 +203,8 @@ export type Database = {
           id?: string
           language?: string | null
           language_code?: string | null
+          pending_shots_payload?: Json | null
+          shots_generation?: string
           source_text?: string | null
           status?: string
           template_source_id?: string | null
@@ -180,58 +227,112 @@ export type Database = {
           },
         ]
       }
-      scenes: {
+      shot_elements: {
         Row: {
+          element_id: string
+          shot_id: string
+        }
+        Insert: {
+          element_id: string
+          shot_id: string
+        }
+        Update: {
+          element_id?: string
+          shot_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shot_elements_element_id_fkey"
+            columns: ["element_id"]
+            isOneToOne: false
+            referencedRelation: "elements"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shot_elements_shot_id_fkey"
+            columns: ["shot_id"]
+            isOneToOne: false
+            referencedRelation: "shots"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shots: {
+        Row: {
+          camera_angle: string | null
+          camera_movement: string | null
+          camera_overridden: boolean
           created_at: string
+          dialogue: Json
+          duration_locked: boolean
           duration_sec: number | null
           id: string
           image_path: string | null
           image_prompt: string | null
           image_status: string
-          position: number
+          order_index: number
           project_id: string
-          scene_key: string | null
+          section_label: string | null
+          shot_key: string
+          shot_size: string | null
           updated_at: string
           video_path: string | null
           video_prompt: string | null
           video_status: string
+          visual_description: string | null
           voice_over: string
         }
         Insert: {
+          camera_angle?: string | null
+          camera_movement?: string | null
+          camera_overridden?: boolean
           created_at?: string
+          dialogue?: Json
+          duration_locked?: boolean
           duration_sec?: number | null
           id?: string
           image_path?: string | null
           image_prompt?: string | null
           image_status?: string
-          position: number
+          order_index: number
           project_id: string
-          scene_key?: string | null
+          section_label?: string | null
+          shot_key: string
+          shot_size?: string | null
           updated_at?: string
           video_path?: string | null
           video_prompt?: string | null
           video_status?: string
+          visual_description?: string | null
           voice_over: string
         }
         Update: {
+          camera_angle?: string | null
+          camera_movement?: string | null
+          camera_overridden?: boolean
           created_at?: string
+          dialogue?: Json
+          duration_locked?: boolean
           duration_sec?: number | null
           id?: string
           image_path?: string | null
           image_prompt?: string | null
           image_status?: string
-          position?: number
+          order_index?: number
           project_id?: string
-          scene_key?: string | null
+          section_label?: string | null
+          shot_key?: string
+          shot_size?: string | null
           updated_at?: string
           video_path?: string | null
           video_prompt?: string | null
           video_status?: string
+          visual_description?: string | null
           voice_over?: string
         }
         Relationships: [
           {
-            foreignKeyName: "scenes_project_id_fkey"
+            foreignKeyName: "shots_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
