@@ -1,11 +1,6 @@
 const isProduction = process.env.NODE_ENV === 'production'
 
 export type ModelsConfig = {
-  script: {
-    provider: 'anthropic'
-    model: string
-    maxTokens: number
-  }
   prompts: {
     provider: 'anthropic'
     model: string
@@ -25,13 +20,6 @@ export type ModelsConfig = {
 }
 
 export const modelsConfig: ModelsConfig = {
-  script: {
-    provider: 'anthropic',
-    model:
-      process.env.CLAUDE_SCRIPT_MODEL ??
-      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
-    maxTokens: Number(process.env.CLAUDE_SCRIPT_MAX_TOKENS) || 8192,
-  },
   prompts: {
     provider: 'anthropic',
     model:

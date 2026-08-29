@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import type Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@/lib/supabase/server'
-import { createClaudeClient, logClaudeUsage } from '@/lib/claude'
+import { createClaudeGateway, logClaudeUsage, type ClaudeGateway } from '@/lib/claude'
 import { modelsConfig } from '@/lib/config/models'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
 import { acquireGenerationLock, releaseGenerationLock } from '@/lib/generation-lock'
@@ -38,6 +38,8 @@ const VIDEO_TYPES = [
   'trailer',
 ] as const
 
+export const maxDuration = 300
+
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id: projectId } = await params
 
@@ -69,8 +71,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     )
   }
 
+  const gateway = createClaudeGateway()
+
   try {
-    return await handleShotsGeneration(supabase, projectId, project)
+    return await handleShotsGeneration(supabase, projectId, project, gateway)
   } finally {
     await releaseGenerationLock(supabase, projectId)
   }
@@ -85,15 +89,15 @@ async function handleShotsGeneration(
     language: string | null
     duration_target: string | null
     title: string | null
-  }
+  },
+  gateway: ClaudeGateway
 ) {
   const targetShots =
     project.duration_target && project.duration_target in durationConfig
       ? durationConfig[project.duration_target as DurationTarget].targetShots
       : durationConfig['1-2min'].targetShots
 
-  const claude = createClaudeClient()
-  const response = await claude.messages.create({
+  const { message, stopReason, requestId } = await gateway.createMessage({
     model: modelsConfig.shots.model,
     max_tokens: modelsConfig.shots.maxTokens,
     system: [
@@ -105,9 +109,13 @@ async function handleShotsGeneration(
     messages: [{ role: 'user', content: 'Generate the shot list now.' }],
   })
 
-  await logClaudeUsage(supabase, projectId, 'shots', modelsConfig.shots.model, response.usage)
+  await logClaudeUsage(supabase, projectId, 'shots', modelsConfig.shots.model, message.usage)
+  // TODO(phase-1): persist stopReason/requestId once the usage table
+  // supports a pending/settled row lifecycle (see CLAUDE.md's `usage`
+  // "Known gaps" note) - for now just surface them in the server log.
+  console.warn(`[shots] stopReason=${stopReason} requestId=${requestId}`)
 
-  const toolUseBlock = response.content.find(
+  const toolUseBlock = message.content.find(
     (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use' && block.name === 'write_shots'
   )
 

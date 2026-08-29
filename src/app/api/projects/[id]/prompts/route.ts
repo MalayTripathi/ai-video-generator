@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import type Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@/lib/supabase/server'
-import { createClaudeClient, logClaudeUsage } from '@/lib/claude'
+import { createClaudeGateway, logClaudeUsage, type ClaudeGateway } from '@/lib/claude'
 import { modelsConfig } from '@/lib/config/models'
 import { acquireGenerationLock, releaseGenerationLock } from '@/lib/generation-lock'
 import { needsPrompts, resolvePromptResults } from './logic'
@@ -90,8 +90,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     )
   }
 
+  const gateway = createClaudeGateway()
+
   try {
-    return await handlePromptsGeneration(supabase, projectId)
+    return await handlePromptsGeneration(supabase, projectId, gateway)
   } finally {
     await releaseGenerationLock(supabase, projectId)
   }
@@ -99,7 +101,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
 async function handlePromptsGeneration(
   supabase: Awaited<ReturnType<typeof createClient>>,
-  projectId: string
+  projectId: string,
+  gateway: ClaudeGateway
 ) {
   const { data: allShots, error: shotsError } = await supabase
     .from('shots')
@@ -128,8 +131,7 @@ async function handlePromptsGeneration(
     return NextResponse.json({ shots: allShots ?? [] })
   }
 
-  const claude = createClaudeClient()
-  const response = await claude.messages.create({
+  const { message, stopReason, requestId } = await gateway.createMessage({
     model: modelsConfig.prompts.model,
     max_tokens: modelsConfig.prompts.maxTokens,
     system: [
@@ -149,9 +151,13 @@ async function handlePromptsGeneration(
     messages: [{ role: 'user', content: 'Generate the image and video prompts now.' }],
   })
 
-  await logClaudeUsage(supabase, projectId, 'prompts', modelsConfig.prompts.model, response.usage)
+  await logClaudeUsage(supabase, projectId, 'prompts', modelsConfig.prompts.model, message.usage)
+  // TODO(phase-1): persist stopReason/requestId once the usage table
+  // supports a pending/settled row lifecycle (see CLAUDE.md's `usage`
+  // "Known gaps" note) - for now just surface them in the server log.
+  console.warn(`[prompts] stopReason=${stopReason} requestId=${requestId}`)
 
-  const toolUseBlock = response.content.find(
+  const toolUseBlock = message.content.find(
     (block): block is Anthropic.ToolUseBlock =>
       block.type === 'tool_use' && block.name === 'write_prompts'
   )

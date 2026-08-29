@@ -91,6 +91,22 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   module exports `estimateClaudeCostUsd`, the single source for turning
   token counts into the `usage.estimated_cost` figure — don't compute cost
   anywhere else.
+- **Provider calls.** Every Claude call goes through the `ClaudeGateway`
+  interface (`src/lib/claude.ts`, `createClaudeGateway()`) — routes never
+  instantiate `@anthropic-ai/sdk` directly, and only `claude.ts` imports it
+  for anything beyond its types. Tests inject a fake `ClaudeGateway`;
+  nothing else stands in for a real call. A live call outside production
+  requires `ALLOW_REAL_CLAUDE=1`, checked at call time by
+  `assertLiveCallsAllowed()` — importing `claude.ts` is always free, only
+  making the call can throw. **Never set, export, or add
+  `ALLOW_REAL_CLAUDE` to any env file, npm script, test config, CI
+  workflow, or shell command** — whether to spend money on a live call is
+  the developer's decision, not the agent's; if a task appears to need a
+  live call to verify, stop and say so instead of enabling the flag. The
+  real gateway always streams (`messages.stream()` + `finalMessage()`,
+  never `create()`) with `maxRetries: 0` — an SDK-level retry on a
+  partially generated response would be a silent second charge, and every
+  retry in this app is user-initiated and confirmed.
 - Duration → shot-count/credit mapping lives in `src/lib/config/duration.ts`
   (`durationConfig`, keyed by `DurationTarget`) — the single source for
   `targetShots`/`estimatedCredits`. Both the intake duration tiles and
@@ -299,9 +315,9 @@ see Open questions.
 The old 4-step wizard (`script`/`voiceover`/`images`/`video`, driven by a
 `WizardStep` type and its own `StepIndicator`) has been removed now that
 intake and the 8-step workbench flow work end to end.
-`/projects/[id]/script` now just redirects to `/projects/[id]/workbench`
-for bookmarked URLs — that redirect is temporary and can be deleted once
-bookmarks have aged out.
+`/projects/[id]/script` redirected to `/projects/[id]/workbench` for
+bookmarked URLs as a temporary shim; that redirect route has since been
+deleted now that bookmark traffic has aged out.
 
 Two loose ends left behind by the removal, both live in the codebase
 today:

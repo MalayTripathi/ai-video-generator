@@ -2,10 +2,12 @@ import type { createClient } from '@/lib/supabase/server'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
-// Long enough to cover any real Claude call; short enough that a crashed or
-// platform-killed request (no `finally` runs) self-heals instead of
-// wedging the project's script/prompts step forever.
-const STALE_AFTER_MS = 3 * 60 * 1000
+// Tied to the real gateway's 600s SDK timeout plus margin
+// (src/lib/claude.ts) - long enough to cover any real Claude call; short
+// enough that a crashed or platform-killed request (no `finally` runs)
+// self-heals instead of wedging the project's script/prompts step forever.
+// Keep the two numbers in sync if either changes.
+const STALE_AFTER_MS = 15 * 60 * 1000
 
 export async function acquireGenerationLock(
   supabase: SupabaseServerClient,
