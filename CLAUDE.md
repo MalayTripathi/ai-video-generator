@@ -92,22 +92,10 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   module exports `estimateClaudeCostUsd`, the single source for turning
   token counts into the `usage.estimated_cost` figure — don't compute cost
   anywhere else.
-- **Provider calls.** Every Claude call goes through the `ClaudeGateway`
-  interface (`src/lib/claude.ts`, `createClaudeGateway()`) — routes never
-  instantiate `@anthropic-ai/sdk` directly, and only `claude.ts` imports it
-  for anything beyond its types. Tests inject a fake `ClaudeGateway`;
-  nothing else stands in for a real call. A live call outside production
-  requires `ALLOW_REAL_CLAUDE=1`, checked at call time by
-  `assertLiveCallsAllowed()` — importing `claude.ts` is always free, only
-  making the call can throw. **Never set, export, or add
-  `ALLOW_REAL_CLAUDE` to any env file, npm script, test config, CI
-  workflow, or shell command** — whether to spend money on a live call is
-  the developer's decision, not the agent's; if a task appears to need a
-  live call to verify, stop and say so instead of enabling the flag. The
-  real gateway always streams (`messages.stream()` + `finalMessage()`,
-  never `create()`) with `maxRetries: 0` — an SDK-level retry on a
-  partially generated response would be a silent second charge, and every
-  retry in this app is user-initiated and confirmed.
+- **Provider calls.** See `## Provider calls` below for the gateway seam,
+  the live-call guard, and the Playwright guard. Never set, export, or add
+  `ALLOW_REAL_CLAUDE` anywhere in the repo — that decision belongs to the
+  developer, not the agent.
 - Duration → shot-count/credit mapping lives in `src/lib/config/duration.ts`
   (`durationConfig`, keyed by `DurationTarget`) — the single source for
   `targetShots`/`estimatedCredits`. The intake duration tiles, shot
@@ -189,6 +177,39 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   content change). Not every route follows this yet — `/prompts`'s
   `PROMPTS_SYSTEM_PROMPT` is still inline — check the specific route
   rather than assuming.
+
+## Provider calls
+- `ClaudeGateway` (`src/lib/claude.ts`) is the only place `@anthropic-ai/sdk`
+  is instantiated — `createClaudeClient` no longer exists in this codebase.
+  Routes receive an injected gateway via `createClaudeGateway()`; tests
+  inject hand-written fakes from `tests/helpers/claude-fakes.ts`
+  (`successMessage`, `truncatedMessage`, `throwingGateway`) — never the real
+  SDK.
+- `assertLiveCallsAllowed()` runs at call time, inside `createMessage`, not
+  at import time. It returns early when `NODE_ENV === 'production'`.
+  Outside production it throws unless `ALLOW_REAL_CLAUDE === '1'` — an exact
+  string match; `'0'`, unset, or anything else all block. A permitted live
+  call logs a `console.warn` banner naming the model and tool before the
+  request fires.
+- **Never set, export, or add `ALLOW_REAL_CLAUDE` to any env file, npm
+  script, test config, CI workflow, or shell command.** Whether to spend
+  money on a live call is the developer's decision alone. If a task appears
+  to need a live call to verify, stop and say so instead of enabling the
+  flag.
+- Playwright has no live path, enforced three times over:
+  `tests/global-setup.ts` throws unconditionally if `ALLOW_REAL_CLAUDE=1` is
+  set; `tests/load-env.ts` deletes the flag from the test-runner's own
+  process immediately after loading `.env.local`; `playwright.config.ts`
+  forces `webServer.env.ALLOW_REAL_CLAUDE` to `''` for the spawned dev
+  server. There is no `test:live` script and nothing in the suite is tagged
+  `@live`.
+- Calls are streaming-only (`messages.stream()` + `finalMessage()`, never
+  `create()`) with `maxRetries: 0` — an SDK-level retry on a partially
+  generated response would be a silent second charge — and a 600s client
+  timeout. The `/shots` route additionally sets `export const maxDuration =
+  300`. `stop_reason` and `request_id` are captured off every call and
+  `console.warn`'d; persisting them onto the `usage` row is Phase 1 (see
+  `usage`'s "Known gaps" note).
 
 ## Testing
 - Business logic (`runShotGeneration`, etc.) is tested by injecting a `ClaudeGateway`
@@ -306,7 +327,10 @@ generated) on replay instead of creating duplicates. This is what makes the
 confirmation modal's "existing shots will be replaced" copy true rather than aspirational.
 
 This mechanism is specific to `/shots` — `/prompts` still uses the plain
-`generating_at`-only CAS lock in `generation-lock.ts`, unchanged.
+`generating_at`-only CAS lock in `generation-lock.ts`, unchanged. The two
+locking strategies are scheduled to converge; until then, `/prompts`'s
+422-on-partial-failure guarantee (see Done log) is enforced by that older
+CAS lock, not by the claim/recover contract described above.
 
 The workbench shot list derives its UI phase from `shots_generation` +
 `shots.length`, not `shots.length` alone (`shots-context.tsx`):
@@ -315,7 +339,14 @@ The workbench shot list derives its UI phase from `shots_generation` +
 result); `ready` with shots → `list`; `ready` with zero shots → `failed`
 (defensive, never auto-retried); `failed` with zero shots → `failed`;
 `failed` with saved shots → `partial` (renders the saved list with a
-cut-short warning banner, not a silent success). Retry is gated behind `RetryConfirmModal`
+cut-short warning banner, not a silent success). This table lives in
+`derivePhase()` (`derive-phase.ts`) as a pure function of
+`(shots_generation, shotCount)`. The client never triggers generation off a
+raw `shots.length === 0` check — the only trigger is `derivePhase()`
+returning `'trigger'` (i.e. `shots_generation === 'pending'`), fired once
+via a ref guard in `ShotsProvider` (`shots-context.tsx`), so a project that
+legitimately has zero shots for another reason can never re-fire
+generation. Retry is gated behind `RetryConfirmModal`
 (`retry-confirm-modal.tsx`), which states the credit cost from
 `durationConfig` when `pending_shots_payload` is absent, or that
 resuming is free when it's present — the same modal warns that
@@ -357,8 +388,9 @@ see Open questions.
 - `/api/projects/[id]/prompts` generates `image_prompt`/`video_prompt` per
   shot, validated (min 50 chars, non-empty) before persistence — invalid
   entries stay null and are regenerable. Partial failure returns 422 and
-  does not advance `current_step`. A history window is wired on this
-  route; prompt caching is wired but inert (see Conventions).
+  does not advance `current_step` (enforced by the older `generating_at`-only
+  CAS lock, not the `/shots` claim/recover contract — see Database).
+  Prompt caching is wired but inert (see Conventions).
 - Double-submit guards on prompt generation and project creation.
   `/prompts` acquires a DB-level CAS lock (`projects.generating_at`,
   `src/lib/generation-lock.ts`) before doing any work and releases it in a
@@ -394,6 +426,14 @@ see Open questions.
   returns the detected type and the route persists it — but only while the
   stored value is still `'auto'`, never overwriting a user's explicit
   choice.
+- **Phase 0 complete**: the `ClaudeGateway` seam and its live-call guard,
+  the shots state machine with `pending_shots_payload` recovery, removal
+  of the mount-time generate-on-empty-shots trigger in favor of
+  `derivePhase()`, and a hardened fake-gateway test suite (see `##
+  Provider calls` and `## Testing`). The delete-before-insert-existing-shots
+  bug in `runShotsPipeline` was found during P0-5 — it was unreachable
+  before the retry path existed, since a first-ever generation always ran
+  against zero existing rows.
 
 ## Superseded
 The old 4-step wizard (`script`/`voiceover`/`images`/`video`, driven by a

@@ -14,7 +14,7 @@ type PrefillableField = 'video_type' | 'aspect_ratio' | 'duration_target'
 const DEFAULTS = {
   videoType: 'auto',
   aspectRatio: '9:16' as AspectRatio,
-  durationTarget: '1-2min' as DurationTarget,
+  durationTarget: '30-60s' as DurationTarget,
 }
 
 const FORMATS: { value: AspectRatio; label: string; sublabel: string; width: number; height: number }[] = [

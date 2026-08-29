@@ -78,7 +78,7 @@ export function ProjectHeader({
               <span className="text-text-quiet">·</span>
               <span className="flex items-center gap-1 text-text-secondary">
                 <LockIcon />
-                {lockedCount} locked
+                {lockedCount} Locked
               </span>
             </>
           )}
@@ -86,7 +86,7 @@ export function ProjectHeader({
       </div>
       <div className="flex flex-wrap gap-rc-2xs">
         {videoTypeLabel(project.video_type) && <Chip>{videoTypeLabel(project.video_type)}</Chip>}
-        {project.aspect_ratio && <Chip>{project.aspect_ratio} · locked</Chip>}
+        {project.aspect_ratio && <Chip>{project.aspect_ratio} · Locked</Chip>}
         {languageLabel(project.language) && <Chip>{languageLabel(project.language)}</Chip>}
         {project.video_model && <Chip accent>{project.video_model}</Chip>}
       </div>
