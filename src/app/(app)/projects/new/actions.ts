@@ -60,6 +60,7 @@ export async function createProjectFromIntake(formData: FormData) {
       status: 'draft',
       current_step: 'workbench',
       furthest_step: 2,
+      shots_generation: 'pending',
     })
     .select('id')
     .single()

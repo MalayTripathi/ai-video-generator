@@ -11,6 +11,8 @@ import { ScriptTab } from './_components/script-tab'
 import { WorkbenchFooter } from './_components/workbench-footer'
 import type { DisplayDialogueLine, DisplayShot } from './_components/types'
 import type { Json, Tables } from '@/lib/database.types'
+import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import { isShotsGenerationStatus } from '@/app/api/projects/[id]/shots/logic'
 
 type ElementRow = Tables<'elements'>
 type ShotRow = Tables<'shots'> & { shot_elements: { elements: ElementRow | null }[] }
@@ -53,7 +55,7 @@ export default async function WorkbenchPage({
   const { data: project } = await supabase
     .from('projects')
     .select(
-      'id, title, source_text, status, current_step, video_type, aspect_ratio, language, video_model, duration_target'
+      'id, title, source_text, status, current_step, video_type, aspect_ratio, language, video_model, duration_target, shots_generation, pending_shots_payload'
     )
     .eq('id', projectId)
     .eq('user_id', user.id)
@@ -110,8 +112,23 @@ export default async function WorkbenchPage({
     createdAt: message.created_at,
   }))
 
+  const hasPendingPayload = project.pending_shots_payload !== null
+  const estimatedCredits =
+    project.duration_target && project.duration_target in durationConfig
+      ? durationConfig[project.duration_target as DurationTarget].estimatedCredits
+      : durationConfig['1-2min'].estimatedCredits
+
   return (
-    <ShotsProvider projectId={projectId} initialShots={shots} initialVideoType={project.video_type}>
+    <ShotsProvider
+      projectId={projectId}
+      initialShots={shots}
+      initialVideoType={project.video_type}
+      initialGenerationStatus={
+        isShotsGenerationStatus(project.shots_generation) ? project.shots_generation : 'pending'
+      }
+      initialHasPendingPayload={hasPendingPayload}
+      estimatedCredits={estimatedCredits}
+    >
       <WorkbenchShell
         project={project}
         agentMessages={agentMessages}

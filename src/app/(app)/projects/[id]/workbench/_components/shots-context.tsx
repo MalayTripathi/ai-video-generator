@@ -1,9 +1,18 @@
 'use client'
 
+import { useRouter } from 'next/navigation'
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DisplayShot } from './types'
+import type { ShotsGenerationStatus } from '@/app/api/projects/[id]/shots/logic'
 
-type Phase = 'idle' | 'generating' | 'failed'
+type Phase = 'generating' | 'list' | 'failed' | 'partial'
+
+function derivePhase(generationStatus: ShotsGenerationStatus, shotsCount: number): Phase {
+  if (generationStatus === 'pending' || generationStatus === 'generating') return 'generating'
+  if (generationStatus === 'ready') return shotsCount === 0 ? 'failed' : 'list'
+  // 'failed'
+  return shotsCount === 0 ? 'failed' : 'partial'
+}
 
 type ShotsContextValue = {
   shots: DisplayShot[]
@@ -18,55 +27,91 @@ export function ShotsProvider({
   projectId,
   initialShots,
   initialVideoType,
+  initialGenerationStatus,
+  initialHasPendingPayload,
+  estimatedCredits,
   children,
 }: {
   projectId: string
   initialShots: DisplayShot[]
   initialVideoType: string | null
+  initialGenerationStatus: ShotsGenerationStatus
+  initialHasPendingPayload: boolean
+  estimatedCredits: number
   children: ReactNode
 }) {
+  const router = useRouter()
   const [shots, setShots] = useState(initialShots)
   const [videoType, setVideoType] = useState(initialVideoType)
-  const [phase, setPhase] = useState<Phase>(initialShots.length === 0 ? 'generating' : 'idle')
+  const [generationStatus, setGenerationStatus] = useState(initialGenerationStatus)
+  const [hasPendingPayload, setHasPendingPayload] = useState(initialHasPendingPayload)
   const triggeredRef = useRef(false)
 
-  async function fetchShots() {
+  const phase = derivePhase(generationStatus, shots.length)
+
+  async function fetchShots(isRetry: boolean) {
     try {
-      const response = await fetch(`/api/projects/${projectId}/shots`, { method: 'POST' })
-      if (response.status === 409) {
-        // Another generation is already running for this project - the CAS
-        // lock is the source of truth here, not the client. No polling: the
-        // lock self-heals after 3 minutes if the other request died.
-        return
+      const response = await fetch(`/api/projects/${projectId}/shots`, {
+        method: 'POST',
+        ...(isRetry
+          ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ retry: true }) }
+          : {}),
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setShots(data.shots)
+        setVideoType(data.video_type)
       }
-      if (!response.ok) {
-        setPhase('failed')
-        return
-      }
-      const data = await response.json()
-      setShots(data.shots)
-      setVideoType(data.video_type)
-      setPhase('idle')
+      // Whatever the outcome (success, 409, 422, 500), the DB row is the source of truth -
+      // resync from the server rather than hand-deriving the new status here.
+      router.refresh()
     } catch {
-      setPhase('failed')
+      // A genuine network failure (e.g. offline) never reached the server, so there is
+      // nothing to resync - fall back to a local failed status.
+      setGenerationStatus('failed')
     }
   }
 
   function retry() {
-    setPhase('generating')
-    void fetchShots()
+    const message = hasPendingPayload
+      ? 'Resuming a previous generation that already completed — this will not use additional credits. Continue?'
+      : `This starts a new shot generation and uses approximately ${estimatedCredits} credits. Continue?`
+    if (!window.confirm(message)) return
+    setGenerationStatus('generating')
+    void fetchShots(true)
   }
 
   useEffect(() => {
     if (triggeredRef.current) return
-    if (initialShots.length > 0) return
+    if (initialGenerationStatus !== 'pending') return
     triggeredRef.current = true
-    // Fire-once trigger for shot generation on first load. setState only
-    // happens after the POST resolves, not synchronously in this effect.
+    // Fire-once trigger for shot generation on first load. Optimistically flips to
+    // 'generating' so the skeleton shows immediately, before the POST resolves.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void fetchShots()
+    setGenerationStatus('generating')
+    void fetchShots(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Sync from the server whenever the parent server component re-renders (after a
+  // router.refresh(), whether triggered by this tab's own request or a poll below) - this
+  // is how a passive tab that never fired its own POST picks up another tab/device's result.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setShots(initialShots)
+    setVideoType(initialVideoType)
+    setGenerationStatus(initialGenerationStatus)
+    setHasPendingPayload(initialHasPendingPayload)
+  }, [initialShots, initialVideoType, initialGenerationStatus, initialHasPendingPayload])
+
+  // Poll while generating so a tab that never fired its own POST (e.g. loaded mid-generation
+  // from another tab/device) discovers completion. workbench/page.tsx is a server component
+  // that re-reads the project row on every refresh - no separate GET route needed.
+  useEffect(() => {
+    if (phase !== 'generating') return
+    const interval = setInterval(() => router.refresh(), 3000)
+    return () => clearInterval(interval)
+  }, [phase, router])
 
   return (
     <ShotsContext.Provider value={{ shots, phase, videoType, retry }}>{children}</ShotsContext.Provider>

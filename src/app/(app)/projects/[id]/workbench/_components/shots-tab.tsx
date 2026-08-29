@@ -55,6 +55,28 @@ function GenerationFailedBanner({ onRetry }: { onRetry: () => void }) {
   )
 }
 
+function GenerationPartialBanner({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex items-center justify-between gap-rc-md rounded-control border border-status-active-bg-hover bg-status-active-bg p-[14px_16px]">
+      <div className="flex flex-col gap-[3px]">
+        <span className="text-control font-medium text-banner-active-title">Generation was cut short</span>
+        <span className="text-small leading-[1.5] text-banner-active-body">
+          The shots below may be incomplete.
+        </span>
+      </div>
+      <div className="flex flex-none gap-rc-xs">
+        <button
+          type="button"
+          onClick={onRetry}
+          className="flex h-8 cursor-pointer items-center rounded-control border border-accent bg-bg-surface px-rc-sm text-small font-medium text-accent hover:bg-accent-wash"
+        >
+          Try again
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function NoShotsEmptyState({ onRebuild }: { onRebuild: () => void }) {
   return (
     <div className="flex flex-col items-center gap-rc-xs rounded-control border border-dashed border-border-strong p-rc-lg text-center">
@@ -109,6 +131,14 @@ export function ShotsTab() {
 
   if (phase === 'generating') return <GeneratingSkeleton />
   if (phase === 'failed') return <GenerationFailedBanner onRetry={retry} />
+  if (phase === 'partial') {
+    return (
+      <div className="flex flex-col gap-rc-sm">
+        <GenerationPartialBanner onRetry={retry} />
+        <ShotList shots={shots} />
+      </div>
+    )
+  }
   if (shots.length === 0) return <NoShotsEmptyState onRebuild={retry} />
   return <ShotList shots={shots} />
 }

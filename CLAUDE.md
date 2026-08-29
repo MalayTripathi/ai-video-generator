@@ -74,7 +74,8 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   by `createProjectFromIntake` (`src/app/projects/new/actions.ts`), already
   fully populated (`source_text`, `video_type`, `aspect_ratio`,
   `duration_target`, `language`, `status: 'draft'`,
-  `current_step: 'workbench'`, `furthest_step: 2`), before redirecting into
+  `current_step: 'workbench'`, `furthest_step: 2`,
+  `shots_generation: 'pending'`), before redirecting into
   `/projects/[id]/workbench`.
 - `dashboard`, `projects/new`, and `projects/[id]/*` live in the
   `src/app/(app)/` route group (URLs unchanged). Its shared `layout.tsx`
@@ -242,6 +243,46 @@ timestamp — and is now written in the same UPDATE that transitions
 `shots_generation` to `'generating'`. `shots_generation` — not "the shots
 table is empty" — is now the only trigger for shot generation.
 
+A `/api/projects/[id]/shots` request runs a strict **claim → recover →
+persist → settle** order (`runShotGeneration` in
+`src/app/api/projects/[id]/shots/logic.ts`). **Claim**: one atomic
+conditional `UPDATE` (project id + user id + a state predicate —
+`pending`, or `generating` with a stale `generating_at`, or `failed` with
+a request-time `retry: true`) is both the lock and the idempotency guard;
+a zero-row result is a refused claim (409, with `reason: 'already_ready' |
+'already_generating' | 'retry_required'`), never a partial attempt.
+**Recover**: if the claimed row already carries a non-null
+`pending_shots_payload`, the gateway is never called — the stored payload
+is replayed through the same parse → resolve-elements → insert pipeline.
+**Persist**: on a fresh call, the raw `write_shots` tool_use input is
+written to `pending_shots_payload` in its own `UPDATE` immediately after
+the Claude call returns, before any `shots` row is inserted. **Settle**: a
+`finally` block runs on every exit path including a thrown exception —
+success writes `ready`/`generating_at: null`/`pending_shots_payload:
+null`; failure writes `failed`/`generating_at: null`, leaving
+`pending_shots_payload` intact for later recovery — except a `max_tokens`
+truncation, which also settles `failed` but always clears the payload,
+since a truncated answer was never "returned successfully" in the sense
+this contract requires.
+
+**A stored `pending_shots_payload` means Claude has already been paid
+for; recovery replays it and never re-calls.**
+
+This mechanism is specific to `/shots` — `/prompts` still uses the plain
+`generating_at`-only CAS lock in `generation-lock.ts`, unchanged.
+
+The workbench shot list derives its UI phase from `shots_generation` +
+`shots.length`, not `shots.length` alone (`shots-context.tsx`):
+`pending`/`generating` → `generating` (skeleton, polls via
+`router.refresh()` every 3s so a passive tab picks up another tab/device's
+result); `ready` with shots → `list`; `ready` with zero shots → `failed`
+(defensive, never auto-retried); `failed` with zero shots → `failed`;
+`failed` with saved shots → `partial` (renders the saved list with a
+cut-short warning banner, not a silent success). Retry is gated behind a
+`window.confirm` naming the credit cost from `durationConfig`, or stating
+the resume is free when `pending_shots_payload` is present — a
+placeholder for a designed confirm modal.
+
 Read `src/lib/database.types.ts` for columns — don't rely on this file.
 Conventions not visible in the types: `projects.status` is unconstrained
 text (draft / in_progress / completed / failed). `current_step` is one of
@@ -289,18 +330,22 @@ see Open questions.
   itself via `useFormStatus` while `createProjectFromIntake` is in flight.
 - Step 2 Workbench (`/projects/[id]/workbench`): built on
   `workbench-shell.tsx` (see Conventions), read-only shot list. On first
-  load with zero shots, the client triggers `POST
-  /api/projects/[id]/shots`, which drives one `write_shots` Claude tool
-  call (system prompt in `src/lib/prompts/shot-generation.ts`, target shot
-  count from `durationConfig`), persists shots/elements/`shot_elements`/
-  dialogue, guards the `projects.title` write (only if still null),
-  inserts an `assistant` message, and logs a `usage` row — same
-  CAS-lock/409/stale-self-heal pattern as `/prompts`. Shot cards are
-  grouped by `section_label`, collapsed only (no editing yet). A
-  `ShotsProvider` client context keeps the header's Target/Current
-  readout, the Shots/Assets tab counts, and the footer's "N elements
-  without a reference image" banner in sync with the client-fetched result
-  once generation completes — none of it is
+  load while `shots_generation` is `'pending'`, the client triggers `POST
+  /api/projects/[id]/shots`, which runs the claim → recover → persist →
+  settle sequence (see Database) via `runShotGeneration` in
+  `src/app/api/projects/[id]/shots/logic.ts` — one `write_shots` Claude
+  tool call (system prompt in `src/lib/prompts/shot-generation.ts`, target
+  shot count from `durationConfig`), persisting
+  shots/elements/`shot_elements`/dialogue, guarding the `projects.title`
+  write (only if still null), inserting an `assistant` message, and
+  logging a `usage` row. This is not `generation-lock.ts`'s
+  `generating_at`-only CAS lock (that mechanism stays reserved for
+  `/prompts`) — shots is driven entirely by `shots_generation`/
+  `pending_shots_payload`. Shot cards are grouped by `section_label`,
+  collapsed only (no editing yet). A `ShotsProvider` client context keeps
+  the header's Target/Current readout, the Shots/Assets tab counts, and
+  the footer's "N elements without a reference image" banner in sync with
+  the client-fetched result once generation completes — none of it is
   server-rendered-once-and-forgotten. Assets and Script tabs render fixed
   empty states this task regardless of whether elements already exist
   (deliberate scope line, not an oversight). Explicitly deferred: shot
@@ -342,11 +387,8 @@ today:
   `assembly` / `social_metadata`). Then a per-user monthly cap checked
   server-side before any expensive call, and real data behind the Usage
   screen and Queue rail item.
-- Wire `/api/projects/[id]/shots`, `generation-lock.ts`, and
-  `shots-context.tsx`/`workbench/page.tsx` to read/write
-  `shots_generation` and `pending_shots_payload` instead of the current
-  "does the shots table have zero rows" check — the migration adds the
-  columns but nothing reads or writes them yet.
+- A designed confirm modal for shot-generation retry, replacing the
+  `window.confirm` placeholder in `shots-context.tsx` (see Database).
 
 ## Open questions
 - **Per-step model selection.** `projects.video_model` is a single column
