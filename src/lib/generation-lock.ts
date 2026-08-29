@@ -7,7 +7,7 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 // enough that a crashed or platform-killed request (no `finally` runs)
 // self-heals instead of wedging the project's script/prompts step forever.
 // Keep the two numbers in sync if either changes.
-const STALE_AFTER_MS = 15 * 60 * 1000
+export const STALE_AFTER_MS = 15 * 60 * 1000
 
 export async function acquireGenerationLock(
   supabase: SupabaseServerClient,

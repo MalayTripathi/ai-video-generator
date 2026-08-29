@@ -40,7 +40,7 @@ const VIDEO_TYPES = [
 // generation-lock.ts's constant of the same name/value: that module stays reserved for
 // /prompts, which still uses the old generating_at-only CAS lock. Keep both in sync
 // manually if either changes.
-const STALE_AFTER_MS = 15 * 60 * 1000
+export const STALE_AFTER_MS = 15 * 60 * 1000
 
 export type ShotsGenerationStatus = 'pending' | 'generating' | 'ready' | 'failed'
 
@@ -420,9 +420,24 @@ async function runShotsPipeline(
     }
   }
 
+  // Replace semantics: every call into this pipeline (first run, retry, or recovery) must
+  // produce a clean slate, matching the confirmation modal's "existing shots will be
+  // replaced" copy. Elements are project-level and deliberately NOT deleted here -
+  // resolveElement() above re-matches them by name on replay, preserving any reference
+  // image already generated for one. shot_elements rows cascade-delete with their parent
+  // shot (FK ON DELETE CASCADE).
+  const { error: deleteError } = await supabase.from('shots').delete().eq('project_id', projectId)
+  if (deleteError) {
+    return { ok: false, status: 500, error: deleteError.message }
+  }
+
   let insertedShots: Tables<'shots'>[] | null = null
   let insertError: { message: string } | null = null
 
+  // With the delete above, no shot row for this project can predate this insert - a
+  // unique-violation here can only be a shot_key collision within this fresh batch. Do
+  // not widen this loop to also regenerate order_index; an order_index collision would
+  // mean the delete step above was skipped or bypassed, not something to paper over here.
   for (let attempt = 0; attempt < MAX_SHOT_KEY_INSERT_ATTEMPTS; attempt++) {
     const shotKeys = generateUniqueShotKeys(validatedShots.length)
     const rows = validatedShots.map((shot, index) => ({

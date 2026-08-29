@@ -226,7 +226,7 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
 
 function PrefilledBadge() {
   return (
-    <span className="rounded-badge bg-accent-wash px-rc-2xs py-px text-chip text-accent-quiet">prefilled</span>
+    <span className="rounded-badge bg-accent-wash px-rc-2xs py-px text-chip text-accent-quiet">Pre-filled</span>
   )
 }
 

@@ -9,6 +9,10 @@ test.describe('New Project intake', () => {
     const { user, cookie } = await createTestSession()
     try {
       await context.addCookies([cookie])
+      // The workbench mounts a client effect that immediately POSTs to trigger shot
+      // generation. Block it so this test's read of shots_generation is deterministic
+      // and this intake test never itself reaches a state that triggers generation.
+      await page.route('**/api/projects/*/shots', (route) => route.abort())
       await page.goto('/projects/new')
 
       const brief = 'A short video about the history of the Great Wall of China'
@@ -37,6 +41,7 @@ test.describe('New Project intake', () => {
       expect(project.duration_target).toBe('1-2min')
       expect(project.video_type).toBe('auto')
       expect(project.template_source_id).toBeNull()
+      expect(project.shots_generation).toBe('pending')
     } finally {
       await deleteTestUser(user.id)
     }

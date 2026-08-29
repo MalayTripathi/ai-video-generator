@@ -150,7 +150,7 @@ export function ShotsTab() {
     />
   )
 
-  if (phase === 'generating') return <GeneratingSkeleton />
+  if (phase === 'generating' || phase === 'trigger') return <GeneratingSkeleton />
   if (phase === 'failed')
     return (
       <>

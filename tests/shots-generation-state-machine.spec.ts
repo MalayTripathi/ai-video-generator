@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
-import type Anthropic from '@anthropic-ai/sdk'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
-import { runShotGeneration } from '../src/app/api/projects/[id]/shots/logic'
+import { runShotGeneration, STALE_AFTER_MS } from '../src/app/api/projects/[id]/shots/logic'
+import { successMessage, truncatedMessage, throwingGateway } from './helpers/claude-fakes'
 import type { ClaudeGateway } from '../src/lib/claude'
 
 const VALID_WRITE_SHOTS_INPUT = {
@@ -23,36 +23,15 @@ const VALID_WRITE_SHOTS_INPUT = {
   ],
 }
 
-function makeStubGateway(response: { input: unknown; stopReason: string | null }) {
+function countingGateway(result: Awaited<ReturnType<ClaudeGateway['createMessage']>>) {
   let callCount = 0
   const gateway: ClaudeGateway = {
     async createMessage() {
       callCount++
-      return {
-        message: {
-          content: [{ type: 'tool_use', id: 'tu_1', name: 'write_shots', input: response.input }],
-          usage: {
-            input_tokens: 10,
-            output_tokens: 10,
-            cache_creation_input_tokens: 0,
-            cache_read_input_tokens: 0,
-          },
-        } as unknown as Anthropic.Message,
-        stopReason: response.stopReason,
-        requestId: 'req_test',
-      }
+      return result
     },
   }
   return { gateway, getCallCount: () => callCount }
-}
-
-function makeThrowingGateway() {
-  const gateway: ClaudeGateway = {
-    async createMessage() {
-      throw new Error('simulated Claude failure')
-    },
-  }
-  return gateway
 }
 
 async function insertProject(
@@ -71,6 +50,7 @@ async function insertProject(
       source_text: 'A short film about a quiet valley.',
       video_type: 'auto',
       duration_target: '30-60s',
+      current_step: 'workbench',
       shots_generation: overrides.shots_generation,
       generating_at: overrides.generating_at ?? null,
       pending_shots_payload: (overrides.pending_shots_payload ?? null) as never,
@@ -95,7 +75,7 @@ test.describe('shot generation state machine', () => {
     const { user } = await createTestSession()
     try {
       const projectId = await insertProject(user.id, { shots_generation: 'ready' })
-      const { gateway, getCallCount } = makeStubGateway({ input: VALID_WRITE_SHOTS_INPUT, stopReason: 'tool_use' })
+      const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
       const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
 
@@ -117,7 +97,30 @@ test.describe('shot generation state machine', () => {
         shots_generation: 'generating',
         generating_at: new Date().toISOString(),
       })
-      const { gateway, getCallCount } = makeStubGateway({ input: VALID_WRITE_SHOTS_INPUT, stopReason: 'tool_use' })
+      const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
+
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.status).toBe(409)
+        expect('reason' in result && result.reason).toBe('already_generating')
+      }
+      expect(getCallCount()).toBe(0)
+    } finally {
+      await deleteTestUser(user.id)
+    }
+  })
+
+  test('claim refused when generating and not yet stale - 409 already_generating, gateway never called', async () => {
+    const { user } = await createTestSession()
+    try {
+      const notYetStale = new Date(Date.now() - (STALE_AFTER_MS - 5 * 60 * 1000)).toISOString()
+      const projectId = await insertProject(user.id, {
+        shots_generation: 'generating',
+        generating_at: notYetStale,
+      })
+      const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
       const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
 
@@ -135,12 +138,12 @@ test.describe('shot generation state machine', () => {
   test('claim succeeds when generating and stale - gateway called once, ends ready', async () => {
     const { user } = await createTestSession()
     try {
-      const staleTimestamp = new Date(Date.now() - 20 * 60 * 1000).toISOString()
+      const staleTimestamp = new Date(Date.now() - (STALE_AFTER_MS + 5 * 60 * 1000)).toISOString()
       const projectId = await insertProject(user.id, {
         shots_generation: 'generating',
         generating_at: staleTimestamp,
       })
-      const { gateway, getCallCount } = makeStubGateway({ input: VALID_WRITE_SHOTS_INPUT, stopReason: 'tool_use' })
+      const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
       const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
 
@@ -157,7 +160,7 @@ test.describe('shot generation state machine', () => {
     const { user } = await createTestSession()
     try {
       const projectId = await insertProject(user.id, { shots_generation: 'failed' })
-      const { gateway, getCallCount } = makeStubGateway({ input: VALID_WRITE_SHOTS_INPUT, stopReason: 'tool_use' })
+      const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
       const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
 
@@ -176,7 +179,7 @@ test.describe('shot generation state machine', () => {
     const { user } = await createTestSession()
     try {
       const projectId = await insertProject(user.id, { shots_generation: 'failed', pending_shots_payload: null })
-      const { gateway, getCallCount } = makeStubGateway({ input: VALID_WRITE_SHOTS_INPUT, stopReason: 'tool_use' })
+      const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
       const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: true })
 
@@ -189,14 +192,23 @@ test.describe('shot generation state machine', () => {
     }
   })
 
-  test('recovery replays a pending payload without calling the gateway again', async () => {
+  test('recovery replays a pending payload without calling the gateway again, replacing any existing shots', async () => {
     const { user } = await createTestSession()
     try {
       const projectId = await insertProject(user.id, {
         shots_generation: 'failed',
         pending_shots_payload: VALID_WRITE_SHOTS_INPUT,
       })
-      const { gateway, getCallCount } = makeStubGateway({ input: VALID_WRITE_SHOTS_INPUT, stopReason: 'tool_use' })
+
+      // Simulate the shots a prior (truncated/partial) attempt left behind - the replay
+      // must replace these, not collide with or accumulate alongside them.
+      const { error: seedError } = await admin.from('shots').insert([
+        { project_id: projectId, order_index: 0, shot_key: 'bbbbb', voice_over: 'stale first attempt' },
+        { project_id: projectId, order_index: 1, shot_key: 'ccccc', voice_over: 'stale second attempt' },
+      ])
+      expect(seedError).toBeNull()
+
+      const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
       const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: true })
 
@@ -206,6 +218,9 @@ test.describe('shot generation state machine', () => {
       expect(getCallCount()).toBe(0)
 
       const { data: shots } = await admin.from('shots').select('*').eq('project_id', projectId)
+      // Exactly the replayed batch's count - not the sum of the 2 stale rows plus the
+      // replay - proving the pipeline replaces the shot list wholesale rather than
+      // accumulating onto whatever a prior attempt left behind.
       expect(shots?.length).toBe(VALID_WRITE_SHOTS_INPUT.shots.length)
 
       const row = await readProject(projectId)
@@ -220,7 +235,7 @@ test.describe('shot generation state machine', () => {
     const { user } = await createTestSession()
     try {
       const projectId = await insertProject(user.id, { shots_generation: 'pending' })
-      const { gateway } = makeStubGateway({ input: VALID_WRITE_SHOTS_INPUT, stopReason: 'max_tokens' })
+      const { gateway } = countingGateway(truncatedMessage(VALID_WRITE_SHOTS_INPUT))
 
       const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
 
@@ -245,7 +260,7 @@ test.describe('shot generation state machine', () => {
     const { user } = await createTestSession()
     try {
       const projectId = await insertProject(user.id, { shots_generation: 'pending' })
-      const { gateway } = makeStubGateway({ input: VALID_WRITE_SHOTS_INPUT, stopReason: 'tool_use' })
+      const { gateway } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
       const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
 
@@ -268,7 +283,7 @@ test.describe('shot generation state machine', () => {
     const { user } = await createTestSession()
     try {
       const projectId = await insertProject(user.id, { shots_generation: 'pending' })
-      const gateway = makeThrowingGateway()
+      const gateway = throwingGateway()
 
       const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
 

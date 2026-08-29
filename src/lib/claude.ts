@@ -17,7 +17,7 @@ function describeCall(params: Anthropic.MessageCreateParams): string {
   return params.tools?.[0]?.name ?? 'unspecified'
 }
 
-function assertLiveCallsAllowed(): void {
+export function assertLiveCallsAllowed(): void {
   if (process.env.NODE_ENV === 'production') return
   if (process.env.ALLOW_REAL_CLAUDE === '1') return
 

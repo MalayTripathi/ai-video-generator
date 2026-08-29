@@ -4,15 +4,7 @@ import { useRouter } from 'next/navigation'
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DisplayShot } from './types'
 import type { ShotsGenerationStatus } from '@/app/api/projects/[id]/shots/logic'
-
-type Phase = 'generating' | 'list' | 'failed' | 'partial'
-
-function derivePhase(generationStatus: ShotsGenerationStatus, shotsCount: number): Phase {
-  if (generationStatus === 'pending' || generationStatus === 'generating') return 'generating'
-  if (generationStatus === 'ready') return shotsCount === 0 ? 'failed' : 'list'
-  // 'failed'
-  return shotsCount === 0 ? 'failed' : 'partial'
-}
+import { derivePhase, type Phase } from './derive-phase'
 
 type ShotsContextValue = {
   shots: DisplayShot[]
@@ -53,7 +45,7 @@ export function ShotsProvider({
   const [confirmOpen, setConfirmOpen] = useState(false)
   const triggeredRef = useRef(false)
 
-  const phase = derivePhase(generationStatus, shots.length)
+  const phase = derivePhase({ shotsGeneration: generationStatus, shotCount: shots.length })
 
   async function fetchShots(isRetry: boolean) {
     try {
@@ -94,7 +86,7 @@ export function ShotsProvider({
 
   useEffect(() => {
     if (triggeredRef.current) return
-    if (initialGenerationStatus !== 'pending') return
+    if (phase !== 'trigger') return
     triggeredRef.current = true
     // Fire-once trigger for shot generation on first load. Optimistically flips to
     // 'generating' so the skeleton shows immediately, before the POST resolves.

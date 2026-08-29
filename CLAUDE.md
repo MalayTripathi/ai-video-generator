@@ -127,7 +127,9 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   build). Don't run `npx playwright install chromium`. Integration tests
   mint a real throwaway Supabase user via `tests/supabase-test-session.ts`
   (`createTestSession`/`deleteTestUser`, admin-API magic-link session)
-  rather than mocking auth — see `tests/new-project-intake.spec.ts`.
+  rather than mocking auth — see `tests/new-project-intake.spec.ts`. See
+  the Testing section below for how provider calls are faked and the run
+  guard that keeps the suite off the real Anthropic API.
 - Schema changes go in `supabase/migrations/` via `supabase migration new`,
   applied with `db push` — never pasted into the dashboard SQL editor.
   Re-run `npm run types:db` after any change; `src/lib/database.types.ts`
@@ -187,6 +189,28 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   content change). Not every route follows this yet — `/prompts`'s
   `PROMPTS_SYSTEM_PROMPT` is still inline — check the specific route
   rather than assuming.
+
+## Testing
+- Business logic (`runShotGeneration`, etc.) is tested by injecting a `ClaudeGateway`
+  literal built from `tests/helpers/claude-fakes.ts`'s canned-shape builders
+  (`successMessage`, `truncatedMessage`, `throwingGateway`) — never a fixture/scenario
+  system, never an env var selecting behavior. No test ever imports or calls
+  `createClaudeGateway()` / the real Anthropic SDK to make a request; `@anthropic-ai/sdk`
+  may only be imported for types in tests.
+- `tests/global-setup.ts` throws unconditionally if `ALLOW_REAL_CLAUDE=1` is set for a
+  Playwright run — there is no sanctioned way to make a live call through Playwright.
+  `tests/load-env.ts` strips the flag from the test-runner's own process immediately
+  after loading `.env.local`, and `playwright.config.ts`'s `webServer.env` forces it
+  empty for the spawned dev server, so a value left in `.env.local` from a manual
+  live-debugging session can't leak into either process. The one deliberate live-call
+  path is `npm run dev` with `ALLOW_REAL_CLAUDE=1` exported by hand in a developer's own
+  shell, entirely outside Playwright/CI.
+- Caveat: the guard cannot protect a manually pre-started `npm run dev` process, since
+  `webServer.reuseExistingServer: true` means Playwright reuses rather than re-spawns it
+  — always start the dev server fresh (or stop a stray one) before trusting the guard.
+- Any test that drives the retry control through the UI must go through the real
+  `RetryConfirmModal` (`role="dialog"`, `retry-confirm-modal.tsx`) — there is no
+  `window.confirm` to handle anymore.
 
 ## Database
 Tables: `projects`, `shots` (renamed from `scenes`), `elements`,
@@ -271,6 +295,16 @@ this contract requires.
 **A stored `pending_shots_payload` means Claude has already been paid
 for; recovery replays it and never re-calls.**
 
+A retry or recovery run replaces the shot list wholesale: `runShotsPipeline` deletes all
+existing `shots` rows for the project (cascading `shot_elements`, which has `ON DELETE
+CASCADE` on both foreign keys) immediately before inserting the fresh/replayed batch,
+always sequenced after `pending_shots_payload` is already durably written — a crash
+between the two still leaves the payload intact for the next retry to recover from.
+`elements` are never deleted: they're project-level and deduped by name, so
+`resolveElement` re-matches existing rows (including any reference image already
+generated) on replay instead of creating duplicates. This is what makes the
+confirmation modal's "existing shots will be replaced" copy true rather than aspirational.
+
 This mechanism is specific to `/shots` — `/prompts` still uses the plain
 `generating_at`-only CAS lock in `generation-lock.ts`, unchanged.
 
@@ -329,7 +363,8 @@ see Open questions.
   `/prompts` acquires a DB-level CAS lock (`projects.generating_at`,
   `src/lib/generation-lock.ts`) before doing any work and releases it in a
   `finally` on every exit path; a concurrent request gets a 409, and a
-  stale lock (crashed/killed request) self-heals after 3 minutes rather
+  stale lock (crashed/killed request) self-heals after 15 minutes (tied to
+  the real gateway's 600s SDK timeout plus margin, see `claude.ts`) rather
   than wedging the project. The intake screen's `BuildButton` disables
   itself via `useFormStatus` while `createProjectFromIntake` is in flight.
 - Step 2 Workbench (`/projects/[id]/workbench`): built on
