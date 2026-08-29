@@ -18,7 +18,12 @@ type ShotsContextValue = {
   shots: DisplayShot[]
   phase: Phase
   videoType: string | null
-  retry: () => void
+  hasPendingPayload: boolean
+  estimatedCredits: number
+  confirmOpen: boolean
+  openRetryConfirm: () => void
+  closeRetryConfirm: () => void
+  confirmRetry: () => void
 }
 
 const ShotsContext = createContext<ShotsContextValue | null>(null)
@@ -45,6 +50,7 @@ export function ShotsProvider({
   const [videoType, setVideoType] = useState(initialVideoType)
   const [generationStatus, setGenerationStatus] = useState(initialGenerationStatus)
   const [hasPendingPayload, setHasPendingPayload] = useState(initialHasPendingPayload)
+  const [confirmOpen, setConfirmOpen] = useState(false)
   const triggeredRef = useRef(false)
 
   const phase = derivePhase(generationStatus, shots.length)
@@ -72,11 +78,16 @@ export function ShotsProvider({
     }
   }
 
-  function retry() {
-    const message = hasPendingPayload
-      ? 'Resuming a previous generation that already completed — this will not use additional credits. Continue?'
-      : `This starts a new shot generation and uses approximately ${estimatedCredits} credits. Continue?`
-    if (!window.confirm(message)) return
+  function openRetryConfirm() {
+    setConfirmOpen(true)
+  }
+
+  function closeRetryConfirm() {
+    setConfirmOpen(false)
+  }
+
+  function confirmRetry() {
+    setConfirmOpen(false)
     setGenerationStatus('generating')
     void fetchShots(true)
   }
@@ -114,7 +125,21 @@ export function ShotsProvider({
   }, [phase, router])
 
   return (
-    <ShotsContext.Provider value={{ shots, phase, videoType, retry }}>{children}</ShotsContext.Provider>
+    <ShotsContext.Provider
+      value={{
+        shots,
+        phase,
+        videoType,
+        hasPendingPayload,
+        estimatedCredits,
+        confirmOpen,
+        openRetryConfirm,
+        closeRetryConfirm,
+        confirmRetry,
+      }}
+    >
+      {children}
+    </ShotsContext.Provider>
   )
 }
 

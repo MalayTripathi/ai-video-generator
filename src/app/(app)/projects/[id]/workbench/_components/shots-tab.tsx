@@ -1,6 +1,7 @@
 'use client'
 
 import { Spinner } from '@/components/spinner'
+import { RetryConfirmModal } from './retry-confirm-modal'
 import { ShotCard } from './shot-card'
 import { useShots } from './shots-context'
 import type { DisplayShot } from './types'
@@ -127,18 +128,51 @@ function ShotList({ shots }: { shots: DisplayShot[] }) {
 }
 
 export function ShotsTab() {
-  const { shots, phase, retry } = useShots()
+  const {
+    shots,
+    phase,
+    hasPendingPayload,
+    estimatedCredits,
+    confirmOpen,
+    openRetryConfirm,
+    closeRetryConfirm,
+    confirmRetry,
+  } = useShots()
+
+  const modal = (
+    <RetryConfirmModal
+      open={confirmOpen}
+      hasPendingPayload={hasPendingPayload}
+      estimatedCredits={estimatedCredits}
+      replacesExisting={phase === 'partial'}
+      onConfirm={confirmRetry}
+      onCancel={closeRetryConfirm}
+    />
+  )
 
   if (phase === 'generating') return <GeneratingSkeleton />
-  if (phase === 'failed') return <GenerationFailedBanner onRetry={retry} />
+  if (phase === 'failed')
+    return (
+      <>
+        {modal}
+        <GenerationFailedBanner onRetry={openRetryConfirm} />
+      </>
+    )
   if (phase === 'partial') {
     return (
       <div className="flex flex-col gap-rc-sm">
-        <GenerationPartialBanner onRetry={retry} />
+        {modal}
+        <GenerationPartialBanner onRetry={openRetryConfirm} />
         <ShotList shots={shots} />
       </div>
     )
   }
-  if (shots.length === 0) return <NoShotsEmptyState onRebuild={retry} />
+  if (shots.length === 0)
+    return (
+      <>
+        {modal}
+        <NoShotsEmptyState onRebuild={openRetryConfirm} />
+      </>
+    )
   return <ShotList shots={shots} />
 }

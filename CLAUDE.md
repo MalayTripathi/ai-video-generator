@@ -110,8 +110,11 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   retry in this app is user-initiated and confirmed.
 - Duration → shot-count/credit mapping lives in `src/lib/config/duration.ts`
   (`durationConfig`, keyed by `DurationTarget`) — the single source for
-  `targetShots`/`estimatedCredits`. Both the intake duration tiles and
-  shot generation read from it; don't duplicate these numbers elsewhere.
+  `targetShots`/`estimatedCredits`. The intake duration tiles, shot
+  generation, and `RetryConfirmModal`'s credit-cost copy all read from
+  it; don't duplicate these numbers elsewhere. Every billed generation
+  outside the initial `pending` trigger (i.e. every retry) is confirmed
+  through that modal before the request fires.
 - `displayTitle(project)` (`src/lib/display-title.ts`) is the single title
   fallback helper (`title` → truncated `source_text` → `'Untitled
   project'`) — used by the dashboard card, the workbench header, and the
@@ -278,10 +281,11 @@ The workbench shot list derives its UI phase from `shots_generation` +
 result); `ready` with shots → `list`; `ready` with zero shots → `failed`
 (defensive, never auto-retried); `failed` with zero shots → `failed`;
 `failed` with saved shots → `partial` (renders the saved list with a
-cut-short warning banner, not a silent success). Retry is gated behind a
-`window.confirm` naming the credit cost from `durationConfig`, or stating
-the resume is free when `pending_shots_payload` is present — a
-placeholder for a designed confirm modal.
+cut-short warning banner, not a silent success). Retry is gated behind `RetryConfirmModal`
+(`retry-confirm-modal.tsx`), which states the credit cost from
+`durationConfig` when `pending_shots_payload` is absent, or that
+resuming is free when it's present — the same modal warns that
+existing shots will be replaced when retrying from the `partial` phase.
 
 Read `src/lib/database.types.ts` for columns — don't rely on this file.
 Conventions not visible in the types: `projects.status` is unconstrained
@@ -387,8 +391,6 @@ today:
   `assembly` / `social_metadata`). Then a per-user monthly cap checked
   server-side before any expensive call, and real data behind the Usage
   screen and Queue rail item.
-- A designed confirm modal for shot-generation retry, replacing the
-  `window.confirm` placeholder in `shots-context.tsx` (see Database).
 
 ## Open questions
 - **Per-step model selection.** `projects.video_model` is a single column
