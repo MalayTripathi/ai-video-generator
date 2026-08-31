@@ -3,7 +3,7 @@ import type { Provider } from '@/lib/config/pipeline'
 // Single place edited when a rate changes. Bump by hand on any edit below -
 // raw_usage.rates on every settled `usage` row records the rate_version that
 // produced it, so a past row's cost stays reconstructable even after rates move.
-export const RATE_VERSION = '2026-08-31'
+export const RATE_VERSION = '2026-09-01'
 
 export type UsageBreakdown = {
   input_tokens: number
@@ -28,12 +28,16 @@ export type ClaudeRates = {
 // whenever a new model becomes selectable. Stored per-million for
 // readability; converted to per-token in exactly one place, perMillionToPerToken,
 // used only inside computeCost's math below.
+//
+// Authority: https://platform.claude.com/docs/en/about-claude/pricing. As of this
+// writing, several third-party pricing trackers still show Sonnet 5 at the old
+// $3/$15 figure - the docs above are correct and supersede them.
 const CLAUDE_RATES: Record<string, ClaudeRates> = {
   'claude-sonnet-5': {
-    inputPerMTok: 3.0,
-    outputPerMTok: 15.0,
-    cacheWritePerMTok: 3.75,
-    cacheReadPerMTok: 0.3,
+    inputPerMTok: 2.0,
+    outputPerMTok: 10.0,
+    cacheWritePerMTok: 2.5,
+    cacheReadPerMTok: 0.2,
   },
   'claude-haiku-4-5-20251001': {
     inputPerMTok: 1.0,

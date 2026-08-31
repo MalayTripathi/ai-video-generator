@@ -15,14 +15,14 @@ test.describe('computeCost', () => {
   })
 
   test('anthropic: includes cache_creation and cache_read buckets', () => {
-    // claude-sonnet-5: inputPerMTok 3.0, outputPerMTok 15.0, cacheWritePerMTok 3.75, cacheReadPerMTok 0.3
+    // claude-sonnet-5: inputPerMTok 2.0, outputPerMTok 10.0, cacheWritePerMTok 2.5, cacheReadPerMTok 0.2
     const result = computeCost('anthropic', 'claude-sonnet-5', {
       input_tokens: 500_000,
       output_tokens: 200_000,
       cache_creation_input_tokens: 100_000,
       cache_read_input_tokens: 1_000_000,
     })
-    const expected = 500_000 * (3.0 / 1_000_000) + 200_000 * (15.0 / 1_000_000) + 100_000 * (3.75 / 1_000_000) + 1_000_000 * (0.3 / 1_000_000)
+    const expected = 500_000 * (2.0 / 1_000_000) + 200_000 * (10.0 / 1_000_000) + 100_000 * (2.5 / 1_000_000) + 1_000_000 * (0.2 / 1_000_000)
     expect(result.estimatedCost).toBeCloseTo(expected, 6)
     expect(result.quantity).toBe(700_000)
   })
