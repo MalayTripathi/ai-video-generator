@@ -1,8 +1,9 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { createClient } from '@/lib/supabase/server'
 import type { ClaudeGateway } from '@/lib/claude'
-import { logClaudeUsage } from '@/lib/claude'
 import { modelsConfig } from '@/lib/config/models'
+import type { UsageBreakdown } from '@/lib/config/pricing'
+import { estimateInputTokens, quoteClaudeCall, assertWithinAllowance, reserveUsage, settleUsage, AllowanceExceededError } from '@/lib/usage'
 import {
   claimGeneration,
   persistGenerationPayload,
@@ -161,6 +162,7 @@ export type PromptGenerationResult =
       reason: 'already_ready' | 'already_generating' | 'retry_required'
     }
   | { ok: false; status: 422; error: string; missingShotKeys?: string[]; shots?: unknown[] }
+  | { ok: false; status: 429; error: string }
   | { ok: false; status: 500; error: string }
 
 /**
@@ -286,6 +288,9 @@ export async function runPromptGeneration(params: {
     error: 'Prompt generation did not complete',
   }
   let clearPayloadOnSettle = false
+  let usageId: string | null = null
+  let measuredBreakdown: UsageBreakdown | null = null
+  let stopReasonForSettle: string | null = null
 
   try {
     const loaded = await loadShotsNeedingPrompts(supabase, projectId)
@@ -314,25 +319,50 @@ export async function runPromptGeneration(params: {
       return outcome
     }
 
+    const dynamicBlock = buildPromptsDynamicBlock(
+      loaded.allShots
+        .filter((s): s is ShotForPrompts & { shot_key: string } => s.shot_key !== null)
+        .map(({ shot_key, voice_over }) => ({ shot_key, voice_over })),
+      shotsNeedingPrompts.map((s) => s.shot_key)
+    )
+
+    const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
+      model: modelsConfig.prompts.model,
+      estimatedInputTokens: estimateInputTokens([PROMPTS_SYSTEM_PROMPT, dynamicBlock]),
+      maxTokens: modelsConfig.prompts.maxTokens,
+    })
+
+    await assertWithinAllowance({ supabase, userId, quotedCost: estimatedCost })
+
+    const reserved = await reserveUsage({
+      supabase,
+      userId,
+      projectId,
+      generationId: generation.id,
+      shotId: null,
+      step: 'image_prompts',
+      operation: 'write_prompts',
+      provider: 'anthropic',
+      model: modelsConfig.prompts.model,
+      quotedCost: estimatedCost,
+      quotedBreakdown,
+    })
+    usageId = reserved.usageId
+
     const { message, stopReason, requestId } = await gateway.createMessage({
       model: modelsConfig.prompts.model,
       max_tokens: modelsConfig.prompts.maxTokens,
       system: [
         { type: 'text', text: PROMPTS_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
-        {
-          type: 'text',
-          text: buildPromptsDynamicBlock(
-            loaded.allShots
-              .filter((s): s is ShotForPrompts & { shot_key: string } => s.shot_key !== null)
-              .map(({ shot_key, voice_over }) => ({ shot_key, voice_over })),
-            shotsNeedingPrompts.map((s) => s.shot_key)
-          ),
-        },
+        { type: 'text', text: dynamicBlock },
       ],
       tools: [WRITE_PROMPTS_TOOL],
       tool_choice: { type: 'tool', name: 'write_prompts' },
       messages: [{ role: 'user', content: 'Generate the image and video prompts now.' }],
     })
+
+    measuredBreakdown = message.usage
+    stopReasonForSettle = stopReason
 
     const toolUseBlock = message.content.find(
       (block): block is Anthropic.ToolUseBlock =>
@@ -340,16 +370,6 @@ export async function runPromptGeneration(params: {
     )
 
     if (!toolUseBlock) {
-      await logClaudeUsage(
-        supabase,
-        userId,
-        projectId,
-        'image_prompts',
-        'write_prompts',
-        modelsConfig.prompts.model,
-        message.usage,
-        generation.id
-      )
       outcome = { ok: false, status: 500, error: 'Claude did not return prompts' }
       return outcome
     }
@@ -362,16 +382,6 @@ export async function runPromptGeneration(params: {
       toolUseBlock.input as Json
     )
 
-    await logClaudeUsage(
-      supabase,
-      userId,
-      projectId,
-      'image_prompts',
-      'write_prompts',
-      modelsConfig.prompts.model,
-      message.usage,
-      generation.id
-    )
     console.warn(`[prompts] stopReason=${stopReason} requestId=${requestId}`)
 
     if (persistError) {
@@ -413,7 +423,7 @@ export async function runPromptGeneration(params: {
   } catch (err) {
     outcome = {
       ok: false,
-      status: 500,
+      status: err instanceof AllowanceExceededError ? 429 : 500,
       error: err instanceof Error ? err.message : 'Unexpected error during prompt generation',
     }
     return outcome
@@ -431,6 +441,26 @@ export async function runPromptGeneration(params: {
       }
     } catch (settleErr) {
       console.error('[prompts] SETTLE update failed', settleErr)
+    }
+
+    // usage SETTLE. Only reserved on the fresh-call path (RECOVER and the
+    // nothing-needs-prompts branch never spend, so usageId stays null there) -
+    // skipped entirely when nothing was ever reserved. status reflects whether Claude
+    // actually responded and was billed, which is NOT the same as outcome.ok: a
+    // persistError after a successful call is outcome.ok === false but was still
+    // billed successfully, while a max_tokens stop is billed but must settle 'failed'
+    // regardless of how much of the pipeline it saved.
+    if (usageId) {
+      await settleUsage({
+        supabase,
+        usageId,
+        provider: 'anthropic',
+        model: modelsConfig.prompts.model,
+        status: measuredBreakdown !== null && stopReasonForSettle !== 'max_tokens' ? 'succeeded' : 'failed',
+        breakdown: measuredBreakdown,
+        stopReason: stopReasonForSettle,
+        error: outcome.ok ? null : outcome.error,
+      })
     }
   }
 }

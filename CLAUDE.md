@@ -88,10 +88,17 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   = one image = one voiceover segment.
 - Model and provider config lives in `src/lib/config/models.ts`, read from
   env with defaults. Never hard-code a model name at a call site. Config
-  sections are added when a step is built, not ahead of it. The same
-  module exports `estimateClaudeCostUsd`, the single source for turning
-  token counts into the `usage.estimated_cost` figure — don't compute cost
-  anywhere else.
+  sections are added when a step is built, not ahead of it.
+- Pricing lives in `src/lib/config/pricing.ts`, separate from
+  `models.ts` — the single place a rate is edited, and the single source
+  of `computeCost`, which turns a provider's raw usage report into the
+  `usage.estimated_cost`/`quantity`/`unit`/`raw_usage` figures — don't
+  compute cost anywhere else. `RATE_VERSION` (a hand-bumped date string)
+  is stamped onto every settled `usage` row so a past row's cost stays
+  reconstructable even after rates change later. `pricing.ts` is
+  deliberately client-importable (rates aren't secrets) and holds only
+  Anthropic's real rates today — `openai`/`elevenlabs`/`fal` are stub
+  shapes with no values yet, filled in as each provider is wired up.
 - **Provider calls.** See `## Provider calls` below for the gateway seam,
   the live-call guard, and the Playwright guard. Never set, export, or add
   `ALLOW_REAL_CLAUDE` anywhere in the repo — that decision belongs to the
@@ -224,9 +231,10 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   generated response would be a silent second charge — and a 600s client
   timeout. The `/shots` route additionally sets `export const maxDuration =
   300`. `stop_reason` and `request_id` are captured off every call and
-  `console.warn`'d; the `usage` table now has a `stop_reason` column
-  (Phase 1), but neither `logClaudeUsage` call site writes `stopReason`/
-  `requestId` into it yet — the column exists, the wiring doesn't.
+  `console.warn`'d; `stop_reason` is also written onto the `usage` row by
+  `settleUsage` (`src/lib/usage/reserve-settle.ts` — see the `usage`
+  section under Database for the full reserve-then-settle lifecycle);
+  `request_id` is still console-only, not persisted anywhere.
 
 ## Testing
 - Business logic (`runShotGeneration`, etc.) is tested by injecting a `ClaudeGateway`
@@ -371,8 +379,8 @@ NULL`), `shot_id` (nullable, `ON DELETE SET NULL`), `step`, `operation`,
 `stop_reason`, `quantity`, `unit`, `raw_usage` (jsonb —
 `{ breakdown: <provider's own numbers>, rates: <rates applied> }`),
 `rate_version`, `estimated_cost numeric(12,6)`, `created_at`,
-`updated_at`. `estimated_cost` is computed by `estimateClaudeCostUsd` from
-`src/lib/config/models.ts` — never inline a second cost calculation.
+`updated_at`. `estimated_cost` is computed by `computeCost` from
+`src/lib/config/pricing.ts` — never inline a second cost calculation.
 
 `user_id` is denormalized directly onto the row on purpose: `project_id`
 is nullable `ON DELETE SET NULL` specifically so billing history survives
@@ -408,22 +416,75 @@ A `max_tokens` truncation is not its own status: it settles as `status:
 'failed'` with `stop_reason: 'max_tokens'` — `stop_reason` is data, never
 a status value.
 
-Two routes write to `usage` today: `/api/projects/[id]/shots` logs
-`step: 'workbench'` / `operation: 'generate_shots'` after the
-`write_shots` call — and, since Phase 1 prompt 2, passes its claimed
-`generations` row's `id` through `logClaudeUsage`'s optional trailing
-`generationId` param, so these rows carry `generation_id` — and
-`/api/projects/[id]/prompts` logs `step: 'image_prompts'` / `operation:
-'write_prompts'` after `write_prompts`, which has no `generations` row to
-attach and so leaves `generation_id` null, same as before. Both still only
-insert once, always with `status: 'succeeded'`, after a
-successful Claude response — `logClaudeUsage` (`src/lib/claude.ts`)
-hasn't been restructured onto the reserve-then-settle lifecycle described
-above, and it still logs only after success and swallows its own insert
-failure. Fixing that is future work. `src/lib/config/pipeline.ts` is the
-single source for the `step`/`operation`/`provider` vocabulary these
-columns use — see Conventions. Every new provider call must log a `usage`
-row.
+**As of Phase 1 prompt 4, `logClaudeUsage` no longer exists.** `usage`
+rows are written by `src/lib/usage/` (`reserveUsage`/`settleUsage`/
+`assertWithinAllowance`), called *around* the gateway call rather than
+after it: `assertWithinAllowance` → `reserveUsage` →
+`gateway.createMessage` → `settleUsage` (in a `finally`).
+
+`reserveUsage` runs BEFORE the gateway call and writes `status: 'pending'`
+with `estimated_cost` set to a deliberately worst-case pre-flight quote —
+estimated input tokens (a crude chars/4 heuristic over the system prompt
+text, `src/lib/usage/quote.ts`) at the input rate, plus the full
+`max_tokens` ceiling at the output rate. A reservation built this way can
+never be overrun by the real call, which is exactly why pending rows are
+safe to sum into a spend cap (see `assertWithinAllowance` below) — the
+number can only move down at settle, never up. **If the INSERT fails,
+`reserveUsage` throws** before the gateway is ever called: calling Claude
+without a reservation row would be exactly the unguarded spend this
+replaces.
+
+`settleUsage` runs in a `finally`, so it runs on success, on a thrown
+exception, and on `max_tokens` truncation alike, and each case settles
+differently: on success it overwrites `estimated_cost` with the measured
+cost and writes `quantity`/`unit`/`raw_usage: { breakdown, rates }`/
+`stop_reason`; on `max_tokens` it settles `status: 'failed'` with
+`stop_reason: 'max_tokens'` and a cost measured from the real (truncated)
+usage — truncation is billed in full, so the measured number is the true
+one; on a throw with partial usage data available (Claude responded but a
+later step failed) it settles `failed` with the cost measured from what's
+known; on a throw with NO usage data at all (the gateway call itself
+threw) it settles `failed` but **retains the pre-flight quote** as
+`estimated_cost` instead of overwriting it, and records in `raw_usage`
+that the cost is unmeasured — over-counting is the safe direction for a
+spend cap to be wrong in. **`settleUsage` never throws**: if its own
+UPDATE fails, it `console.error`s with the usage id and leaves the row
+`'pending'` — by that point the money may already be spent, and failing
+the request now would lose the user's work on top of it. **A `usage` row
+stuck `'pending'` is therefore the deliberate signal for a call that died
+mid-flight**, not a bug to paper over. This asymmetry (reserve throws /
+settle never throws) is spelled out in `src/lib/usage/reserve-settle.ts`'s
+module docblock and must not be "tidied" into symmetry later.
+
+Both `/api/projects/[id]/shots` (`step: 'workbench'` / `operation:
+'generate_shots'`) and `/api/projects/[id]/prompts` (`step:
+'image_prompts'` / `operation: 'write_prompts'`) pass their claimed
+`generations` row's `id` into `reserveUsage`, so both carry
+`generation_id`. Neither reserves/settles usage on the RECOVER path or
+(prompts only) the "nothing needs generating" path, since neither spends
+anything there. `src/lib/config/pipeline.ts` is the single source for the
+`step`/`operation`/`provider` vocabulary these columns use — see
+Conventions. Every new provider call must go through
+`reserveUsage`/`settleUsage`, never a direct `usage` insert.
+
+`assertWithinAllowance` (`src/lib/usage/allowance.ts`) is called
+immediately before `reserveUsage` and enforces a per-user monthly spend
+ceiling by summing `estimated_cost` over the user's `usage` rows for the
+current calendar month — pending rows count, which is the whole reason
+they carry the quote. **It is wired but disabled by default**: off, it
+performs zero queries, gated by the `SPEND_CAP_ENABLED` env flag (default
+unset/off; the ceiling itself is `SPEND_CAP_MONTHLY_USD`, default $100).
+When enabled and a quote would exceed the ceiling, it throws
+`AllowanceExceededError`, which both routes' `catch` blocks map to a
+`429` response. Flipping `SPEND_CAP_ENABLED=1` on is a product decision
+for whoever owns spend policy, not implied by this change.
+
+With this, all four mechanisms behind the original unexplained-spend
+incident are closed: the gateway-seam live-call guard (Phase 0), the
+`generations` claim replacing the old CAS lock (Phase 1), the
+`ready`→`succeeded`/payload-recovery contract (Phase 1), and now
+reserve-then-settle usage logging replacing `logClaudeUsage`'s
+log-only-after-success-and-swallow-failure behavior (Phase 1 prompt 4).
 
 **As of Phase 1 prompt 2, `projects.shots_generation` and
 `projects.pending_shots_payload` no longer exist.** The shot-generation
@@ -459,9 +520,11 @@ a thrown exception, calling `settleGeneration` — success writes
 `payload` intact for later recovery — except a `max_tokens` truncation,
 which also settles `failed` but always clears the payload, since a
 truncated answer was never "returned successfully" in the sense this
-contract requires. `logClaudeUsage` is passed the claimed row's `id` so
-the resulting `usage` row carries `generation_id` (see the `usage`
-paragraph above).
+contract requires. `reserveUsage`/`settleUsage` are passed the claimed
+row's `id` as `generationId`, so the resulting `usage` row carries
+`generation_id` (see the `usage` section above for the full
+reserve-then-settle lifecycle, which runs independently of this
+claim/recover/persist/settle sequence).
 
 **A generations row with a non-null `payload` means Claude has already
 been paid for; recovery replays it and never re-calls.**
@@ -627,6 +690,11 @@ see Open questions.
   bug in `runShotsPipeline` was found during P0-5 — it was unreachable
   before the retry path existed, since a first-ever generation always ran
   against zero existing rows.
+- **Phase 1 prompt 4 complete**: `logClaudeUsage` is deleted, replaced by
+  the reserve-then-settle lifecycle (`src/lib/usage/`) wired into both
+  `/shots` and `/prompts` — see the `usage` section under Database for the
+  full mechanism. This was the last of four mechanisms behind a real
+  unexplained-spend incident; all four are now closed.
 
 ## Superseded
 The old 4-step wizard (`script`/`voiceover`/`images`/`video`, driven by a
@@ -664,11 +732,13 @@ today:
   just `current_step` position
 - `usage`'s column expansion (`user_id`, `model`, `status`, and a
   constrained `step`/`operation` vocabulary) is done as of Phase 1 (see
-  `## Phase 1` in Database). Still open: a per-user monthly spend cap
-  checked server-side before any expensive call (reading `estimated_cost`
-  summed over the user's current period — this is exactly why that column
-  is reserve-then-settle, never null while pending), and real data behind
-  the Usage screen and Queue rail item.
+  `## Phase 1` in Database). The reserve-then-settle usage lifecycle
+  (`reserveUsage`/`settleUsage`, replacing `logClaudeUsage`) and a
+  per-user monthly spend cap (`assertWithinAllowance`) are both done as of
+  Phase 1 prompt 4 — the cap is wired but disabled by default
+  (`SPEND_CAP_ENABLED`, see the `usage` section under Database). Still
+  open: real data behind the Usage screen and Queue rail item, and the
+  actual product decision on when/whether to flip the cap on.
 - Agent chat turns deliberately get a `usage` row but no `generations`
   row — there's no "claim" concept for a chat turn the way there is for a
   generation, so nothing would hold that claim. Accepted consequence: a

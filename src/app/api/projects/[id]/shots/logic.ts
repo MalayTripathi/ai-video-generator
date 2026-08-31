@@ -1,8 +1,9 @@
 import type { createClient } from '@/lib/supabase/server'
 import type { ClaudeGateway } from '@/lib/claude'
-import { logClaudeUsage } from '@/lib/claude'
 import { modelsConfig } from '@/lib/config/models'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import type { UsageBreakdown } from '@/lib/config/pricing'
+import { estimateInputTokens, quoteClaudeCall, assertWithinAllowance, reserveUsage, settleUsage, AllowanceExceededError } from '@/lib/usage'
 import { generateUniqueShotKeys, isUniqueViolation, MAX_SHOT_KEY_INSERT_ATTEMPTS } from '@/lib/shot-key'
 import {
   claimGeneration,
@@ -155,6 +156,7 @@ export type ShotGenerationResult =
       reason: 'already_ready' | 'already_generating' | 'retry_required'
     }
   | { ok: false; status: 422; error: string }
+  | { ok: false; status: 429; error: string }
   | { ok: false; status: 500; error: string }
 
 type ClaimedProject = {
@@ -509,6 +511,9 @@ export async function runShotGeneration(params: {
     error: 'Shot generation did not complete',
   }
   let clearPayloadOnSettle = false
+  let usageId: string | null = null
+  let measuredBreakdown: UsageBreakdown | null = null
+  let stopReasonForSettle: string | null = null
 
   try {
     // RECOVER BEFORE SPEND. A stored payload means Claude has already been paid for;
@@ -526,6 +531,32 @@ export async function runShotGeneration(params: {
         ? durationConfig[project.duration_target as DurationTarget].targetShots
         : durationConfig['1-2min'].targetShots
 
+    const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
+      model: modelsConfig.shots.model,
+      estimatedInputTokens: estimateInputTokens([
+        SHOT_GENERATION_SYSTEM_PROMPT_V2,
+        buildShotsDynamicBlock(project, targetShots),
+      ]),
+      maxTokens: modelsConfig.shots.maxTokens,
+    })
+
+    await assertWithinAllowance({ supabase, userId, quotedCost: estimatedCost })
+
+    const reserved = await reserveUsage({
+      supabase,
+      userId,
+      projectId,
+      generationId: generation.id,
+      shotId: null,
+      step: 'workbench',
+      operation: 'generate_shots',
+      provider: 'anthropic',
+      model: modelsConfig.shots.model,
+      quotedCost: estimatedCost,
+      quotedBreakdown,
+    })
+    usageId = reserved.usageId
+
     const { message, stopReason, requestId } = await gateway.createMessage({
       model: modelsConfig.shots.model,
       max_tokens: modelsConfig.shots.maxTokens,
@@ -538,21 +569,14 @@ export async function runShotGeneration(params: {
       messages: [{ role: 'user', content: 'Generate the shot list now.' }],
     })
 
+    measuredBreakdown = message.usage
+    stopReasonForSettle = stopReason
+
     const toolUseBlock = message.content.find(
       (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use' && block.name === 'write_shots'
     )
 
     if (!toolUseBlock) {
-      await logClaudeUsage(
-        supabase,
-        userId,
-        projectId,
-        'workbench',
-        'generate_shots',
-        modelsConfig.shots.model,
-        message.usage,
-        generation.id
-      )
       outcome = { ok: false, status: 500, error: 'Claude did not return a shot list' }
       return outcome
     }
@@ -565,16 +589,6 @@ export async function runShotGeneration(params: {
       toolUseBlock.input as Json
     )
 
-    await logClaudeUsage(
-      supabase,
-      userId,
-      projectId,
-      'workbench',
-      'generate_shots',
-      modelsConfig.shots.model,
-      message.usage,
-      generation.id
-    )
     console.warn(`[shots] stopReason=${stopReason} requestId=${requestId}`)
 
     if (persistError) {
@@ -613,7 +627,7 @@ export async function runShotGeneration(params: {
   } catch (err) {
     outcome = {
       ok: false,
-      status: 500,
+      status: err instanceof AllowanceExceededError ? 429 : 500,
       error: err instanceof Error ? err.message : 'Unexpected error during shot generation',
     }
     return outcome
@@ -633,6 +647,25 @@ export async function runShotGeneration(params: {
       // No further safety net for a failed SETTLE write - logged, not thrown, so it can
       // never override the already-decided outcome being returned.
       console.error('[shots] SETTLE update failed', settleErr)
+    }
+
+    // usage SETTLE. Only reserved on the fresh-call path (RECOVER never spends, so
+    // usageId stays null there) - skipped entirely when nothing was ever reserved.
+    // status reflects whether Claude actually responded and was billed, which is NOT
+    // the same as outcome.ok: a persistError after a successful call is outcome.ok ===
+    // false but was still billed successfully, while a max_tokens stop is billed but
+    // must settle 'failed' regardless of how much of the pipeline it saved.
+    if (usageId) {
+      await settleUsage({
+        supabase,
+        usageId,
+        provider: 'anthropic',
+        model: modelsConfig.shots.model,
+        status: measuredBreakdown !== null && stopReasonForSettle !== 'max_tokens' ? 'succeeded' : 'failed',
+        breakdown: measuredBreakdown,
+        stopReason: stopReasonForSettle,
+        error: outcome.ok ? null : outcome.error,
+      })
     }
   }
 }

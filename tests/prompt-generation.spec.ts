@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
 import { runPromptGeneration } from '../src/app/api/projects/[id]/prompts/logic'
-import { successMessage, truncatedMessage } from './helpers/claude-fakes'
+import { successMessage, truncatedMessage, throwingGateway } from './helpers/claude-fakes'
 import type { ClaudeGateway } from '../src/lib/claude'
 
 const GOOD_IMAGE_PROMPT =
@@ -115,13 +115,15 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
 
       const { data: usageRows, error: usageError } = await admin
         .from('usage')
-        .select('generation_id, step, operation')
+        .select('generation_id, step, operation, status, estimated_cost')
         .eq('project_id', projectId)
       expect(usageError).toBeNull()
       expect(usageRows!.length).toBe(1)
       expect(usageRows![0].generation_id).not.toBeNull()
       expect(usageRows![0].step).toBe('image_prompts')
       expect(usageRows![0].operation).toBe('write_prompts')
+      expect(usageRows![0].status).toBe('succeeded')
+      expect(usageRows![0].estimated_cost).not.toBeNull()
     } finally {
       await deleteTestUser(user.id)
     }
@@ -327,6 +329,102 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
 
       const { data: usageRows } = await admin.from('usage').select('id').eq('project_id', projectId)
       expect(usageRows!.length).toBe(0)
+    } finally {
+      await deleteTestUser(user.id)
+    }
+  })
+
+  test('a gateway call that throws still leaves a usage row, failed, with a non-null estimated cost', async () => {
+    const { user } = await createTestSession()
+    try {
+      const projectId = await insertProject(user.id)
+      await insertShots(projectId, [{ shot_key: 'b2c3d' }])
+      const gateway = throwingGateway('simulated network failure')
+
+      const result = await runPromptGeneration({
+        gateway,
+        supabase: admin,
+        projectId,
+        userId: user.id,
+        retry: false,
+      })
+      expect(result.ok).toBe(false)
+
+      const { data: usageRows, error: usageError } = await admin
+        .from('usage')
+        .select('status, estimated_cost, step, operation')
+        .eq('project_id', projectId)
+      expect(usageError).toBeNull()
+      expect(usageRows!.length).toBe(1)
+      expect(usageRows![0].status).toBe('failed')
+      expect(usageRows![0].estimated_cost).not.toBeNull()
+      expect(usageRows![0].step).toBe('image_prompts')
+      expect(usageRows![0].operation).toBe('write_prompts')
+    } finally {
+      await deleteTestUser(user.id)
+    }
+  })
+
+  test('a successful call writes exactly one succeeded usage row with a measured cost below the quote', async () => {
+    const { user } = await createTestSession()
+    try {
+      const projectId = await insertProject(user.id)
+      await insertShots(projectId, [{ shot_key: 'b2c3d' }, { shot_key: 'f4g5h' }])
+      const { gateway } = fakeGateway(['b2c3d', 'f4g5h'])
+
+      const result = await runPromptGeneration({
+        gateway,
+        supabase: admin,
+        projectId,
+        userId: user.id,
+        retry: false,
+      })
+      expect(result.ok).toBe(true)
+
+      const { data: usageRows, error: usageError } = await admin
+        .from('usage')
+        .select('status, estimated_cost, quantity, raw_usage')
+        .eq('project_id', projectId)
+      expect(usageError).toBeNull()
+      expect(usageRows!.length).toBe(1)
+      expect(usageRows![0].status).toBe('succeeded')
+      expect(usageRows![0].quantity).toBe(20) // successMessage's fixed 10 input + 10 output tokens
+      const raw = usageRows![0].raw_usage as { quoted?: unknown }
+      // settle fully overwrites raw_usage - the reserve-time quote should be gone.
+      expect(raw.quoted).toBeUndefined()
+      expect(usageRows![0].estimated_cost).toBeGreaterThan(0)
+      expect(usageRows![0].estimated_cost).toBeLessThan(0.001)
+    } finally {
+      await deleteTestUser(user.id)
+    }
+  })
+
+  test('a max_tokens truncation writes a failed usage row with stop_reason max_tokens and a measured cost', async () => {
+    const { user } = await createTestSession()
+    try {
+      const projectId = await insertProject(user.id)
+      await insertShots(projectId, [{ shot_key: 'b2c3d' }])
+      const { gateway } = fakeGateway(['b2c3d'], { truncated: true })
+
+      const result = await runPromptGeneration({
+        gateway,
+        supabase: admin,
+        projectId,
+        userId: user.id,
+        retry: false,
+      })
+      expect(result.ok).toBe(false)
+      expect(result.status).toBe(422)
+
+      const { data: usageRows, error: usageError } = await admin
+        .from('usage')
+        .select('status, stop_reason, estimated_cost')
+        .eq('project_id', projectId)
+      expect(usageError).toBeNull()
+      expect(usageRows!.length).toBe(1)
+      expect(usageRows![0].status).toBe('failed')
+      expect(usageRows![0].stop_reason).toBe('max_tokens')
+      expect(usageRows![0].estimated_cost).not.toBeNull()
     } finally {
       await deleteTestUser(user.id)
     }
