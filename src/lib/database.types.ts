@@ -155,7 +155,6 @@ export type Database = {
           current_step: string
           duration_target: string | null
           furthest_step: number
-          generating_at: string | null
           id: string
           language: string | null
           language_code: string | null
@@ -178,7 +177,6 @@ export type Database = {
           current_step?: string
           duration_target?: string | null
           furthest_step?: number
-          generating_at?: string | null
           id?: string
           language?: string | null
           language_code?: string | null
@@ -201,7 +199,6 @@ export type Database = {
           current_step?: string
           duration_target?: string | null
           furthest_step?: number
-          generating_at?: string | null
           id?: string
           language?: string | null
           language_code?: string | null

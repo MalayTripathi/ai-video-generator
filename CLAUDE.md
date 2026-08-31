@@ -348,10 +348,17 @@ clears it on failure only when the caller explicitly asks (the
 `max_tokens` truncation case) — otherwise a failed row's payload survives
 for RECOVER, same as before.
 
-`generations` is used today by the `/shots` route (`step: 'workbench'`,
-`operation: 'generate_shots'`, `shot_id: null`) — see the claim → recover
-→ persist → settle description below. `/prompts` still uses
-`generation-lock.ts`'s plain `generating_at`-only CAS lock, unmigrated.
+`generations` is used by both `/shots` (`step: 'workbench'`, `operation:
+'generate_shots'`, `shot_id: null`) and, as of Phase 1 prompt 3, `/prompts`
+(`step: 'image_prompts'`, `operation: 'write_prompts'`, `shot_id: null`) —
+see the claim → recover → persist → settle description below.
+`claimGeneration`/`persistGenerationPayload`/`settleGeneration` are now
+the **only** locking mechanism in the codebase; `generation-lock.ts` and
+its `projects.generating_at`-only CAS lock (`acquireGenerationLock`/
+`releaseGenerationLock`) are deleted, and the `generating_at` column is
+dropped. See "`/prompts`'s step attribution is provisional" below for why
+`image_prompts` is the wrong long-term home for half of what this route
+does.
 
 `usage` is the model-spend ledger, one row per provider call — dropped
 and recreated in Phase 1 with a provider-neutral shape; its old rows were
@@ -469,12 +476,47 @@ between the two still leaves the payload intact for the next retry to recover fr
 generated) on replay instead of creating duplicates. This is what makes the
 confirmation modal's "existing shots will be replaced" copy true rather than aspirational.
 
-This mechanism is specific to `/shots` — `/prompts` still uses the plain
-`generating_at`-only CAS lock in `generation-lock.ts` (its own, unmigrated
-`STALE_AFTER_MS`, unrelated to the copy `claim.ts` now owns). The two
-locking strategies are scheduled to converge; until then, `/prompts`'s
-422-on-partial-failure guarantee (see Done log) is enforced by that older
-CAS lock, not by the claim/recover contract described above.
+`/prompts` runs the identical claim → recover → persist → settle sequence
+(`runPromptGeneration` in `src/app/api/projects/[id]/prompts/logic.ts`,
+`step: 'image_prompts'`, `operation: 'write_prompts'`, `shot_id: null`) as
+of Phase 1 prompt 3 — there is no second variant of the claim helper, and
+no route left on the old `generation-lock.ts` CAS lock. Unlike `/shots`,
+`/prompts` claims unconditionally even when nothing needs generating (a
+call where every shot already has usable prompts still claims, finds
+nothing to do via `runPromptsPipeline`'s empty target set, and settles
+`succeeded` with no payload and no Claude call) — this is a deliberate
+behavior change from the old lock, which was freely re-callable forever;
+a `/prompts` call after `succeeded` now needs `retry: true`, same as
+`/shots`. Recovery/derived-write semantics differ from `/shots` in one
+respect: `runPromptsPipeline` only `.update()`s the specific shots
+Claude was asked about — there is no wholesale delete-and-reinsert, since
+prompts are a field on an existing shot, not the shot itself. The
+422-on-partial-failure guarantee (see Done log) is now enforced by the
+claim/recover contract, not a CAS lock: a non-truncation 422 (some
+requested shot_keys came back missing) leaves `payload` intact for
+recovery — mirroring `runShotsPipeline`'s own "nothing usable" 422, which
+also doesn't clear its payload — while a `max_tokens` truncation clears
+it, identically to `/shots`.
+
+**`/prompts`'s step attribution is provisional and is a blocker for Step
+4.** The route's `write_prompts` tool call requires both `image_prompt`
+and `video_prompt` for every requested shot in one Claude call — a
+leftover from an older step ordering where this was a single step. In the
+current 8-step pipeline these are Steps 4 and 6, separated by Step 5
+(storyboard), so one undivided call is wrong on the merits, not just on
+attribution: video prompts get written before the image exists and so
+can't reference it; they go stale by Step 6 once storyboard retiming
+happens and must be regenerated at additional cost; and the user pays for
+video prompts at Step 4 that they may never reach if they abandon at Step
+5. **Before Step 4 (Image Prompts) ships, `/api/projects/[id]/prompts`
+must be split into separate image-prompts and video-prompts routes, each
+with its own claim (`image_prompts`/`write_prompts` and
+`video_prompts`/`write_prompts`). Until then the single route is
+provisionally attributed to `image_prompts`, which under-reports Step 6
+spend as zero. This is a prerequisite for Step 4, not a Phase 3
+consistency task.** The route has no frontend caller today (see
+Superseded), so nothing is corrupted by the provisional attribution yet —
+but it must not ship to real users unsplit.
 
 The workbench shot list derives its UI phase from the `generations` row's
 `state` + `shots.length`, not `shots.length` alone (`shots-context.tsx`):
@@ -535,17 +577,22 @@ see Open questions.
 - `/api/projects/[id]/prompts` generates `image_prompt`/`video_prompt` per
   shot, validated (min 50 chars, non-empty) before persistence — invalid
   entries stay null and are regenerable. Partial failure returns 422 and
-  does not advance `current_step` (enforced by the older `generating_at`-only
-  CAS lock, not the `/shots` claim/recover contract — see Database).
-  Prompt caching is wired but inert (see Conventions).
+  does not advance `current_step`, enforced by the same claim/recover
+  contract `/shots` uses (`step: 'image_prompts'`, `operation:
+  'write_prompts'` — see Database's `generations` section, and its
+  provisional-attribution blocker note). As of Phase 1 prompt 3 the raw
+  Claude payload is persisted before any `shots.update()` (previously it
+  wrote straight from the in-memory response — a real crash-safety
+  improvement, not just a lock swap). Prompt caching is wired but inert
+  (see Conventions).
 - Double-submit guards on prompt generation and project creation.
-  `/prompts` acquires a DB-level CAS lock (`projects.generating_at`,
-  `src/lib/generation-lock.ts`) before doing any work and releases it in a
-  `finally` on every exit path; a concurrent request gets a 409, and a
-  stale lock (crashed/killed request) self-heals after 15 minutes (tied to
-  the real gateway's 600s SDK timeout plus margin, see `claude.ts`) rather
-  than wedging the project. The intake screen's `BuildButton` disables
-  itself via `useFormStatus` while `createProjectFromIntake` is in flight.
+  `/prompts` claims via `claimGeneration` (see Database) before doing any
+  work and settles in a `finally` on every exit path; a concurrent request
+  gets a 409, and a stale claim (crashed/killed request) self-heals after
+  15 minutes (tied to the real gateway's 600s SDK timeout plus margin, see
+  `claude.ts`) rather than wedging the project. The intake screen's
+  `BuildButton` disables itself via `useFormStatus` while
+  `createProjectFromIntake` is in flight.
 - Step 2 Workbench (`/projects/[id]/workbench`): built on
   `workbench-shell.tsx` (see Conventions), read-only shot list. On first
   load while its `generations` row is absent or `state: 'pending'`, the
@@ -556,10 +603,9 @@ see Open questions.
   shot count from `durationConfig`), persisting
   shots/elements/`shot_elements`/dialogue, guarding the `projects.title`
   write (only if still null), inserting an `assistant` message, and
-  logging a `usage` row. This is not `generation-lock.ts`'s
-  `generating_at`-only CAS lock (that mechanism stays reserved for
-  `/prompts`) — shots is driven entirely by the `generations` row's
-  `state`/`payload` (see Database). Shot cards are grouped by `section_label`,
+  logging a `usage` row — driven entirely by the `generations` row's
+  `state`/`payload` (see Database; `/prompts` runs the identical
+  claim/recover/persist/settle contract as of Phase 1 prompt 3). Shot cards are grouped by `section_label`,
   collapsed only (no editing yet). A `ShotsProvider` client context keeps
   the header's Target/Current readout, the Shots/Assets tab counts, and
   the footer's "N elements without a reference image" banner in sync with
@@ -599,10 +645,16 @@ today:
   split into separate image-prompt and video-prompt routes.
 
 ## Current focus
-- `/shots` is migrated onto `generations` as of Phase 1 prompt 2 (see
-  Database); `/prompts` is not — it still runs on `generation-lock.ts`'s
-  older `generating_at`-only CAS lock. Migrating `/prompts` onto
-  `generations` too is future work.
+- **Blocker for Step 4**: `/api/projects/[id]/prompts` must be split into
+  separate image-prompts and video-prompts routes before Step 4 ships —
+  see the "step attribution is provisional" note in Database's
+  `generations` section for why the current single-call design
+  under-reports Step 6 spend. Not a Phase 3 consistency task; a
+  prerequisite.
+- `/shots` and, as of Phase 1 prompt 3, `/prompts` are both migrated onto
+  `generations` (see Database) — `claimGeneration` /
+  `persistGenerationPayload` / `settleGeneration` are the only locking
+  mechanism left in the codebase.
 - Shot editing: expand/collapse a shot card, edit voice_over / visual
   description / camera fields, duration stepper, delete
 - Agent chat mutations on the workbench (composer is rendered but disabled

@@ -9,9 +9,8 @@ type GenerationRow = Tables<'generations'>
 // Tied to the real gateway's 600s SDK timeout plus margin (src/lib/claude.ts) - long
 // enough to cover any real Claude call; short enough that a crashed or
 // platform-killed request (no `finally` runs) self-heals instead of wedging a claim
-// forever. Moved here unchanged from shots/logic.ts's copy of the same constant.
-// generation-lock.ts's separate copy stays reserved for /prompts's older CAS lock -
-// the two locking strategies are scheduled to converge, but not yet.
+// forever. This is the one locking mechanism in the codebase - both /shots and
+// /prompts claim through claimGeneration.
 export const STALE_AFTER_MS = 15 * 60 * 1000
 
 export type GenerationIdentity = {
