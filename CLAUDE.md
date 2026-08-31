@@ -103,6 +103,17 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   it; don't duplicate these numbers elsewhere. Every billed generation
   outside the initial `pending` trigger (i.e. every retry) is confirmed
   through that modal before the request fires.
+- `src/lib/config/pipeline.ts` is the single source for the pipeline's
+  step/operation/provider vocabulary: `STEPS`/`Step`, `OPERATIONS`/
+  `Operation`, `PROVIDERS`/`Provider`, the `STEP_OPERATIONS` map of which
+  operations are valid per step, and `stepOperationLabel(step, operation)`
+  for rendering a pair as copy (e.g. "Workbench — New shots"). The
+  `generations` and `usage` tables' `step`/`operation`/`provider` CHECK
+  constraints mirror these arrays by hand — Postgres can't import a TS
+  module, so update both migrations' CHECK lists whenever this file's
+  arrays change. **Users must never see a raw step/operation value or a
+  provider/model name anywhere in the UI** — `stepOperationLabel` is the
+  only sanctioned renderer.
 - `displayTitle(project)` (`src/lib/display-title.ts`) is the single title
   fallback helper (`title` → truncated `source_text` → `'Untitled
   project'`) — used by the dashboard card, the workbench header, and the
@@ -126,11 +137,12 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   infer schema from usage — read the types file.
 - Prompt caching is wired on both `/prompts` and `/shots` but is currently
   inert on both: the static prefixes still sit under the minimum cacheable
-  size (2048 Haiku / 1024 Sonnet), so no cache entry is created and
-  `usage.cache_creation_units` / `cache_read_units` log as 0. Don't pad
-  prompts to reach the threshold. It will activate on its own as prompts
-  grow — the workbench agent's system prompt plus tool schemas plus shot
-  index will clear it comfortably.
+  size (2048 Haiku / 1024 Sonnet), so no cache entry is created and the
+  `cache_creation_input_tokens` / `cache_read_input_tokens` buckets inside
+  `usage.raw_usage.breakdown` log as 0. Don't pad prompts to reach the
+  threshold. It will activate on its own as prompts grow — the workbench
+  agent's system prompt plus tool schemas plus shot index will clear it
+  comfortably.
 - Tailwind v4 gotcha: `<button>` has no default `cursor: pointer` in
   preflight (unlike v3). Every clickable button needs `cursor-pointer`
   added explicitly, plus `disabled:cursor-not-allowed` where the button
@@ -208,8 +220,9 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   generated response would be a silent second charge — and a 600s client
   timeout. The `/shots` route additionally sets `export const maxDuration =
   300`. `stop_reason` and `request_id` are captured off every call and
-  `console.warn`'d; persisting them onto the `usage` row is Phase 1 (see
-  `usage`'s "Known gaps" note).
+  `console.warn`'d; the `usage` table now has a `stop_reason` column
+  (Phase 1), but neither `logClaudeUsage` call site writes `stopReason`/
+  `requestId` into it yet — the column exists, the wiring doesn't.
 
 ## Testing
 - Business logic (`runShotGeneration`, etc.) is tested by injecting a `ClaudeGateway`
@@ -235,10 +248,15 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
 
 ## Database
 Tables: `projects`, `shots` (renamed from `scenes`), `elements`,
-`shot_elements`, `messages`, `jobs`, `usage`. All RLS-protected;
+`shot_elements`, `messages`, `generations`, `usage`. All RLS-protected.
+Two tables deviate from the single-level `exists`-on-`projects` subquery
+every other child table (including `generations`) uses for ownership:
 `shot_elements` resolves ownership through a two-level join (shots →
-projects), unlike every other child table's single-level `exists`
-subquery. Private `artifacts` Storage bucket.
+projects); `usage` resolves ownership through a `user_id` column
+denormalized directly onto the row, with `projects`-style per-command
+policies (`user_id = auth.uid()`, split into SELECT/INSERT/UPDATE) rather
+than a join — see `usage`'s own paragraph below for why. Private
+`artifacts` Storage bucket.
 
 `shots.shot_key` is a stable, immutable 5-character key (see Conventions)
 with a `(project_id, shot_key)` unique constraint — not the ordinal
@@ -258,22 +276,105 @@ and eventually one reference image — across every shot it appears in.
 `reference_image_path` is null and `status` is `'pending'` until a later
 step generates one.
 
-`usage` is the model-spend ledger, one row per provider call. Columns:
-`id`, `project_id`, `provider`, `kind`, `input_units`, `output_units`,
-`cache_creation_units`, `cache_read_units`, `estimated_cost`,
-`created_at`. `estimated_cost` is computed by `estimateClaudeCostUsd`
-from `src/lib/config/models.ts` — never inline a second cost calculation.
-Two routes write to it today: `/api/projects/[id]/shots` logs
-`kind: 'shots'` after the `write_shots` call, and
-`/api/projects/[id]/prompts` logs `kind: 'prompts'` after `write_prompts`.
-A third value, `kind: 'script'`, exists in historical rows only — the
-route that wrote it is gone. Every new provider call must log here.
-Known gaps, deliberately not yet addressed (see Current focus): no
-`user_id` (reachable only via `project_id`, and a project delete would
-orphan or erase the spend record), no `model` column (so Haiku-vs-Sonnet
-routing can't be verified from the ledger), no `status` column (so a
-failed-but-billed call can't be recorded), and `kind` is unconstrained
-text.
+## Phase 1: `generations` and the recreated `usage`
+
+`generations` holds claim/lock state for every operation that fires a
+paid external API call — the general-purpose replacement for the `jobs`
+table, which was pre-provisioned for Step 7 clip generation but never
+used by any code path (confirmed empty before being dropped). It's a
+table rather than per-step columns on `projects` because Step 7
+regenerates individual clips per shot: a project-level column can't
+express "this one shot's clip is mid-generation while the others are
+idle," but a `shot_id`-scoped `generations` row can (`shot_id` is null
+for a project-level operation, e.g. `write_prompts`). Columns: `id`,
+`project_id`, `shot_id`, `step`, `operation`, `state`
+(`pending`/`generating`/`succeeded`/`failed`), `payload` (raw provider
+payload, written before any derived rows — the same
+persist-before-writing discipline as `pending_shots_payload`), `error`,
+`external_id` (fal.ai's async polling handle; null for every other
+provider), `started_at`, `created_at`, `updated_at`.
+
+The table implements an **insert-to-claim** pattern: a row's mere
+existence at a given `(project_id, step, operation, shot_id)` identity
+*is* the lock, established by inserting it; a second write later settles
+the same row (`state` → `succeeded`/`failed`). This is why its RLS policy
+set is explicit `SELECT`/`INSERT`/`UPDATE` (not just `SELECT`/`INSERT`) —
+without the `UPDATE` policy, the settle write fails silently under RLS.
+The uniqueness guard is `generations_identity_idx`, a unique index on
+`(project_id, step, operation, shot_id)` with **`NULLS NOT DISTINCT`**
+(Postgres 15+; this project runs 17.6) — load-bearing, because without it
+Postgres treats every null `shot_id` as distinct, and two concurrent
+project-level claims (e.g. two `write_prompts` calls with no `shot_id`)
+for the same `(step, operation)` would both succeed instead of the second
+being rejected by the index.
+
+**`generations` is currently unused by all application code.** Nothing in
+this codebase reads or writes it yet — the shots route still runs
+entirely on `projects.shots_generation`/`pending_shots_payload` (see
+below), and `/prompts` still uses `generation-lock.ts`'s plain
+`generating_at`-only CAS lock. Migrating either route onto `generations`
+is future work, not done in Phase 1.
+
+`usage` is the model-spend ledger, one row per provider call — dropped
+and recreated in Phase 1 with a provider-neutral shape; its old rows were
+discarded deliberately (they predate the Phase 0 fixes and are known
+under-counts — no `user_id`, no `model`, no `status`). Columns: `id`,
+`user_id`, `project_id` (nullable, `ON DELETE SET NULL`), `generation_id`
+(nullable, `ON DELETE SET NULL`), `message_id` (nullable, `ON DELETE SET
+NULL`), `shot_id` (nullable, `ON DELETE SET NULL`), `step`, `operation`,
+`provider`, `model`, `status` (`pending`/`succeeded`/`failed`),
+`stop_reason`, `quantity`, `unit`, `raw_usage` (jsonb —
+`{ breakdown: <provider's own numbers>, rates: <rates applied> }`),
+`rate_version`, `estimated_cost numeric(12,6)`, `created_at`,
+`updated_at`. `estimated_cost` is computed by `estimateClaudeCostUsd` from
+`src/lib/config/models.ts` — never inline a second cost calculation.
+
+`user_id` is denormalized directly onto the row on purpose: `project_id`
+is nullable `ON DELETE SET NULL` specifically so billing history survives
+project deletion, and `usage`'s RLS policy follows that — ownership is a
+direct `user_id = auth.uid()` check (SELECT/INSERT/UPDATE, `projects`-
+style), not the join-through-`projects` pattern every other child table
+uses, because a join-based policy would deny a user access to their own
+orphaned billing rows the instant a project is deleted. The INSERT
+policy's `project_id`-ownership `exists` check is a **data-integrity**
+guard, not a security one (`user_id = auth.uid()` alone already fully
+secures the row) — it guarantees that when `project_id` is set, it
+actually belongs to the inserting user, so a future "cost per project"
+query joining `usage` to `projects` stays meaningful.
+
+`generation_id` and `message_id` are independent dimensions, not
+alternatives — a row may carry both (an agent turn that triggers a
+claimed operation), either, or neither. `message_id` is a grouping key
+only and must never appear in a unique constraint, since multiple `usage`
+rows may legitimately share one agent-chat message.
+
+`estimated_cost` is **reserve-then-settle, not null-then-populate**:
+written on INSERT with the pre-flight quote, then overwritten on settle
+with the measured cost — `status` distinguishes the two (`pending` =
+quoted, `succeeded`/`failed` = measured). It is never null while `status
+= 'pending'`. This matters because a per-user spend cap is coming, and it
+will sum `estimated_cost` over the user's current period to enforce it —
+if pending rows carried null, in-flight spend would be invisible to that
+sum and two concurrent expensive operations could both pass the check and
+both bill. The pending row is a reservation, not a placeholder; don't let
+this get "simplified" to null-until-settled later.
+
+A `max_tokens` truncation is not its own status: it settles as `status:
+'failed'` with `stop_reason: 'max_tokens'` — `stop_reason` is data, never
+a status value.
+
+Two routes write to `usage` today: `/api/projects/[id]/shots` logs
+`step: 'workbench'` / `operation: 'generate_shots'` after the
+`write_shots` call, and `/api/projects/[id]/prompts` logs `step:
+'image_prompts'` / `operation: 'write_prompts'` after `write_prompts`.
+Both still only insert once, always with `status: 'succeeded'`, after a
+successful Claude response — `logClaudeUsage` (`src/lib/claude.ts`)
+hasn't been restructured onto the reserve-then-settle lifecycle described
+above, and it still logs only after success and swallows its own insert
+failure. Fixing that is future work. `src/lib/config/pipeline.ts` is the
+single source for the `step`/`operation`/`provider` vocabulary these
+columns use — see Conventions. Every new provider call must log a `usage`
+row.
 
 `projects.shots_generation` (text, CHECK-constrained, default `'pending'`)
 is the shot-generation state machine:
@@ -459,13 +560,19 @@ today:
 - Element upload/generation (reference images) from the Assets tab
 - Step-guard navigation: gate step-to-step links on `furthest_step`, not
   just `current_step` position
-- Expand `usage`: add `user_id`, `model`, and `status`; constrain `kind`
-  to a fixed vocabulary covering the remaining steps
-  (`shots` / `camera_derive` / `element_reference` / `voiceover` /
-  `image_prompt` / `image_gen` / `video_prompt` / `clip_gen` /
-  `assembly` / `social_metadata`). Then a per-user monthly cap checked
-  server-side before any expensive call, and real data behind the Usage
-  screen and Queue rail item.
+- `usage`'s column expansion (`user_id`, `model`, `status`, and a
+  constrained `step`/`operation` vocabulary) is done as of Phase 1 (see
+  `## Phase 1` in Database). Still open: a per-user monthly spend cap
+  checked server-side before any expensive call (reading `estimated_cost`
+  summed over the user's current period — this is exactly why that column
+  is reserve-then-settle, never null while pending), and real data behind
+  the Usage screen and Queue rail item.
+- Agent chat turns deliberately get a `usage` row but no `generations`
+  row — there's no "claim" concept for a chat turn the way there is for a
+  generation, so nothing would hold that claim. Accepted consequence: a
+  page refresh mid-turn can cause the turn to re-fire and be billed
+  twice. Known, accepted gap, not an oversight — revisit when C4 (the
+  agent-turn work) is built.
 
 ## Open questions
 - **Per-step model selection.** `projects.video_model` is a single column

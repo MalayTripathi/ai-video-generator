@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { createClient } from '@/lib/supabase/server'
 import { estimateClaudeCostUsd } from '@/lib/config/models'
+import type { Step, Operation } from '@/lib/config/pipeline'
 
 export interface ClaudeGateway {
   createMessage(params: Anthropic.MessageCreateParams): Promise<{
@@ -63,15 +64,25 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
  * Logs usage to the console (as before) and persists a best-effort `usage`
  * row for spend tracking. A failed insert is logged, not thrown - usage
  * tracking must never break the caller's request.
+ *
+ * quantity/unit are Claude-specific for now (input+output tokens);
+ * raw_usage.breakdown keeps every provider-reported bucket, including the
+ * two cache ones excluded from quantity, so a future rate change can
+ * re-derive estimated_cost without re-calling the provider. rate_version
+ * is null until models.ts carries a versioned pricing config. status is
+ * always 'succeeded' here because this function is only ever called
+ * after a successful Claude response.
  */
 export async function logClaudeUsage(
   supabase: SupabaseServerClient,
+  userId: string,
   projectId: string,
-  kind: 'prompts' | 'shots',
+  step: Step,
+  operation: Operation,
   model: string,
   usage: Anthropic.Usage
 ) {
-  console.log(`[${kind}] usage`, {
+  console.log(`[${step}:${operation}] usage`, {
     input_tokens: usage.input_tokens,
     output_tokens: usage.output_tokens,
     cache_creation_input_tokens: usage.cache_creation_input_tokens,
@@ -79,17 +90,28 @@ export async function logClaudeUsage(
   })
 
   const { error } = await supabase.from('usage').insert({
+    user_id: userId,
     project_id: projectId,
+    step,
+    operation,
     provider: 'anthropic',
-    kind,
-    input_units: usage.input_tokens,
-    output_units: usage.output_tokens,
-    cache_creation_units: usage.cache_creation_input_tokens ?? 0,
-    cache_read_units: usage.cache_read_input_tokens ?? 0,
+    model,
+    status: 'succeeded',
+    quantity: usage.input_tokens + usage.output_tokens,
+    unit: 'tokens',
+    raw_usage: {
+      breakdown: {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
+        cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
+      },
+    },
+    rate_version: null,
     estimated_cost: estimateClaudeCostUsd(model, usage),
   })
 
   if (error) {
-    console.error(`[${kind}] failed to persist usage row`, error.message)
+    console.error(`[${step}:${operation}] failed to persist usage row`, error.message)
   }
 }

@@ -93,7 +93,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const gateway = createClaudeGateway()
 
   try {
-    return await handlePromptsGeneration(supabase, projectId, gateway)
+    return await handlePromptsGeneration(supabase, projectId, user.id, gateway)
   } finally {
     await releaseGenerationLock(supabase, projectId)
   }
@@ -102,6 +102,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 async function handlePromptsGeneration(
   supabase: Awaited<ReturnType<typeof createClient>>,
   projectId: string,
+  userId: string,
   gateway: ClaudeGateway
 ) {
   const { data: allShots, error: shotsError } = await supabase
@@ -151,7 +152,15 @@ async function handlePromptsGeneration(
     messages: [{ role: 'user', content: 'Generate the image and video prompts now.' }],
   })
 
-  await logClaudeUsage(supabase, projectId, 'prompts', modelsConfig.prompts.model, message.usage)
+  await logClaudeUsage(
+    supabase,
+    userId,
+    projectId,
+    'image_prompts',
+    'write_prompts',
+    modelsConfig.prompts.model,
+    message.usage
+  )
   // TODO(phase-1): persist stopReason/requestId once the usage table
   // supports a pending/settled row lifecycle (see CLAUDE.md's `usage`
   // "Known gaps" note) - for now just surface them in the server log.

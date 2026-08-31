@@ -612,7 +612,15 @@ export async function runShotGeneration(params: {
     )
 
     if (!toolUseBlock) {
-      await logClaudeUsage(supabase, projectId, 'shots', modelsConfig.shots.model, message.usage)
+      await logClaudeUsage(
+        supabase,
+        userId,
+        projectId,
+        'workbench',
+        'generate_shots',
+        modelsConfig.shots.model,
+        message.usage
+      )
       outcome = { ok: false, status: 500, error: 'Claude did not return a shot list' }
       return outcome
     }
@@ -624,7 +632,15 @@ export async function runShotGeneration(params: {
       .update({ pending_shots_payload: toolUseBlock.input as Json })
       .eq('id', projectId)
 
-    await logClaudeUsage(supabase, projectId, 'shots', modelsConfig.shots.model, message.usage)
+    await logClaudeUsage(
+      supabase,
+      userId,
+      projectId,
+      'workbench',
+      'generate_shots',
+      modelsConfig.shots.model,
+      message.usage
+    )
     console.warn(`[shots] stopReason=${stopReason} requestId=${requestId}`)
 
     if (persistError) {
