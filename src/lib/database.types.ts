@@ -349,6 +349,7 @@ export type Database = {
           project_id: string | null
           provider: string
           quantity: number | null
+          quoted_cost: number | null
           rate_version: string | null
           raw_usage: Json | null
           shot_id: string | null
@@ -370,6 +371,7 @@ export type Database = {
           project_id?: string | null
           provider: string
           quantity?: number | null
+          quoted_cost?: number | null
           rate_version?: string | null
           raw_usage?: Json | null
           shot_id?: string | null
@@ -391,6 +393,7 @@ export type Database = {
           project_id?: string | null
           provider?: string
           quantity?: number | null
+          quoted_cost?: number | null
           rate_version?: string | null
           raw_usage?: Json | null
           shot_id?: string | null

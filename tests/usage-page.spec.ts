@@ -13,6 +13,7 @@ function row(overrides: Partial<UsageRow> & Pick<UsageRow, 'step' | 'operation' 
     id: crypto.randomUUID(),
     project_id: null,
     estimated_cost: 0,
+    quoted_cost: null,
     created_at: new Date().toISOString(),
     ...overrides,
   }
@@ -98,6 +99,36 @@ test.describe('aggregateUsage', () => {
 
     expect(aggregation.anomalies.stalePending.count).toBe(1)
     expect(aggregation.anomalies.stalePending.total).toBeCloseTo(0.5, 6)
+  })
+
+  test('calibration is skipped when no settled row has a quoted_cost', () => {
+    const rows: UsageRow[] = [
+      row({ step: 'workbench', operation: 'generate_shots', status: 'succeeded', estimated_cost: 0.05, quoted_cost: null }),
+      row({ step: 'workbench', operation: 'generate_shots', status: 'failed', estimated_cost: 0.01, quoted_cost: null }),
+    ]
+
+    const aggregation = aggregateUsage(rows, [])
+
+    expect(aggregation.calibration.count).toBe(0)
+    expect(aggregation.calibration.meanDelta).toBe(0)
+    expect(aggregation.calibration.meanRatio).toBeNull()
+  })
+
+  test('calibration averages the delta and ratio across settled rows that have a quoted_cost', () => {
+    const rows: UsageRow[] = [
+      row({ step: 'workbench', operation: 'generate_shots', status: 'succeeded', estimated_cost: 0.03, quoted_cost: 0.02 }),
+      row({ step: 'image_prompts', operation: 'write_prompts', status: 'failed', estimated_cost: 0.01, quoted_cost: 0.02 }),
+      // Excluded: no quoted_cost (pre-migration row).
+      row({ step: 'workbench', operation: 'generate_shots', status: 'succeeded', estimated_cost: 0.5, quoted_cost: null }),
+      // Excluded: not settled.
+      row({ step: 'workbench', operation: 'generate_shots', status: 'pending', estimated_cost: 5, quoted_cost: 0.5 }),
+    ]
+
+    const aggregation = aggregateUsage(rows, [])
+
+    expect(aggregation.calibration.count).toBe(2)
+    expect(aggregation.calibration.meanDelta).toBeCloseTo(0, 6) // (+0.01 + -0.01) / 2
+    expect(aggregation.calibration.meanRatio).toBeCloseTo(1.0, 6) // (1.5 + 0.5) / 2
   })
 
   test('a user with no rows for the period gets isEmpty: true', () => {

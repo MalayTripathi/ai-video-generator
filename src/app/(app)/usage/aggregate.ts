@@ -11,6 +11,7 @@ export type UsageRow = {
   operation: Operation
   status: string
   estimated_cost: number | null
+  quoted_cost: number | null
   created_at: string
 }
 
@@ -41,6 +42,12 @@ export type ProjectBreakdownRow = {
   bySteps: StepBreakdownRow[]
 }
 
+export type CalibrationSummary = {
+  count: number
+  meanDelta: number
+  meanRatio: number | null
+}
+
 export type UsageAggregation = {
   settledTotal: number
   pendingTotal: number
@@ -51,6 +58,7 @@ export type UsageAggregation = {
     stalePending: { count: number; total: number }
     failed: { count: number; total: number }
   }
+  calibration: CalibrationSummary
   isEmpty: boolean
 }
 
@@ -83,6 +91,30 @@ function buildStepBreakdown(rows: UsageRow[], denominatorTotal: number): StepBre
       callCount: group.callCount,
     }))
     .sort((a, b) => b.cost - a.cost)
+}
+
+/**
+ * Compares each settled row's measured estimated_cost against its immutable
+ * quoted_cost - the calibration signal for estimateInputTokens's known
+ * downward-biased estimate and for eventually setting SPEND_CAP_MONTHLY_USD from
+ * evidence rather than a guess (see CLAUDE.md). A settled row with no quoted_cost
+ * (pre-migration data) is excluded rather than treated as zero delta.
+ */
+function buildCalibration(settledRows: UsageRow[]): CalibrationSummary {
+  const eligible = settledRows.filter((row): row is UsageRow & { quoted_cost: number } => row.quoted_cost !== null)
+
+  const meanDelta =
+    eligible.length > 0
+      ? eligible.reduce((sum, row) => sum + ((row.estimated_cost ?? 0) - row.quoted_cost), 0) / eligible.length
+      : 0
+
+  const ratioRows = eligible.filter((row) => row.quoted_cost > 0)
+  const meanRatio =
+    ratioRows.length > 0
+      ? ratioRows.reduce((sum, row) => sum + (row.estimated_cost ?? 0) / row.quoted_cost, 0) / ratioRows.length
+      : null
+
+  return { count: eligible.length, meanDelta, meanRatio }
 }
 
 /**
@@ -152,6 +184,7 @@ export function aggregateUsage(rows: UsageRow[], projects: ProjectMeta[], now: D
       stalePending: { count: stalePendingRows.length, total: sumCost(stalePendingRows) },
       failed: { count: failedRows.length, total: sumCost(failedRows) },
     },
+    calibration: buildCalibration(settledRows),
     isEmpty: rows.length === 0,
   }
 }

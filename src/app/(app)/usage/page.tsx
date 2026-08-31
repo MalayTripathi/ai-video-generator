@@ -28,7 +28,7 @@ export default async function UsagePage({ searchParams }: { searchParams: Promis
 
   let usageQuery = supabase
     .from('usage')
-    .select('id, project_id, step, operation, status, estimated_cost, created_at')
+    .select('id, project_id, step, operation, status, estimated_cost, quoted_cost, created_at')
     .eq('user_id', user.id)
 
   if (start) usageQuery = usageQuery.gte('created_at', start)
@@ -43,6 +43,7 @@ export default async function UsagePage({ searchParams }: { searchParams: Promis
     operation: row.operation as Operation,
     status: row.status,
     estimated_cost: row.estimated_cost,
+    quoted_cost: row.quoted_cost,
     created_at: row.created_at,
   }))
 

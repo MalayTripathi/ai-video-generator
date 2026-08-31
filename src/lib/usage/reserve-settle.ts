@@ -59,6 +59,11 @@ export async function reserveUsage(params: {
       model: params.model,
       status: 'pending',
       estimated_cost: params.quotedCost,
+      // Immutable pre-flight snapshot - settleUsage must never write this column,
+      // under any status or breakdown outcome. estimated_cost starts equal to it and
+      // moves on settle; quoted_cost never moves, so (estimated_cost - quoted_cost)
+      // stays a valid calibration delta after settle.
+      quoted_cost: params.quotedCost,
       rate_version: RATE_VERSION,
       // Stored so a stuck-pending row is debuggable: shows what was guessed, not just
       // a bare number. settleUsage fully overwrites this with the measured breakdown.
@@ -86,6 +91,10 @@ export async function settleUsage(params: {
   stopReason?: string | null
   error?: string | null
 }): Promise<void> {
+  // quoted_cost is deliberately never assigned anywhere in this function, in any
+  // branch below - it is the immutable snapshot reserveUsage wrote, and the whole
+  // point of the calibration delta (estimated_cost - quoted_cost) on /usage is that
+  // it survives settle untouched. Do not add it here.
   const update: Record<string, unknown> = {
     status: params.status,
     stop_reason: params.stopReason ?? null,
