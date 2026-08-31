@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin } from './supabase-test-session'
+import { primary } from './fixed-users'
 import { runShotGeneration } from '../src/app/api/projects/[id]/shots/logic'
 import { successMessage, truncatedMessage, throwingGateway } from './helpers/claude-fakes'
 import type { ClaudeGateway } from '../src/lib/claude'
@@ -81,8 +82,8 @@ async function readGeneration(projectId: string) {
 
 test.describe('Step 2 workbench - shot generation', () => {
   test('parses shots, applies the title/video_type, inserts an assistant message, and lands on ready with the payload cleared', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
 
@@ -121,14 +122,12 @@ test.describe('Step 2 workbench - shot generation', () => {
       expect(messagesError).toBeNull()
       expect(messages!.length).toBeGreaterThan(0)
       expect(messages![0].content.trim().length).toBeGreaterThan(0)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('dedupes an element referenced by name in one shot and by dialogue speaker in another, and resolves dialogue to the deduped element', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
 
@@ -161,14 +160,12 @@ test.describe('Step 2 workbench - shot generation', () => {
       const dialogue = dialogueShot!.dialogue as { element_id: string; line: string }[]
       expect(dialogue.length).toBe(1)
       expect(dialogue[0].element_id).toBe(mara!.id)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a gateway call that throws still leaves a usage row, failed, with a non-null estimated cost', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const gateway = throwingGateway('simulated network failure')
 
@@ -185,14 +182,12 @@ test.describe('Step 2 workbench - shot generation', () => {
       expect(usageRows![0].estimated_cost).not.toBeNull()
       expect(usageRows![0].step).toBe('workbench')
       expect(usageRows![0].operation).toBe('generate_shots')
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a successful call writes exactly one succeeded usage row with a measured cost below the quote', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
 
@@ -214,14 +209,12 @@ test.describe('Step 2 workbench - shot generation', () => {
       expect(raw.quoted).toBeUndefined()
       expect(usageRows![0].estimated_cost).toBeGreaterThan(0)
       expect(usageRows![0].estimated_cost).toBeLessThan(0.001)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a max_tokens truncation writes a failed usage row with stop_reason max_tokens and a measured cost', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const gateway: ClaudeGateway = { async createMessage() { return truncatedMessage(RICH_INPUT) } }
 
@@ -238,8 +231,6 @@ test.describe('Step 2 workbench - shot generation', () => {
       expect(usageRows![0].status).toBe('failed')
       expect(usageRows![0].stop_reason).toBe('max_tokens')
       expect(usageRows![0].estimated_cost).not.toBeNull()
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 })

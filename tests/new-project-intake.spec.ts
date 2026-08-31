@@ -1,15 +1,14 @@
 import { test, expect } from '@playwright/test'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { primary } from './fixed-users'
 import { DEFAULT_DURATION_TARGET } from '../src/lib/config/duration'
 
 test.describe('New Project intake', () => {
-  test('filling the brief and submitting creates a project and lands on workbench', async ({
-    page,
-    context,
-  }) => {
-    const { user, cookie } = await createTestSession()
-    try {
-      await context.addCookies([cookie])
+  test('filling the brief and submitting creates a project and lands on workbench', async ({ page }) => {
+    // The default browser identity (primary, via playwright.config.ts's storageState)
+    // is already authenticated - no per-test createTestSession()/addCookies needed.
+    const user = primary.user
+    {
       // The workbench mounts a client effect that immediately POSTs to trigger shot
       // generation. Block it so this test's read of shots_generation is deterministic
       // and this intake test never itself reaches a state that triggers generation.
@@ -55,25 +54,17 @@ test.describe('New Project intake', () => {
         .maybeSingle()
       expect(generationError).toBeNull()
       expect(generation).toBeNull()
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
-  test('the build button stays disabled until the brief has text', async ({ page, context }) => {
-    const { user, cookie } = await createTestSession()
-    try {
-      await context.addCookies([cookie])
-      await page.goto('/projects/new')
+  test('the build button stays disabled until the brief has text', async ({ page }) => {
+    await page.goto('/projects/new')
 
-      const button = page.getByRole('button', { name: 'Build workbench' })
-      await expect(button).toBeDisabled()
+    const button = page.getByRole('button', { name: 'Build workbench' })
+    await expect(button).toBeDisabled()
 
-      await page.getByPlaceholder(/describe your idea/i).fill('A quick idea')
-      await expect(button).toBeEnabled()
-    } finally {
-      await deleteTestUser(user.id)
-    }
+    await page.getByPlaceholder(/describe your idea/i).fill('A quick idea')
+    await expect(button).toBeEnabled()
   })
 
   test('rail and empty-state "New Project" links navigate to the intake screen', async ({

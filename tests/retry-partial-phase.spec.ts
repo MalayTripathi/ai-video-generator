@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin } from './supabase-test-session'
+import { primary } from './fixed-users'
 
 const PENDING_PAYLOAD = {
   title: 'A short film',
@@ -69,11 +70,11 @@ async function readGeneration(projectId: string) {
 }
 
 test.describe('retry from the partial phase', () => {
-  test('resumes the pending payload without billing, and cancelling sends nothing', async ({ page, context }) => {
-    const { user, cookie } = await createTestSession()
-    try {
-      await context.addCookies([cookie])
-
+  test('resumes the pending payload without billing, and cancelling sends nothing', async ({ page }) => {
+    // The default browser identity (primary, via playwright.config.ts's storageState)
+    // is already authenticated - no per-test createTestSession()/addCookies needed.
+    const user = primary.user
+    {
       const shotsRequests: { method: string; postData: string | null }[] = []
       await page.route('**/api/projects/*/shots', async (route) => {
         const request = route.request()
@@ -119,8 +120,6 @@ test.describe('retry from the partial phase', () => {
       const { data: finalShots } = await admin.from('shots').select('*').eq('project_id', projectId)
       // Exactly the replayed batch's count, not the sum of the 2 stale rows plus the replay.
       expect(finalShots?.length).toBe(PENDING_PAYLOAD.shots.length)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 })

@@ -257,6 +257,74 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
 - Any test that drives the retry control through the UI must go through the real
   `RetryConfirmModal` (`role="dialog"`, `retry-confirm-modal.tsx`) — there is no
   `window.confirm` to handle anymore.
+- **Auth in tests is `storageState`-first, not per-test `createTestSession()`.**
+  Supabase's hosted auth rate-limits magic-link `verifyOtp` per project (roughly
+  30/hour) — the old pattern of every test minting its own throwaway user made a full
+  suite run consume ~45 of those in one go, so the suite itself exhausted the limit and
+  every retry pushed the reset further out. `tests/global-setup.ts` now authenticates
+  two **fixed, reused-across-runs** identities once per run — `primary` and
+  `secondary` (idempotent get-or-create by a stable email, not a fresh UUID each time)
+  — and writes each one's session to `tests/.auth/{name}.storageState.json` (a real
+  Playwright storageState file, consumed via `playwright.config.ts`'s
+  `use.storageState`, the default for every spec's `page`/`context`) and
+  `tests/.auth/{name}.session.json` (raw `access_token`/`refresh_token`, for a spec that
+  needs a Supabase client directly rather than a browser). `tests/.auth/` is gitignored
+  — real (if throwaway-identity) tokens, never committed. `tests/fixed-users.ts` reads
+  those files and exports `primary`/`secondary`; import from there, not
+  `createTestSession()`, unless the spec is one of the exceptions below. A spec that
+  needs `secondary`'s browser identity opts in with
+  `test.use({ storageState: SECONDARY_STORAGE_STATE })`; none currently do, since the
+  one multi-user spec builds its own scoped Supabase client instead of a browser context
+  (see below) — the opt-in mechanism exists for a future one that would.
+- **Specs assert against their own project's rows, not global per-user totals.**
+  Because `primary`/`secondary` are persistent and accumulate `projects`/`shots`/
+  `generations`/`usage` rows across every run forever (Task 3's explicit trade-off — no
+  global truncate-between-runs step was added, since that would eventually run against
+  real data), every spec using them scopes its assertions to the specific
+  `project_id`/`generation_id`/row `id` it just created, never to "all of this user's
+  rows." A handful of specs assert something that's *inherently* a global-per-user fact
+  and so must keep their own fresh, never-attempted `createTestSession()` user instead
+  of sharing `primary`/`secondary` — do not "fix" these by switching them to a fixed
+  user:
+  - `usage-page.spec.ts`'s RLS test (two users, since it's proving user A's row is
+    invisible to user B — cannot share one identity for both sides of that check).
+  - `usage-page.spec.ts`'s `/usage` empty-state test (needs a user with literally zero
+    `usage` rows).
+  - `new-project-intake.spec.ts`'s dashboard-empty-state-click test (the empty-state
+    "New Project" CTA only renders when the user has zero `projects` rows).
+  - `usage-module.spec.ts`'s `assertWithinAllowance` "exceeds the ceiling" test (asserts
+    an exact row count for the user this month).
+- Moving to a local Supabase instance (`supabase start`) is the eventual answer for full
+  test isolation and zero shared rate limits — every run would get a clean database, and
+  even the four fresh-user specs above could reuse a fixed identity. Deliberately not
+  done here; this fix keeps the suite on the shared hosted dev project but cuts its auth
+  load from ~45 `verifyOtp` calls per run to 7 (2 fixed identities + the four specs
+  above, one of which needs two).
+- **`primary`/`secondary` accumulate `projects`/`usage` rows every run** (every spec
+  that shares them creates fresh, project-scoped rows under their user ids — see above),
+  so `tests/global-teardown.ts` (wired via `playwright.config.ts`'s `globalTeardown`)
+  deletes them at the end of the run. It is deliberately a `globalTeardown`, not
+  `afterEach`: the suite runs at full parallelism
+  (`playwright.config.ts`'s `fullyParallel: true`), so per-test cleanup of the *shared*
+  fixed users' data would delete rows another in-flight test is still asserting against
+  — only a single pass after every test has finished is safe. It reads
+  `primary`/`secondary` from `tests/fixed-users.ts` — the same module every spec
+  imports — so the ids it deletes by can never drift from the ones `global-setup.ts`
+  minted; it never deletes by pattern or truncates a table. It deletes **`usage` rows
+  first, explicitly**, `WHERE user_id IN (...)`, before deleting `projects`: unlike
+  every other child table, `usage.project_id` is `ON DELETE SET NULL`, not `CASCADE`
+  (see the `usage` section under Database), so deleting `projects` first would only null
+  out `usage.project_id` on the fixed users' rows rather than remove them, and they'd
+  accumulate forever. Deleting `projects` after that cascades `shots`/`generations`/
+  `elements`/`shot_elements` normally. The two fixed auth users themselves are never
+  deleted — they're reused every run. A teardown failure is `console.error`'d and
+  swallowed, never rethrown: a cleanup failure must not turn a green suite red, and by
+  the time teardown runs the suite's actual pass/fail result is already determined. The
+  four fresh-user specs above are unaffected by any of this — they still clean up their
+  own `createTestSession()` user via `deleteTestUser()` in their own `finally` block,
+  same as before; teardown has no way to know their ids, and doesn't need to, since each
+  one is unique to its own test and can't collide with another in-flight test under
+  parallelism the way the shared fixed users could.
 
 ## Database
 Tables: `projects`, `shots` (renamed from `scenes`), `elements`,
@@ -441,6 +509,26 @@ spend cap. So "can never be overrun" is approximately, not strictly, true
 today. Accepted for now because the schema's token cost is small and
 stable; closing it needs a measured baseline for typical tool-schema size
 (see Current focus).
+
+`usage.quoted_cost` is the immutable half of that pre-flight quote:
+`reserveUsage` writes it once, alongside `estimated_cost`, and
+`settleUsage` never writes it under any status or breakdown outcome — no
+branch of its `update` object references the column, and a comment on
+that function says so explicitly so a future edit doesn't add it by
+habit next to `estimated_cost`. `estimated_cost` keeps its name even
+after settle overwrites it with a measured cost, because it is still a
+list-price figure computed from token counts, not a provider invoice —
+that naming is deliberate and load-bearing in the `/usage` UI copy,
+where every section is labelled "estimated" for exactly this reason.
+Because `quoted_cost` never moves, `(estimated_cost - quoted_cost)`
+stays a valid calibration delta after settle — surfaced as the
+"Estimate calibration" line in `/usage`'s Anomalies section — and is
+the evidence that would eventually close the tool-schema-exclusion gap
+above and inform where `SPEND_CAP_MONTHLY_USD` should actually be set,
+rather than that ceiling staying a guess indefinitely. `quoted_cost` is
+nullable with no backfill (added after `estimated_cost` already existed
+in production), so the calibration figure is computed only over rows
+that have one.
 
 `settleUsage` runs in a `finally`, so it runs on success, on a thrown
 exception, and on `max_tokens` truncation alike, and each case settles
@@ -717,7 +805,9 @@ see Open questions.
   (`SPEND_CAP_ENABLED`). The `/usage` page (`src/app/(app)/usage/`)
   makes all of this visible: spend grouped by step and by project for a
   selected period, with settled/pending spend kept separate and a
-  dedicated anomalies section for stuck-pending and failed rows. **All
+  dedicated anomalies section for stuck-pending and failed rows, plus an
+  estimate-calibration line (mean quoted-vs-actual delta and ratio,
+  `usage.quoted_cost`) diagnosing the spend estimate itself. **All
   four mechanisms behind the original unexplained-spend incident are now
   closed**: the gateway-seam live-call guard (Phase 0), the `generations`
   claim replacing the old CAS lock, the `ready`→`succeeded`/

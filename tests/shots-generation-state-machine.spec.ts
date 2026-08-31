@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin } from './supabase-test-session'
+import { primary } from './fixed-users'
 import { runShotGeneration } from '../src/app/api/projects/[id]/shots/logic'
 import { STALE_AFTER_MS } from '../src/lib/generations/claim'
 import { successMessage, truncatedMessage, throwingGateway } from './helpers/claude-fakes'
@@ -86,8 +87,8 @@ async function readGeneration(projectId: string) {
 
 test.describe('shot generation state machine', () => {
   test('claim refused when succeeded - 409 already_ready, gateway never called', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await seedGeneration(projectId, { state: 'succeeded' })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
@@ -100,14 +101,12 @@ test.describe('shot generation state machine', () => {
         expect('reason' in result && result.reason).toBe('already_ready')
       }
       expect(getCallCount()).toBe(0)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('claim refused when generating and fresh - 409 already_generating, gateway never called', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await seedGeneration(projectId, { state: 'generating', started_at: new Date().toISOString() })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
@@ -120,14 +119,12 @@ test.describe('shot generation state machine', () => {
         expect('reason' in result && result.reason).toBe('already_generating')
       }
       expect(getCallCount()).toBe(0)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('claim refused when generating and not yet stale - 409 already_generating, gateway never called', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const notYetStale = new Date(Date.now() - (STALE_AFTER_MS - 5 * 60 * 1000)).toISOString()
       await seedGeneration(projectId, { state: 'generating', started_at: notYetStale })
@@ -141,14 +138,12 @@ test.describe('shot generation state machine', () => {
         expect('reason' in result && result.reason).toBe('already_generating')
       }
       expect(getCallCount()).toBe(0)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('claim succeeds when generating and stale - gateway called once, ends succeeded', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const staleTimestamp = new Date(Date.now() - (STALE_AFTER_MS + 5 * 60 * 1000)).toISOString()
       await seedGeneration(projectId, { state: 'generating', started_at: staleTimestamp })
@@ -160,14 +155,12 @@ test.describe('shot generation state machine', () => {
       expect(getCallCount()).toBe(1)
       const row = await readGeneration(projectId)
       expect(row.state).toBe('succeeded')
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('claim refused when failed without retry - 409 retry_required, gateway never called', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await seedGeneration(projectId, { state: 'failed' })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
@@ -180,14 +173,12 @@ test.describe('shot generation state machine', () => {
         expect('reason' in result && result.reason).toBe('retry_required')
       }
       expect(getCallCount()).toBe(0)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('claim succeeds when failed with retry and no pending payload - gateway called once, ends succeeded', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await seedGeneration(projectId, { state: 'failed', payload: null })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
@@ -198,14 +189,12 @@ test.describe('shot generation state machine', () => {
       expect(getCallCount()).toBe(1)
       const row = await readGeneration(projectId)
       expect(row.state).toBe('succeeded')
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('recovery replays a pending payload without calling the gateway again, replacing any existing shots', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await seedGeneration(projectId, { state: 'failed', payload: VALID_WRITE_SHOTS_INPUT })
 
@@ -235,14 +224,12 @@ test.describe('shot generation state machine', () => {
       const row = await readGeneration(projectId)
       expect(row.state).toBe('succeeded')
       expect(row.payload).toBeNull()
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('truncation (max_tokens) saves usable shots, ends failed, and clears the pending payload', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const { gateway } = countingGateway(truncatedMessage(VALID_WRITE_SHOTS_INPUT))
 
@@ -260,14 +247,12 @@ test.describe('shot generation state machine', () => {
       // truncated answer was never a successful return, so a retry must ask Claude for a
       // fresh, complete list rather than replaying the same short one forever.
       expect(row.payload).toBeNull()
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('full success sets succeeded and clears the payload', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const { gateway } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
@@ -282,14 +267,12 @@ test.describe('shot generation state machine', () => {
       const row = await readGeneration(projectId)
       expect(row.state).toBe('succeeded')
       expect(row.payload).toBeNull()
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a thrown exception mid-pipeline never leaves the project stuck generating', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const gateway = throwingGateway()
 
@@ -300,14 +283,12 @@ test.describe('shot generation state machine', () => {
 
       const row = await readGeneration(projectId)
       expect(row.state).toBe('failed')
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('two concurrent requests on the same project: exactly one claims, the other is blocked, and only one Claude call is made', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
@@ -328,8 +309,6 @@ test.describe('shot generation state machine', () => {
         expect('reason' in blockedResult && blockedResult.reason).toBe('already_generating')
       }
       expect(getCallCount()).toBe(1)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 })

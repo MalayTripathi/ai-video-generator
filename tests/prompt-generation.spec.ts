@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin } from './supabase-test-session'
+import { primary } from './fixed-users'
 import { runPromptGeneration } from '../src/app/api/projects/[id]/prompts/logic'
 import { successMessage, truncatedMessage, throwingGateway } from './helpers/claude-fakes'
 import type { ClaudeGateway } from '../src/lib/claude'
@@ -73,8 +74,8 @@ async function readGeneration(projectId: string) {
 
 test.describe('Step 4 (provisional) - image/video prompt generation', () => {
   test('writes prompts for shots that need them, advances current_step, settles succeeded, and logs a usage row carrying generation_id', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await insertShots(projectId, [{ shot_key: 'b2c3d' }, { shot_key: 'f4g5h' }])
 
@@ -124,14 +125,12 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       expect(usageRows![0].operation).toBe('write_prompts')
       expect(usageRows![0].status).toBe('succeeded')
       expect(usageRows![0].estimated_cost).not.toBeNull()
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a response missing requested shot_keys returns 422, does not advance current_step, and leaves the payload intact', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await insertShots(projectId, [{ shot_key: 'b2c3d' }, { shot_key: 'f4g5h' }])
 
@@ -163,14 +162,12 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       const generation = await readGeneration(projectId)
       expect(generation.state).toBe('failed')
       expect(generation.payload).not.toBeNull()
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('two concurrent calls on a fresh identity: exactly one claims and calls Claude, the other is blocked as already_generating', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await insertShots(projectId, [{ shot_key: 'b2c3d' }])
 
@@ -191,14 +188,12 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       )
 
       expect(getCalls()).toBe(1)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a persisted payload with derived rows not yet written is replayed without a second Claude call', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await insertShots(projectId, [{ shot_key: 'b2c3d' }, { shot_key: 'f4g5h' }])
 
@@ -243,14 +238,12 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       const generation = await readGeneration(projectId)
       expect(generation.state).toBe('succeeded')
       expect(generation.payload).toBeNull()
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a max_tokens truncation settles failed and clears the payload so a retry calls Claude fresh', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await insertShots(projectId, [{ shot_key: 'b2c3d' }])
 
@@ -269,14 +262,12 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       const generation = await readGeneration(projectId)
       expect(generation.state).toBe('failed')
       expect(generation.payload).toBeNull()
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a succeeded claim blocks a further call with already_ready unless retry is true', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await insertShots(projectId, [{ shot_key: 'b2c3d' }])
 
@@ -300,14 +291,12 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       expect(second.ok).toBe(false)
       expect(second.status).toBe(409)
       expect(!second.ok && 'reason' in second && second.reason).toBe('already_ready')
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a project with nothing left to generate settles succeeded with no Claude call and no usage row', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await insertShots(projectId, [
         { shot_key: 'b2c3d', image_prompt: GOOD_IMAGE_PROMPT, video_prompt: GOOD_VIDEO_PROMPT },
@@ -329,14 +318,12 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
 
       const { data: usageRows } = await admin.from('usage').select('id').eq('project_id', projectId)
       expect(usageRows!.length).toBe(0)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a gateway call that throws still leaves a usage row, failed, with a non-null estimated cost', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await insertShots(projectId, [{ shot_key: 'b2c3d' }])
       const gateway = throwingGateway('simulated network failure')
@@ -360,14 +347,12 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       expect(usageRows![0].estimated_cost).not.toBeNull()
       expect(usageRows![0].step).toBe('image_prompts')
       expect(usageRows![0].operation).toBe('write_prompts')
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a successful call writes exactly one succeeded usage row with a measured cost below the quote', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await insertShots(projectId, [{ shot_key: 'b2c3d' }, { shot_key: 'f4g5h' }])
       const { gateway } = fakeGateway(['b2c3d', 'f4g5h'])
@@ -394,14 +379,12 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       expect(raw.quoted).toBeUndefined()
       expect(usageRows![0].estimated_cost).toBeGreaterThan(0)
       expect(usageRows![0].estimated_cost).toBeLessThan(0.001)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('a max_tokens truncation writes a failed usage row with stop_reason max_tokens and a measured cost', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       await insertShots(projectId, [{ shot_key: 'b2c3d' }])
       const { gateway } = fakeGateway(['b2c3d'], { truncated: true })
@@ -425,8 +408,6 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       expect(usageRows![0].status).toBe('failed')
       expect(usageRows![0].stop_reason).toBe('max_tokens')
       expect(usageRows![0].estimated_cost).not.toBeNull()
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 })
