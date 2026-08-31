@@ -74,9 +74,9 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   by `createProjectFromIntake` (`src/app/projects/new/actions.ts`), already
   fully populated (`source_text`, `video_type`, `aspect_ratio`,
   `duration_target`, `language`, `status: 'draft'`,
-  `current_step: 'workbench'`, `furthest_step: 2`,
-  `shots_generation: 'pending'`), before redirecting into
-  `/projects/[id]/workbench`.
+  `current_step: 'workbench'`, `furthest_step: 2`), before redirecting into
+  `/projects/[id]/workbench`. It writes no `generations` row either — a
+  brand-new project simply has none until its first claim (see Phase 1).
 - `dashboard`, `projects/new`, and `projects/[id]/*` live in the
   `src/app/(app)/` route group (URLs unchanged). Its shared `layout.tsx`
   fetches the user once and renders `Rail` there, so the rail survives
@@ -100,7 +100,11 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   (`durationConfig`, keyed by `DurationTarget`) — the single source for
   `targetShots`/`estimatedCredits`. The intake duration tiles, shot
   generation, and `RetryConfirmModal`'s credit-cost copy all read from
-  it; don't duplicate these numbers elsewhere. Every billed generation
+  it; don't duplicate these numbers elsewhere. The same file exports
+  `DEFAULT_DURATION_TARGET` (currently `'30-60s'`, the permanent product
+  default, not a placeholder) — `intake-form.tsx`'s pre-selected tile reads
+  from it rather than carrying its own literal, so intake tests assert
+  against the constant instead of a hardcoded string. Every billed generation
   outside the initial `pending` trigger (i.e. every retry) is confirmed
   through that modal before the request fires.
 - `src/lib/config/pipeline.ts` is the single source for the pipeline's
@@ -289,8 +293,9 @@ idle," but a `shot_id`-scoped `generations` row can (`shot_id` is null
 for a project-level operation, e.g. `write_prompts`). Columns: `id`,
 `project_id`, `shot_id`, `step`, `operation`, `state`
 (`pending`/`generating`/`succeeded`/`failed`), `payload` (raw provider
-payload, written before any derived rows — the same
-persist-before-writing discipline as `pending_shots_payload`), `error`,
+payload, written before any derived rows — the same persist-before-writing
+discipline the now-dropped `projects.pending_shots_payload` used to
+enforce), `error`,
 `external_id` (fal.ai's async polling handle; null for every other
 provider), `started_at`, `created_at`, `updated_at`.
 
@@ -308,12 +313,45 @@ project-level claims (e.g. two `write_prompts` calls with no `shot_id`)
 for the same `(step, operation)` would both succeed instead of the second
 being rejected by the index.
 
-**`generations` is currently unused by all application code.** Nothing in
-this codebase reads or writes it yet — the shots route still runs
-entirely on `projects.shots_generation`/`pending_shots_payload` (see
-below), and `/prompts` still uses `generation-lock.ts`'s plain
-`generating_at`-only CAS lock. Migrating either route onto `generations`
-is future work, not done in Phase 1.
+`src/lib/generations/claim.ts` is the one module that reads or writes
+`state`/`payload`/`started_at`/`error` — every claimant goes through
+`claimGeneration`/`persistGenerationPayload`/`settleGeneration`; nothing
+writes those columns inline. `claimGeneration({ supabase, identity, retry
+})` implements the insert-to-claim algorithm: a plain `INSERT` (state
+`'generating'`) claims a never-attempted identity outright; a `23505`
+unique violation (detected by Postgres error code — see `isUniqueViolation`
+in `shot-key.ts`, reused here rather than string-matching the message)
+means a row already exists, and the function reads it and branches on
+`state`: `'succeeded'` refuses with `already_ready`; `'failed'` without
+`retry` refuses with `retry_required`; `'generating'` refuses with
+`already_generating` unless `started_at` is older than `STALE_AFTER_MS`
+(now defined in `claim.ts`, not `shots/logic.ts` — see below); `'failed'`
+with `retry`, a stale `'generating'`, or a `'pending'` row (only possible
+via backfill, for a project that was never attempted) are all
+reclaimable. Every reclaim is a **conditional `UPDATE`** filtered on the
+exact state it expects (`.eq('state', <expected>)`, plus a staleness
+bound for the `'generating'` case) — if it affects zero rows, another
+caller reclaimed first, and the loser is refused with `already_generating`
+uniformly regardless of which state it was racing from (this reproduces
+the old single-atomic-UPDATE claim's behaviour exactly: any race loser's
+follow-up read would, by the time it read, always see `'generating'` — the
+winner's write). A reclaim never touches `payload` — a stale or failed row
+may already carry one Claude was paid for, and RECOVER must still see it.
+
+**The `ready` → `succeeded` rename happens in exactly one place**:
+`settleGeneration`'s success branch writes `state: 'succeeded'`; every
+other state name (`pending`/`generating`/`failed`) is unchanged between
+the old `projects.shots_generation` vocabulary and this one.
+`settleGeneration` also always clears `payload` on success unconditionally
+(it was only ever a recovery aid for an in-flight or failed attempt), and
+clears it on failure only when the caller explicitly asks (the
+`max_tokens` truncation case) — otherwise a failed row's payload survives
+for RECOVER, same as before.
+
+`generations` is used today by the `/shots` route (`step: 'workbench'`,
+`operation: 'generate_shots'`, `shot_id: null`) — see the claim → recover
+→ persist → settle description below. `/prompts` still uses
+`generation-lock.ts`'s plain `generating_at`-only CAS lock, unmigrated.
 
 `usage` is the model-spend ledger, one row per provider call — dropped
 and recreated in Phase 1 with a provider-neutral shape; its old rows were
@@ -365,9 +403,13 @@ a status value.
 
 Two routes write to `usage` today: `/api/projects/[id]/shots` logs
 `step: 'workbench'` / `operation: 'generate_shots'` after the
-`write_shots` call, and `/api/projects/[id]/prompts` logs `step:
-'image_prompts'` / `operation: 'write_prompts'` after `write_prompts`.
-Both still only insert once, always with `status: 'succeeded'`, after a
+`write_shots` call — and, since Phase 1 prompt 2, passes its claimed
+`generations` row's `id` through `logClaudeUsage`'s optional trailing
+`generationId` param, so these rows carry `generation_id` — and
+`/api/projects/[id]/prompts` logs `step: 'image_prompts'` / `operation:
+'write_prompts'` after `write_prompts`, which has no `generations` row to
+attach and so leaves `generation_id` null, same as before. Both still only
+insert once, always with `status: 'succeeded'`, after a
 successful Claude response — `logClaudeUsage` (`src/lib/claude.ts`)
 hasn't been restructured onto the reserve-then-settle lifecycle described
 above, and it still logs only after success and swallows its own insert
@@ -376,51 +418,51 @@ single source for the `step`/`operation`/`provider` vocabulary these
 columns use — see Conventions. Every new provider call must log a `usage`
 row.
 
-`projects.shots_generation` (text, CHECK-constrained, default `'pending'`)
-is the shot-generation state machine:
-- `pending` — intake has created the row, shot generation has not run yet.
-- `generating` — a claim is held; `generating_at` holds the claim
-  timestamp.
-- `ready` — shots exist and are committed.
-- `failed` — the last attempt failed. `pending_shots_payload` (jsonb,
-  nullable) is non-null if and only if Claude already returned
-  successfully and only the database writes failed, in which case
-  recovery must replay the payload and MUST NOT call Claude again.
-`pending_shots_payload` is always cleared once shots and shot_elements are
-committed. `generating_at` is unchanged in role — still the claim
-timestamp — and is now written in the same UPDATE that transitions
-`shots_generation` to `'generating'`. `shots_generation` — not "the shots
-table is empty" — is now the only trigger for shot generation.
+**As of Phase 1 prompt 2, `projects.shots_generation` and
+`projects.pending_shots_payload` no longer exist.** The shot-generation
+claim/state lives entirely in the `generations` row identified by
+`(project_id, step: 'workbench', operation: 'generate_shots', shot_id:
+null)` — one row per project, created by that project's first claim
+attempt (a brand-new project has none until then). `state` is
+`pending`/`generating`/`succeeded`/`failed` (see the Phase 1 section
+above for the full claim algorithm and the `ready` → `succeeded` rename);
+`payload` plays the role `pending_shots_payload` used to; `started_at`
+plays the role `generating_at` used to.
 
-A `/api/projects/[id]/shots` request runs a strict **claim → recover →
-persist → settle** order (`runShotGeneration` in
-`src/app/api/projects/[id]/shots/logic.ts`). **Claim**: one atomic
-conditional `UPDATE` (project id + user id + a state predicate —
-`pending`, or `generating` with a stale `generating_at`, or `failed` with
-a request-time `retry: true`) is both the lock and the idempotency guard;
-a zero-row result is a refused claim (409, with `reason: 'already_ready' |
-'already_generating' | 'retry_required'`), never a partial attempt.
-**Recover**: if the claimed row already carries a non-null
-`pending_shots_payload`, the gateway is never called — the stored payload
-is replayed through the same parse → resolve-elements → insert pipeline.
+A `/api/projects/[id]/shots` request runs the same strict **claim →
+recover → persist → settle** order as before (`runShotGeneration` in
+`src/app/api/projects/[id]/shots/logic.ts`), now built on
+`src/lib/generations/claim.ts` instead of a bespoke `projects` UPDATE.
+**Claim**: `claimGeneration` (see Phase 1 above) is both the lock and the
+idempotency guard; a `blocked` outcome is a refused claim (409, with
+`reason: 'already_ready' | 'already_generating' | 'retry_required'`),
+never a partial attempt — the project's own fields (`source_text`,
+`video_type`, `language`, `duration_target`, `title`) are loaded in a
+separate `SELECT` *before* the claim, so a vanished/unowned project
+returns 404 without needing to interpret an RLS/FK error off the claim
+`INSERT`. **Recover**: if the claimed row already carries a non-null
+`payload`, the gateway is never called — the stored payload is replayed
+through the same parse → resolve-elements → insert pipeline.
 **Persist**: on a fresh call, the raw `write_shots` tool_use input is
-written to `pending_shots_payload` in its own `UPDATE` immediately after
-the Claude call returns, before any `shots` row is inserted. **Settle**: a
-`finally` block runs on every exit path including a thrown exception —
-success writes `ready`/`generating_at: null`/`pending_shots_payload:
-null`; failure writes `failed`/`generating_at: null`, leaving
-`pending_shots_payload` intact for later recovery — except a `max_tokens`
-truncation, which also settles `failed` but always clears the payload,
-since a truncated answer was never "returned successfully" in the sense
-this contract requires.
+written to the row's `payload` via `persistGenerationPayload`
+immediately after the Claude call returns, before any `shots` row is
+inserted. **Settle**: a `finally` block runs on every exit path including
+a thrown exception, calling `settleGeneration` — success writes
+`succeeded` and always clears `payload`; failure writes `failed`, leaving
+`payload` intact for later recovery — except a `max_tokens` truncation,
+which also settles `failed` but always clears the payload, since a
+truncated answer was never "returned successfully" in the sense this
+contract requires. `logClaudeUsage` is passed the claimed row's `id` so
+the resulting `usage` row carries `generation_id` (see the `usage`
+paragraph above).
 
-**A stored `pending_shots_payload` means Claude has already been paid
-for; recovery replays it and never re-calls.**
+**A generations row with a non-null `payload` means Claude has already
+been paid for; recovery replays it and never re-calls.**
 
 A retry or recovery run replaces the shot list wholesale: `runShotsPipeline` deletes all
 existing `shots` rows for the project (cascading `shot_elements`, which has `ON DELETE
 CASCADE` on both foreign keys) immediately before inserting the fresh/replayed batch,
-always sequenced after `pending_shots_payload` is already durably written — a crash
+always sequenced after the payload is already durably persisted — a crash
 between the two still leaves the payload intact for the next retry to recover from.
 `elements` are never deleted: they're project-level and deduped by name, so
 `resolveElement` re-matches existing rows (including any reference image already
@@ -428,28 +470,32 @@ generated) on replay instead of creating duplicates. This is what makes the
 confirmation modal's "existing shots will be replaced" copy true rather than aspirational.
 
 This mechanism is specific to `/shots` — `/prompts` still uses the plain
-`generating_at`-only CAS lock in `generation-lock.ts`, unchanged. The two
+`generating_at`-only CAS lock in `generation-lock.ts` (its own, unmigrated
+`STALE_AFTER_MS`, unrelated to the copy `claim.ts` now owns). The two
 locking strategies are scheduled to converge; until then, `/prompts`'s
 422-on-partial-failure guarantee (see Done log) is enforced by that older
 CAS lock, not by the claim/recover contract described above.
 
-The workbench shot list derives its UI phase from `shots_generation` +
-`shots.length`, not `shots.length` alone (`shots-context.tsx`):
-`pending`/`generating` → `generating` (skeleton, polls via
-`router.refresh()` every 3s so a passive tab picks up another tab/device's
-result); `ready` with shots → `list`; `ready` with zero shots → `failed`
-(defensive, never auto-retried); `failed` with zero shots → `failed`;
-`failed` with saved shots → `partial` (renders the saved list with a
-cut-short warning banner, not a silent success). This table lives in
-`derivePhase()` (`derive-phase.ts`) as a pure function of
-`(shots_generation, shotCount)`. The client never triggers generation off a
-raw `shots.length === 0` check — the only trigger is `derivePhase()`
-returning `'trigger'` (i.e. `shots_generation === 'pending'`), fired once
-via a ref guard in `ShotsProvider` (`shots-context.tsx`), so a project that
+The workbench shot list derives its UI phase from the `generations` row's
+`state` + `shots.length`, not `shots.length` alone (`shots-context.tsx`):
+no row, or `state: 'pending'` → `trigger` (fires the auto-POST once); `
+'generating'` → `generating` (skeleton, polls via `router.refresh()`
+every 3s so a passive tab picks up another tab/device's result);
+`'succeeded'` with shots → `list`; `'succeeded'` with zero shots →
+`failed` (defensive, never auto-retried); `'failed'` with zero shots →
+`failed`; `'failed'` with saved shots → `partial` (renders the saved list
+with a cut-short warning banner, not a silent success). This table lives
+in `derivePhase()` (`derive-phase.ts`) as a pure function of
+`(generation: { state: string } | null, shotCount)` — a missing row and
+`state: 'pending'` collapse to the same `trigger` output, matching what
+the old absent/unrecognized-status fallback produced. The client never
+triggers generation off a raw `shots.length === 0` check — the only
+trigger is `derivePhase()` returning `'trigger'`, fired once via a ref
+guard in `ShotsProvider` (`shots-context.tsx`), so a project that
 legitimately has zero shots for another reason can never re-fire
 generation. Retry is gated behind `RetryConfirmModal`
 (`retry-confirm-modal.tsx`), which states the credit cost from
-`durationConfig` when `pending_shots_payload` is absent, or that
+`durationConfig` when the row's `payload` is null, or that
 resuming is free when it's present — the same modal warns that
 existing shots will be replaced when retrying from the `partial` phase.
 
@@ -502,18 +548,18 @@ see Open questions.
   itself via `useFormStatus` while `createProjectFromIntake` is in flight.
 - Step 2 Workbench (`/projects/[id]/workbench`): built on
   `workbench-shell.tsx` (see Conventions), read-only shot list. On first
-  load while `shots_generation` is `'pending'`, the client triggers `POST
-  /api/projects/[id]/shots`, which runs the claim → recover → persist →
-  settle sequence (see Database) via `runShotGeneration` in
-  `src/app/api/projects/[id]/shots/logic.ts` — one `write_shots` Claude
+  load while its `generations` row is absent or `state: 'pending'`, the
+  client triggers `POST /api/projects/[id]/shots`, which runs the claim →
+  recover → persist → settle sequence (see Database) via `runShotGeneration`
+  in `src/app/api/projects/[id]/shots/logic.ts` — one `write_shots` Claude
   tool call (system prompt in `src/lib/prompts/shot-generation.ts`, target
   shot count from `durationConfig`), persisting
   shots/elements/`shot_elements`/dialogue, guarding the `projects.title`
   write (only if still null), inserting an `assistant` message, and
   logging a `usage` row. This is not `generation-lock.ts`'s
   `generating_at`-only CAS lock (that mechanism stays reserved for
-  `/prompts`) — shots is driven entirely by `shots_generation`/
-  `pending_shots_payload`. Shot cards are grouped by `section_label`,
+  `/prompts`) — shots is driven entirely by the `generations` row's
+  `state`/`payload` (see Database). Shot cards are grouped by `section_label`,
   collapsed only (no editing yet). A `ShotsProvider` client context keeps
   the header's Target/Current readout, the Shots/Assets tab counts, and
   the footer's "N elements without a reference image" banner in sync with
@@ -553,6 +599,10 @@ today:
   split into separate image-prompt and video-prompt routes.
 
 ## Current focus
+- `/shots` is migrated onto `generations` as of Phase 1 prompt 2 (see
+  Database); `/prompts` is not — it still runs on `generation-lock.ts`'s
+  older `generating_at`-only CAS lock. Migrating `/prompts` onto
+  `generations` too is future work.
 - Shot editing: expand/collapse a shot card, edit voice_over / visual
   description / camera fields, duration stepper, delete
 - Agent chat mutations on the workbench (composer is rendered but disabled

@@ -159,8 +159,6 @@ export type Database = {
           id: string
           language: string | null
           language_code: string | null
-          pending_shots_payload: Json | null
-          shots_generation: string
           source_text: string | null
           status: string
           template_source_id: string | null
@@ -184,8 +182,6 @@ export type Database = {
           id?: string
           language?: string | null
           language_code?: string | null
-          pending_shots_payload?: Json | null
-          shots_generation?: string
           source_text?: string | null
           status?: string
           template_source_id?: string | null
@@ -209,8 +205,6 @@ export type Database = {
           id?: string
           language?: string | null
           language_code?: string | null
-          pending_shots_payload?: Json | null
-          shots_generation?: string
           source_text?: string | null
           status?: string
           template_source_id?: string | null

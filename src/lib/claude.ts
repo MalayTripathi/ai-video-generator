@@ -80,7 +80,8 @@ export async function logClaudeUsage(
   step: Step,
   operation: Operation,
   model: string,
-  usage: Anthropic.Usage
+  usage: Anthropic.Usage,
+  generationId?: string | null
 ) {
   console.log(`[${step}:${operation}] usage`, {
     input_tokens: usage.input_tokens,
@@ -92,6 +93,7 @@ export async function logClaudeUsage(
   const { error } = await supabase.from('usage').insert({
     user_id: userId,
     project_id: projectId,
+    generation_id: generationId ?? null,
     step,
     operation,
     provider: 'anthropic',

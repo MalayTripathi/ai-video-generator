@@ -1,17 +1,15 @@
-import type { ShotsGenerationStatus } from '@/app/api/projects/[id]/shots/logic'
-
 export type Phase = 'generating' | 'list' | 'failed' | 'partial' | 'trigger'
 
 export function derivePhase({
-  shotsGeneration,
+  generation,
   shotCount,
 }: {
-  shotsGeneration: ShotsGenerationStatus
+  generation: { state: string } | null
   shotCount: number
 }): Phase {
-  if (shotsGeneration === 'pending') return 'trigger'
-  if (shotsGeneration === 'generating') return 'generating'
-  if (shotsGeneration === 'ready') return shotCount === 0 ? 'failed' : 'list'
+  if (!generation || generation.state === 'pending') return 'trigger'
+  if (generation.state === 'generating') return 'generating'
+  if (generation.state === 'succeeded') return shotCount === 0 ? 'failed' : 'list'
   // 'failed'
   return shotCount === 0 ? 'failed' : 'partial'
 }

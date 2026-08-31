@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { DEFAULT_DURATION_TARGET } from '../src/lib/config/duration'
 
 test.describe('New Project intake', () => {
   test('filling the brief and submitting creates a project and lands on workbench', async ({
@@ -38,10 +39,22 @@ test.describe('New Project intake', () => {
       expect(project.current_step).toBe('workbench')
       expect(project.furthest_step).toBe(2)
       expect(project.aspect_ratio).toBe('9:16')
-      expect(project.duration_target).toBe('1-2min')
+      expect(project.duration_target).toBe(DEFAULT_DURATION_TARGET)
       expect(project.video_type).toBe('auto')
       expect(project.template_source_id).toBeNull()
-      expect(project.shots_generation).toBe('pending')
+
+      // The auto-trigger POST is blocked above, so no claim was ever attempted - a
+      // brand-new project has no generations row until its first claim.
+      const { data: generation, error: generationError } = await admin
+        .from('generations')
+        .select('id')
+        .eq('project_id', projectId!)
+        .eq('step', 'workbench')
+        .eq('operation', 'generate_shots')
+        .is('shot_id', null)
+        .maybeSingle()
+      expect(generationError).toBeNull()
+      expect(generation).toBeNull()
     } finally {
       await deleteTestUser(user.id)
     }

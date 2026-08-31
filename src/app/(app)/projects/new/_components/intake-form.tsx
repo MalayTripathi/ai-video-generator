@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { displayTitle } from '@/lib/display-title'
-import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import { durationConfig, DEFAULT_DURATION_TARGET, type DurationTarget } from '@/lib/config/duration'
 import { VIDEO_TYPES } from '@/lib/video-type-labels'
 import { createProjectFromIntake } from '../actions'
 import type { TemplateProject } from '../types'
@@ -14,7 +14,7 @@ type PrefillableField = 'video_type' | 'aspect_ratio' | 'duration_target'
 const DEFAULTS = {
   videoType: 'auto',
   aspectRatio: '9:16' as AspectRatio,
-  durationTarget: '30-60s' as DurationTarget,
+  durationTarget: DEFAULT_DURATION_TARGET,
 }
 
 const FORMATS: { value: AspectRatio; label: string; sublabel: string; width: number; height: number }[] = [

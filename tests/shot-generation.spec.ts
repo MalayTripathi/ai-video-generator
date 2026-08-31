@@ -59,12 +59,24 @@ async function insertProject(userId: string) {
       video_type: 'auto',
       duration_target: '1-2min',
       current_step: 'workbench',
-      shots_generation: 'pending',
     })
     .select('id')
     .single()
   expect(error).toBeNull()
   return data!.id as string
+}
+
+async function readGeneration(projectId: string) {
+  const { data, error } = await admin
+    .from('generations')
+    .select('state, payload')
+    .eq('project_id', projectId)
+    .eq('step', 'workbench')
+    .eq('operation', 'generate_shots')
+    .is('shot_id', null)
+    .single()
+  expect(error).toBeNull()
+  return data!
 }
 
 test.describe('Step 2 workbench - shot generation', () => {
@@ -90,14 +102,16 @@ test.describe('Step 2 workbench - shot generation', () => {
 
       const { data: project, error: projectError } = await admin
         .from('projects')
-        .select('title, video_type, shots_generation, pending_shots_payload')
+        .select('title, video_type')
         .eq('id', projectId)
         .single()
       expect(projectError).toBeNull()
       expect(project!.title).toBe(RICH_INPUT.title)
       expect(project!.video_type).toBe(RICH_INPUT.video_type)
-      expect(project!.shots_generation).toBe('ready')
-      expect(project!.pending_shots_payload).toBeNull()
+
+      const generation = await readGeneration(projectId)
+      expect(generation.state).toBe('succeeded')
+      expect(generation.payload).toBeNull()
 
       const { data: messages, error: messagesError } = await admin
         .from('messages')
