@@ -1,0 +1,157 @@
+import { STALE_AFTER_MS } from '@/lib/generations/claim'
+import { stepOperationLabel, type Step, type Operation } from '@/lib/config/pipeline'
+import { displayTitle } from '@/lib/display-title'
+import { videoTypeLabel } from '@/lib/video-type-labels'
+import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+
+export type UsageRow = {
+  id: string
+  project_id: string | null
+  step: Step
+  operation: Operation
+  status: string
+  estimated_cost: number | null
+  created_at: string
+}
+
+export type ProjectMeta = {
+  id: string
+  title: string | null
+  source_text: string | null
+  video_type: string | null
+  duration_target: string | null
+}
+
+export type StepBreakdownRow = {
+  step: Step
+  operation: Operation
+  label: string
+  cost: number
+  sharePct: number
+  callCount: number
+}
+
+export type ProjectBreakdownRow = {
+  projectId: string | null
+  title: string
+  videoTypeLabel: string | null
+  durationLabel: string | null
+  total: number
+  /** sharePct within each row is this project's own share, not the grand total's. */
+  bySteps: StepBreakdownRow[]
+}
+
+export type UsageAggregation = {
+  settledTotal: number
+  pendingTotal: number
+  projectsWithSpendCount: number
+  byStep: StepBreakdownRow[]
+  byProject: ProjectBreakdownRow[]
+  anomalies: {
+    stalePending: { count: number; total: number }
+    failed: { count: number; total: number }
+  }
+  isEmpty: boolean
+}
+
+function sumCost(rows: UsageRow[]): number {
+  return rows.reduce((sum, row) => sum + (row.estimated_cost ?? 0), 0)
+}
+
+function buildStepBreakdown(rows: UsageRow[], denominatorTotal: number): StepBreakdownRow[] {
+  const groups = new Map<string, { step: Step; operation: Operation; cost: number; callCount: number }>()
+
+  for (const row of rows) {
+    const key = `${row.step}:${row.operation}`
+    const cost = row.estimated_cost ?? 0
+    const existing = groups.get(key)
+    if (existing) {
+      existing.cost += cost
+      existing.callCount += 1
+    } else {
+      groups.set(key, { step: row.step, operation: row.operation, cost, callCount: 1 })
+    }
+  }
+
+  return [...groups.values()]
+    .map((group) => ({
+      step: group.step,
+      operation: group.operation,
+      label: stepOperationLabel(group.step, group.operation),
+      cost: group.cost,
+      sharePct: denominatorTotal > 0 ? (group.cost / denominatorTotal) * 100 : 0,
+      callCount: group.callCount,
+    }))
+    .sort((a, b) => b.cost - a.cost)
+}
+
+/**
+ * Aggregates a period's `usage` rows in memory - the answer to "what does a project
+ * cost, and what share is Step 7" needs a GROUP BY that supabase-js can't express
+ * without `.rpc()`, which this codebase forbids (see CLAUDE.md's Provider calls
+ * section). This is fine at hundreds of rows. Once a user accumulates thousands of
+ * `usage` rows, this must become a Postgres VIEW with `security_invoker` (never a
+ * function/`.rpc()`) so the database does the grouping - do not scale this function
+ * further, replace it.
+ *
+ * "Settled" = status IN ('succeeded', 'failed') - both are measured costs (a failed
+ * call, e.g. a max_tokens truncation, is billed in full, per the reserve-then-settle
+ * docblock). "Pending" is reported separately everywhere in this aggregation, never
+ * merged into a settled figure - a pending row carries a worst-case pre-flight quote,
+ * and folding it into byStep/byProject would misrepresent which step actually costs
+ * the most, the exact inflation risk the summary total is split to avoid.
+ */
+export function aggregateUsage(rows: UsageRow[], projects: ProjectMeta[], now: Date = new Date()): UsageAggregation {
+  const settledRows = rows.filter((row) => row.status === 'succeeded' || row.status === 'failed')
+  const pendingRows = rows.filter((row) => row.status === 'pending')
+  const failedRows = rows.filter((row) => row.status === 'failed')
+
+  const settledTotal = sumCost(settledRows)
+  const pendingTotal = sumCost(pendingRows)
+
+  const byStep = buildStepBreakdown(settledRows, settledTotal)
+
+  const projectMetaById = new Map(projects.map((project) => [project.id, project]))
+  const projectIds = [...new Set(settledRows.map((row) => row.project_id))]
+  const projectsWithSpendCount = projectIds.filter((id) => id !== null).length
+
+  const byProject: ProjectBreakdownRow[] = projectIds
+    .map((projectId) => {
+      const projectRows = settledRows.filter((row) => row.project_id === projectId)
+      const total = sumCost(projectRows)
+      const meta = projectId ? projectMetaById.get(projectId) : undefined
+      const durationLabel =
+        meta?.duration_target && meta.duration_target in durationConfig
+          ? durationConfig[meta.duration_target as DurationTarget].label
+          : null
+
+      return {
+        projectId,
+        title: projectId ? (meta ? displayTitle(meta) : 'Untitled project') : 'Deleted project',
+        videoTypeLabel: meta?.video_type ? videoTypeLabel(meta.video_type) : null,
+        durationLabel,
+        total,
+        bySteps: buildStepBreakdown(projectRows, total),
+      }
+    })
+    .sort((a, b) => b.total - a.total)
+
+  // Anchored on created_at (when the reservation was written) - `usage` has no
+  // started_at of its own the way `generations` does, and created_at is set once at
+  // reserveUsage's INSERT, so it plays the same role here.
+  const staleBefore = now.getTime() - STALE_AFTER_MS
+  const stalePendingRows = pendingRows.filter((row) => new Date(row.created_at).getTime() < staleBefore)
+
+  return {
+    settledTotal,
+    pendingTotal,
+    projectsWithSpendCount,
+    byStep,
+    byProject,
+    anomalies: {
+      stalePending: { count: stalePendingRows.length, total: sumCost(stalePendingRows) },
+      failed: { count: failedRows.length, total: sumCost(failedRows) },
+    },
+    isEmpty: rows.length === 0,
+  }
+}

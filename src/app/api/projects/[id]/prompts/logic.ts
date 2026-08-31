@@ -162,7 +162,7 @@ export type PromptGenerationResult =
       reason: 'already_ready' | 'already_generating' | 'retry_required'
     }
   | { ok: false; status: 422; error: string; missingShotKeys?: string[]; shots?: unknown[] }
-  | { ok: false; status: 429; error: string }
+  | { ok: false; status: 402; error: string }
   | { ok: false; status: 500; error: string }
 
 /**
@@ -423,7 +423,7 @@ export async function runPromptGeneration(params: {
   } catch (err) {
     outcome = {
       ok: false,
-      status: err instanceof AllowanceExceededError ? 429 : 500,
+      status: err instanceof AllowanceExceededError ? 402 : 500,
       error: err instanceof Error ? err.message : 'Unexpected error during prompt generation',
     }
     return outcome

@@ -52,6 +52,10 @@ export async function createTestSession() {
   return {
     user,
     cookie: { name: cookieName, value: cookieValue, url: 'http://localhost:3000' },
+    // Raw session, so a caller can build a second anon client scoped to this user
+    // directly (auth.setSession) without decoding the cookie - used by RLS tests that
+    // need two real, differently-scoped clients in the same process.
+    session: otpData.session,
   }
 }
 

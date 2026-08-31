@@ -434,6 +434,14 @@ number can only move down at settle, never up. **If the INSERT fails,
 without a reservation row would be exactly the unguarded spend this
 replaces.
 
+Caveat: `estimateInputTokens` (`src/lib/usage/quote.ts`) excludes the tool
+schema JSON sent alongside the system prompt, which biases the input
+estimate — and therefore the quote — downward, the wrong direction for a
+spend cap. So "can never be overrun" is approximately, not strictly, true
+today. Accepted for now because the schema's token cost is small and
+stable; closing it needs a measured baseline for typical tool-schema size
+(see Current focus).
+
 `settleUsage` runs in a `finally`, so it runs on success, on a thrown
 exception, and on `max_tokens` truncation alike, and each case settles
 differently: on success it overwrites `estimated_cost` with the measured
@@ -476,8 +484,11 @@ performs zero queries, gated by the `SPEND_CAP_ENABLED` env flag (default
 unset/off; the ceiling itself is `SPEND_CAP_MONTHLY_USD`, default $100).
 When enabled and a quote would exceed the ceiling, it throws
 `AllowanceExceededError`, which both routes' `catch` blocks map to a
-`429` response. Flipping `SPEND_CAP_ENABLED=1` on is a product decision
-for whoever owns spend policy, not implied by this change.
+`402` response (Payment Required — not `429`, which would invite retry
+logic that can't succeed until the period resets, and would be
+indistinguishable from a real rate limit in logs). Flipping
+`SPEND_CAP_ENABLED=1` on is a product decision for whoever owns spend
+policy, not implied by this change.
 
 With this, all four mechanisms behind the original unexplained-spend
 incident are closed: the gateway-seam live-call guard (Phase 0), the
@@ -690,11 +701,27 @@ see Open questions.
   bug in `runShotsPipeline` was found during P0-5 — it was unreachable
   before the retry path existed, since a first-ever generation always ran
   against zero existing rows.
-- **Phase 1 prompt 4 complete**: `logClaudeUsage` is deleted, replaced by
-  the reserve-then-settle lifecycle (`src/lib/usage/`) wired into both
-  `/shots` and `/prompts` — see the `usage` section under Database for the
-  full mechanism. This was the last of four mechanisms behind a real
-  unexplained-spend incident; all four are now closed.
+- **Phase 1 complete**: the `generations` table and insert-to-claim
+  (`claimGeneration`/`persistGenerationPayload`/`settleGeneration`) are
+  now the one locking mechanism in the codebase — the old
+  `acquireGenerationLock`/`releaseGenerationLock` CAS lock and
+  `projects.generating_at` are deleted. The `usage` table was dropped and
+  recreated with a provider-neutral shape and reserve-then-settle logging
+  (`reserveUsage`/`settleUsage` in `src/lib/usage/`, replacing
+  `logClaudeUsage`'s log-only-after-success-and-swallow-failure
+  behavior) — see the `usage` section under Database for the full
+  mechanism. `src/lib/config/pricing.ts` (`computeCost`, `RATE_VERSION`)
+  is the single place a rate is edited and cost is computed.
+  `assertWithinAllowance` (a per-user monthly spend ceiling) is wired
+  into both `/shots` and `/prompts` but disabled by default
+  (`SPEND_CAP_ENABLED`). The `/usage` page (`src/app/(app)/usage/`)
+  makes all of this visible: spend grouped by step and by project for a
+  selected period, with settled/pending spend kept separate and a
+  dedicated anomalies section for stuck-pending and failed rows. **All
+  four mechanisms behind the original unexplained-spend incident are now
+  closed**: the gateway-seam live-call guard (Phase 0), the `generations`
+  claim replacing the old CAS lock, the `ready`→`succeeded`/
+  payload-recovery contract, and reserve-then-settle usage logging.
 
 ## Superseded
 The old 4-step wizard (`script`/`voiceover`/`images`/`video`, driven by a
@@ -729,22 +756,39 @@ today:
   today)
 - Element upload/generation (reference images) from the Assets tab
 - Step-guard navigation: gate step-to-step links on `furthest_step`, not
-  just `current_step` position
-- `usage`'s column expansion (`user_id`, `model`, `status`, and a
-  constrained `step`/`operation` vocabulary) is done as of Phase 1 (see
-  `## Phase 1` in Database). The reserve-then-settle usage lifecycle
-  (`reserveUsage`/`settleUsage`, replacing `logClaudeUsage`) and a
-  per-user monthly spend cap (`assertWithinAllowance`) are both done as of
-  Phase 1 prompt 4 — the cap is wired but disabled by default
-  (`SPEND_CAP_ENABLED`, see the `usage` section under Database). Still
-  open: real data behind the Usage screen and Queue rail item, and the
-  actual product decision on when/whether to flip the cap on.
+  just `current_step` position — blocked on `furthest_step` actually
+  being live-tracked (see Phase 2 open items below).
+- The actual product decision on when/whether to flip
+  `SPEND_CAP_ENABLED` on is still open — Phase 1 only wired the
+  mechanism (see `## Phase 1` in Database and the `/usage` page).
+  The Queue rail item is still visual-only, pending real data.
 - Agent chat turns deliberately get a `usage` row but no `generations`
   row — there's no "claim" concept for a chat turn the way there is for a
   generation, so nothing would hold that claim. Accepted consequence: a
   page refresh mid-turn can cause the turn to re-fire and be billed
   twice. Known, accepted gap, not an oversight — revisit when C4 (the
   agent-turn work) is built.
+- **Going into Phase 2, five open items carried over from Phase 1:**
+  - `current_step` has no DB CHECK constraint (unconstrained text,
+    app-code-enforced only) — unlike `aspect_ratio`/`duration_target`/
+    `video_type`, which do have one.
+  - `furthest_step` is written once, at project creation
+    (`createProjectFromIntake`, `= 2`), and never incremented anywhere
+    else in the codebase — step-guard navigation (above) can't gate on it
+    until something advances it as a project progresses.
+  - `/prompts` advances `current_step` straight to `'voiceover'`
+    (`runPromptGeneration`), skipping storyboard/video_prompts — a
+    leftover of the pre-8-step single-call design, the same root cause as
+    the provisional step-attribution issue in the `generations` section
+    under Database.
+  - The `/prompts` split blocker before Step 4 (see Database's
+    `generations` section and the Current focus bullet above) — not yet
+    closed.
+  - The tool-schema exclusion gap in `estimateInputTokens`
+    (`src/lib/usage/quote.ts`) biases the spend-cap quote downward — see
+    the caveat on the `reserveUsage` paragraph under Database. Accepted
+    for now; close it once there's a measured baseline for typical
+    tool-schema size.
 
 ## Open questions
 - **Per-step model selection.** `projects.video_model` is a single column

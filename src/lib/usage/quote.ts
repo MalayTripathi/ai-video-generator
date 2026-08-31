@@ -11,6 +11,12 @@ const CHARS_PER_TOKEN_ESTIMATE = 4
  * tool schema JSON sent alongside them - a real gap, accepted because a fixed tool
  * schema's token cost is small and stable relative to max_tokens, and because this
  * feeds a worst-case ceiling, not a bill.
+ *
+ * Known gap: excluding the tool schema biases this estimate DOWNWARD - the wrong
+ * direction for a spend cap, which wants to over-reserve, never under-reserve. It's
+ * accepted for now because the schema's token cost is small and stable, but it should
+ * be closed once there's a measured baseline for typical tool-schema size (see
+ * CLAUDE.md).
  */
 export function estimateInputTokens(texts: string[]): number {
   const totalChars = texts.reduce((sum, text) => sum + text.length, 0)
