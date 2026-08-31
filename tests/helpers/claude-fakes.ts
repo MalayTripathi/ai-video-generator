@@ -21,11 +21,13 @@ export function truncatedMessage(input: unknown, toolName = 'write_shots'): Fake
   return { ...successMessage(input, toolName), stopReason: 'max_tokens' }
 }
 
-/** A full gateway whose createMessage throws, simulating a hard API/network failure. */
-export function throwingGateway(message = 'simulated Claude failure'): ClaudeGateway {
+/** A full gateway whose createMessage throws, simulating a hard API/network failure.
+ * Pass an Error instance (e.g. LiveCallsBlockedError) to throw it directly rather than
+ * wrapping a message in a plain Error. */
+export function throwingGateway(error: Error | string = 'simulated Claude failure'): ClaudeGateway {
   return {
     async createMessage() {
-      throw new Error(message)
+      throw typeof error === 'string' ? new Error(error) : error
     },
   }
 }

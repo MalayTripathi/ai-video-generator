@@ -2,6 +2,7 @@ import type { createClient } from '@/lib/supabase/server'
 import type { Step, Operation, Provider } from '@/lib/config/pipeline'
 import { computeCost, type UsageBreakdown } from '@/lib/config/pricing'
 import { RATE_VERSION } from '@/lib/config/pricing'
+import { LiveCallsBlockedError } from '@/lib/claude'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -89,7 +90,8 @@ export async function settleUsage(params: {
   /** null/absent when nothing was ever measured - a throw before the gateway returned anything. */
   breakdown?: UsageBreakdown | null
   stopReason?: string | null
-  error?: string | null
+  /** The raw caught error (not a pre-stringified message) - identified by instanceof below, never by message text. */
+  error?: unknown
 }): Promise<void> {
   // quoted_cost is deliberately never assigned anywhere in this function, in any
   // branch below - it is the immutable snapshot reserveUsage wrote, and the whole
@@ -111,12 +113,26 @@ export async function settleUsage(params: {
     update.quantity = quantity
     update.unit = unit
     update.raw_usage = { breakdown: params.breakdown, rates: appliedRates }
+  } else if (params.error instanceof LiveCallsBlockedError) {
+    // NARROW, DELIBERATE EXCEPTION: LiveCallsBlockedError is thrown by
+    // assertLiveCallsAllowed() before any request reaches Anthropic, so unlike every
+    // other unmeasured throw in the branch below, this one is PROVABLY unbilled, not
+    // just probably unbilled. Settling it at the pre-flight quote would inflate real
+    // spend with calls that never happened. Do not add more branches like this one for
+    // anything that isn't verified pre-network the same way - a network failure,
+    // stream error, or timeout after the request left the process is unverifiable and
+    // must keep retaining the quote in the branch below.
+    update.estimated_cost = 0
+    update.raw_usage = { blocked: true, billed: false, reason: params.error.message }
   } else {
-    // No usage data available - a hard throw before the gateway ever returned
-    // anything. estimated_cost is intentionally left out of `update` below so the
+    // No usage data available, and not a verified pre-network throw - could be a
+    // network failure, stream error, or timeout after the request already left the
+    // process. estimated_cost is intentionally left out of `update` below so the
     // pre-flight quote written at reserve time survives untouched (see module
     // docblock: over-counting is the safe direction for a future spend cap).
-    update.raw_usage = { unmeasured: true, error: params.error ?? null }
+    const message =
+      params.error instanceof Error ? params.error.message : params.error != null ? String(params.error) : null
+    update.raw_usage = { unmeasured: true, error: message }
   }
 
   const { error } = await params.supabase.from('usage').update(update).eq('id', params.usageId)

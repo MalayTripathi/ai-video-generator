@@ -213,7 +213,12 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   Outside production it throws unless `ALLOW_REAL_CLAUDE === '1'` — an exact
   string match; `'0'`, unset, or anything else all block. A permitted live
   call logs a `console.warn` banner naming the model and tool before the
-  request fires.
+  request fires. It throws a typed `LiveCallsBlockedError` (`src/lib/claude.ts`),
+  not a plain `Error` — `settleUsage` detects it by `instanceof`, never by
+  message text (same principle as detecting a `23505` unique violation by error
+  code), to settle a blocked local call at zero cost instead of the full
+  pre-flight quote. See the `settleUsage` paragraph under `## Phase 1` in
+  Database for the full pre-network-vs-unverifiable distinction.
 - **Never set, export, or add `ALLOW_REAL_CLAUDE` to any env file, npm
   script, test config, CI workflow, or shell command.** Whether to spend
   money on a live call is the developer's decision alone. If a task appears
@@ -540,10 +545,27 @@ usage — truncation is billed in full, so the measured number is the true
 one; on a throw with partial usage data available (Claude responded but a
 later step failed) it settles `failed` with the cost measured from what's
 known; on a throw with NO usage data at all (the gateway call itself
-threw) it settles `failed` but **retains the pre-flight quote** as
+threw), the settle branch depends on WHEN the throw happened, not merely
+that it happened. A throw *verified* to have occurred before any request
+reached the provider — today, exactly `LiveCallsBlockedError` from
+`assertLiveCallsAllowed()` (identified by `instanceof`, never by message
+text — see Provider calls) — is provably unbilled, so it settles `failed`
+with `estimated_cost: 0` and `raw_usage: { blocked: true, billed: false,
+reason: <message> }`. Every other throw with no usage data (a network
+failure, stream error, or timeout after the request already left the
+process) is unverifiable, not provably harmless, and keeps the old
+behavior: it settles `failed` but **retains the pre-flight quote** as
 `estimated_cost` instead of overwriting it, and records in `raw_usage`
 that the cost is unmeasured — over-counting is the safe direction for a
-spend cap to be wrong in. **`settleUsage` never throws**: if its own
+spend cap to be wrong in. **This is a single, deliberately narrow
+exception, not a pattern** — do not add a second branch for a throw
+that merely seems unlikely to have been billed; only a throw that is
+structurally guaranteed to precede the network call qualifies. A blocked
+row still shows in `/usage`'s Anomalies as a failed row (a real failure
+worth seeing), but is excluded from `byStep`/`byProject`'s `callCount` —
+a blocked call was never a call — via `UsageRow.blocked`, derived from
+`raw_usage.blocked` in `page.tsx` and filtered out in `aggregateUsage`
+(`src/app/(app)/usage/aggregate.ts`). **`settleUsage` never throws**: if its own
 UPDATE fails, it `console.error`s with the usage id and leaves the row
 `'pending'` — by that point the money may already be spent, and failing
 the request now would lose the user's work on top of it. **A `usage` row

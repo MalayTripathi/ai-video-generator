@@ -291,6 +291,7 @@ export async function runPromptGeneration(params: {
   let usageId: string | null = null
   let measuredBreakdown: UsageBreakdown | null = null
   let stopReasonForSettle: string | null = null
+  let caughtError: unknown = null
 
   try {
     const loaded = await loadShotsNeedingPrompts(supabase, projectId)
@@ -421,6 +422,7 @@ export async function runPromptGeneration(params: {
     outcome = pipelineResult
     return outcome
   } catch (err) {
+    caughtError = err
     outcome = {
       ok: false,
       status: err instanceof AllowanceExceededError ? 402 : 500,
@@ -459,7 +461,7 @@ export async function runPromptGeneration(params: {
         status: measuredBreakdown !== null && stopReasonForSettle !== 'max_tokens' ? 'succeeded' : 'failed',
         breakdown: measuredBreakdown,
         stopReason: stopReasonForSettle,
-        error: outcome.ok ? null : outcome.error,
+        error: outcome.ok ? null : caughtError,
       })
     }
   }

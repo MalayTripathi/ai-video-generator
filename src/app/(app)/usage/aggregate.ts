@@ -13,6 +13,9 @@ export type UsageRow = {
   estimated_cost: number | null
   quoted_cost: number | null
   created_at: string
+  /** Derived from raw_usage.blocked - a call assertLiveCallsAllowed() refused before
+   * any request reached the provider. Never a real call, so excluded from callCount. */
+  blocked: boolean
 }
 
 export type ProjectMeta = {
@@ -141,7 +144,13 @@ export function aggregateUsage(rows: UsageRow[], projects: ProjectMeta[], now: D
   const settledTotal = sumCost(settledRows)
   const pendingTotal = sumCost(pendingRows)
 
-  const byStep = buildStepBreakdown(settledRows, settledTotal)
+  // Blocked rows (assertLiveCallsAllowed refused before any request reached the
+  // provider) settle at estimated_cost 0, so they never move settledTotal - but they
+  // must also never inflate callCount, since a blocked call was never a call.
+  const byStep = buildStepBreakdown(
+    settledRows.filter((row) => !row.blocked),
+    settledTotal
+  )
 
   const projectMetaById = new Map(projects.map((project) => [project.id, project]))
   const projectIds = [...new Set(settledRows.map((row) => row.project_id))]
@@ -163,7 +172,10 @@ export function aggregateUsage(rows: UsageRow[], projects: ProjectMeta[], now: D
         videoTypeLabel: meta?.video_type ? videoTypeLabel(meta.video_type) : null,
         durationLabel,
         total,
-        bySteps: buildStepBreakdown(projectRows, total),
+        bySteps: buildStepBreakdown(
+          projectRows.filter((row) => !row.blocked),
+          total
+        ),
       }
     })
     .sort((a, b) => b.total - a.total)

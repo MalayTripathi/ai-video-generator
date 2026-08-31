@@ -15,6 +15,7 @@ function row(overrides: Partial<UsageRow> & Pick<UsageRow, 'step' | 'operation' 
     estimated_cost: 0,
     quoted_cost: null,
     created_at: new Date().toISOString(),
+    blocked: false,
     ...overrides,
   }
 }
@@ -129,6 +130,22 @@ test.describe('aggregateUsage', () => {
     expect(aggregation.calibration.count).toBe(2)
     expect(aggregation.calibration.meanDelta).toBeCloseTo(0, 6) // (+0.01 + -0.01) / 2
     expect(aggregation.calibration.meanRatio).toBeCloseTo(1.0, 6) // (1.5 + 0.5) / 2
+  })
+
+  test('blocked rows do not count toward the settled total or the per-step call count', () => {
+    const rows: UsageRow[] = [
+      row({ step: 'workbench', operation: 'generate_shots', status: 'succeeded', estimated_cost: 0.02 }),
+      row({ step: 'workbench', operation: 'generate_shots', status: 'failed', estimated_cost: 0, blocked: true }),
+    ]
+
+    const aggregation = aggregateUsage(rows, [])
+
+    expect(aggregation.settledTotal).toBeCloseTo(0.02, 6)
+    const workbenchRow = aggregation.byStep.find((r) => r.step === 'workbench' && r.operation === 'generate_shots')
+    expect(workbenchRow?.callCount).toBe(1)
+    // Still a real failure worth seeing in Anomalies - only the "calls" count and
+    // spend totals treat a blocked call as if it never happened.
+    expect(aggregation.anomalies.failed.count).toBe(1)
   })
 
   test('a user with no rows for the period gets isEmpty: true', () => {

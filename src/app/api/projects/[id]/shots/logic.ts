@@ -514,6 +514,7 @@ export async function runShotGeneration(params: {
   let usageId: string | null = null
   let measuredBreakdown: UsageBreakdown | null = null
   let stopReasonForSettle: string | null = null
+  let caughtError: unknown = null
 
   try {
     // RECOVER BEFORE SPEND. A stored payload means Claude has already been paid for;
@@ -625,6 +626,7 @@ export async function runShotGeneration(params: {
     outcome = pipelineResult
     return outcome
   } catch (err) {
+    caughtError = err
     outcome = {
       ok: false,
       status: err instanceof AllowanceExceededError ? 402 : 500,
@@ -664,7 +666,7 @@ export async function runShotGeneration(params: {
         status: measuredBreakdown !== null && stopReasonForSettle !== 'max_tokens' ? 'succeeded' : 'failed',
         breakdown: measuredBreakdown,
         stopReason: stopReasonForSettle,
-        error: outcome.ok ? null : outcome.error,
+        error: outcome.ok ? null : caughtError,
       })
     }
   }

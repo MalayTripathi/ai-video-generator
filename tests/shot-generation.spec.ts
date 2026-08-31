@@ -3,7 +3,7 @@ import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { runShotGeneration } from '../src/app/api/projects/[id]/shots/logic'
 import { successMessage, truncatedMessage, throwingGateway } from './helpers/claude-fakes'
-import type { ClaudeGateway } from '../src/lib/claude'
+import { LiveCallsBlockedError, type ClaudeGateway } from '../src/lib/claude'
 
 const SHOT_KEY_RE = /^[23456789bcdfghjkmnpqrstvwxz]{5}$/
 
@@ -182,6 +182,33 @@ test.describe('Step 2 workbench - shot generation', () => {
       expect(usageRows![0].estimated_cost).not.toBeNull()
       expect(usageRows![0].step).toBe('workbench')
       expect(usageRows![0].operation).toBe('generate_shots')
+    }
+  })
+
+  test('a pre-network blocked call settles as failed with zero cost, not the quote', async () => {
+    const user = primary.user
+    {
+      const projectId = await insertProject(user.id)
+      const gateway = throwingGateway(new LiveCallsBlockedError())
+
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      expect(result.ok).toBe(false)
+
+      const { data: usageRows, error: usageError } = await admin
+        .from('usage')
+        .select('status, estimated_cost, raw_usage')
+        .eq('project_id', projectId)
+      expect(usageError).toBeNull()
+      expect(usageRows!.length).toBe(1)
+      expect(usageRows![0].status).toBe('failed')
+      // Unlike the ordinary-throw case above, this must be exactly 0, not merely
+      // non-null - assertLiveCallsAllowed() throws before any request reaches
+      // Anthropic, so retaining the pre-flight quote here would be a real cost
+      // inflation, not a conservative over-count.
+      expect(usageRows![0].estimated_cost).toBe(0)
+      const raw = usageRows![0].raw_usage as { blocked?: boolean; billed?: boolean }
+      expect(raw.blocked).toBe(true)
+      expect(raw.billed).toBe(false)
     }
   })
 
