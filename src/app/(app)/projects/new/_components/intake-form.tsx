@@ -3,12 +3,12 @@
 import { useMemo, useState } from 'react'
 import { displayTitle } from '@/lib/display-title'
 import { durationConfig, DEFAULT_DURATION_TARGET, type DurationTarget } from '@/lib/config/duration'
+import type { AspectRatio } from '@/lib/config/enums'
 import { VIDEO_TYPES } from '@/lib/video-type-labels'
 import { createProjectFromIntake } from '../actions'
 import type { TemplateProject } from '../types'
 import { BuildButton } from './build-button'
 
-type AspectRatio = '9:16' | '16:9' | '1:1'
 type PrefillableField = 'video_type' | 'aspect_ratio' | 'duration_target'
 
 const DEFAULTS = {

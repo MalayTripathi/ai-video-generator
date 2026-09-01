@@ -1,4 +1,6 @@
-export const VIDEO_TYPES: { value: string; label: string }[] = [
+import type { VideoType } from '@/lib/config/enums'
+
+export const VIDEO_TYPES: { value: VideoType; label: string }[] = [
   { value: 'auto', label: 'Detect from my text' },
   { value: 'narrated_story', label: 'Narrated Story' },
   { value: 'explainer', label: 'Explainer' },

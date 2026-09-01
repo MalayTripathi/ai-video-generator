@@ -16,32 +16,18 @@ import {
   buildWriteShotsTool,
   buildShotsDynamicBlock,
 } from '@/lib/prompts/shot-generation'
+import {
+  SHOT_SIZES,
+  CAMERA_ANGLES,
+  CAMERA_MOVEMENTS,
+  ELEMENT_TYPES,
+  CLASSIFIABLE_VIDEO_TYPES,
+} from '@/lib/config/enums'
 import type { Json, Tables } from '@/lib/database.types'
 import type Anthropic from '@anthropic-ai/sdk'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type ElementRow = Tables<'elements'>
-
-const SHOT_SIZES = ['wide', 'full', 'medium', 'close_up', 'extreme_close_up'] as const
-const CAMERA_ANGLES = ['eye_level', 'low', 'high', 'over_the_shoulder', 'top_down'] as const
-const CAMERA_MOVEMENTS = [
-  'static',
-  'slow_push_in',
-  'pull_out',
-  'pan',
-  'tilt',
-  'orbit',
-  'handheld',
-] as const
-const ELEMENT_TYPES = ['character', 'location', 'prop'] as const
-const VIDEO_TYPES = [
-  'narrated_story',
-  'explainer',
-  'facts_listicle',
-  'character_drama',
-  'product_ad',
-  'trailer',
-] as const
 
 export type RawDialogueLine = { speaker_name: string; line: string }
 export type RawElementRef = { name: string; type: string; description: string }
@@ -244,7 +230,7 @@ async function runShotsPipeline(
 
   const parsedTitle = typeof input.title === 'string' ? input.title.trim().slice(0, 60) || null : null
   const parsedMessage = typeof input.message === 'string' ? input.message.trim() : ''
-  const parsedVideoType = sanitizeEnum(input.video_type, VIDEO_TYPES)
+  const parsedVideoType = sanitizeEnum(input.video_type, CLASSIFIABLE_VIDEO_TYPES)
 
   // Dedup source of truth: reused across the whole request so two shots naming the same
   // new element resolve to one row, not one each. The project's (project_id, lower(name))

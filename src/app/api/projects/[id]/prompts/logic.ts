@@ -217,15 +217,6 @@ async function runPromptsPipeline(
     }
   }
 
-  const { error: projectUpdateError } = await supabase
-    .from('projects')
-    .update({ status: 'in_progress' })
-    .eq('id', projectId)
-
-  if (projectUpdateError) {
-    return { ok: false, status: 500, error: projectUpdateError.message }
-  }
-
   return { ok: true, status: 200, data: { shots: refreshedShots ?? [] } }
 }
 

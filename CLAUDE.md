@@ -152,6 +152,24 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   arrays change. **Users must never see a raw step/operation value or a
   provider/model name anywhere in the UI** — `stepOperationLabel` is the
   only sanctioned renderer.
+- `src/lib/config/enums.ts` is the single hand-written source for
+  `video_type` (plus `CLASSIFIABLE_VIDEO_TYPES`, the `'auto'`-excluded
+  subset `write_shots` classifies into), `aspect_ratio`, `shot_size`,
+  `camera_angle`, `camera_movement`, and `element_type` — each an
+  `as const` tuple plus its derived union type, the same idiom
+  `pipeline.ts` uses for `STEPS`/`Step`. Never derived from
+  `database.types.ts`: a CHECK-constrained text column is typed as plain
+  `string` by the Supabase codegen, so derivation isn't available for some
+  of these, and mixing derived/hand-written would mean two patterns for
+  one job. This is a different axis from `pipeline.ts` — that file
+  describes the pipeline itself (steps/operations/providers); this one
+  describes shot attributes and project settings — so keep them in
+  separate modules. `buildWriteShotsTool` (`src/lib/prompts/
+  shot-generation.ts`) and `sanitizeEnum`'s call sites
+  (`/api/projects/[id]/shots/logic.ts`) both import from here, so the tool
+  schema Claude sees can never drift from the validator that checks its
+  output. `elements.type` has no DB CHECK constraint (unlike the other
+  enums in this module) — a gap noted here, not closed.
 - `displayTitle(project)` (`src/lib/display-title.ts`) is the single title
   fallback helper (`title` → truncated `source_text` → `'Untitled
   project'`) — used by the dashboard card, the workbench header, and the
@@ -379,8 +397,8 @@ with a `(project_id, shot_key)` unique constraint — not the ordinal
 `shots` craft fields: `visual_description`; `dialogue` (jsonb
 `{element_id, line}[]`, resolved against `elements` for display — never
 raw speaker names); `shot_size` / `camera_angle` / `camera_movement`
-(each DB-CHECK-constrained to a fixed enum — read the migration, not just
-the types file, for the allowed values); `section_label`;
+(each DB-CHECK-constrained to a fixed enum, hand-written in
+`src/lib/config/enums.ts` — see Conventions); `section_label`;
 `camera_overridden` / `duration_locked` (booleans marking a field as
 user-set vs. still free to regenerate).
 
@@ -780,9 +798,11 @@ Read `src/lib/database.types.ts` for columns — don't rely on this file.
 Conventions not visible in the types: `projects.status` is unconstrained
 text (draft / in_progress / completed / failed). `current_step` is one of
 `workbench` / `voiceover` / `image_prompts` / `storyboard` /
-`video_prompts` / `generation` / `assembly` — also unconstrained text, with
-no DB CHECK (unlike `aspect_ratio`/`duration_target`/`video_type`, which do
-have one), so the vocabulary is enforced by app code only. `intake` is a
+`video_prompts` / `generation` / `assembly` — as of Phase 3, DB-CHECK-
+constrained to exactly these seven values
+(`supabase/migrations/20260901125544_add_current_step_check.sql`),
+matching `aspect_ratio`/`duration_target`/`video_type` (it was
+unconstrained text, app-code-enforced only, before then). `intake` is a
 pre-project screen, not a real `current_step` value — it only exists as
 the step-1 anchor in `furthest_step`'s mapping. `furthest_step` (smallint,
 default 1) tracks the deepest step a project has reached, 1-8 over that
@@ -888,7 +908,9 @@ ordering that's about to change) — see Done.
   'image_prompts'`, `operation: 'write_prompts'` — see Database's
   `generations` section, and its provisional-attribution blocker note). As
   of Phase 2 the route no longer writes `current_step` on success either —
-  see `## Phase 2`. As of Phase 1 prompt 3 the raw
+  see `## Phase 2`. As of Phase 3 it no longer writes `status: 'in_progress'`
+  either — dead vocabulary from the old script-generation era, removed with
+  no substitute (see the Phase 3 Done-log entry). As of Phase 1 prompt 3 the raw
   Claude payload is persisted before any `shots.update()` (previously it
   wrote straight from the in-memory response — a real crash-safety
   improvement, not just a lock swap). Prompt caching is wired but inert
@@ -988,6 +1010,33 @@ ordering that's about to change) — see Done.
   heterogeneous-key PostgREST risk). `loading.tsx` skeletons added for `dashboard` and
   `/usage`, mirroring each page's real layout so navigation streams immediately instead
   of blocking on the server fetch.
+- **Phase 3 complete**: duplication and dead vocabulary from the script-generation
+  rename are cleaned up. `src/lib/config/enums.ts` (see Conventions) is now the single
+  hand-written source for `video_type`/`CLASSIFIABLE_VIDEO_TYPES`, `aspect_ratio`,
+  `shot_size`, `camera_angle`, `camera_movement`, and `element_type` — previously
+  duplicated across `video-type-labels.ts`, `projects/new/actions.ts`,
+  `intake-form.tsx`, `/api/projects/[id]/shots/logic.ts`, and the `write_shots` tool
+  schema (`src/lib/prompts/shot-generation.ts`), which now imports from it directly so
+  the schema Claude sees can never drift from the validator that checks its output
+  (this does change the tool schema's serialised size and therefore the pre-flight
+  quote in `estimateInputTokens` — expected, not a regression). A drift test
+  (`tests/enums-drift.spec.ts`) inserts every member of each DB-CHECK-constrained enum
+  and asserts acceptance, then one bogus value per enum and asserts rejection, turning
+  TS-vs-CHECK-constraint drift into a test failure instead of a runtime surprise
+  (`element_type` has no DB CHECK constraint to test against, so it's consolidated into
+  the module but excluded from the drift test). `/api/projects/[id]/prompts` no longer
+  writes `status: 'in_progress'` — dead vocabulary from the old script-generation era,
+  removed with no substitute (the project-lifecycle status design is still open, see
+  Current focus). `projects.current_step` gets its first-ever DB CHECK constraint
+  (`20260901125544_add_current_step_check.sql`) — it was previously app-code-enforced
+  only, despite `aspect_ratio`/`duration_target`/`video_type` having had one all along —
+  added in a migration that verifies no row holds `'script'` before adding the
+  constraint, so it fails loudly rather than silently if that assumption is ever wrong.
+  The old script-generation vocabulary (`modelsConfig.script`, a `'script'` literal in
+  the usage module, `CLAUDE_SCRIPT_*` env vars) turned out to already be fully gone —
+  removed in earlier phases — and `.env.example` already carried
+  `CLAUDE_PROMPTS_MODEL`/`CLAUDE_PROMPTS_MAX_TOKENS`/`CLAUDE_SHOTS_MODEL`/
+  `CLAUDE_SHOTS_MAX_TOKENS`, so Phase 3 confirmed rather than performed that cleanup.
 
 ## Superseded
 The old 4-step wizard (`script`/`voiceover`/`images`/`video`, driven by a
@@ -1038,22 +1087,21 @@ today:
   page refresh mid-turn can cause the turn to re-fire and be billed
   twice. Known, accepted gap, not an oversight — revisit when C4 (the
   agent-turn work) is built.
-- **Out of the four open items carried into Phase 2 from Phase 1, two remain open:**
-  - `current_step` still has no DB CHECK constraint (unconstrained text,
-    app-code-enforced only) — unlike `aspect_ratio`/`duration_target`/
-    `video_type`, which do have one. Deliberately not added in Phase 2 (that's
-    Phase 3's job, alongside removing `'script'` from the vocabulary).
+- **Out of the four open items carried into Phase 2 from Phase 1, three are now resolved
+  and one remains open:**
   - The `/prompts` split blocker before Step 4 (see Database's
     `generations` section and the Current focus bullet above) — not yet
     closed.
 
-  The other two are resolved by Phase 2 (see `## Phase 2` above): `furthest_step`
+  The other three are resolved: two by Phase 2 (see `## Phase 2` above): `furthest_step`
   now has a real, single write site (`advanceStep()`) rather than being written once and
   never touched again — though it still has no live callers, so `furthest_step` won't
   actually advance past project creation until the step-guard navigation item above is
   built. And `/prompts` no longer advances `current_step` to `'voiceover'` at all — the
   write was removed outright rather than redirected, since any destination chosen now
-  would encode an ordering that's about to change once `/prompts` splits.
+  would encode an ordering that's about to change once `/prompts` splits. The third —
+  `current_step` had no DB CHECK constraint, unlike `aspect_ratio`/`duration_target`/
+  `video_type` — is resolved by Phase 3 (see the Done log).
 
 ## Open questions
 - **Per-step model selection.** `projects.video_model` is a single column

@@ -4,17 +4,7 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
 import { modelsConfig } from '@/lib/config/models'
-
-const VIDEO_TYPES = [
-  'auto',
-  'narrated_story',
-  'explainer',
-  'facts_listicle',
-  'character_drama',
-  'product_ad',
-  'trailer',
-]
-const ASPECT_RATIOS = ['9:16', '16:9', '1:1']
+import { VIDEO_TYPES, ASPECT_RATIOS } from '@/lib/config/enums'
 
 export async function createProjectFromIntake(formData: FormData) {
   const supabase = await createClient()
@@ -32,10 +22,12 @@ export async function createProjectFromIntake(formData: FormData) {
   }
 
   const videoTypeRaw = formData.get('video_type') as string | null
-  const videoType = videoTypeRaw && VIDEO_TYPES.includes(videoTypeRaw) ? videoTypeRaw : 'auto'
+  const videoType =
+    videoTypeRaw && (VIDEO_TYPES as readonly string[]).includes(videoTypeRaw) ? videoTypeRaw : 'auto'
 
   const aspectRatioRaw = formData.get('aspect_ratio') as string | null
-  const aspectRatio = aspectRatioRaw && ASPECT_RATIOS.includes(aspectRatioRaw) ? aspectRatioRaw : '9:16'
+  const aspectRatio =
+    aspectRatioRaw && (ASPECT_RATIOS as readonly string[]).includes(aspectRatioRaw) ? aspectRatioRaw : '9:16'
 
   const durationTargetRaw = formData.get('duration_target') as string | null
   const durationTarget: DurationTarget =

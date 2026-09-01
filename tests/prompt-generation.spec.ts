@@ -103,12 +103,11 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
 
       const { data: project, error: projectError } = await admin
         .from('projects')
-        .select('current_step, status')
+        .select('current_step')
         .eq('id', projectId)
         .single()
       expect(projectError).toBeNull()
       expect(project!.current_step).toBe('workbench')
-      expect(project!.status).toBe('in_progress')
 
       const generation = await readGeneration(projectId)
       expect(generation.state).toBe('succeeded')

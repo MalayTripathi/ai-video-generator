@@ -1,4 +1,11 @@
 import type Anthropic from '@anthropic-ai/sdk'
+import {
+  CLASSIFIABLE_VIDEO_TYPES,
+  SHOT_SIZES,
+  CAMERA_ANGLES,
+  CAMERA_MOVEMENTS,
+  ELEMENT_TYPES,
+} from '@/lib/config/enums'
 
 // v3 - target shot count is now a hard ceiling, not a soft target: added an
 // explicit instruction that the count may never be exceeded. Bump the
@@ -44,14 +51,7 @@ export function buildWriteShotsTool(targetShots: number): Anthropic.Tool {
         video_type: {
           type: 'string',
           description: 'Best-matching classification of this video based on the brief and shots.',
-          enum: [
-            'narrated_story',
-            'explainer',
-            'facts_listicle',
-            'character_drama',
-            'product_ad',
-            'trailer',
-          ],
+          enum: [...CLASSIFIABLE_VIDEO_TYPES],
         },
         shots: {
           type: 'array',
@@ -68,15 +68,15 @@ export function buildWriteShotsTool(targetShots: number): Anthropic.Tool {
               },
               shot_size: {
                 type: 'string',
-                enum: ['wide', 'full', 'medium', 'close_up', 'extreme_close_up'],
+                enum: [...SHOT_SIZES],
               },
               camera_angle: {
                 type: 'string',
-                enum: ['eye_level', 'low', 'high', 'over_the_shoulder', 'top_down'],
+                enum: [...CAMERA_ANGLES],
               },
               camera_movement: {
                 type: 'string',
-                enum: ['static', 'slow_push_in', 'pull_out', 'pan', 'tilt', 'orbit', 'handheld'],
+                enum: [...CAMERA_MOVEMENTS],
               },
               duration_sec: { type: 'number', description: 'Shot duration in whole seconds.' },
               section_label: {
@@ -103,7 +103,7 @@ export function buildWriteShotsTool(targetShots: number): Anthropic.Tool {
                   type: 'object',
                   properties: {
                     name: { type: 'string' },
-                    type: { type: 'string', enum: ['character', 'location', 'prop'] },
+                    type: { type: 'string', enum: [...ELEMENT_TYPES] },
                     description: { type: 'string' },
                   },
                   required: ['name', 'type', 'description'],

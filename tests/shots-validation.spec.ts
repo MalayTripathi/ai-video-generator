@@ -1,7 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { sanitizeEnum, parseRawShots, isUsableShot } from '../src/app/api/projects/[id]/shots/logic'
-
-const SHOT_SIZES = ['wide', 'full', 'medium', 'close_up', 'extreme_close_up'] as const
+import { SHOT_SIZES } from '../src/lib/config/enums'
 
 test.describe('write_shots validation', () => {
   test('sanitizeEnum nulls an unrecognized value instead of rejecting the shot', () => {
