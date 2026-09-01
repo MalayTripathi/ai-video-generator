@@ -299,11 +299,13 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
     "New Project" CTA only renders when the user has zero `projects` rows).
   - `usage-module.spec.ts`'s `assertWithinAllowance` "exceeds the ceiling" test (asserts
     an exact row count for the user this month).
+  - `usage-page.spec.ts`'s rail-spending test (asserts an exact dollar figure for "this
+    user, this month" — same reason as the allowance-ceiling test above).
 - Moving to a local Supabase instance (`supabase start`) is the eventual answer for full
   test isolation and zero shared rate limits — every run would get a clean database, and
-  even the four fresh-user specs above could reuse a fixed identity. Deliberately not
+  even the five fresh-user specs above could reuse a fixed identity. Deliberately not
   done here; this fix keeps the suite on the shared hosted dev project but cuts its auth
-  load from ~45 `verifyOtp` calls per run to 7 (2 fixed identities + the four specs
+  load from ~45 `verifyOtp` calls per run to 8 (2 fixed identities + the five specs
   above, one of which needs two).
 - **`primary`/`secondary` accumulate `projects`/`usage` rows every run** (every spec
   that shares them creates fresh, project-scoped rows under their user ids — see above),
@@ -497,23 +499,38 @@ after it: `assertWithinAllowance` → `reserveUsage` →
 
 `reserveUsage` runs BEFORE the gateway call and writes `status: 'pending'`
 with `estimated_cost` set to a deliberately worst-case pre-flight quote —
-estimated input tokens (a crude chars/4 heuristic over the system prompt
-text, `src/lib/usage/quote.ts`) at the input rate, plus the full
-`max_tokens` ceiling at the output rate. A reservation built this way can
-never be overrun by the real call, which is exactly why pending rows are
-safe to sum into a spend cap (see `assertWithinAllowance` below) — the
-number can only move down at settle, never up. **If the INSERT fails,
-`reserveUsage` throws** before the gateway is ever called: calling Claude
-without a reservation row would be exactly the unguarded spend this
-replaces.
+estimated input tokens (a crude chars/4 heuristic, `src/lib/usage/quote.ts`)
+at the input rate, plus the full `max_tokens` ceiling at the output rate.
+A reservation built this way can never be overrun by the real call, which
+is exactly why pending rows are safe to sum into a spend cap (see
+`assertWithinAllowance` below) — the number can only move down at settle,
+never up. **If the INSERT fails, `reserveUsage` throws** before the
+gateway is ever called: calling Claude without a reservation row would be
+exactly the unguarded spend this replaces.
 
-Caveat: `estimateInputTokens` (`src/lib/usage/quote.ts`) excludes the tool
-schema JSON sent alongside the system prompt, which biases the input
-estimate — and therefore the quote — downward, the wrong direction for a
-spend cap. So "can never be overrun" is approximately, not strictly, true
-today. Accepted for now because the schema's token cost is small and
-stable; closing it needs a measured baseline for typical tool-schema size
-(see Current focus).
+**As of Phase 1 prompt 6, `estimateInputTokens` counts everything actually
+sent to the model**, not just the system-prompt text: the system prompt,
+the literal user message, and the serialised tool schema JSON —
+`JSON.stringify`'d from the same `tools` array the call passes to the
+gateway, so it can't drift out of sync as a schema grows; never a
+hardcoded size. A fixed `TOOL_USE_SYSTEM_OVERHEAD_TOKENS` constant
+(`src/lib/config/pricing.ts`, currently `300` — an approximation, not a
+measurement, to be refined against more data) is added on top, since
+Anthropic's tool-use system overhead isn't proportional to any text sent
+and so doesn't belong in the chars/4 math. The chars/4 heuristic itself is
+kept (JSON is punctuation-dense and likely tokenises at fewer than 4
+chars/token, so the schema portion may still run a little low — a
+remaining bias to check with more data points, not a reason to add a
+network round trip to `count_tokens` before every call).
+
+This closes a real, measured gap: the first live shot-generation call
+quoted input 536 / output 4000 ($0.020536) against an actual input of
+1814 / output 1009 ($0.006859) — a 3.4x under-estimate, almost entirely
+the excluded `write_shots` tool schema (`JSON.stringify([WRITE_SHOTS_TOOL]).length`
+was 2396 chars on its own). Recomputing that same call's quote with the
+new formula lands around 1442 tokens against the actual 1814 — the
+remaining gap (~372 tokens, vs. the old 1278) is consistent with the
+chars/4-on-JSON bias noted above, not a new omission.
 
 `usage.quoted_cost` is the immutable half of that pre-flight quote:
 `reserveUsage` writes it once, alongside `estimated_cost`, and
@@ -528,12 +545,19 @@ where every section is labelled "estimated" for exactly this reason.
 Because `quoted_cost` never moves, `(estimated_cost - quoted_cost)`
 stays a valid calibration delta after settle — surfaced as the
 "Estimate calibration" line in `/usage`'s Anomalies section — and is
-the evidence that would eventually close the tool-schema-exclusion gap
-above and inform where `SPEND_CAP_MONTHLY_USD` should actually be set,
-rather than that ceiling staying a guess indefinitely. `quoted_cost` is
-nullable with no backfill (added after `estimated_cost` already existed
-in production), so the calibration figure is computed only over rows
-that have one.
+the evidence behind the `estimateInputTokens` fix above and behind
+wherever `SPEND_CAP_MONTHLY_USD` should actually be set, rather than
+that ceiling staying a guess indefinitely. `quoted_cost` is nullable
+with no backfill (added after `estimated_cost` already existed in
+production), so the calibration figure is computed only over rows that
+have one — **and, as of Phase 1 prompt 6, only over rows that aren't
+blocked** (`aggregate.ts`'s `buildCalibration`). A blocked row settles
+at `estimated_cost: 0` by design (see the `settleUsage` paragraph
+below), so its ratio against a nonzero `quoted_cost` is always 0 and
+would drag the calibration mean toward zero for a call that was never
+actually measured — the same exclusion the settled total and the
+per-step call count already applied to blocked rows now applies to
+calibration too, consistently.
 
 `settleUsage` runs in a `finally`, so it runs on success, on a thrown
 exception, and on `max_tokens` truncation alike, and each case settles
@@ -827,13 +851,28 @@ see Open questions.
   (`SPEND_CAP_ENABLED`). The `/usage` page (`src/app/(app)/usage/`)
   makes all of this visible: spend grouped by step and by project for a
   selected period, with settled/pending spend kept separate and a
-  dedicated anomalies section for stuck-pending and failed rows, plus an
-  estimate-calibration line (mean quoted-vs-actual delta and ratio,
-  `usage.quoted_cost`) diagnosing the spend estimate itself. **All
-  four mechanisms behind the original unexplained-spend incident are now
-  closed**: the gateway-seam live-call guard (Phase 0), the `generations`
-  claim replacing the old CAS lock, the `ready`→`succeeded`/
-  payload-recovery contract, and reserve-then-settle usage logging.
+  dedicated anomalies section for stuck-pending, blocked, and genuinely
+  failed rows (each its own line, shown only when its count is non-zero —
+  blocked and failed are deliberately separate lines with different copy,
+  since a blocked call cost nothing and a failed one was billed for what
+  was used), plus an estimate-calibration line (mean quoted-vs-actual
+  delta and ratio, `usage.quoted_cost`, excluding blocked rows so a
+  never-billed call can't drag the mean toward zero) diagnosing the spend
+  estimate itself. **All four mechanisms behind the original
+  unexplained-spend incident are now closed**: the gateway-seam live-call
+  guard (Phase 0), the `generations` claim replacing the old CAS lock, the
+  `ready`→`succeeded`/payload-recovery contract, and reserve-then-settle
+  usage logging. As of Phase 1 prompt 6, `estimateInputTokens` also counts
+  the serialised tool schema and user message (not just the system
+  prompt), closing a measured 3.4x input under-estimate (see the
+  `reserveUsage` paragraph under Database), and the rail
+  (`(app)/dashboard/rail.tsx`) shows real settled, non-blocked spend for
+  the current calendar month under "Usage spending" (not a credits
+  figure — there is no credit system), linking to `/usage`; it's sourced
+  from `aggregateUsage` via a request-memoized `getUsageRows`
+  (`usage/data.ts`, wrapped in React's `cache()`) so the shared layout and
+  the `/usage` page itself don't double-query when both render in the same
+  request.
 
 ## Superseded
 The old 4-step wizard (`script`/`voiceover`/`images`/`video`, driven by a
@@ -880,7 +919,7 @@ today:
   page refresh mid-turn can cause the turn to re-fire and be billed
   twice. Known, accepted gap, not an oversight — revisit when C4 (the
   agent-turn work) is built.
-- **Going into Phase 2, five open items carried over from Phase 1:**
+- **Going into Phase 2, four open items carried over from Phase 1:**
   - `current_step` has no DB CHECK constraint (unconstrained text,
     app-code-enforced only) — unlike `aspect_ratio`/`duration_target`/
     `video_type`, which do have one.
@@ -896,11 +935,6 @@ today:
   - The `/prompts` split blocker before Step 4 (see Database's
     `generations` section and the Current focus bullet above) — not yet
     closed.
-  - The tool-schema exclusion gap in `estimateInputTokens`
-    (`src/lib/usage/quote.ts`) biases the spend-cap quote downward — see
-    the caveat on the `reserveUsage` paragraph under Database. Accepted
-    for now; close it once there's a measured baseline for typical
-    tool-schema size.
 
 ## Open questions
 - **Per-step model selection.** `projects.video_model` is a single column

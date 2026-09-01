@@ -2,9 +2,9 @@ import { formatCost } from '@/lib/format-cost'
 import type { UsageAggregation } from './aggregate'
 
 export function UsageAnomalies({ aggregation }: { aggregation: UsageAggregation }) {
-  const { stalePending, failed } = aggregation.anomalies
+  const { stalePending, blocked, failed } = aggregation.anomalies
   const { calibration } = aggregation
-  if (stalePending.count === 0 && failed.count === 0 && calibration.count === 0) return null
+  if (stalePending.count === 0 && blocked.count === 0 && failed.count === 0 && calibration.count === 0) return null
 
   return (
     <section className="rounded-control border border-border-subtle bg-bg-surface p-rc-lg shadow-card">
@@ -22,6 +22,17 @@ export function UsageAnomalies({ aggregation }: { aggregation: UsageAggregation 
             <p className="text-meta text-status-active-fg">
               These calls were billed against but never settled — likely a request that died
               mid-flight.
+            </p>
+          </div>
+        )}
+
+        {blocked.count > 0 && (
+          <div className="flex flex-col gap-rc-3xs rounded-badge bg-bg-inset px-rc-sm py-rc-xs">
+            <span className="text-ui font-medium text-text-secondary">
+              {blocked.count} blocked, {formatCost(blocked.total)}
+            </span>
+            <p className="text-meta text-text-tertiary">
+              These calls were refused before any request was sent and cost nothing.
             </p>
           </div>
         )}

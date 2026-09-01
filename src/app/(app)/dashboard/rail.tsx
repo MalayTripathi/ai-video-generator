@@ -3,9 +3,10 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import type { User } from '@supabase/supabase-js'
+import { formatCost } from '@/lib/format-cost'
 import { UserMenu } from './user-menu'
 
-export function Rail({ user }: { user?: User }) {
+export function Rail({ user, spendThisMonth }: { user?: User; spendThisMonth: number }) {
   const pathname = usePathname()
   const active = pathname === '/dashboard'
   const usageActive = pathname === '/usage'
@@ -100,12 +101,12 @@ export function Rail({ user }: { user?: User }) {
         }}
       />
 
-      <div className="flex flex-col gap-rc-3xs px-rc-xs pb-rc-2xs">
-        <span className="text-label uppercase tracking-label text-rail-fg-muted">Credits used</span>
+      <Link href="/usage" className="flex flex-col gap-rc-3xs px-rc-xs pb-rc-2xs">
+        <span className="text-label uppercase tracking-label text-rail-fg-muted">Usage spending</span>
         <span className="text-body font-medium text-rail-fg">
-          $4.20 <span className="text-meta font-normal text-rail-fg-muted">this month</span>
+          {formatCost(spendThisMonth)} <span className="text-meta font-normal text-rail-fg-muted">this month</span>
         </span>
-      </div>
+      </Link>
 
       {user && (
         <>

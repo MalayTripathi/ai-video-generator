@@ -59,6 +59,9 @@ export type UsageAggregation = {
   byProject: ProjectBreakdownRow[]
   anomalies: {
     stalePending: { count: number; total: number }
+    /** Refused by assertLiveCallsAllowed() before any request reached the provider - cost nothing. */
+    blocked: { count: number; total: number }
+    /** Genuinely failed, non-blocked calls - billed for what was used. */
     failed: { count: number; total: number }
   }
   calibration: CalibrationSummary
@@ -101,10 +104,14 @@ function buildStepBreakdown(rows: UsageRow[], denominatorTotal: number): StepBre
  * quoted_cost - the calibration signal for estimateInputTokens's known
  * downward-biased estimate and for eventually setting SPEND_CAP_MONTHLY_USD from
  * evidence rather than a guess (see CLAUDE.md). A settled row with no quoted_cost
- * (pre-migration data) is excluded rather than treated as zero delta.
+ * (pre-migration data) is excluded rather than treated as zero delta. A blocked row is
+ * excluded too - it settles at estimated_cost 0 by design, so its ratio is always 0 and
+ * would drag the mean toward zero for a call that was never actually measured.
  */
 function buildCalibration(settledRows: UsageRow[]): CalibrationSummary {
-  const eligible = settledRows.filter((row): row is UsageRow & { quoted_cost: number } => row.quoted_cost !== null)
+  const eligible = settledRows.filter(
+    (row): row is UsageRow & { quoted_cost: number } => row.quoted_cost !== null && !row.blocked
+  )
 
   const meanDelta =
     eligible.length > 0
@@ -139,7 +146,8 @@ function buildCalibration(settledRows: UsageRow[]): CalibrationSummary {
 export function aggregateUsage(rows: UsageRow[], projects: ProjectMeta[], now: Date = new Date()): UsageAggregation {
   const settledRows = rows.filter((row) => row.status === 'succeeded' || row.status === 'failed')
   const pendingRows = rows.filter((row) => row.status === 'pending')
-  const failedRows = rows.filter((row) => row.status === 'failed')
+  const blockedRows = rows.filter((row) => row.blocked)
+  const failedRows = rows.filter((row) => row.status === 'failed' && !row.blocked)
 
   const settledTotal = sumCost(settledRows)
   const pendingTotal = sumCost(pendingRows)
@@ -194,6 +202,7 @@ export function aggregateUsage(rows: UsageRow[], projects: ProjectMeta[], now: D
     byProject,
     anomalies: {
       stalePending: { count: stalePendingRows.length, total: sumCost(stalePendingRows) },
+      blocked: { count: blockedRows.length, total: sumCost(blockedRows) },
       failed: { count: failedRows.length, total: sumCost(failedRows) },
     },
     calibration: buildCalibration(settledRows),

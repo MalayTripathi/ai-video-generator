@@ -532,12 +532,14 @@ export async function runShotGeneration(params: {
         ? durationConfig[project.duration_target as DurationTarget].targetShots
         : durationConfig['1-2min'].targetShots
 
+    const userMessage = 'Generate the shot list now.'
+
     const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
       model: modelsConfig.shots.model,
-      estimatedInputTokens: estimateInputTokens([
-        SHOT_GENERATION_SYSTEM_PROMPT_V2,
-        buildShotsDynamicBlock(project, targetShots),
-      ]),
+      estimatedInputTokens: estimateInputTokens({
+        texts: [SHOT_GENERATION_SYSTEM_PROMPT_V2, buildShotsDynamicBlock(project, targetShots), userMessage],
+        tools: [WRITE_SHOTS_TOOL],
+      }),
       maxTokens: modelsConfig.shots.maxTokens,
     })
 
@@ -567,7 +569,7 @@ export async function runShotGeneration(params: {
       ],
       tools: [WRITE_SHOTS_TOOL],
       tool_choice: { type: 'tool', name: 'write_shots' },
-      messages: [{ role: 'user', content: 'Generate the shot list now.' }],
+      messages: [{ role: 'user', content: userMessage }],
     })
 
     measuredBreakdown = message.usage

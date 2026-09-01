@@ -1,4 +1,5 @@
-import { computeCost, type UsageBreakdown } from '@/lib/config/pricing'
+import type Anthropic from '@anthropic-ai/sdk'
+import { computeCost, TOOL_USE_SYSTEM_OVERHEAD_TOKENS, type UsageBreakdown } from '@/lib/config/pricing'
 
 // Crude on purpose: a real tokenizer isn't available at this layer, and this number
 // only ever feeds a worst-case reservation that settle immediately corrects downward -
@@ -6,21 +7,24 @@ import { computeCost, type UsageBreakdown } from '@/lib/config/pricing'
 const CHARS_PER_TOKEN_ESTIMATE = 4
 
 /**
- * Estimates input tokens from the character length of the text that will make up the
- * bulk of a Claude call's input (the system prompt blocks). Deliberately excludes the
- * tool schema JSON sent alongside them - a real gap, accepted because a fixed tool
- * schema's token cost is small and stable relative to max_tokens, and because this
- * feeds a worst-case ceiling, not a bill.
+ * Estimates input tokens from everything actually sent to the model: the system
+ * prompt text, the user message text, and the serialised tool schema JSON - derived
+ * from the same `tools` array passed to the gateway call, so this can never drift out
+ * of sync with the schema as it grows (never hardcode a schema size here). Anthropic's
+ * fixed tool-use system overhead is added on top as TOOL_USE_SYSTEM_OVERHEAD_TOKENS
+ * (pricing.ts), since it isn't proportional to any text sent and so doesn't belong in
+ * the char count.
  *
- * Known gap: excluding the tool schema biases this estimate DOWNWARD - the wrong
- * direction for a spend cap, which wants to over-reserve, never under-reserve. It's
- * accepted for now because the schema's token cost is small and stable, but it should
- * be closed once there's a measured baseline for typical tool-schema size (see
+ * Known remaining bias: JSON is punctuation-dense and likely tokenises at fewer than 4
+ * chars/token, so the schema portion of this estimate may still run a little low even
+ * after this change - worth checking once there are more measured data points (see
  * CLAUDE.md).
  */
-export function estimateInputTokens(texts: string[]): number {
-  const totalChars = texts.reduce((sum, text) => sum + text.length, 0)
-  return Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)
+export function estimateInputTokens(params: { texts: string[]; tools: Anthropic.Tool[] }): number {
+  const textChars = params.texts.reduce((sum, text) => sum + text.length, 0)
+  const toolsChars = JSON.stringify(params.tools).length
+  const charEstimate = Math.ceil((textChars + toolsChars) / CHARS_PER_TOKEN_ESTIMATE)
+  return charEstimate + (params.tools.length > 0 ? TOOL_USE_SYSTEM_OVERHEAD_TOKENS : 0)
 }
 
 /**

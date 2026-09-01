@@ -327,9 +327,14 @@ export async function runPromptGeneration(params: {
       shotsNeedingPrompts.map((s) => s.shot_key)
     )
 
+    const userMessage = 'Generate the image and video prompts now.'
+
     const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
       model: modelsConfig.prompts.model,
-      estimatedInputTokens: estimateInputTokens([PROMPTS_SYSTEM_PROMPT, dynamicBlock]),
+      estimatedInputTokens: estimateInputTokens({
+        texts: [PROMPTS_SYSTEM_PROMPT, dynamicBlock, userMessage],
+        tools: [WRITE_PROMPTS_TOOL],
+      }),
       maxTokens: modelsConfig.prompts.maxTokens,
     })
 
@@ -359,7 +364,7 @@ export async function runPromptGeneration(params: {
       ],
       tools: [WRITE_PROMPTS_TOOL],
       tool_choice: { type: 'tool', name: 'write_prompts' },
-      messages: [{ role: 'user', content: 'Generate the image and video prompts now.' }],
+      messages: [{ role: 'user', content: userMessage }],
     })
 
     measuredBreakdown = message.usage

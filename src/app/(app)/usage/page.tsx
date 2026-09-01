@@ -1,9 +1,9 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import type { Step, Operation } from '@/lib/config/pipeline'
 import { TopBar } from '../dashboard/top-bar'
-import { parsePeriod, getPeriodRange } from './period'
-import { aggregateUsage, type UsageRow, type ProjectMeta } from './aggregate'
+import { parsePeriod } from './period'
+import { getUsageRows } from './data'
+import { aggregateUsage, type ProjectMeta } from './aggregate'
 import { PeriodSelector } from './period-selector'
 import { UsageSummary } from './usage-summary'
 import { UsageByStep } from './usage-by-step'
@@ -24,29 +24,7 @@ export default async function UsagePage({ searchParams }: { searchParams: Promis
     redirect('/login')
   }
 
-  const { start, end } = getPeriodRange(period)
-
-  let usageQuery = supabase
-    .from('usage')
-    .select('id, project_id, step, operation, status, estimated_cost, quoted_cost, created_at, raw_usage')
-    .eq('user_id', user.id)
-
-  if (start) usageQuery = usageQuery.gte('created_at', start)
-  if (end) usageQuery = usageQuery.lt('created_at', end)
-
-  const { data: usageRows } = await usageQuery
-
-  const rows: UsageRow[] = (usageRows ?? []).map((row) => ({
-    id: row.id,
-    project_id: row.project_id,
-    step: row.step as Step,
-    operation: row.operation as Operation,
-    status: row.status,
-    estimated_cost: row.estimated_cost,
-    quoted_cost: row.quoted_cost,
-    created_at: row.created_at,
-    blocked: (row.raw_usage as { blocked?: boolean } | null)?.blocked === true,
-  }))
+  const rows = await getUsageRows(user.id, period)
 
   const projectIds = [...new Set(rows.map((row) => row.project_id).filter((id): id is string => id !== null))]
 

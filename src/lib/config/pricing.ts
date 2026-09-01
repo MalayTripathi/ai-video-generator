@@ -5,6 +5,12 @@ import type { Provider } from '@/lib/config/pipeline'
 // produced it, so a past row's cost stays reconstructable even after rates move.
 export const RATE_VERSION = '2026-09-01'
 
+// Anthropic injects a fixed system-prompt overhead when tools are present, on top of
+// the tool schema JSON and the visible system/user text - this approximates that
+// overhead in tokens. Not derived from a measurement yet (a few hundred tokens is the
+// right order of magnitude); refine once there's a measured baseline (see CLAUDE.md).
+export const TOOL_USE_SYSTEM_OVERHEAD_TOKENS = 300
+
 export type UsageBreakdown = {
   input_tokens: number
   output_tokens: number
