@@ -15,6 +15,9 @@
 /test-results
 /playwright-report
 /blob-report
+# Fixed test-user Supabase sessions minted by tests/global-setup.ts - real (if
+# throwaway-identity) auth tokens, never committed.
+/tests/.auth
 
 # next.js
 /.next/

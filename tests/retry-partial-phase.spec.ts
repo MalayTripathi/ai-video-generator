@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin } from './supabase-test-session'
+import { primary } from './fixed-users'
 
 const PENDING_PAYLOAD = {
   title: 'A short film',
@@ -30,13 +31,21 @@ async function seedPartialProject(userId: string) {
       video_type: 'auto',
       duration_target: '30-60s',
       current_step: 'workbench',
-      shots_generation: 'failed',
-      pending_shots_payload: PENDING_PAYLOAD as never,
     })
     .select('id')
     .single()
   expect(error).toBeNull()
   const projectId = project!.id as string
+
+  const { error: generationError } = await admin.from('generations').insert({
+    project_id: projectId,
+    step: 'workbench',
+    operation: 'generate_shots',
+    shot_id: null,
+    state: 'failed',
+    payload: PENDING_PAYLOAD as never,
+  })
+  expect(generationError).toBeNull()
 
   // The 2 shots a prior truncated attempt would have left behind.
   const { error: shotsError } = await admin.from('shots').insert([
@@ -48,12 +57,24 @@ async function seedPartialProject(userId: string) {
   return projectId
 }
 
-test.describe('retry from the partial phase', () => {
-  test('resumes the pending payload without billing, and cancelling sends nothing', async ({ page, context }) => {
-    const { user, cookie } = await createTestSession()
-    try {
-      await context.addCookies([cookie])
+async function readGeneration(projectId: string) {
+  const { data } = await admin
+    .from('generations')
+    .select('state, payload')
+    .eq('project_id', projectId)
+    .eq('step', 'workbench')
+    .eq('operation', 'generate_shots')
+    .is('shot_id', null)
+    .single()
+  return data
+}
 
+test.describe('retry from the partial phase', () => {
+  test('resumes the pending payload without billing, and cancelling sends nothing', async ({ page }) => {
+    // The default browser identity (primary, via playwright.config.ts's storageState)
+    // is already authenticated - no per-test createTestSession()/addCookies needed.
+    const user = primary.user
+    {
       const shotsRequests: { method: string; postData: string | null }[] = []
       await page.route('**/api/projects/*/shots', async (route) => {
         const request = route.request()
@@ -90,31 +111,15 @@ test.describe('retry from the partial phase', () => {
       // The recovery path never calls the gateway, so this is safe under the
       // ALLOW_REAL_CLAUDE guard regardless - it's worth confirming end to end.
       await expect
-        .poll(
-          async () => {
-            const { data } = await admin
-              .from('projects')
-              .select('shots_generation')
-              .eq('id', projectId)
-              .single()
-            return data?.shots_generation
-          },
-          { timeout: 15_000 }
-        )
-        .toBe('ready')
+        .poll(async () => (await readGeneration(projectId))?.state, { timeout: 15_000 })
+        .toBe('succeeded')
 
-      const { data: finalProject } = await admin
-        .from('projects')
-        .select('pending_shots_payload')
-        .eq('id', projectId)
-        .single()
-      expect(finalProject?.pending_shots_payload).toBeNull()
+      const finalGeneration = await readGeneration(projectId)
+      expect(finalGeneration?.payload).toBeNull()
 
       const { data: finalShots } = await admin.from('shots').select('*').eq('project_id', projectId)
       // Exactly the replayed batch's count, not the sum of the 2 stale rows plus the replay.
       expect(finalShots?.length).toBe(PENDING_PAYLOAD.shots.length)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 })

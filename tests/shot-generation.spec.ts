@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin } from './supabase-test-session'
+import { primary } from './fixed-users'
 import { runShotGeneration } from '../src/app/api/projects/[id]/shots/logic'
-import { successMessage } from './helpers/claude-fakes'
-import type { ClaudeGateway } from '../src/lib/claude'
+import { successMessage, truncatedMessage, throwingGateway } from './helpers/claude-fakes'
+import { LiveCallsBlockedError, type ClaudeGateway } from '../src/lib/claude'
 
 const SHOT_KEY_RE = /^[23456789bcdfghjkmnpqrstvwxz]{5}$/
 
@@ -49,7 +50,7 @@ const RICH_INPUT = {
   ],
 }
 
-async function insertProject(userId: string) {
+async function insertProject(userId: string, durationTarget = '1-2min') {
   const { data, error } = await admin
     .from('projects')
     .insert({
@@ -57,9 +58,8 @@ async function insertProject(userId: string) {
       title: null,
       source_text: 'A short film about a lighthouse keeper and her dog.',
       video_type: 'auto',
-      duration_target: '1-2min',
+      duration_target: durationTarget,
       current_step: 'workbench',
-      shots_generation: 'pending',
     })
     .select('id')
     .single()
@@ -67,10 +67,37 @@ async function insertProject(userId: string) {
   return data!.id as string
 }
 
+function buildShots(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    voice_over: `Narration for shot ${i + 1}.`,
+    visual_description: `Visual for shot ${i + 1}.`,
+    shot_size: 'wide',
+    camera_angle: 'eye_level',
+    camera_movement: 'static',
+    duration_sec: 3,
+    section_label: 'Section',
+    dialogue: [],
+    element_names: [],
+  }))
+}
+
+async function readGeneration(projectId: string) {
+  const { data, error } = await admin
+    .from('generations')
+    .select('state, payload')
+    .eq('project_id', projectId)
+    .eq('step', 'workbench')
+    .eq('operation', 'generate_shots')
+    .is('shot_id', null)
+    .single()
+  expect(error).toBeNull()
+  return data!
+}
+
 test.describe('Step 2 workbench - shot generation', () => {
   test('parses shots, applies the title/video_type, inserts an assistant message, and lands on ready with the payload cleared', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
 
@@ -90,14 +117,16 @@ test.describe('Step 2 workbench - shot generation', () => {
 
       const { data: project, error: projectError } = await admin
         .from('projects')
-        .select('title, video_type, shots_generation, pending_shots_payload')
+        .select('title, video_type')
         .eq('id', projectId)
         .single()
       expect(projectError).toBeNull()
       expect(project!.title).toBe(RICH_INPUT.title)
       expect(project!.video_type).toBe(RICH_INPUT.video_type)
-      expect(project!.shots_generation).toBe('ready')
-      expect(project!.pending_shots_payload).toBeNull()
+
+      const generation = await readGeneration(projectId)
+      expect(generation.state).toBe('succeeded')
+      expect(generation.payload).toBeNull()
 
       const { data: messages, error: messagesError } = await admin
         .from('messages')
@@ -107,14 +136,12 @@ test.describe('Step 2 workbench - shot generation', () => {
       expect(messagesError).toBeNull()
       expect(messages!.length).toBeGreaterThan(0)
       expect(messages![0].content.trim().length).toBeGreaterThan(0)
-    } finally {
-      await deleteTestUser(user.id)
     }
   })
 
   test('dedupes an element referenced by name in one shot and by dialogue speaker in another, and resolves dialogue to the deduped element', async () => {
-    const { user } = await createTestSession()
-    try {
+    const user = primary.user
+    {
       const projectId = await insertProject(user.id)
       const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
 
@@ -147,8 +174,152 @@ test.describe('Step 2 workbench - shot generation', () => {
       const dialogue = dialogueShot!.dialogue as { element_id: string; line: string }[]
       expect(dialogue.length).toBe(1)
       expect(dialogue[0].element_id).toBe(mara!.id)
-    } finally {
-      await deleteTestUser(user.id)
+    }
+  })
+
+  test('a gateway call that throws still leaves a usage row, failed, with a non-null estimated cost', async () => {
+    const user = primary.user
+    {
+      const projectId = await insertProject(user.id)
+      const gateway = throwingGateway('simulated network failure')
+
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      expect(result.ok).toBe(false)
+
+      const { data: usageRows, error: usageError } = await admin
+        .from('usage')
+        .select('status, estimated_cost, step, operation')
+        .eq('project_id', projectId)
+      expect(usageError).toBeNull()
+      expect(usageRows!.length).toBe(1)
+      expect(usageRows![0].status).toBe('failed')
+      expect(usageRows![0].estimated_cost).not.toBeNull()
+      expect(usageRows![0].step).toBe('workbench')
+      expect(usageRows![0].operation).toBe('generate_shots')
+    }
+  })
+
+  test('a pre-network blocked call settles as failed with zero cost, not the quote', async () => {
+    const user = primary.user
+    {
+      const projectId = await insertProject(user.id)
+      const gateway = throwingGateway(new LiveCallsBlockedError())
+
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      expect(result.ok).toBe(false)
+
+      const { data: usageRows, error: usageError } = await admin
+        .from('usage')
+        .select('status, estimated_cost, raw_usage')
+        .eq('project_id', projectId)
+      expect(usageError).toBeNull()
+      expect(usageRows!.length).toBe(1)
+      expect(usageRows![0].status).toBe('failed')
+      // Unlike the ordinary-throw case above, this must be exactly 0, not merely
+      // non-null - assertLiveCallsAllowed() throws before any request reaches
+      // Anthropic, so retaining the pre-flight quote here would be a real cost
+      // inflation, not a conservative over-count.
+      expect(usageRows![0].estimated_cost).toBe(0)
+      const raw = usageRows![0].raw_usage as { blocked?: boolean; billed?: boolean }
+      expect(raw.blocked).toBe(true)
+      expect(raw.billed).toBe(false)
+    }
+  })
+
+  test('a successful call writes exactly one succeeded usage row with a measured cost below the quote', async () => {
+    const user = primary.user
+    {
+      const projectId = await insertProject(user.id)
+      const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
+
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      expect(result.ok).toBe(true)
+
+      const { data: usageRows, error: usageError } = await admin
+        .from('usage')
+        .select('status, estimated_cost, quantity, raw_usage')
+        .eq('project_id', projectId)
+      expect(usageError).toBeNull()
+      expect(usageRows!.length).toBe(1)
+      expect(usageRows![0].status).toBe('succeeded')
+      expect(usageRows![0].quantity).toBe(20) // successMessage's fixed 10 input + 10 output tokens
+      const raw = usageRows![0].raw_usage as { quoted?: unknown }
+      // The measured cost (tiny, fixed 20-token usage) must be far below the worst-case
+      // quote (max_tokens at the output rate) that raw_usage.quoted would have recorded
+      // had settle never overwritten it.
+      expect(raw.quoted).toBeUndefined()
+      expect(usageRows![0].estimated_cost).toBeGreaterThan(0)
+      expect(usageRows![0].estimated_cost).toBeLessThan(0.001)
+    }
+  })
+
+  test('a max_tokens truncation writes a failed usage row with stop_reason max_tokens and a measured cost', async () => {
+    const user = primary.user
+    {
+      const projectId = await insertProject(user.id)
+      const gateway: ClaudeGateway = { async createMessage() { return truncatedMessage(RICH_INPUT) } }
+
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      expect(result.ok).toBe(false)
+      expect(result.status).toBe(422)
+
+      const { data: usageRows, error: usageError } = await admin
+        .from('usage')
+        .select('status, stop_reason, estimated_cost')
+        .eq('project_id', projectId)
+      expect(usageError).toBeNull()
+      expect(usageRows!.length).toBe(1)
+      expect(usageRows![0].status).toBe('failed')
+      expect(usageRows![0].stop_reason).toBe('max_tokens')
+      expect(usageRows![0].estimated_cost).not.toBeNull()
+    }
+  })
+
+  test('a gateway returning more shots than the target: all are persisted intact and the over-count is logged, not truncated', async () => {
+    const user = primary.user
+    {
+      // 30-60s tier has targetShots = 8 (src/lib/config/duration.ts); the schema's
+      // maxItems should prevent this in normal operation, but this test proves the
+      // server-side backstop never drops shots if it's ever hit.
+      const projectId = await insertProject(user.id, '30-60s')
+      const overCountInput = {
+        title: 'Over Count',
+        message: 'Here is your shot list.',
+        video_type: 'narrated_story',
+        shots: buildShots(10),
+      }
+      const gateway: ClaudeGateway = { async createMessage() { return successMessage(overCountInput) } }
+
+      const warnCalls: unknown[][] = []
+      const originalWarn = console.warn
+      console.warn = (...args: unknown[]) => {
+        warnCalls.push(args)
+      }
+
+      let result
+      try {
+        result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      } finally {
+        console.warn = originalWarn
+      }
+
+      expect(result.ok).toBe(true)
+
+      const { data: shots, error: shotsError } = await admin
+        .from('shots')
+        .select('shot_key')
+        .eq('project_id', projectId)
+      expect(shotsError).toBeNull()
+      // Nothing dropped, despite exceeding the target of 8.
+      expect(shots!.length).toBe(10)
+
+      const overCountWarning = warnCalls.find(
+        (args) => typeof args[0] === 'string' && args[0].includes('[shots] over_count')
+      )
+      expect(overCountWarning).toBeTruthy()
+      expect(overCountWarning![0]).toContain(`project=${projectId}`)
+      expect(overCountWarning![0]).toContain('target=8')
+      expect(overCountWarning![0]).toContain('actual=10')
     }
   })
 })

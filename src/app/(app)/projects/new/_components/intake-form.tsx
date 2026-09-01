@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { displayTitle } from '@/lib/display-title'
-import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import { durationConfig, DEFAULT_DURATION_TARGET, type DurationTarget } from '@/lib/config/duration'
 import { VIDEO_TYPES } from '@/lib/video-type-labels'
 import { createProjectFromIntake } from '../actions'
 import type { TemplateProject } from '../types'
@@ -14,7 +14,7 @@ type PrefillableField = 'video_type' | 'aspect_ratio' | 'duration_target'
 const DEFAULTS = {
   videoType: 'auto',
   aspectRatio: '9:16' as AspectRatio,
-  durationTarget: '30-60s' as DurationTarget,
+  durationTarget: DEFAULT_DURATION_TARGET,
 }
 
 const FORMATS: { value: AspectRatio; label: string; sublabel: string; width: number; height: number }[] = [
@@ -24,6 +24,23 @@ const FORMATS: { value: AspectRatio; label: string; sublabel: string; width: num
 ]
 
 const DURATIONS = Object.entries(durationConfig) as [DurationTarget, (typeof durationConfig)[DurationTarget]][]
+
+// A number immediately preceding "shot(s)"/"scene(s)" (optionally hyphenated, e.g.
+// "4-shot montage"). Light heuristic only, not a parser - false positives (a screenplay
+// prose mention, a reference-video shot count) are expected and acceptable since the
+// warning this feeds is non-blocking.
+const SHOT_COUNT_PATTERN = /(\d+)\s*-?\s*(?:shots?|scenes?)\b/gi
+
+function extractRequestedShotCount(text: string): number | null {
+  let max: number | null = null
+  for (const match of text.matchAll(SHOT_COUNT_PATTERN)) {
+    const value = Number(match[1])
+    if (!Number.isNaN(value) && (max === null || value > max)) {
+      max = value
+    }
+  }
+  return max
+}
 
 function tileClass(selected: boolean) {
   return selected
@@ -38,6 +55,13 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(DEFAULTS.aspectRatio)
   const [durationTarget, setDurationTarget] = useState<DurationTarget>(DEFAULTS.durationTarget)
   const [prefilled, setPrefilled] = useState<Set<PrefillableField>>(new Set())
+
+  const requestedShotCount = useMemo(() => extractRequestedShotCount(sourceText), [sourceText])
+  const targetShots = durationConfig[durationTarget].targetShots
+  const shotCountWarning =
+    requestedShotCount !== null && requestedShotCount > targetShots
+      ? `You mentioned around ${requestedShotCount} shots, but the shot list for ${durationConfig[durationTarget].label} is capped at ${targetShots}. Pick a longer duration if you need more, or the brief will be trimmed to fit.`
+      : null
 
   function dropPrefilled(field: PrefillableField) {
     setPrefilled((prev) => {
@@ -111,6 +135,11 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
         rows={6}
         className="min-h-[130px] resize-y rounded-badge border border-border-strong bg-bg-surface px-[11px] py-[10px] text-control leading-[1.5] text-text-primary outline-none placeholder:text-text-tertiary focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       />
+      {shotCountWarning && (
+        <p role="status" data-testid="shot-count-warning" className="text-small text-status-active-fg">
+          {shotCountWarning}
+        </p>
+      )}
 
       <div className="flex flex-col gap-rc-xs">
         <div className="flex items-center gap-rc-xs">

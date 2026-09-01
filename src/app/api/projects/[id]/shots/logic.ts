@@ -1,12 +1,19 @@
 import type { createClient } from '@/lib/supabase/server'
 import type { ClaudeGateway } from '@/lib/claude'
-import { logClaudeUsage } from '@/lib/claude'
 import { modelsConfig } from '@/lib/config/models'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import type { UsageBreakdown } from '@/lib/config/pricing'
+import { estimateInputTokens, quoteClaudeCall, assertWithinAllowance, reserveUsage, settleUsage, AllowanceExceededError } from '@/lib/usage'
 import { generateUniqueShotKeys, isUniqueViolation, MAX_SHOT_KEY_INSERT_ATTEMPTS } from '@/lib/shot-key'
 import {
-  SHOT_GENERATION_SYSTEM_PROMPT_V2,
-  WRITE_SHOTS_TOOL,
+  claimGeneration,
+  persistGenerationPayload,
+  settleGeneration,
+  type BlockedReason,
+} from '@/lib/generations/claim'
+import {
+  SHOT_GENERATION_SYSTEM_PROMPT_V3,
+  buildWriteShotsTool,
   buildShotsDynamicBlock,
 } from '@/lib/prompts/shot-generation'
 import type { Json, Tables } from '@/lib/database.types'
@@ -35,30 +42,6 @@ const VIDEO_TYPES = [
   'product_ad',
   'trailer',
 ] as const
-
-// Tied to claude.ts's 600s SDK timeout + margin. Duplicated (not imported) from
-// generation-lock.ts's constant of the same name/value: that module stays reserved for
-// /prompts, which still uses the old generating_at-only CAS lock. Keep both in sync
-// manually if either changes.
-export const STALE_AFTER_MS = 15 * 60 * 1000
-
-export type ShotsGenerationStatus = 'pending' | 'generating' | 'ready' | 'failed'
-
-const SHOTS_GENERATION_STATUSES: readonly ShotsGenerationStatus[] = [
-  'pending',
-  'generating',
-  'ready',
-  'failed',
-]
-
-/**
- * database.types.ts types the column as plain `string` (Supabase codegen doesn't emit
- * CHECK constraints as literal unions). An unrecognized value fails safe toward 'pending'
- * so an unexpected value re-attempts generation rather than getting permanently stuck.
- */
-export function isShotsGenerationStatus(value: unknown): value is ShotsGenerationStatus {
-  return typeof value === 'string' && (SHOTS_GENERATION_STATUSES as string[]).includes(value)
-}
 
 export type RawDialogueLine = { speaker_name: string; line: string }
 export type RawElementRef = { name: string; type: string; description: string }
@@ -173,6 +156,7 @@ export type ShotGenerationResult =
       reason: 'already_ready' | 'already_generating' | 'retry_required'
     }
   | { ok: false; status: 422; error: string }
+  | { ok: false; status: 402; error: string }
   | { ok: false; status: 500; error: string }
 
 type ClaimedProject = {
@@ -184,99 +168,31 @@ type ClaimedProject = {
 }
 
 /**
- * CLAIM. One atomic conditional UPDATE is both the lock and the idempotency guard: it only
- * matches a row that is 'pending', or 'generating' with a stale generating_at, or (only
- * when retry is requested) 'failed'. A zero-row result means the claim was refused - no
- * code path below this function can reach the gateway without a claim in hand.
+ * Loads the project fields the pipeline needs. Run before the claim, not as a
+ * fallback after one is refused: this subsumes the old "informational SELECT after a
+ * refused claim" 404 case, and sidesteps having to distinguish an RLS/FK error on a
+ * `generations` INSERT for a nonexistent or unowned project from any other insert
+ * error.
  */
-async function claimShotsGeneration(
+async function loadProjectForClaim(
   supabase: SupabaseServerClient,
   projectId: string,
-  userId: string,
-  retry: boolean
-): Promise<
-  | { ok: true; project: ClaimedProject; pendingPayload: unknown | null }
-  | { ok: false; result: ShotGenerationResult }
-> {
-  const staleBefore = new Date(Date.now() - STALE_AFTER_MS).toISOString()
-
-  const orParts = [
-    'shots_generation.eq.pending',
-    `and(shots_generation.eq.generating,generating_at.lt.${staleBefore})`,
-  ]
-  if (retry) orParts.push('shots_generation.eq.failed')
-
-  const { data, error } = await supabase
+  userId: string
+): Promise<ClaimedProject | null> {
+  const { data } = await supabase
     .from('projects')
-    .update({ shots_generation: 'generating', generating_at: new Date().toISOString() })
-    .eq('id', projectId)
-    .eq('user_id', userId)
-    .or(orParts.join(','))
-    .select('source_text, video_type, language, duration_target, title, pending_shots_payload')
-
-  if (error) {
-    return { ok: false, result: { ok: false, status: 500, error: error.message } }
-  }
-
-  const claimed = data?.[0]
-  if (claimed) {
-    return {
-      ok: true,
-      project: {
-        source_text: claimed.source_text,
-        video_type: claimed.video_type,
-        language: claimed.language,
-        duration_target: claimed.duration_target,
-        title: claimed.title,
-      },
-      pendingPayload: claimed.pending_shots_payload,
-    }
-  }
-
-  // The claim was refused. This follow-up read is purely informational - it never feeds
-  // back into a write, so it can't compromise the atomic decision the UPDATE already made.
-  const { data: current } = await supabase
-    .from('projects')
-    .select('shots_generation')
+    .select('source_text, video_type, language, duration_target, title')
     .eq('id', projectId)
     .eq('user_id', userId)
     .single()
 
-  if (!current) {
-    return { ok: false, result: { ok: false, status: 404, error: 'Project not found' } }
-  }
-  if (current.shots_generation === 'ready') {
-    return {
-      ok: false,
-      result: {
-        ok: false,
-        status: 409,
-        error: 'Shots have already been generated for this project.',
-        reason: 'already_ready',
-      },
-    }
-  }
-  if (current.shots_generation === 'generating') {
-    return {
-      ok: false,
-      result: {
-        ok: false,
-        status: 409,
-        error: 'A generation is already in progress for this project.',
-        reason: 'already_generating',
-      },
-    }
-  }
-  // 'failed' without retry, or the rare 'pending' race window, both read as retry_required.
-  return {
-    ok: false,
-    result: {
-      ok: false,
-      status: 409,
-      error: 'The last generation failed. Retry to try again.',
-      reason: 'retry_required',
-    },
-  }
+  return data
+}
+
+const BLOCKED_REASON_MESSAGES: Record<BlockedReason, string> = {
+  already_ready: 'Shots have already been generated for this project.',
+  already_generating: 'A generation is already in progress for this project.',
+  retry_required: 'The last generation failed. Retry to try again.',
 }
 
 /**
@@ -289,7 +205,9 @@ async function runShotsPipeline(
   supabase: SupabaseServerClient,
   projectId: string,
   project: ClaimedProject,
-  rawInput: unknown
+  rawInput: unknown,
+  targetShots: number,
+  generationId: string
 ): Promise<
   { ok: true; status: 200; data: ShotsResponseBody } | { ok: false; status: 422 | 500; error: string }
 > {
@@ -313,6 +231,15 @@ async function runShotsPipeline(
       status: 422,
       error: "Couldn't build the shot list. The model returned nothing usable.",
     }
+  }
+
+  // Defensive backstop: the write_shots schema's maxItems already constrains the model to
+  // targetShots, so this should be rare. Never truncate here - the call is already paid
+  // for, and dropping trailing shots would leave a story missing its ending.
+  if (validatedShots.length > targetShots) {
+    console.warn(
+      `[shots] over_count project=${projectId} generation=${generationId} target=${targetShots} actual=${validatedShots.length}`
+    )
   }
 
   const parsedTitle = typeof input.title === 'string' ? input.title.trim().slice(0, 60) || null : null
@@ -568,63 +495,115 @@ export async function runShotGeneration(params: {
 }): Promise<ShotGenerationResult> {
   const { gateway, supabase, projectId, userId, retry } = params
 
-  const claim = await claimShotsGeneration(supabase, projectId, userId, retry)
-  if (!claim.ok) return claim.result // never entered 'generating' - nothing to settle
+  const project = await loadProjectForClaim(supabase, projectId, userId)
+  if (!project) {
+    return { ok: false, status: 404, error: 'Project not found' }
+  }
 
-  const { project, pendingPayload } = claim
+  const claim = await claimGeneration({
+    supabase,
+    identity: { projectId, step: 'workbench', operation: 'generate_shots', shotId: null },
+    retry,
+  })
+
+  if (claim.outcome === 'error') {
+    return { ok: false, status: 500, error: claim.message }
+  }
+  if (claim.outcome === 'blocked') {
+    // never entered 'generating' - nothing to settle
+    return { ok: false, status: 409, error: BLOCKED_REASON_MESSAGES[claim.reason], reason: claim.reason }
+  }
+
+  const { generation } = claim
+  const pendingPayload = generation.payload
   let outcome: ShotGenerationResult = {
     ok: false,
     status: 500,
     error: 'Shot generation did not complete',
   }
   let clearPayloadOnSettle = false
+  let usageId: string | null = null
+  let measuredBreakdown: UsageBreakdown | null = null
+  let stopReasonForSettle: string | null = null
+  let caughtError: unknown = null
 
   try {
-    // RECOVER BEFORE SPEND. A stored pending_shots_payload means Claude has already been
-    // paid for; recovery replays it and never re-calls the gateway.
-    if (pendingPayload !== null) {
-      console.warn(
-        `[shots] recovering pending_shots_payload for project=${projectId} - skipping a new Claude call`
-      )
-      outcome = await runShotsPipeline(supabase, projectId, project, pendingPayload)
-      return outcome
-    }
-
     const targetShots =
       project.duration_target && project.duration_target in durationConfig
         ? durationConfig[project.duration_target as DurationTarget].targetShots
         : durationConfig['1-2min'].targetShots
 
+    // RECOVER BEFORE SPEND. A stored payload means Claude has already been paid for;
+    // recovery replays it and never re-calls the gateway.
+    if (pendingPayload !== null) {
+      console.warn(
+        `[shots] recovering pending payload for project=${projectId} generation=${generation.id} - skipping a new Claude call`
+      )
+      outcome = await runShotsPipeline(supabase, projectId, project, pendingPayload, targetShots, generation.id)
+      return outcome
+    }
+
+    const userMessage = 'Generate the shot list now.'
+    const writeShotsTool = buildWriteShotsTool(targetShots)
+
+    const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
+      model: modelsConfig.shots.model,
+      estimatedInputTokens: estimateInputTokens({
+        texts: [SHOT_GENERATION_SYSTEM_PROMPT_V3, buildShotsDynamicBlock(project, targetShots), userMessage],
+        tools: [writeShotsTool],
+      }),
+      maxTokens: modelsConfig.shots.maxTokens,
+    })
+
+    await assertWithinAllowance({ supabase, userId, quotedCost: estimatedCost })
+
+    const reserved = await reserveUsage({
+      supabase,
+      userId,
+      projectId,
+      generationId: generation.id,
+      shotId: null,
+      step: 'workbench',
+      operation: 'generate_shots',
+      provider: 'anthropic',
+      model: modelsConfig.shots.model,
+      quotedCost: estimatedCost,
+      quotedBreakdown,
+    })
+    usageId = reserved.usageId
+
     const { message, stopReason, requestId } = await gateway.createMessage({
       model: modelsConfig.shots.model,
       max_tokens: modelsConfig.shots.maxTokens,
       system: [
-        { type: 'text', text: SHOT_GENERATION_SYSTEM_PROMPT_V2, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: SHOT_GENERATION_SYSTEM_PROMPT_V3, cache_control: { type: 'ephemeral' } },
         { type: 'text', text: buildShotsDynamicBlock(project, targetShots) },
       ],
-      tools: [WRITE_SHOTS_TOOL],
+      tools: [writeShotsTool],
       tool_choice: { type: 'tool', name: 'write_shots' },
-      messages: [{ role: 'user', content: 'Generate the shot list now.' }],
+      messages: [{ role: 'user', content: userMessage }],
     })
+
+    measuredBreakdown = message.usage
+    stopReasonForSettle = stopReason
 
     const toolUseBlock = message.content.find(
       (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use' && block.name === 'write_shots'
     )
 
     if (!toolUseBlock) {
-      await logClaudeUsage(supabase, projectId, 'shots', modelsConfig.shots.model, message.usage)
       outcome = { ok: false, status: 500, error: 'Claude did not return a shot list' }
       return outcome
     }
 
     // PERSIST BEFORE WRITING. Lands before any shot row insert - if the process dies
     // between here and SETTLE, the payload is already safe to recover on the next claim.
-    const { error: persistError } = await supabase
-      .from('projects')
-      .update({ pending_shots_payload: toolUseBlock.input as Json })
-      .eq('id', projectId)
+    const { error: persistError } = await persistGenerationPayload(
+      supabase,
+      generation.id,
+      toolUseBlock.input as Json
+    )
 
-    await logClaudeUsage(supabase, projectId, 'shots', modelsConfig.shots.model, message.usage)
     console.warn(`[shots] stopReason=${stopReason} requestId=${requestId}`)
 
     if (persistError) {
@@ -633,12 +612,19 @@ export async function runShotGeneration(params: {
       outcome = {
         ok: false,
         status: 500,
-        error: `Claude returned a shot list, but it could not be saved safely (${persistError.message}). Retry to regenerate.`,
+        error: `Claude returned a shot list, but it could not be saved safely (${persistError}). Retry to regenerate.`,
       }
       return outcome
     }
 
-    const pipelineResult = await runShotsPipeline(supabase, projectId, project, toolUseBlock.input)
+    const pipelineResult = await runShotsPipeline(
+      supabase,
+      projectId,
+      project,
+      toolUseBlock.input,
+      targetShots,
+      generation.id
+    )
 
     // TRUNCATION. A max_tokens stop was never a successful return, so - unlike a normal
     // failure - the payload is cleared here rather than left for a later recovery: leaving
@@ -661,9 +647,10 @@ export async function runShotGeneration(params: {
     outcome = pipelineResult
     return outcome
   } catch (err) {
+    caughtError = err
     outcome = {
       ok: false,
-      status: 500,
+      status: err instanceof AllowanceExceededError ? 402 : 500,
       error: err instanceof Error ? err.message : 'Unexpected error during shot generation',
     }
     return outcome
@@ -671,25 +658,37 @@ export async function runShotGeneration(params: {
     // SETTLE. Runs on every exit, including a thrown exception, so a project can never be
     // left stuck 'generating'.
     try {
-      if (outcome.ok) {
-        await supabase
-          .from('projects')
-          .update({ shots_generation: 'ready', generating_at: null, pending_shots_payload: null })
-          .eq('id', projectId)
-      } else {
-        await supabase
-          .from('projects')
-          .update({
-            shots_generation: 'failed',
-            generating_at: null,
-            ...(clearPayloadOnSettle ? { pending_shots_payload: null } : {}),
-          })
-          .eq('id', projectId)
+      const { error: settleError } = await settleGeneration(supabase, generation.id, {
+        success: outcome.ok,
+        error: outcome.ok ? null : outcome.error,
+        clearPayload: clearPayloadOnSettle,
+      })
+      if (settleError) {
+        console.error('[shots] SETTLE update failed', settleError)
       }
     } catch (settleErr) {
       // No further safety net for a failed SETTLE write - logged, not thrown, so it can
       // never override the already-decided outcome being returned.
       console.error('[shots] SETTLE update failed', settleErr)
+    }
+
+    // usage SETTLE. Only reserved on the fresh-call path (RECOVER never spends, so
+    // usageId stays null there) - skipped entirely when nothing was ever reserved.
+    // status reflects whether Claude actually responded and was billed, which is NOT
+    // the same as outcome.ok: a persistError after a successful call is outcome.ok ===
+    // false but was still billed successfully, while a max_tokens stop is billed but
+    // must settle 'failed' regardless of how much of the pipeline it saved.
+    if (usageId) {
+      await settleUsage({
+        supabase,
+        usageId,
+        provider: 'anthropic',
+        model: modelsConfig.shots.model,
+        status: measuredBreakdown !== null && stopReasonForSettle !== 'max_tokens' ? 'succeeded' : 'failed',
+        breakdown: measuredBreakdown,
+        stopReason: stopReasonForSettle,
+        error: outcome.ok ? null : caughtError,
+      })
     }
   }
 }

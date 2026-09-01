@@ -3,11 +3,13 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import type { User } from '@supabase/supabase-js'
+import { formatCost } from '@/lib/format-cost'
 import { UserMenu } from './user-menu'
 
-export function Rail({ user }: { user?: User }) {
+export function Rail({ user, spendThisMonth }: { user?: User; spendThisMonth: number }) {
   const pathname = usePathname()
   const active = pathname === '/dashboard'
+  const usageActive = pathname === '/usage'
   const name = (user?.user_metadata?.full_name as string | undefined)?.trim() || user?.email || 'Account'
   const email = user?.email ?? ''
 
@@ -63,14 +65,22 @@ export function Rail({ user }: { user?: User }) {
           </svg>
           Queue
         </div>
-        <div className="flex h-[34px] items-center gap-[10px] rounded-control px-rc-xs text-ui text-rail-fg-muted">
+        <Link
+          href="/usage"
+          className={
+            usageActive
+              ? 'relative flex h-[34px] items-center gap-[10px] rounded-control bg-rail-item-active-bg px-rc-xs text-ui font-medium text-rail-fg'
+              : 'flex h-[34px] items-center gap-[10px] rounded-control px-rc-xs text-ui text-rail-fg-muted hover:bg-rail-item-active-bg hover:text-rail-fg'
+          }
+        >
+          {usageActive && <span className="absolute left-0 top-[11px] h-3 w-[2px] rounded-[1px] bg-accent" />}
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <rect x="1" y="8" width="2.5" height="5" fill="currentColor" />
             <rect x="5.75" y="4.5" width="2.5" height="8.5" fill="currentColor" />
             <rect x="10.5" y="1.5" width="2.5" height="11.5" fill="currentColor" />
           </svg>
           Usage
-        </div>
+        </Link>
         <div className="flex h-[34px] items-center gap-[10px] rounded-control px-rc-xs text-ui text-rail-fg-muted">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
             <circle cx="7" cy="7" r="2.25" stroke="currentColor" strokeWidth="1.3" />
@@ -91,12 +101,12 @@ export function Rail({ user }: { user?: User }) {
         }}
       />
 
-      <div className="flex flex-col gap-rc-3xs px-rc-xs pb-rc-2xs">
-        <span className="text-label uppercase tracking-label text-rail-fg-muted">Credits used</span>
+      <Link href="/usage" className="flex flex-col gap-rc-3xs px-rc-xs pb-rc-2xs">
+        <span className="text-label uppercase tracking-label text-rail-fg-muted">Usage spending</span>
         <span className="text-body font-medium text-rail-fg">
-          $4.20 <span className="text-meta font-normal text-rail-fg-muted">this month</span>
+          {formatCost(spendThisMonth)} <span className="text-meta font-normal text-rail-fg-muted">this month</span>
         </span>
-      </div>
+      </Link>
 
       {user && (
         <>

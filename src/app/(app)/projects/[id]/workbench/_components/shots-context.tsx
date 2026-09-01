@@ -3,7 +3,6 @@
 import { useRouter } from 'next/navigation'
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DisplayShot } from './types'
-import type { ShotsGenerationStatus } from '@/app/api/projects/[id]/shots/logic'
 import { derivePhase, type Phase } from './derive-phase'
 
 type ShotsContextValue = {
@@ -24,7 +23,7 @@ export function ShotsProvider({
   projectId,
   initialShots,
   initialVideoType,
-  initialGenerationStatus,
+  initialGenerationState,
   initialHasPendingPayload,
   estimatedCredits,
   children,
@@ -32,7 +31,7 @@ export function ShotsProvider({
   projectId: string
   initialShots: DisplayShot[]
   initialVideoType: string | null
-  initialGenerationStatus: ShotsGenerationStatus
+  initialGenerationState: string | null
   initialHasPendingPayload: boolean
   estimatedCredits: number
   children: ReactNode
@@ -40,12 +39,15 @@ export function ShotsProvider({
   const router = useRouter()
   const [shots, setShots] = useState(initialShots)
   const [videoType, setVideoType] = useState(initialVideoType)
-  const [generationStatus, setGenerationStatus] = useState(initialGenerationStatus)
+  const [generationState, setGenerationState] = useState(initialGenerationState)
   const [hasPendingPayload, setHasPendingPayload] = useState(initialHasPendingPayload)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const triggeredRef = useRef(false)
 
-  const phase = derivePhase({ shotsGeneration: generationStatus, shotCount: shots.length })
+  const phase = derivePhase({
+    generation: generationState === null ? null : { state: generationState },
+    shotCount: shots.length,
+  })
 
   async function fetchShots(isRetry: boolean) {
     try {
@@ -66,7 +68,7 @@ export function ShotsProvider({
     } catch {
       // A genuine network failure (e.g. offline) never reached the server, so there is
       // nothing to resync - fall back to a local failed status.
-      setGenerationStatus('failed')
+      setGenerationState('failed')
     }
   }
 
@@ -80,7 +82,7 @@ export function ShotsProvider({
 
   function confirmRetry() {
     setConfirmOpen(false)
-    setGenerationStatus('generating')
+    setGenerationState('generating')
     void fetchShots(true)
   }
 
@@ -91,7 +93,7 @@ export function ShotsProvider({
     // Fire-once trigger for shot generation on first load. Optimistically flips to
     // 'generating' so the skeleton shows immediately, before the POST resolves.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setGenerationStatus('generating')
+    setGenerationState('generating')
     void fetchShots(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -103,9 +105,9 @@ export function ShotsProvider({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setShots(initialShots)
     setVideoType(initialVideoType)
-    setGenerationStatus(initialGenerationStatus)
+    setGenerationState(initialGenerationState)
     setHasPendingPayload(initialHasPendingPayload)
-  }, [initialShots, initialVideoType, initialGenerationStatus, initialHasPendingPayload])
+  }, [initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload])
 
   // Poll while generating so a tab that never fired its own POST (e.g. loaded mid-generation
   // from another tab/device) discovers completion. workbench/page.tsx is a server component

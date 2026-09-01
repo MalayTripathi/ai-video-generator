@@ -1,5 +1,8 @@
 export type DurationTarget = '30-60s' | '1-2min' | '3-5min' | '8-10min'
 
+// Single source of truth for the intake screen's pre-selected duration tile.
+export const DEFAULT_DURATION_TARGET: DurationTarget = '30-60s'
+
 export type DurationConfig = {
   label: string
   targetShots: number

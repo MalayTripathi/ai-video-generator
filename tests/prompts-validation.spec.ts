@@ -27,44 +27,44 @@ test.describe('write_prompts validation', () => {
     // where the response for s001 is empty (the exact failure mode observed
     // in production).
     const rawPrompts = [
-      { shot_key: 's001', image_prompt: '', video_prompt: '' },
-      { shot_key: 's002', image_prompt: GOOD_IMAGE_PROMPT, video_prompt: GOOD_VIDEO_PROMPT },
-      { shot_key: 's003', image_prompt: GOOD_IMAGE_PROMPT, video_prompt: GOOD_VIDEO_PROMPT },
+      { shot_key: 'b2c3d', image_prompt: '', video_prompt: '' },
+      { shot_key: 'f4g5h', image_prompt: GOOD_IMAGE_PROMPT, video_prompt: GOOD_VIDEO_PROMPT },
+      { shot_key: 'j6k7m', image_prompt: GOOD_IMAGE_PROMPT, video_prompt: GOOD_VIDEO_PROMPT },
     ]
 
     const { validEntries, missingShotKeys } = resolvePromptResults(rawPrompts, [
-      's001',
-      's002',
-      's003',
+      'b2c3d',
+      'f4g5h',
+      'j6k7m',
     ])
 
-    // s001's garbage entry never reaches persistence - it's simply not in
+    // b2c3d's garbage entry never reaches persistence - it's simply not in
     // validEntries, so the route's .update() call for it never happens and
     // the shot's columns stay null rather than being overwritten with "".
-    expect(validEntries.map((e) => e.shot_key).sort()).toEqual(['s002', 's003'])
+    expect(validEntries.map((e) => e.shot_key).sort()).toEqual(['f4g5h', 'j6k7m'])
 
     // Reported so the caller can gate wizard advancement and surface an error.
-    expect(missingShotKeys).toEqual(['s001'])
+    expect(missingShotKeys).toEqual(['b2c3d'])
   })
 
   test('fewer entries than requested are reported as missing', () => {
     const rawPrompts = [
-      { shot_key: 's002', image_prompt: GOOD_IMAGE_PROMPT, video_prompt: GOOD_VIDEO_PROMPT },
+      { shot_key: 'f4g5h', image_prompt: GOOD_IMAGE_PROMPT, video_prompt: GOOD_VIDEO_PROMPT },
     ]
 
-    const { validEntries, missingShotKeys } = resolvePromptResults(rawPrompts, ['s001', 's002'])
+    const { validEntries, missingShotKeys } = resolvePromptResults(rawPrompts, ['b2c3d', 'f4g5h'])
 
-    expect(validEntries.map((e) => e.shot_key)).toEqual(['s002'])
-    expect(missingShotKeys).toEqual(['s001'])
+    expect(validEntries.map((e) => e.shot_key)).toEqual(['f4g5h'])
+    expect(missingShotKeys).toEqual(['b2c3d'])
   })
 
   test('all valid entries leave no missing shot_keys', () => {
     const rawPrompts = [
-      { shot_key: 's001', image_prompt: GOOD_IMAGE_PROMPT, video_prompt: GOOD_VIDEO_PROMPT },
-      { shot_key: 's002', image_prompt: GOOD_IMAGE_PROMPT, video_prompt: GOOD_VIDEO_PROMPT },
+      { shot_key: 'b2c3d', image_prompt: GOOD_IMAGE_PROMPT, video_prompt: GOOD_VIDEO_PROMPT },
+      { shot_key: 'f4g5h', image_prompt: GOOD_IMAGE_PROMPT, video_prompt: GOOD_VIDEO_PROMPT },
     ]
 
-    const { validEntries, missingShotKeys } = resolvePromptResults(rawPrompts, ['s001', 's002'])
+    const { validEntries, missingShotKeys } = resolvePromptResults(rawPrompts, ['b2c3d', 'f4g5h'])
 
     expect(validEntries).toHaveLength(2)
     expect(missingShotKeys).toEqual([])

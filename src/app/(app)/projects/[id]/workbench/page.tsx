@@ -12,7 +12,6 @@ import { WorkbenchFooter } from './_components/workbench-footer'
 import type { DisplayDialogueLine, DisplayShot } from './_components/types'
 import type { Json, Tables } from '@/lib/database.types'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
-import { isShotsGenerationStatus } from '@/app/api/projects/[id]/shots/logic'
 
 type ElementRow = Tables<'elements'>
 type ShotRow = Tables<'shots'> & { shot_elements: { elements: ElementRow | null }[] }
@@ -55,7 +54,7 @@ export default async function WorkbenchPage({
   const { data: project } = await supabase
     .from('projects')
     .select(
-      'id, title, source_text, status, current_step, video_type, aspect_ratio, language, video_model, duration_target, shots_generation, pending_shots_payload'
+      'id, title, source_text, status, current_step, video_type, aspect_ratio, language, video_model, duration_target'
     )
     .eq('id', projectId)
     .eq('user_id', user.id)
@@ -65,20 +64,29 @@ export default async function WorkbenchPage({
     notFound()
   }
 
-  const [{ data: shotsRows }, { data: elementsRows }, { data: messageRows }] = await Promise.all([
-    supabase
-      .from('shots')
-      .select('*, shot_elements(elements(id, name, type, status, reference_image_path))')
-      .eq('project_id', projectId)
-      .order('order_index', { ascending: true }),
-    supabase.from('elements').select('*').eq('project_id', projectId),
-    supabase
-      .from('messages')
-      .select('*')
-      .eq('project_id', projectId)
-      .eq('role', 'assistant')
-      .order('created_at', { ascending: true }),
-  ])
+  const [{ data: shotsRows }, { data: elementsRows }, { data: messageRows }, { data: generation }] =
+    await Promise.all([
+      supabase
+        .from('shots')
+        .select('*, shot_elements(elements(id, name, type, status, reference_image_path))')
+        .eq('project_id', projectId)
+        .order('order_index', { ascending: true }),
+      supabase.from('elements').select('*').eq('project_id', projectId),
+      supabase
+        .from('messages')
+        .select('*')
+        .eq('project_id', projectId)
+        .eq('role', 'assistant')
+        .order('created_at', { ascending: true }),
+      supabase
+        .from('generations')
+        .select('state, payload')
+        .eq('project_id', projectId)
+        .eq('step', 'workbench')
+        .eq('operation', 'generate_shots')
+        .is('shot_id', null)
+        .maybeSingle(),
+    ])
 
   const elementsById = new Map((elementsRows ?? []).map((el) => [el.id, el]))
   const typedShotsRows = (shotsRows ?? []) as unknown as ShotRow[]
@@ -112,7 +120,7 @@ export default async function WorkbenchPage({
     createdAt: message.created_at,
   }))
 
-  const hasPendingPayload = project.pending_shots_payload !== null
+  const hasPendingPayload = generation?.payload != null
   const estimatedCredits =
     project.duration_target && project.duration_target in durationConfig
       ? durationConfig[project.duration_target as DurationTarget].estimatedCredits
@@ -123,9 +131,7 @@ export default async function WorkbenchPage({
       projectId={projectId}
       initialShots={shots}
       initialVideoType={project.video_type}
-      initialGenerationStatus={
-        isShotsGenerationStatus(project.shots_generation) ? project.shots_generation : 'pending'
-      }
+      initialGenerationState={generation?.state ?? null}
       initialHasPendingPayload={hasPendingPayload}
       estimatedCredits={estimatedCredits}
     >

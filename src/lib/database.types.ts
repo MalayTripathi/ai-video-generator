@@ -10,7 +10,7 @@ export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
-    PostgrestVersion: "14.17"
+    PostgrestVersion: "14.5"
   }
   public: {
     Tables: {
@@ -55,17 +55,19 @@ export type Database = {
           },
         ]
       }
-      jobs: {
+      generations: {
         Row: {
           created_at: string
           error: string | null
           external_id: string | null
           id: string
-          kind: string
+          operation: string
+          payload: Json | null
           project_id: string
-          provider: string
           shot_id: string | null
-          status: string
+          started_at: string | null
+          state: string
+          step: string
           updated_at: string
         }
         Insert: {
@@ -73,11 +75,13 @@ export type Database = {
           error?: string | null
           external_id?: string | null
           id?: string
-          kind: string
+          operation: string
+          payload?: Json | null
           project_id: string
-          provider: string
           shot_id?: string | null
-          status?: string
+          started_at?: string | null
+          state?: string
+          step: string
           updated_at?: string
         }
         Update: {
@@ -85,23 +89,25 @@ export type Database = {
           error?: string | null
           external_id?: string | null
           id?: string
-          kind?: string
+          operation?: string
+          payload?: Json | null
           project_id?: string
-          provider?: string
           shot_id?: string | null
-          status?: string
+          started_at?: string | null
+          state?: string
+          step?: string
           updated_at?: string
         }
         Relationships: [
           {
-            foreignKeyName: "jobs_project_id_fkey"
+            foreignKeyName: "generations_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "jobs_shot_id_fkey"
+            foreignKeyName: "generations_shot_id_fkey"
             columns: ["shot_id"]
             isOneToOne: false
             referencedRelation: "shots"
@@ -149,12 +155,9 @@ export type Database = {
           current_step: string
           duration_target: string | null
           furthest_step: number
-          generating_at: string | null
           id: string
           language: string | null
           language_code: string | null
-          pending_shots_payload: Json | null
-          shots_generation: string
           source_text: string | null
           status: string
           template_source_id: string | null
@@ -174,12 +177,9 @@ export type Database = {
           current_step?: string
           duration_target?: string | null
           furthest_step?: number
-          generating_at?: string | null
           id?: string
           language?: string | null
           language_code?: string | null
-          pending_shots_payload?: Json | null
-          shots_generation?: string
           source_text?: string | null
           status?: string
           template_source_id?: string | null
@@ -199,12 +199,9 @@ export type Database = {
           current_step?: string
           duration_target?: string | null
           furthest_step?: number
-          generating_at?: string | null
           id?: string
           language?: string | null
           language_code?: string | null
-          pending_shots_payload?: Json | null
-          shots_generation?: string
           source_text?: string | null
           status?: string
           template_source_id?: string | null
@@ -342,47 +339,98 @@ export type Database = {
       }
       usage: {
         Row: {
-          cache_creation_units: number
-          cache_read_units: number
           created_at: string
           estimated_cost: number | null
+          generation_id: string | null
           id: string
-          input_units: number
-          kind: string
-          output_units: number
-          project_id: string
+          message_id: string | null
+          model: string
+          operation: string
+          project_id: string | null
           provider: string
+          quantity: number | null
+          quoted_cost: number | null
+          rate_version: string | null
+          raw_usage: Json | null
+          shot_id: string | null
+          status: string
+          step: string
+          stop_reason: string | null
+          unit: string | null
+          updated_at: string
+          user_id: string
         }
         Insert: {
-          cache_creation_units?: number
-          cache_read_units?: number
           created_at?: string
           estimated_cost?: number | null
+          generation_id?: string | null
           id?: string
-          input_units?: number
-          kind: string
-          output_units?: number
-          project_id: string
+          message_id?: string | null
+          model: string
+          operation: string
+          project_id?: string | null
           provider: string
+          quantity?: number | null
+          quoted_cost?: number | null
+          rate_version?: string | null
+          raw_usage?: Json | null
+          shot_id?: string | null
+          status?: string
+          step: string
+          stop_reason?: string | null
+          unit?: string | null
+          updated_at?: string
+          user_id: string
         }
         Update: {
-          cache_creation_units?: number
-          cache_read_units?: number
           created_at?: string
           estimated_cost?: number | null
+          generation_id?: string | null
           id?: string
-          input_units?: number
-          kind?: string
-          output_units?: number
-          project_id?: string
+          message_id?: string | null
+          model?: string
+          operation?: string
+          project_id?: string | null
           provider?: string
+          quantity?: number | null
+          quoted_cost?: number | null
+          rate_version?: string | null
+          raw_usage?: Json | null
+          shot_id?: string | null
+          status?: string
+          step?: string
+          stop_reason?: string | null
+          unit?: string | null
+          updated_at?: string
+          user_id?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "usage_generation_id_fkey"
+            columns: ["generation_id"]
+            isOneToOne: false
+            referencedRelation: "generations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "usage_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "usage_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "usage_shot_id_fkey"
+            columns: ["shot_id"]
+            isOneToOne: false
+            referencedRelation: "shots"
             referencedColumns: ["id"]
           },
         ]
