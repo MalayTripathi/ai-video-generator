@@ -786,9 +786,81 @@ have one), so the vocabulary is enforced by app code only. `intake` is a
 pre-project screen, not a real `current_step` value — it only exists as
 the step-1 anchor in `furthest_step`'s mapping. `furthest_step` (smallint,
 default 1) tracks the deepest step a project has reached, 1-8 over that
-same vocabulary (intake=1 ... assembly=8). `projects.video_model` holds a
-single model string and is currently populated with a placeholder value —
-see Open questions.
+same vocabulary (intake=1 ... assembly=8). As of Phase 2, `current_step`'s
+column default is `'workbench'` (migration
+`20260901104929_current_step_default_workbench.sql`; it was still the
+pre-rename `'script'` until then, and that migration also backfilled any
+stray `'script'` row to `'workbench'` — see `## Phase 2` below).
+`projects.video_model` holds a single model string and is currently
+populated with a placeholder value — see Open questions.
+
+## Phase 2: `current_step` / `furthest_step` and `advanceStep()`
+
+These two `projects` columns have precise, distinct meanings, and conflating them was the
+root cause of both being broken before Phase 2:
+
+- `current_step` = the step the user is currently on. It is "where they are," not "how
+  far they got." It moves **backward** when the user navigates back via the step
+  indicator, and forward via Continue.
+- `furthest_step` = how far the user has unlocked. It **never decreases**.
+
+`intake` is not a tracked step and needs no runtime lower-bound guard against it: it never
+appears as a `current_step` value and has no per-project route (`/projects/new` is a
+pre-project screen, and the project row doesn't exist until submit), so "the user can't
+navigate back to intake" already follows from the enum and the route topology — no
+separate enforcement point is needed, and none should be added (a `MIN_NAVIGABLE_STEP`
+constant would be exactly the kind of scattered second enforcement point this phase
+exists to avoid).
+
+**`advanceStep(supabase, projectId, step)`** (`src/lib/projects/advance-step.ts`) is now
+the **sole permitted write site for both columns outside project creation**. It runs two
+statements, in order, no `.rpc()`, no read-then-write:
+1. An unconditional `current_step` update — it follows the user, forward or backward.
+2. A conditional `furthest_step` update, filtered `.lt('furthest_step', idx)` — a no-op
+   when navigating backward or re-entering an already-unlocked step. The `.lt()` filter
+   makes the never-decreases guarantee at the database, not by reading the current value
+   and computing a max in application code.
+
+`idx` comes from `stepIndex(step)` (`src/lib/config/pipeline.ts`), which derives from the
+existing `STEPS` array (`STEPS.indexOf(step) + 2`, the `+2` accounting for `intake`
+occupying the conceptual first slot without being a member of `Step`) rather than a
+separate hand-maintained map. **Known gap**: `storyboard` is a real `current_step` value
+(see the 8-step route list above) but isn't a member of `Step` — deliberately, since
+`Step`/`STEPS` is the operations-attribution vocabulary mirrored into the
+`generations`/`usage` CHECK constraints, and storyboard claims no generation and logs no
+usage (see the `pipeline.ts` file header). Widening `STEPS` to include it would wrongly
+imply storyboard belongs in those CHECK constraints too. Nothing writes `current_step`
+past `'workbench'` today, so this has no live consequence yet — whoever builds Step 5's
+slice must extend the `current_step` vocabulary (and `stepIndex`, and `advanceStep`'s
+parameter type) at that time, rather than this being pre-solved now.
+
+`advanceStep` is called **only on an explicit step transition — never on a save**. Saving
+an edit on a revisited step (e.g. editing a shot's camera fields on the workbench) persists
+via its own save action and must not call `advanceStep`; if saving advanced the step,
+`current_step` would start tracking edits instead of navigation and lose its meaning.
+Unsaved edits may live in component state but must never reach the database without an
+explicit save. The agent is available throughout steps 2 through 8.
+
+**`advanceStep` ships with zero callers as of Phase 2** — the Continue buttons and step
+indicator that will call it are a later slice. This is deliberate: the helper exists so
+the first real transition has somewhere correct to go, not so it can be exercised yet.
+
+**COUPLING WARNING**: `workbench-step-indicator.tsx` currently derives complete/current/
+locked from `current_step`'s position alone (`STEPS.findIndex`) and does not consult
+`furthest_step` — see Current focus. That is correct **only** because `advanceStep` has
+no callers yet, so `current_step` never regresses in practice. The moment the first
+`advanceStep` caller lands, `current_step` starts regressing on backward navigation, and
+the indicator would then render an already-unlocked step as locked — locking a user out
+of work they've already finished. **The indicator must switch to consulting
+`furthest_step` in the same slice that adds the first `advanceStep` caller, not in a
+later one.**
+
+Prior to Phase 2, `/api/projects/[id]/prompts` wrote `current_step: 'voiceover'` directly
+on success — wrong three ways (advanced to a route that doesn't exist as a per-project
+page yet, could do so with zero shots, and the route itself is slated to split into
+separate image-prompts/video-prompts routes before Step 4 ships). That write is removed
+entirely, with no substitute destination (any destination chosen now would encode an
+ordering that's about to change) — see Done.
 
 ## Done
 - Supabase email/password auth: signup, login, sign-out, protected dashboard
@@ -811,11 +883,12 @@ see Open questions.
   unmount/remount.
 - `/api/projects/[id]/prompts` generates `image_prompt`/`video_prompt` per
   shot, validated (min 50 chars, non-empty) before persistence — invalid
-  entries stay null and are regenerable. Partial failure returns 422 and
-  does not advance `current_step`, enforced by the same claim/recover
-  contract `/shots` uses (`step: 'image_prompts'`, `operation:
-  'write_prompts'` — see Database's `generations` section, and its
-  provisional-attribution blocker note). As of Phase 1 prompt 3 the raw
+  entries stay null and are regenerable. Partial failure returns 422,
+  enforced by the same claim/recover contract `/shots` uses (`step:
+  'image_prompts'`, `operation: 'write_prompts'` — see Database's
+  `generations` section, and its provisional-attribution blocker note). As
+  of Phase 2 the route no longer writes `current_step` on success either —
+  see `## Phase 2`. As of Phase 1 prompt 3 the raw
   Claude payload is persisted before any `shots.update()` (previously it
   wrote straight from the in-memory response — a real crash-safety
   improvement, not just a lock swap). Prompt caching is wired but inert
@@ -900,6 +973,21 @@ see Open questions.
   (`usage/data.ts`, wrapped in React's `cache()`) so the shared layout and
   the `/usage` page itself don't double-query when both render in the same
   request.
+- **Phase 2 complete**: `advanceStep()` (`src/lib/projects/advance-step.ts`) is now the
+  sole permitted write site for `current_step`/`furthest_step` outside project creation
+  (see `## Phase 2`) — ships with zero callers this phase, by design. The bad
+  `current_step: 'voiceover'` write in `/prompts` is removed with no substitute
+  destination. `stepIndex()` (`src/lib/config/pipeline.ts`) derives a project's progress
+  index from `STEPS`. A migration
+  (`20260901104929_current_step_default_workbench.sql`) fixed the column default
+  (`'script'` → `'workbench'`) and backfilled any stray `'script'` row. Read-only audits:
+  the dashboard resume link (`project-card.tsx`) is the one `current_step` read that
+  would 404 against a stale `'script'` row — closed by the migration above, no code
+  change needed at the read site itself; `runShotsPipeline`'s batch shot insert is clean
+  (`duration_locked`/`camera_overridden` are unconditional `false` on every row, no
+  heterogeneous-key PostgREST risk). `loading.tsx` skeletons added for `dashboard` and
+  `/usage`, mirroring each page's real layout so navigation streams immediately instead
+  of blocking on the server fetch.
 
 ## Superseded
 The old 4-step wizard (`script`/`voiceover`/`images`/`video`, driven by a
@@ -934,8 +1022,12 @@ today:
   today)
 - Element upload/generation (reference images) from the Assets tab
 - Step-guard navigation: gate step-to-step links on `furthest_step`, not
-  just `current_step` position — blocked on `furthest_step` actually
-  being live-tracked (see Phase 2 open items below).
+  just `current_step` position. `advanceStep()` (see `## Phase 2`) is now the
+  write site that will keep `furthest_step` live-tracked once wired up, but
+  it has zero callers yet, so this is still blocked in practice. Per the
+  coupling warning in `## Phase 2`, `workbench-step-indicator.tsx` must
+  switch from `current_step`-position to `furthest_step` in the same slice
+  that adds `advanceStep`'s first caller — not before, not after.
 - The actual product decision on when/whether to flip
   `SPEND_CAP_ENABLED` on is still open — Phase 1 only wired the
   mechanism (see `## Phase 1` in Database and the `/usage` page).
@@ -946,22 +1038,22 @@ today:
   page refresh mid-turn can cause the turn to re-fire and be billed
   twice. Known, accepted gap, not an oversight — revisit when C4 (the
   agent-turn work) is built.
-- **Going into Phase 2, four open items carried over from Phase 1:**
-  - `current_step` has no DB CHECK constraint (unconstrained text,
+- **Out of the four open items carried into Phase 2 from Phase 1, two remain open:**
+  - `current_step` still has no DB CHECK constraint (unconstrained text,
     app-code-enforced only) — unlike `aspect_ratio`/`duration_target`/
-    `video_type`, which do have one.
-  - `furthest_step` is written once, at project creation
-    (`createProjectFromIntake`, `= 2`), and never incremented anywhere
-    else in the codebase — step-guard navigation (above) can't gate on it
-    until something advances it as a project progresses.
-  - `/prompts` advances `current_step` straight to `'voiceover'`
-    (`runPromptGeneration`), skipping storyboard/video_prompts — a
-    leftover of the pre-8-step single-call design, the same root cause as
-    the provisional step-attribution issue in the `generations` section
-    under Database.
+    `video_type`, which do have one. Deliberately not added in Phase 2 (that's
+    Phase 3's job, alongside removing `'script'` from the vocabulary).
   - The `/prompts` split blocker before Step 4 (see Database's
     `generations` section and the Current focus bullet above) — not yet
     closed.
+
+  The other two are resolved by Phase 2 (see `## Phase 2` above): `furthest_step`
+  now has a real, single write site (`advanceStep()`) rather than being written once and
+  never touched again — though it still has no live callers, so `furthest_step` won't
+  actually advance past project creation until the step-guard navigation item above is
+  built. And `/prompts` no longer advances `current_step` to `'voiceover'` at all — the
+  write was removed outright rather than redirected, since any destination chosen now
+  would encode an ordering that's about to change once `/prompts` splits.
 
 ## Open questions
 - **Per-step model selection.** `projects.video_model` is a single column

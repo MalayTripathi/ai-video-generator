@@ -77,3 +77,25 @@ export function stepOperationLabel(step: Step, operation: Operation): string {
   const operationLabel = OPERATION_LABELS[step]?.[operation] ?? operation
   return `${stepLabel} — ${operationLabel}`
 }
+
+// Position of `step` in the project's overall progress scale, where intake
+// occupies the conceptual first slot (1) without being a member of Step -
+// see CLAUDE.md: intake is a pre-project screen, never a tracked step. This
+// keeps stepIndex('workbench') === 2, matching both the furthest_step values
+// already backfilled by migration 20260826162156_step_progress.sql and the
+// literal `furthest_step: 2` written at project creation
+// (src/app/(app)/projects/new/actions.ts).
+//
+// KNOWN GAP: storyboard is a real current_step value (CLAUDE.md's 8-step
+// route list) but is not a member of Step - deliberately, since Step is the
+// operations-attribution vocabulary mirrored into the generations/usage
+// CHECK constraints, and storyboard claims no generation and logs no usage
+// (see the file header above). Nothing writes current_step past 'workbench'
+// today, so this has no live consequence yet. Whoever builds Step 5's slice
+// must extend the current_step vocabulary (and this function, and
+// advanceStep's parameter type) at that time - do not preemptively widen
+// STEPS to include it, which would incorrectly imply storyboard belongs in
+// the generations/usage CHECK constraints too.
+export function stepIndex(step: Step): number {
+  return STEPS.indexOf(step) + 2
+}

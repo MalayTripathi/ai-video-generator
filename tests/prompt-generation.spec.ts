@@ -73,7 +73,7 @@ async function readGeneration(projectId: string) {
 }
 
 test.describe('Step 4 (provisional) - image/video prompt generation', () => {
-  test('writes prompts for shots that need them, advances current_step, settles succeeded, and logs a usage row carrying generation_id', async () => {
+  test('writes prompts for shots that need them, settles succeeded, and logs a usage row carrying generation_id', async () => {
     const user = primary.user
     {
       const projectId = await insertProject(user.id)
@@ -107,7 +107,7 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
         .eq('id', projectId)
         .single()
       expect(projectError).toBeNull()
-      expect(project!.current_step).toBe('voiceover')
+      expect(project!.current_step).toBe('workbench')
       expect(project!.status).toBe('in_progress')
 
       const generation = await readGeneration(projectId)

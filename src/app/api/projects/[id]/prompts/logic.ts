@@ -219,7 +219,7 @@ async function runPromptsPipeline(
 
   const { error: projectUpdateError } = await supabase
     .from('projects')
-    .update({ current_step: 'voiceover', status: 'in_progress' })
+    .update({ status: 'in_progress' })
     .eq('id', projectId)
 
   if (projectUpdateError) {
