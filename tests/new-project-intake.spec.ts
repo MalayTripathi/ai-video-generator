@@ -67,6 +67,59 @@ test.describe('New Project intake', () => {
     await expect(button).toBeEnabled()
   })
 
+  test('warns, but does not block, when the brief requests more shots than the selected duration caps', async ({
+    page,
+  }) => {
+    const user = primary.user
+    {
+      // DEFAULT_DURATION_TARGET ('30-60s') is pre-selected, targetShots = 8.
+      await page.route('**/api/projects/*/shots', (route) => route.abort())
+      await page.goto('/projects/new')
+
+      const warning = page.getByTestId('shot-count-warning')
+      await expect(warning).toBeHidden()
+
+      const brief = 'Create a 12 shot video about the history of the Great Wall of China'
+      await page.getByPlaceholder(/describe your idea/i).fill(brief)
+      await expect(warning).toBeVisible()
+
+      const button = page.getByRole('button', { name: 'Build workbench' })
+      await expect(button).toBeEnabled()
+
+      // The warning never blocks the real submission path, not just the button state.
+      await button.click()
+      await page.waitForURL(/\/projects\/[0-9a-f-]+\/workbench$/, { waitUntil: 'commit' })
+
+      const projectId = page.url().match(/\/projects\/([0-9a-f-]+)\/workbench$/)?.[1]
+      expect(projectId).toBeTruthy()
+
+      const { data: project, error } = await admin
+        .from('projects')
+        .select('user_id, source_text')
+        .eq('id', projectId!)
+        .single()
+      expect(error).toBeNull()
+      expect(project!.user_id).toBe(user.id)
+      expect(project!.source_text).toBe(brief)
+    }
+  })
+
+  test('does not warn when the requested shot count is at or below the selected duration cap', async ({ page }) => {
+    await page.route('**/api/projects/*/shots', (route) => route.abort())
+    await page.goto('/projects/new')
+
+    const warning = page.getByTestId('shot-count-warning')
+
+    // Below target (30-60s tier, targetShots = 8) - mirrors the already-correct
+    // production behavior where fewer shots than target is honored, not padded.
+    await page.getByPlaceholder(/describe your idea/i).fill('Create a 4 shot video about a lighthouse')
+    await expect(warning).toBeHidden()
+
+    // Exactly at target - explicit boundary, must stay silent.
+    await page.getByPlaceholder(/describe your idea/i).fill('Create an 8 shot video about a lighthouse')
+    await expect(warning).toBeHidden()
+  })
+
   test('rail and empty-state "New Project" links navigate to the intake screen', async ({
     page,
     context,

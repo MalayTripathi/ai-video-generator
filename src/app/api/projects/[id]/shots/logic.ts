@@ -12,8 +12,8 @@ import {
   type BlockedReason,
 } from '@/lib/generations/claim'
 import {
-  SHOT_GENERATION_SYSTEM_PROMPT_V2,
-  WRITE_SHOTS_TOOL,
+  SHOT_GENERATION_SYSTEM_PROMPT_V3,
+  buildWriteShotsTool,
   buildShotsDynamicBlock,
 } from '@/lib/prompts/shot-generation'
 import type { Json, Tables } from '@/lib/database.types'
@@ -205,7 +205,9 @@ async function runShotsPipeline(
   supabase: SupabaseServerClient,
   projectId: string,
   project: ClaimedProject,
-  rawInput: unknown
+  rawInput: unknown,
+  targetShots: number,
+  generationId: string
 ): Promise<
   { ok: true; status: 200; data: ShotsResponseBody } | { ok: false; status: 422 | 500; error: string }
 > {
@@ -229,6 +231,15 @@ async function runShotsPipeline(
       status: 422,
       error: "Couldn't build the shot list. The model returned nothing usable.",
     }
+  }
+
+  // Defensive backstop: the write_shots schema's maxItems already constrains the model to
+  // targetShots, so this should be rare. Never truncate here - the call is already paid
+  // for, and dropping trailing shots would leave a story missing its ending.
+  if (validatedShots.length > targetShots) {
+    console.warn(
+      `[shots] over_count project=${projectId} generation=${generationId} target=${targetShots} actual=${validatedShots.length}`
+    )
   }
 
   const parsedTitle = typeof input.title === 'string' ? input.title.trim().slice(0, 60) || null : null
@@ -517,28 +528,29 @@ export async function runShotGeneration(params: {
   let caughtError: unknown = null
 
   try {
+    const targetShots =
+      project.duration_target && project.duration_target in durationConfig
+        ? durationConfig[project.duration_target as DurationTarget].targetShots
+        : durationConfig['1-2min'].targetShots
+
     // RECOVER BEFORE SPEND. A stored payload means Claude has already been paid for;
     // recovery replays it and never re-calls the gateway.
     if (pendingPayload !== null) {
       console.warn(
         `[shots] recovering pending payload for project=${projectId} generation=${generation.id} - skipping a new Claude call`
       )
-      outcome = await runShotsPipeline(supabase, projectId, project, pendingPayload)
+      outcome = await runShotsPipeline(supabase, projectId, project, pendingPayload, targetShots, generation.id)
       return outcome
     }
 
-    const targetShots =
-      project.duration_target && project.duration_target in durationConfig
-        ? durationConfig[project.duration_target as DurationTarget].targetShots
-        : durationConfig['1-2min'].targetShots
-
     const userMessage = 'Generate the shot list now.'
+    const writeShotsTool = buildWriteShotsTool(targetShots)
 
     const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
       model: modelsConfig.shots.model,
       estimatedInputTokens: estimateInputTokens({
-        texts: [SHOT_GENERATION_SYSTEM_PROMPT_V2, buildShotsDynamicBlock(project, targetShots), userMessage],
-        tools: [WRITE_SHOTS_TOOL],
+        texts: [SHOT_GENERATION_SYSTEM_PROMPT_V3, buildShotsDynamicBlock(project, targetShots), userMessage],
+        tools: [writeShotsTool],
       }),
       maxTokens: modelsConfig.shots.maxTokens,
     })
@@ -564,10 +576,10 @@ export async function runShotGeneration(params: {
       model: modelsConfig.shots.model,
       max_tokens: modelsConfig.shots.maxTokens,
       system: [
-        { type: 'text', text: SHOT_GENERATION_SYSTEM_PROMPT_V2, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: SHOT_GENERATION_SYSTEM_PROMPT_V3, cache_control: { type: 'ephemeral' } },
         { type: 'text', text: buildShotsDynamicBlock(project, targetShots) },
       ],
-      tools: [WRITE_SHOTS_TOOL],
+      tools: [writeShotsTool],
       tool_choice: { type: 'tool', name: 'write_shots' },
       messages: [{ role: 'user', content: userMessage }],
     })
@@ -605,7 +617,14 @@ export async function runShotGeneration(params: {
       return outcome
     }
 
-    const pipelineResult = await runShotsPipeline(supabase, projectId, project, toolUseBlock.input)
+    const pipelineResult = await runShotsPipeline(
+      supabase,
+      projectId,
+      project,
+      toolUseBlock.input,
+      targetShots,
+      generation.id
+    )
 
     // TRUNCATION. A max_tokens stop was never a successful return, so - unlike a normal
     // failure - the payload is cleared here rather than left for a later recovery: leaving

@@ -50,7 +50,7 @@ const RICH_INPUT = {
   ],
 }
 
-async function insertProject(userId: string) {
+async function insertProject(userId: string, durationTarget = '1-2min') {
   const { data, error } = await admin
     .from('projects')
     .insert({
@@ -58,13 +58,27 @@ async function insertProject(userId: string) {
       title: null,
       source_text: 'A short film about a lighthouse keeper and her dog.',
       video_type: 'auto',
-      duration_target: '1-2min',
+      duration_target: durationTarget,
       current_step: 'workbench',
     })
     .select('id')
     .single()
   expect(error).toBeNull()
   return data!.id as string
+}
+
+function buildShots(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    voice_over: `Narration for shot ${i + 1}.`,
+    visual_description: `Visual for shot ${i + 1}.`,
+    shot_size: 'wide',
+    camera_angle: 'eye_level',
+    camera_movement: 'static',
+    duration_sec: 3,
+    section_label: 'Section',
+    dialogue: [],
+    element_names: [],
+  }))
 }
 
 async function readGeneration(projectId: string) {
@@ -258,6 +272,54 @@ test.describe('Step 2 workbench - shot generation', () => {
       expect(usageRows![0].status).toBe('failed')
       expect(usageRows![0].stop_reason).toBe('max_tokens')
       expect(usageRows![0].estimated_cost).not.toBeNull()
+    }
+  })
+
+  test('a gateway returning more shots than the target: all are persisted intact and the over-count is logged, not truncated', async () => {
+    const user = primary.user
+    {
+      // 30-60s tier has targetShots = 8 (src/lib/config/duration.ts); the schema's
+      // maxItems should prevent this in normal operation, but this test proves the
+      // server-side backstop never drops shots if it's ever hit.
+      const projectId = await insertProject(user.id, '30-60s')
+      const overCountInput = {
+        title: 'Over Count',
+        message: 'Here is your shot list.',
+        video_type: 'narrated_story',
+        shots: buildShots(10),
+      }
+      const gateway: ClaudeGateway = { async createMessage() { return successMessage(overCountInput) } }
+
+      const warnCalls: unknown[][] = []
+      const originalWarn = console.warn
+      console.warn = (...args: unknown[]) => {
+        warnCalls.push(args)
+      }
+
+      let result
+      try {
+        result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      } finally {
+        console.warn = originalWarn
+      }
+
+      expect(result.ok).toBe(true)
+
+      const { data: shots, error: shotsError } = await admin
+        .from('shots')
+        .select('shot_key')
+        .eq('project_id', projectId)
+      expect(shotsError).toBeNull()
+      // Nothing dropped, despite exceeding the target of 8.
+      expect(shots!.length).toBe(10)
+
+      const overCountWarning = warnCalls.find(
+        (args) => typeof args[0] === 'string' && args[0].includes('[shots] over_count')
+      )
+      expect(overCountWarning).toBeTruthy()
+      expect(overCountWarning![0]).toContain(`project=${projectId}`)
+      expect(overCountWarning![0]).toContain('target=8')
+      expect(overCountWarning![0]).toContain('actual=10')
     }
   })
 })

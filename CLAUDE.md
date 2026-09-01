@@ -114,6 +114,33 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   against the constant instead of a hardcoded string. Every billed generation
   outside the initial `pending` trigger (i.e. every retry) is confirmed
   through that modal before the request fires.
+- **`targetShots` is a hard ceiling, not a soft target.** Source text may
+  request fewer shots than the tier's `targetShots` (honored as-is — a
+  4-shot request on an 8-target tier correctly produces 4 shots), but never
+  more. Enforced three ways: the tool schema (`buildWriteShotsTool(targetShots)`
+  in `src/lib/prompts/shot-generation.ts` sets `maxItems` on the `shots`
+  property — the primary enforcement, since it's a constraint the model
+  can't exceed rather than an instruction it might weigh against the user's
+  request); the system prompt (`SHOT_GENERATION_SYSTEM_PROMPT_V3` states the
+  count is a hard maximum, and `buildShotsDynamicBlock` says "up to N shots
+  (hard maximum)", not "about N" — belt-and-braces with the schema, not a
+  substitute for it); and a non-blocking intake warning (`intake-form.tsx`
+  runs a light client-side regex — a number immediately before "shot(s)"/
+  "scene(s)" — against `source_text`, and shows an amber (`status-active`,
+  never `status-failed`) hint when the detected count exceeds the selected
+  tile's `targetShots`). The intake check warns rather than blocks because
+  the heuristic has no semantic understanding and false-positives readily
+  (a pasted screenplay's own prose describing its scene count, a mention of
+  a reference video's shot count) — blocking a legitimate submission on a
+  regex match would cost the user more than the warning is meant to save;
+  it never touches `BuildButton`'s `disabled` state. Server-side,
+  `runShotsPipeline` never silently truncates an over-count result even if
+  the schema constraint is somehow exceeded (e.g. a payload recovered from
+  before this constraint existed): the call is already paid for at that
+  point, and dropping trailing shots would leave a story missing its
+  ending, which is worse than a slightly long shot list — it persists the
+  full array and logs a `[shots] over_count ...` warning with the project
+  id, generation id, target, and actual count instead.
 - `src/lib/config/pipeline.ts` is the single source for the pipeline's
   step/operation/provider vocabulary: `STEPS`/`Step`, `OPERATIONS`/
   `Operation`, `PROVIDERS`/`Provider`, the `STEP_OPERATIONS` map of which

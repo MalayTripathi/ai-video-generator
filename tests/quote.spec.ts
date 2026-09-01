@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import type Anthropic from '@anthropic-ai/sdk'
 import { estimateInputTokens } from '../src/lib/usage/quote'
+import { buildWriteShotsTool } from '../src/lib/prompts/shot-generation'
 
 const SMALL_TOOL: Anthropic.Tool = {
   name: 'small_tool',
@@ -75,5 +76,17 @@ test.describe('estimateInputTokens', () => {
     })
 
     expect(withUserMessage).toBeGreaterThan(short)
+  })
+
+  test('picks up the real write_shots tool schema per call - the estimate differs across targetShots', () => {
+    const texts = ['A fixed system prompt.', 'A fixed user message.']
+
+    const withSmallTarget = estimateInputTokens({ texts, tools: [buildWriteShotsTool(8)] })
+    const withLargeTarget = estimateInputTokens({ texts, tools: [buildWriteShotsTool(75)] })
+
+    // buildWriteShotsTool builds a per-call schema whose maxItems and description text
+    // vary with targetShots - estimateInputTokens must reflect that difference, not a
+    // stale/shared schema size.
+    expect(withLargeTarget).not.toBe(withSmallTarget)
   })
 })
