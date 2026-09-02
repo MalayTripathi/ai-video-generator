@@ -1,7 +1,16 @@
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import { VIDEO_MODELS, type VideoModelId } from '@/lib/config/models'
 import { videoTypeLabel } from '@/lib/video-type-labels'
 import { languageLabel } from '@/lib/language-labels'
 import { displayTitle } from '@/lib/display-title'
+
+function videoModelLabel(videoModel: string | null): string | null {
+  if (!videoModel) return null
+  // Falls back to the raw stored value for a row that predates the registry (e.g. the old
+  // 'Kling 2.1' placeholder default) - never blank a chip just because a model isn't
+  // (yet) registered.
+  return VIDEO_MODELS[videoModel as VideoModelId]?.label ?? videoModel
+}
 
 function formatDuration(totalSeconds: number) {
   const minutes = Math.floor(totalSeconds / 60)
@@ -88,7 +97,7 @@ export function ProjectHeader({
         {videoTypeLabel(project.video_type) && <Chip>{videoTypeLabel(project.video_type)}</Chip>}
         {project.aspect_ratio && <Chip>{project.aspect_ratio} · Locked</Chip>}
         {languageLabel(project.language) && <Chip>{languageLabel(project.language)}</Chip>}
-        {project.video_model && <Chip accent>{project.video_model}</Chip>}
+        {videoModelLabel(project.video_model) && <Chip accent>{videoModelLabel(project.video_model)}</Chip>}
       </div>
     </div>
   )

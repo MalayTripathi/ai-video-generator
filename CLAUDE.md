@@ -89,6 +89,25 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
 - Model and provider config lives in `src/lib/config/models.ts`, read from
   env with defaults. Never hard-code a model name at a call site. Config
   sections are added when a step is built, not ahead of it.
+- **Video-model duration registry.** `src/lib/config/models.ts` also
+  exports `VIDEO_MODELS` (added C3 prompt 1) — a registry keyed by
+  `VideoModelId`, each entry an internal identifier, a user-facing
+  `label`, and `durationMin`/`durationMax` in fractional seconds — for
+  the Step 2 duration stepper to clamp against once it's built (not yet
+  built this task). `DEFAULT_VIDEO_MODEL` is `'mochi-1'` (`Mochi 1`, 1.4s
+  – 5.4s), and `modelsConfig.video.model`'s default now derives from it
+  (`VIDEO_MODELS[DEFAULT_VIDEO_MODEL].id`) rather than the old hardcoded
+  `'Kling 2.1'` literal — `actions.ts`'s intake-creation fallback is the
+  only reader, unchanged in shape. `ProjectHeader`'s model chip resolves
+  `project.video_model` through this registry for its label, falling
+  back to the raw stored value for a project created before the registry
+  existed. This registry is additive to `modelsConfig` (a different
+  axis — provider-call config vs. a duration-bounds catalog); adding a
+  model is one entry here, not edits scattered across several places. No
+  backfill migration was run for existing `'Kling 2.1'` projects — only
+  the default for new projects changed. This closes only the
+  duration-bounds half of the "Per-step model selection" open question
+  below; the broader per-step provider model map remains open.
 - Pricing lives in `src/lib/config/pricing.ts`, separate from
   `models.ts` — the single place a rate is edited, and the single source
   of `computeCost`, which turns a provider's raw usage report into the
@@ -121,7 +140,7 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   in `src/lib/prompts/shot-generation.ts` sets `maxItems` on the `shots`
   property — the primary enforcement, since it's a constraint the model
   can't exceed rather than an instruction it might weigh against the user's
-  request); the system prompt (`SHOT_GENERATION_SYSTEM_PROMPT_V3` states the
+  request); the system prompt (`SHOT_GENERATION_SYSTEM_PROMPT_V4` states the
   count is a hard maximum, and `buildShotsDynamicBlock` says "up to N shots
   (hard maximum)", not "about N" — belt-and-braces with the schema, not a
   substitute for it); and a non-blocking intake warning (`intake-form.tsx`
@@ -141,6 +160,17 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   ending, which is worse than a slightly long shot list — it persists the
   full array and logs a `[shots] over_count ...` warning with the project
   id, generation id, target, and actual count instead.
+- **Tool-schema cost note (C3 prompt 1).** `write_shots`' schema grew a
+  third time — `shot_size_origin`/`camera_angle_origin`/
+  `camera_movement_origin` (system prompt bumped to `_V4`) — which shifts
+  the pre-flight quote again, since `estimateInputTokens`
+  `JSON.stringify`'s the whole tool schema (see the `reserveUsage`
+  paragraph under Database). No attempt was made to preserve the previous
+  serialized size. The input-estimate calibration ratio (see
+  `usage.quoted_cost` under Database) was already stale twice over from
+  earlier enum-consolidation and camera-field changes; this makes it
+  stale a third time. The next live run is the new baseline, not a
+  regression to chase.
 - `src/lib/config/pipeline.ts` is the single source for the pipeline's
   step/operation/provider vocabulary: `STEPS`/`Step`, `OPERATIONS`/
   `Operation`, `PROVIDERS`/`Provider`, the `STEP_OPERATIONS` map of which
@@ -168,8 +198,15 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   shot-generation.ts`) and `sanitizeEnum`'s call sites
   (`/api/projects/[id]/shots/logic.ts`) both import from here, so the tool
   schema Claude sees can never drift from the validator that checks its
-  output. `elements.type` has no DB CHECK constraint (unlike the other
-  enums in this module) — a gap noted here, not closed.
+  output. `elements.type` **does** have a DB CHECK constraint
+  (`elements_type_check`, added in
+  `20260827051112_elements_and_shot_elements.sql`, matching `ELEMENT_TYPES`
+  exactly) — an earlier version of this note claimed otherwise; corrected
+  during C3 prompt 1, which also added `element_type` coverage to
+  `tests/enums-drift.spec.ts` now that there's a constraint to test
+  against. `camera_origin` (`CAMERA_ORIGINS` in this same module) is a
+  fourth enum added by C3 prompt 1 — see the three-origin camera model
+  under Database.
 - `displayTitle(project)` (`src/lib/display-title.ts`) is the single title
   fallback helper (`title` → truncated `source_text` → `'Untitled
   project'`) — used by the dashboard card, the workbench header, and the
@@ -394,13 +431,93 @@ than a join — see `usage`'s own paragraph below for why. Private
 with a `(project_id, shot_key)` unique constraint — not the ordinal
 `s001`-style values it originally shipped with.
 
-`shots` craft fields: `visual_description`; `dialogue` (jsonb
-`{element_id, line}[]`, resolved against `elements` for display — never
-raw speaker names); `shot_size` / `camera_angle` / `camera_movement`
-(each DB-CHECK-constrained to a fixed enum, hand-written in
-`src/lib/config/enums.ts` — see Conventions); `section_label`;
-`camera_overridden` / `duration_locked` (booleans marking a field as
-user-set vs. still free to regenerate).
+`shots` craft fields: `visual_description`; `shot_size` / `camera_angle` /
+`camera_movement` (each DB-CHECK-constrained to a fixed enum, hand-written
+in `src/lib/config/enums.ts` — see Conventions); `section_label`;
+`duration_locked` (boolean marking duration as user-set vs. still free to
+regenerate); `image_prompt_stale` / `video_prompt_stale` (booleans, see
+the Staleness paragraph below). Character dialogue lives in its own
+`shot_dialogue` table, not a column — see the dedicated paragraph below.
+
+**Camera fields have three independent origins, not a boolean.** As of
+C3 prompt 1, `shots.camera_overridden` (a single boolean covering all
+three camera fields together) is replaced by `shot_size_origin` /
+`camera_angle_origin` / `camera_movement_origin` — each DB-CHECK-
+constrained to exactly `'auto'` / `'derived'` / `'override'`
+(`CAMERA_ORIGINS` in `src/lib/config/enums.ts`), one origin per field
+independently:
+- `auto` — the visual description said nothing about this camera choice,
+  so the AI chose it freely.
+- `derived` — the visual description explicitly named this choice (e.g.
+  "**Wide shot** of the Taj Mahal at sunrise"), so the AI was forced to
+  it. The UI shows a note that this came from the description.
+- `override` — a person picked the value manually. No AI was involved,
+  and the model can never return this value itself — `write_shots`'
+  tool schema for these three fields is `MODEL_REPORTABLE_CAMERA_ORIGINS`
+  (`CAMERA_ORIGINS` filtered to drop `'override'`), so this is enforced
+  structurally, not only by validation.
+
+`runShotsPipeline` sanitizes an unrecognized/missing origin to `'auto'`
+(the columns are `NOT NULL`) rather than nulling — `'auto'` is the
+conservative default, since it never claims the description names a
+camera choice when the model didn't say so. The migration that
+introduced these columns backfilled existing `camera_overridden = true`
+rows to `'override'` on all three and left everything else at the
+`'auto'` default — **nothing backfills to `'derived'`**: determining
+which existing shots have a camera term in their visual description
+would require a paid Claude call per shot for a purely cosmetic result,
+so existing shots read as `auto` and become accurate the first time
+they're re-derived (C3 prompt 3).
+
+**Staleness is set by user edits only, never by a pipeline.**
+`shots.image_prompt_stale` / `shots.video_prompt_stale` and
+`projects.voiceover_stale` (all booleans, `DEFAULT false`, added in C3
+prompt 1) mark a downstream output as invalidated by a later edit. They
+currently have **no writers** — the C3 edit action (a later slice) is the
+only thing that will ever set them; created now so that work doesn't
+have to reach back into this migration later, the way `furthest_step`
+once did. Step 3's voiceover pipeline writes `duration_sec` back onto
+every shot where `duration_locked = false`; if that pipeline also set
+`voiceover_stale`, it would invalidate its own output on every
+successful run — the user regenerates, the pipeline writes durations
+again, the flag sets again, unbounded, and every cycle is a paid
+ElevenLabs call. **`runVoiceoverPipeline` must never write
+`voiceover_stale`.** Which edits set what (for the future edit action to
+implement): editing a shot's **voiceover text** sets
+`projects.voiceover_stale` (Step 3 produces one continuous narration
+file for the whole project, so any narration edit invalidates the whole
+render) and that shot's `image_prompt_stale` and `video_prompt_stale`.
+Editing a shot's **visual description** or **camera fields** sets that
+shot's `image_prompt_stale` and `video_prompt_stale`. Editing
+**character dialogue** sets that shot's `video_prompt_stale` only —
+dialogue is on-camera speech, not narration, so it doesn't touch the
+voiceover. Editing **duration** sets nothing stale: audio is derived
+from narration text, duration doesn't change what's spoken, and the
+mismatch between a locked duration and actual narration length is
+resolved at Step 5 by retiming visuals against the narration, which
+costs nothing. Staleness is a flag, never a null — the output was paid
+for and the user may still accept it.
+
+**Character dialogue lives in `shot_dialogue`, a separate table — not a
+jsonb column on `shots`.** (As of C3 prompt 1; it was previously
+`shots.dialogue jsonb`.) Columns: `id`, `shot_id` (`ON DELETE CASCADE`),
+`project_id` (denormalized — see below), `element_id` (`ON DELETE
+CASCADE`, the speaking character), `line`, `order_index`, `created_at`.
+RLS mirrors `shots`'s own single blanket policy exactly (one `USING`
+covering every command, not the split SELECT/INSERT/UPDATE pattern
+`generations`/`usage` use), keyed directly on the denormalized
+`project_id` rather than joining through `shots`. It's a table rather
+than a jsonb array specifically because a shared array can't support
+independent per-row saves without a read-modify-write race: the C3 UI
+(a later slice) saves each dialogue row independently, and C4's future
+agent-mutation tools will write dialogue concurrently with the UI — two
+concurrent writers sharing one array would silently clobber each other.
+`runShotsPipeline` writes resolved dialogue as one uniform batch insert
+into `shot_dialogue` (replacing the old per-shot `Promise.all` of
+`.update({ dialogue: ... })` calls); no explicit cleanup is needed on
+retry/recovery, since the pipeline's existing `shots` delete-before-
+reinsert already cascades `shot_dialogue` rows via `shot_id ON DELETE
+CASCADE`, the same way it already cascades `shot_elements`.
 
 `elements` (character / location / prop) are deduped per project by
 `lower(name)` (unique index), so a recurring character reuses one row —
@@ -1023,8 +1140,11 @@ ordering that's about to change) — see Done.
   (`tests/enums-drift.spec.ts`) inserts every member of each DB-CHECK-constrained enum
   and asserts acceptance, then one bogus value per enum and asserts rejection, turning
   TS-vs-CHECK-constraint drift into a test failure instead of a runtime surprise
-  (`element_type` has no DB CHECK constraint to test against, so it's consolidated into
-  the module but excluded from the drift test). `/api/projects/[id]/prompts` no longer
+  (`element_type` was believed to have no DB CHECK constraint to test against at the time,
+  so it was consolidated into the module but excluded from the drift test — this turned
+  out to be wrong; `elements_type_check` already existed, and C3 prompt 1 added the
+  coverage and corrected the stale claim, see Conventions and the C3 prompt 1 entry
+  below). `/api/projects/[id]/prompts` no longer
   writes `status: 'in_progress'` — dead vocabulary from the old script-generation era,
   removed with no substitute (the project-lifecycle status design is still open, see
   Current focus). `projects.current_step` gets its first-ever DB CHECK constraint
@@ -1037,6 +1157,30 @@ ordering that's about to change) — see Done.
   removed in earlier phases — and `.env.example` already carried
   `CLAUDE_PROMPTS_MODEL`/`CLAUDE_PROMPTS_MAX_TOKENS`/`CLAUDE_SHOTS_MODEL`/
   `CLAUDE_SHOTS_MAX_TOKENS`, so Phase 3 confirmed rather than performed that cleanup.
+- **C3 prompt 1 complete** (schema, config, and generation only — no editing UI, no save
+  actions, no AI re-derivation route; those are prompts 2 and 3): `shots.camera_overridden`
+  is replaced by three independent origin columns (`shot_size_origin` /
+  `camera_angle_origin` / `camera_movement_origin`, each `'auto'`/`'derived'`/`'override'`
+  — see the three-origin camera model under Database); `runShotsPipeline` now has
+  `write_shots` report a real origin per camera field (schema-restricted to
+  `MODEL_REPORTABLE_CAMERA_ORIGINS`, which excludes `'override'` — only a manual edit sets
+  that), replacing the old unconditional `camera_overridden: false` on every generated
+  shot. Downstream staleness flags (`shots.image_prompt_stale` / `video_prompt_stale`,
+  `projects.voiceover_stale`) are added with no writers yet — see the Staleness paragraph
+  under Database for the full rule, including why `runVoiceoverPipeline` must never write
+  `voiceover_stale`. Character dialogue moves off `shots.dialogue` (jsonb) onto its own
+  `shot_dialogue` table, migrated in place in the same migration that drops the old
+  column — a table rather than jsonb specifically so the C3 edit UI and C4's future agent
+  mutation tools can save dialogue rows independently without a read-modify-write race.
+  `src/lib/config/models.ts` gains a `VIDEO_MODELS` duration-bounds registry
+  (`DEFAULT_VIDEO_MODEL` = `'mochi-1'`), partially closing the "Per-step model selection"
+  open question. Corrected two stale claims found while implementing this: `elements.type`
+  already had a DB CHECK constraint (contradicting both the task brief and this file's own
+  prior wording — see the enums.ts Conventions bullet and the Phase 3 entry above), so no
+  new constraint migration was created; `element_type` drift-test coverage was added
+  against the existing constraint instead. Three migrations:
+  `20260902125700_add_camera_origin_columns.sql`, `20260902125702_add_staleness_flags.sql`,
+  `20260902125705_create_shot_dialogue_and_drop_shots_dialogue.sql`.
 
 ## Superseded
 The old 4-step wizard (`script`/`voiceover`/`images`/`video`, driven by a
@@ -1105,16 +1249,24 @@ today:
 
 ## Open questions
 - **Per-step model selection.** `projects.video_model` is a single column
-  holding one model string, currently a placeholder. But model choice is
-  per-step, not per-project: OpenAI models for image generation,
-  ElevenLabs models for voiceover, fal.ai models for video clips. The
-  schema needs to reflect that before Step 3 — likely a per-step model
-  map on the project rather than one column — and `models.ts` needs to
-  carry provider → model → `{ costPerUnit, ... }` plus, for video models,
-  the clip-duration constraints (`durationMin` / `durationMax` /
-  `durationStep`) that bound the workbench duration stepper.
+  holding one model string. Model choice is per-step, not per-project:
+  OpenAI models for image generation, ElevenLabs models for voiceover,
+  fal.ai models for video clips. The schema needs to reflect that before
+  Step 3 — likely a per-step model map on the project rather than one
+  column — and `models.ts` needs to carry provider → model →
+  `{ costPerUnit, ... }` for each. **Partially closed by C3 prompt 1**:
+  video-model duration bounds now live in `models.ts`'s `VIDEO_MODELS`
+  registry (`durationMin`/`durationMax` in seconds, keyed by
+  `VideoModelId`, `DEFAULT_VIDEO_MODEL` = `'mochi-1'` — see Conventions)
+  for the Step 2 duration stepper to clamp against once it's built. Still
+  open: the broader per-step provider model map itself, and per-model
+  cost config.
 - **Camera re-derivation trigger.** Editing `visual_description` should
-  re-derive `shot_size`/`camera_angle`/`camera_movement` only while
-  `camera_overridden` is false — but whether that fires automatically on
-  save or behind an explicit user action is undecided. It costs a model
-  call per save at production model tiers, multiplied across users.
+  re-derive `shot_size`/`camera_angle`/`camera_movement` only for fields
+  whose origin isn't `'override'` (see the three-origin camera model
+  under Database, C3 prompt 1 — this question predates that change and
+  used to read `camera_overridden` is false; the same question now
+  applies per-field instead of to all three fields together) — but
+  whether that fires automatically on save or behind an explicit user
+  action is undecided. It costs a model call per save at production model
+  tiers, multiplied across users.

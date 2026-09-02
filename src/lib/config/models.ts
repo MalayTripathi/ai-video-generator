@@ -1,5 +1,25 @@
 const isProduction = process.env.NODE_ENV === 'production'
 
+// Video-model registry: duration bounds per model, for the Step 2 duration stepper to
+// clamp against once it's built. This registry will grow - adding a model is one entry
+// here, not edits scattered across several places. Seconds are fractional (real clip
+// durations aren't whole numbers); frame counts and provider names must never appear in
+// user-facing strings - only `label` and durations in seconds are shown to users.
+export type VideoModelId = 'mochi-1'
+
+export type VideoModelConfig = {
+  id: VideoModelId
+  label: string
+  durationMin: number
+  durationMax: number
+}
+
+export const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
+  'mochi-1': { id: 'mochi-1', label: 'Mochi 1', durationMin: 1.4, durationMax: 5.4 },
+}
+
+export const DEFAULT_VIDEO_MODEL: VideoModelId = 'mochi-1'
+
 export type ModelsConfig = {
   prompts: {
     provider: 'anthropic'
@@ -36,6 +56,6 @@ export const modelsConfig: ModelsConfig = {
   },
   video: {
     provider: 'fal',
-    model: process.env.FAL_VIDEO_MODEL ?? 'Kling 2.1',
+    model: process.env.FAL_VIDEO_MODEL ?? VIDEO_MODELS[DEFAULT_VIDEO_MODEL].id,
   },
 }

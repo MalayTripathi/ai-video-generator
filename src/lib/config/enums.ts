@@ -54,9 +54,24 @@ export const CAMERA_MOVEMENTS = [
 
 export type CameraMovement = (typeof CAMERA_MOVEMENTS)[number]
 
-// Duplicated the same way as the enums above (tool schema + sanitizeEnum) but has no DB
-// CHECK constraint on elements.type - consolidated here for consistency; excluded from
-// the enum drift test since there's no DB rejection to assert against.
+// Duplicated the same way as the enums above (tool schema + sanitizeEnum). elements.type
+// does have a DB CHECK constraint (elements_type_check, added in
+// 20260827051112_elements_and_shot_elements.sql) - covered by the enum drift test like
+// every other enum here.
 export const ELEMENT_TYPES = ['character', 'location', 'prop'] as const
 
 export type ElementType = (typeof ELEMENT_TYPES)[number]
+
+// auto: the visual description said nothing about this camera choice, so the AI chose it
+// freely. derived: the visual description explicitly named this choice, so the AI was
+// forced to it. override: a person picked the value manually - no AI was involved.
+export const CAMERA_ORIGINS = ['auto', 'derived', 'override'] as const
+
+export type CameraOrigin = (typeof CAMERA_ORIGINS)[number]
+
+// Claude's write_shots tool never returns 'override' - only a manual edit sets that.
+// Derived (like CLASSIFIABLE_VIDEO_TYPES above) rather than hand-duplicated so the tool
+// schema can't drift into accepting a value only a human should set.
+export const MODEL_REPORTABLE_CAMERA_ORIGINS = CAMERA_ORIGINS.filter(
+  (v): v is Exclude<CameraOrigin, 'override'> => v !== 'override'
+)

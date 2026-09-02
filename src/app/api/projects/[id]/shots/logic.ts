@@ -12,7 +12,7 @@ import {
   type BlockedReason,
 } from '@/lib/generations/claim'
 import {
-  SHOT_GENERATION_SYSTEM_PROMPT_V3,
+  SHOT_GENERATION_SYSTEM_PROMPT_V4,
   buildWriteShotsTool,
   buildShotsDynamicBlock,
 } from '@/lib/prompts/shot-generation'
@@ -22,6 +22,7 @@ import {
   CAMERA_MOVEMENTS,
   ELEMENT_TYPES,
   CLASSIFIABLE_VIDEO_TYPES,
+  MODEL_REPORTABLE_CAMERA_ORIGINS,
 } from '@/lib/config/enums'
 import type { Json, Tables } from '@/lib/database.types'
 import type Anthropic from '@anthropic-ai/sdk'
@@ -38,6 +39,9 @@ export type RawShot = {
   shot_size: string | null
   camera_angle: string | null
   camera_movement: string | null
+  shot_size_origin: string | null
+  camera_angle_origin: string | null
+  camera_movement_origin: string | null
   duration_sec: number | null
   section_label: string | null
   dialogue: RawDialogueLine[]
@@ -101,6 +105,9 @@ export function parseRawShots(rawShots: unknown): RawShot[] {
       shot_size: typeof v.shot_size === 'string' ? v.shot_size : null,
       camera_angle: typeof v.camera_angle === 'string' ? v.camera_angle : null,
       camera_movement: typeof v.camera_movement === 'string' ? v.camera_movement : null,
+      shot_size_origin: typeof v.shot_size_origin === 'string' ? v.shot_size_origin : null,
+      camera_angle_origin: typeof v.camera_angle_origin === 'string' ? v.camera_angle_origin : null,
+      camera_movement_origin: typeof v.camera_movement_origin === 'string' ? v.camera_movement_origin : null,
       duration_sec: typeof v.duration_sec === 'number' ? v.duration_sec : null,
       section_label: typeof v.section_label === 'string' ? v.section_label.trim() || null : null,
       dialogue: Array.isArray(v.dialogue) ? v.dialogue.filter(isDialogueLine) : [],
@@ -209,6 +216,13 @@ async function runShotsPipeline(
     shot_size: sanitizeEnum(shot.shot_size, SHOT_SIZES),
     camera_angle: sanitizeEnum(shot.camera_angle, CAMERA_ANGLES),
     camera_movement: sanitizeEnum(shot.camera_movement, CAMERA_MOVEMENTS),
+    // The origin columns are NOT NULL, so an unrecognized/missing value falls back to
+    // 'auto' - the conservative default, since it never claims the description names a
+    // camera choice when we can't tell.
+    shot_size_origin: sanitizeEnum(shot.shot_size_origin, MODEL_REPORTABLE_CAMERA_ORIGINS) ?? 'auto',
+    camera_angle_origin: sanitizeEnum(shot.camera_angle_origin, MODEL_REPORTABLE_CAMERA_ORIGINS) ?? 'auto',
+    camera_movement_origin:
+      sanitizeEnum(shot.camera_movement_origin, MODEL_REPORTABLE_CAMERA_ORIGINS) ?? 'auto',
   }))
 
   if (validatedShots.length === 0) {
@@ -362,10 +376,12 @@ async function runShotsPipeline(
       shot_size: shot.shot_size,
       camera_angle: shot.camera_angle,
       camera_movement: shot.camera_movement,
+      shot_size_origin: shot.shot_size_origin,
+      camera_angle_origin: shot.camera_angle_origin,
+      camera_movement_origin: shot.camera_movement_origin,
       duration_sec: shot.duration_sec,
       section_label: shot.section_label,
       duration_locked: false,
-      camera_overridden: false,
     }))
 
     const { data, error } = await supabase.from('shots').insert(rows).select('*')
@@ -398,21 +414,21 @@ async function runShotsPipeline(
     }
   }
 
-  const dialogueUpdates = insertedShots
-    .map((shotRow, index) => ({ shotRow, dialogue: shotBuilds[index].dialogueResolved }))
-    .filter(({ dialogue }) => dialogue.length > 0)
-
-  const dialogueResults = await Promise.all(
-    dialogueUpdates.map(({ shotRow, dialogue }) =>
-      supabase
-        .from('shots')
-        .update({ dialogue: dialogue.map(({ element_id, line }) => ({ element_id, line })) })
-        .eq('id', shotRow.id)
-    )
+  const dialogueRows = insertedShots.flatMap((shotRow, index) =>
+    shotBuilds[index].dialogueResolved.map((d, lineIndex) => ({
+      shot_id: shotRow.id,
+      project_id: projectId,
+      element_id: d.element_id,
+      line: d.line,
+      order_index: lineIndex,
+    }))
   )
-  const dialogueError = dialogueResults.find((r) => r.error)?.error
-  if (dialogueError) {
-    return { ok: false, status: 500, error: dialogueError.message }
+
+  if (dialogueRows.length > 0) {
+    const { error: dialogueError } = await supabase.from('shot_dialogue').insert(dialogueRows)
+    if (dialogueError) {
+      return { ok: false, status: 500, error: dialogueError.message }
+    }
   }
 
   // Guarded: only write the title if the user hasn't set one since creation
@@ -535,7 +551,7 @@ export async function runShotGeneration(params: {
     const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
       model: modelsConfig.shots.model,
       estimatedInputTokens: estimateInputTokens({
-        texts: [SHOT_GENERATION_SYSTEM_PROMPT_V3, buildShotsDynamicBlock(project, targetShots), userMessage],
+        texts: [SHOT_GENERATION_SYSTEM_PROMPT_V4, buildShotsDynamicBlock(project, targetShots), userMessage],
         tools: [writeShotsTool],
       }),
       maxTokens: modelsConfig.shots.maxTokens,
@@ -562,7 +578,7 @@ export async function runShotGeneration(params: {
       model: modelsConfig.shots.model,
       max_tokens: modelsConfig.shots.maxTokens,
       system: [
-        { type: 'text', text: SHOT_GENERATION_SYSTEM_PROMPT_V3, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: SHOT_GENERATION_SYSTEM_PROMPT_V4, cache_control: { type: 'ephemeral' } },
         { type: 'text', text: buildShotsDynamicBlock(project, targetShots) },
       ],
       tools: [writeShotsTool],

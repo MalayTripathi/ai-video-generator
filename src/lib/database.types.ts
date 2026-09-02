@@ -169,6 +169,7 @@ export type Database = {
           video_model: string | null
           video_type: string | null
           voice_id: string | null
+          voiceover_stale: boolean
         }
         Insert: {
           aspect_ratio?: string | null
@@ -191,6 +192,7 @@ export type Database = {
           video_model?: string | null
           video_type?: string | null
           voice_id?: string | null
+          voiceover_stale?: boolean
         }
         Update: {
           aspect_ratio?: string | null
@@ -213,6 +215,7 @@ export type Database = {
           video_model?: string | null
           video_type?: string | null
           voice_id?: string | null
+          voiceover_stale?: boolean
         }
         Relationships: [
           {
@@ -220,6 +223,58 @@ export type Database = {
             columns: ["template_source_id"]
             isOneToOne: false
             referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shot_dialogue: {
+        Row: {
+          created_at: string
+          element_id: string
+          id: string
+          line: string
+          order_index: number
+          project_id: string
+          shot_id: string
+        }
+        Insert: {
+          created_at?: string
+          element_id: string
+          id?: string
+          line: string
+          order_index: number
+          project_id: string
+          shot_id: string
+        }
+        Update: {
+          created_at?: string
+          element_id?: string
+          id?: string
+          line?: string
+          order_index?: number
+          project_id?: string
+          shot_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shot_dialogue_element_id_fkey"
+            columns: ["element_id"]
+            isOneToOne: false
+            referencedRelation: "elements"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shot_dialogue_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shot_dialogue_shot_id_fkey"
+            columns: ["shot_id"]
+            isOneToOne: false
+            referencedRelation: "shots"
             referencedColumns: ["id"]
           },
         ]
@@ -257,72 +312,81 @@ export type Database = {
       shots: {
         Row: {
           camera_angle: string | null
+          camera_angle_origin: string
           camera_movement: string | null
-          camera_overridden: boolean
+          camera_movement_origin: string
           created_at: string
-          dialogue: Json
           duration_locked: boolean
           duration_sec: number | null
           id: string
           image_path: string | null
           image_prompt: string | null
+          image_prompt_stale: boolean
           image_status: string
           order_index: number
           project_id: string
           section_label: string | null
           shot_key: string
           shot_size: string | null
+          shot_size_origin: string
           updated_at: string
           video_path: string | null
           video_prompt: string | null
+          video_prompt_stale: boolean
           video_status: string
           visual_description: string | null
           voice_over: string
         }
         Insert: {
           camera_angle?: string | null
+          camera_angle_origin?: string
           camera_movement?: string | null
-          camera_overridden?: boolean
+          camera_movement_origin?: string
           created_at?: string
-          dialogue?: Json
           duration_locked?: boolean
           duration_sec?: number | null
           id?: string
           image_path?: string | null
           image_prompt?: string | null
+          image_prompt_stale?: boolean
           image_status?: string
           order_index: number
           project_id: string
           section_label?: string | null
           shot_key: string
           shot_size?: string | null
+          shot_size_origin?: string
           updated_at?: string
           video_path?: string | null
           video_prompt?: string | null
+          video_prompt_stale?: boolean
           video_status?: string
           visual_description?: string | null
           voice_over: string
         }
         Update: {
           camera_angle?: string | null
+          camera_angle_origin?: string
           camera_movement?: string | null
-          camera_overridden?: boolean
+          camera_movement_origin?: string
           created_at?: string
-          dialogue?: Json
           duration_locked?: boolean
           duration_sec?: number | null
           id?: string
           image_path?: string | null
           image_prompt?: string | null
+          image_prompt_stale?: boolean
           image_status?: string
           order_index?: number
           project_id?: string
           section_label?: string | null
           shot_key?: string
           shot_size?: string | null
+          shot_size_origin?: string
           updated_at?: string
           video_path?: string | null
           video_prompt?: string | null
+          video_prompt_stale?: boolean
           video_status?: string
           visual_description?: string | null
           voice_over?: string
@@ -459,12 +523,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -488,11 +552,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -513,11 +577,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -538,11 +602,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -555,11 +619,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
