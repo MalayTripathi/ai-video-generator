@@ -1,8 +1,8 @@
 import { Spinner } from '@/components/spinner'
 import type { CameraDerivationStatusValue } from './use-camera-derivation'
+import { RevertIcon } from './camera-origin-fields'
 
-const EXPLAINER =
-  'Every shot gets a camera: AI chooses one, a camera named in the visual description is taken from there, and picking one here makes it yours until you revert.'
+const EXPLAINER = 'AI picks a camera, unless your description names one or you pick one yourself.'
 
 function FailedDot() {
   return (
@@ -37,11 +37,15 @@ export function CameraDerivationStatus({
   pendingFieldLabels,
   heldFieldLabels,
   onRetry,
+  showResetAll,
+  onResetAll,
 }: {
   status: CameraDerivationStatusValue
   pendingFieldLabels: string[]
   heldFieldLabels: string[]
   onRetry: () => void
+  showResetAll: boolean
+  onResetAll: () => void
 }) {
   if (status === 'running') {
     const held = heldFieldLabels.length > 0 ? ` ${joinWithAnd(heldFieldLabels)} ${heldFieldLabels.length === 1 ? 'is' : 'are'} yours, so it stays.` : ''
@@ -65,5 +69,19 @@ export function CameraDerivationStatus({
     )
   }
 
-  return <span className="text-meta text-text-tertiary">{EXPLAINER}</span>
+  return (
+    <div className="flex items-start justify-between gap-rc-sm">
+      <span className="text-meta text-text-tertiary">{EXPLAINER}</span>
+      {showResetAll && (
+        <button
+          type="button"
+          onClick={onResetAll}
+          className="flex flex-none cursor-pointer items-center gap-[5px] text-meta text-accent hover:underline"
+        >
+          <RevertIcon />
+          Reset all to auto
+        </button>
+      )}
+    </div>
+  )
 }

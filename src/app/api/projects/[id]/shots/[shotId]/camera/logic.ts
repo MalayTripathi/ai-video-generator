@@ -13,7 +13,6 @@ import {
   AllowanceExceededError,
 } from '@/lib/usage'
 import {
-  CAMERA_FIELD_NAMES,
   CAMERA_FIELD_ENUM,
   CAMERA_DERIVATION_SYSTEM_PROMPT,
   buildDeriveCameraTool,
@@ -69,12 +68,15 @@ function isValidReportableOrigin(value: unknown): value is 'auto' | 'derived' {
 }
 
 /**
- * Runs the camera re-derivation call for one shot. Two triggers share this one
- * function: `fields` omitted asks about all 3 fields (a visual_description edit);
- * `revertField` set is a single-field "Revert to auto" - it both flips that field's
- * origin away from 'override' and re-derives it in the same call (see CLAUDE.md: this
- * is a deliberate combined-call design, not a separate origin-flip action followed by
- * a route call).
+ * Runs the camera re-derivation call for one shot. `fields` is the request's write
+ * scope - required, caller-decided, never inferred or widened by this function (see
+ * CLAUDE.md's camera-scope invariant); the route validates it's non-empty before this
+ * is ever called. Three trigger shapes share this one function: a visual_description
+ * edit passes all three fields; a single-field "Revert to auto" passes `fields: [that
+ * field], revertField: thatField`; "Reset all to auto" passes `fields` = all three,
+ * `resetAll: true`. `revertField`/`resetAll` both force-apply Claude's answer for their
+ * field(s) regardless of current origin - reverting/resetting always lands on a real
+ * value, never a no-op.
  *
  * No `generations` row is claimed here - see pipeline.ts's OPERATIONS comment. This is
  * a sub-second Haiku call, not expensive/resumable work, and a claim row's terminal
@@ -86,35 +88,26 @@ export async function runCameraDerivation(params: {
   projectId: string
   shotId: string
   userId: string
-  fields?: CameraFieldName[]
+  fields: CameraFieldName[]
   revertField?: CameraFieldName
+  resetAll?: boolean
 }): Promise<CameraDerivationResult> {
-  const { gateway, supabase, projectId, shotId, userId, fields, revertField } = params
+  const { gateway, supabase, projectId, shotId, userId, fields, revertField, resetAll } = params
 
   const shot = await loadOwnedShot(supabase, shotId, userId)
   if (!shot || shot.project_id !== projectId) {
     return { ok: false, status: 404, error: 'Shot not found' }
   }
 
-  let requestedFields: CameraFieldName[] = fields && fields.length > 0 ? [...fields] : [...CAMERA_FIELD_NAMES]
-  if (revertField && !requestedFields.includes(revertField)) {
-    requestedFields = [...requestedFields, revertField]
-  }
+  // No fallback, no widening: the caller's `fields` IS the scope. See CLAUDE.md's
+  // camera-scope invariant - a field outside this list is never a write target below,
+  // regardless of what Claude returns for it.
+  const requestedFields: CameraFieldName[] = [...fields]
 
   const originByField: Record<CameraFieldName, string> = {
     shot_size: shot.shot_size_origin,
     camera_angle: shot.camera_angle_origin,
     camera_movement: shot.camera_movement_origin,
-  }
-
-  // All-override guard: skipped for a revert, whose whole point is to un-override one
-  // field even if all 3 happen to be 'override'. Otherwise, asking Claude about 3
-  // fields nobody wants touched would be pure waste - no reserve, no network call.
-  if (!revertField) {
-    const allOverride = CAMERA_FIELD_NAMES.every((field) => originByField[field] === 'override')
-    if (allOverride) {
-      return { ok: false, status: 400, error: 'Every camera field is set manually - nothing to re-derive.' }
-    }
   }
 
   let usageId: string | null = null
@@ -197,13 +190,14 @@ export async function runCameraDerivation(params: {
       if (!isValidCameraValue(field, value) || !isValidReportableOrigin(origin)) continue
 
       const currentOrigin = originByField[field]
-      // Force-apply for the explicit revert target regardless of Claude's answer -
-      // reverting always lands on 'auto' (no mention) or 'derived' (explicit mention),
-      // both valid non-override states. Otherwise: apply to auto/derived fields
-      // unconditionally, and to an override field only when Claude found explicit new
-      // textual evidence ('derived') - this is the "description wins over a prior
-      // manual choice" rule, enforced here in code, never trusted to the model alone.
-      const shouldApply = field === revertField || currentOrigin !== 'override' || origin === 'derived'
+      // Force-apply for the explicit revert target, or for every field on a "Reset all"
+      // call, regardless of Claude's answer - reverting/resetting always lands on
+      // 'auto' (no mention) or 'derived' (explicit mention), both valid non-override
+      // states. Otherwise: apply to auto/derived fields unconditionally, and to an
+      // override field only when Claude found explicit new textual evidence ('derived')
+      // - this is the "description wins over a prior manual choice" rule, enforced here
+      // in code, never trusted to the model alone.
+      const shouldApply = field === revertField || resetAll === true || currentOrigin !== 'override' || origin === 'derived'
       if (!shouldApply) continue
 
       updates[field] = value

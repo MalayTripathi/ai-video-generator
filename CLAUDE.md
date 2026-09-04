@@ -613,29 +613,62 @@ already-`'override'` value is a real no-op, but the same value while
 origin is still `'auto'`/`'derived'` is not, since origin still needs to
 move to `'override'`.
 
+**Camera-scope invariant.** A camera field may be written ONLY if it is
+explicitly named in the request's `fields` scope. A field outside scope
+is a read-only input at most, never a write target, regardless of what
+the model returns about it. Scope is decided by the caller and is never
+inferred, defaulted, or widened by the server — `fields` is a required,
+server-validated parameter (`route.ts`'s `parseFields`: non-empty array,
+every member a real camera field name, no duplicates, else `400` before
+any DB read or AI call) and `runCameraDerivation` (`logic.ts`) uses it
+as-is (`const requestedFields = [...fields]`), with no fallback to "all
+three" and no auto-widening to include a revert/reset target the caller
+forgot to list. Corollary: a single-field "Reset to auto" has a scope of
+exactly one field; a description edit and "Reset all to auto" both have
+a scope of all three, passed explicitly by the client — never inferred
+server-side. This closed a real bug: the server used to fall back to all
+three fields whenever a caller's `fields` was missing, so a single-field
+revert (which never sent `fields`) could ask about, and overwrite, a
+sibling field the user never touched.
+
 **`POST /api/projects/[id]/shots/[shotId]/camera`** (`logic.ts`'s
 `runCameraDerivation`) is the AI re-derivation call that produces
-`'derived'`. Two trigger conditions, both client-side in
-`shot-card.tsx`: (a) a `visual_description` save whose value actually
-changed (the existing `VisualDescriptionField`'s own
+`'derived'`. Three trigger shapes, all client-side in `shot-card.tsx`,
+share this one function: (a) a `visual_description` save whose value
+actually changed (the existing `VisualDescriptionField`'s own
 `if (trimmed === persisted) return` guard already encodes "actually
-changed" — the trigger hooks into `onSaved`, not a new check) **and** at
-least one camera field isn't `'override'`; (b) a single-field "Revert to
-auto" click, which is **one combined route call**, not a separate
-origin-flip action followed by a route call — the route itself flips
-that field's origin away from `'override'` (implicitly, by force-applying
-its write-back regardless of what Claude answers) and re-derives it
-atomically. This was a deliberate design choice over a two-step
-alternative: it means a failed revert leaves the field completely
-untouched (still `'override'`, old value) rather than stuck with a
-flipped origin and a stale value, since nothing is written to `shots`
-until a successful response's write-back step.
+changed" — the trigger hooks into `onSaved`, not a new check) — sends
+`fields` listing all three, unconditionally, even when every field is
+currently `'override'` (see "Change B" below); (b) a single-field "Reset
+to auto" click — sends `fields: [thatField], revertField: thatField`,
+**one combined route call**, not a separate origin-flip action followed
+by a route call — the route itself flips that field's origin away from
+`'override'` (implicitly, by force-applying its write-back regardless of
+what Claude answers) and re-derives it atomically; (c) a "Reset all to
+auto" click (below the three fields, once per card) — sends `fields`
+listing all three plus `resetAll: true`, one combined call that
+force-applies Claude's answer for every field, landing each
+independently on `'auto'` or `'derived'` (both legitimate, neither
+coerced to the other). All three of (b)/(c)'s force-apply paths share
+the same rationale over a two-step alternative: a failed
+revert/reset-all leaves every touched field completely untouched (still
+its old origin and value) rather than stuck with a flipped origin and a
+stale value, since nothing is written to `shots` until a successful
+response's write-back step.
 
-**The all-override guard** — skipped only for a revert, whose entire
-point is to un-override one field — refuses the call (client before the
-request, server as a second check, `400`) when all three fields are
-already `'override'`: there is nothing for the model to write, so the
-call would be pure waste with no derivable outcome.
+**Change B: there is no "all fields already override → skip" guard.**
+An earlier version of this call refused (client-side skip, then a
+server-side `400`) to re-derive on a description edit when all three
+fields were already `'override'`, on the theory that nothing was left to
+re-derive. This was wrong on the merits and was removed: if a user edits
+the description to explicitly name a camera choice, that's real evidence
+and deserves a real check, even when every field happens to be a manual
+choice already — the guard was blocking exactly the case where the
+user's intent is most deliberate. There is no replacement guard inside
+`runCameraDerivation` for this, because there's nothing left to guard:
+the route already refuses an empty/missing `fields` before this function
+is ever called (see the camera-scope invariant above), so "scope is
+empty" can't reach here.
 
 **Trigger (a) always asks Claude about all three fields, including ones
 currently `'override'`; code alone decides, per field, whether to apply
@@ -645,10 +678,11 @@ names a camera choice for a field it's never told about, so a
 per-call-filtered schema can't implement "description wins" at all — the
 model has to see every field's enum options to answer any of them.
 Write-back (`logic.ts`) then applies unconditionally to a field whose
-origin is `'auto'`/`'derived'`, and to a field whose origin is
-`'override'` **only when Claude's answer for that field is `'derived'`**
-(explicit textual evidence) — otherwise that field is left completely
-untouched, value and origin alike. This is **the description-wins-over-a-prior-manual-choice
+origin is `'auto'`/`'derived'`, to any field on a `resetAll`/matching
+`revertField` call, and to a field whose origin is `'override'`
+**only when Claude's answer for that field is `'derived'`** (explicit
+textual evidence) — otherwise that field is left completely untouched,
+value and origin alike. This is **the description-wins-over-a-prior-manual-choice
 rule**: a camera term the user just typed into the description is a
 stronger, more recent signal than a dropdown they set earlier, but only
 when Claude found real textual evidence for that specific field — a
@@ -677,7 +711,7 @@ client-side instead: a **coalescing in-flight guard**
 that arrives mid-flight replaces any already-queued trigger (so at most
 one is ever waiting) and fires automatically once the running call
 finishes — it does **not** drop. Dropping was considered and rejected:
-a dropped "Revert to auto" click would leave that field on `'override'`
+a dropped "Reset to auto" click would leave that field on `'override'`
 with no feedback at all, which is worse than the accepted cost of
 allowing up to 2 billed calls for 2 rapid *distinct* edits to the same
 shot (never more than 2, regardless of how many times a trigger re-fires
@@ -1730,6 +1764,40 @@ ordering that's about to change) — see Done.
     task's requested regression test was for the fourth (unreproduced, unfixed) item,
     and per this file's own standing rule a test must not assert on hoped-for behavior
     that hasn't been confirmed.
+- **Camera re-derivation scope-widening bug fixed; all-override skip guard removed;
+  "Reset all to auto" added.** Root cause of a confirmed bug (a shot with all three
+  camera fields overridden; reverting just one also silently overwrote a different,
+  untouched field): `runCameraDerivation` (`logic.ts`) fell back to asking about all
+  three fields whenever a caller's `fields` list was missing/empty, and the client's
+  single-field revert request never sent one, so the sibling field entered scope and
+  could be overwritten by the "description wins over override" rule. Fixed by making
+  `fields` a required, server-validated parameter with no fallback and no
+  server-side widening — see the "Camera-scope invariant" paragraph under Database for
+  the full rule and both call sites' fix. Two related changes shipped alongside: (1)
+  the "all three fields already override → skip the call" guard on the description-edit
+  trigger is removed — it was blocking exactly the case (an explicit new description)
+  where re-derivation should always win; see "Change B" under Database. (2) A "Reset all
+  to auto" control (`camera-derivation-status.tsx`, right-aligned on the same line as
+  the (rewritten) helper text, hidden only when every field is already `'auto'`) issues
+  one combined three-field call (`fields` = all three, `resetAll: true`) rather than
+  three sequential per-field reverts, force-applying Claude's answer for every field so
+  each lands independently on `'auto'` or `'derived'`. The per-field control was renamed
+  "Revert to auto" → "Reset to auto" (sentence case, same position/icon/visibility rule)
+  to read clearly alongside the new "Reset all to auto". `RevertIcon` was exported from
+  `camera-origin-fields.tsx` so both controls share the exact same glyph. New/updated
+  tests in `tests/camera-derivation.spec.ts`: a direct-call regression test proving a
+  single-field revert leaves two overridden sibling fields byte-identical (value and
+  origin); a direct-call test proving a judgement for a field outside the requested
+  scope is discarded, not written; three `page.request.post` tests proving `fields`
+  omitted/empty/containing an unknown member all `400` before any DB read or AI call,
+  with zero `usage` rows and zero shot mutation; a UI test replacing the old (now
+  incorrect) "no re-derivation when all-override" test, proving a description edit
+  while all three fields are override still re-derives and honors explicit new
+  evidence; four "Reset all to auto" UI tests (hidden-when-all-auto, visible-with-one
+  non-auto, exactly-one-call-scoped-to-all-three, and per-field-vs-reset-all
+  cardinality). The pre-existing "Revert to auto"/coalescing tests were updated for the
+  rename and the now-required `fields` field in the request body. All 142 Playwright
+  tests pass; `npm run build`, `npx tsc --noEmit`, `npm run lint` all clean.
 
 ## Superseded
 The old 4-step wizard (`script`/`voiceover`/`images`/`video`, driven by a

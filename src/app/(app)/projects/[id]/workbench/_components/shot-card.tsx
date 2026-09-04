@@ -129,22 +129,17 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
   const rollup = useMemo(() => rollupStatus(fieldStatus), [fieldStatus])
   const boundCharacters = useMemo(() => shot.elements.filter((el) => el.type === 'character'), [shot.elements])
 
-  const allCameraFieldsOverride =
-    shot.shot_size_origin === 'override' &&
-    shot.camera_angle_origin === 'override' &&
-    shot.camera_movement_origin === 'override'
-
   function handleVisualDescriptionSaved(patch: { visual_description: string }) {
     updateShotLocal(shot.id, patch)
-    // Nothing to re-derive when every camera field is already a manual choice - the
-    // server enforces this guard too, but skipping the request client-side avoids a
-    // pointless round trip. See CLAUDE.md's re-derivation trigger conditions.
-    if (!allCameraFieldsOverride) {
-      snapshotCameraValues()
-      void trigger({}).then((updated) => {
-        if (updated) updateShotLocal(shot.id, toShotPatch(updated))
-      })
-    }
+    // Always re-derive on an actually-changed, successfully-saved description edit -
+    // even when every camera field is currently 'override'. New description text is
+    // real evidence that deserves a real check; write-back still only overwrites an
+    // override field when Claude finds explicit new evidence for it (see CLAUDE.md's
+    // camera-scope invariant and the description-wins-over-override rule).
+    snapshotCameraValues()
+    void trigger({ fields: [...CAMERA_FIELD_NAMES] }).then((updated) => {
+      if (updated) updateShotLocal(shot.id, toShotPatch(updated))
+    })
   }
 
   function handleCameraFieldSaved(field: CameraFieldName, value: string) {
@@ -154,7 +149,14 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
 
   function handleRevert(field: CameraFieldName) {
     snapshotCameraValues()
-    void trigger({ revertField: field }).then((updated) => {
+    void trigger({ fields: [field], revertField: field }).then((updated) => {
+      if (updated) updateShotLocal(shot.id, toShotPatch(updated))
+    })
+  }
+
+  function handleResetAll() {
+    snapshotCameraValues()
+    void trigger({ fields: [...CAMERA_FIELD_NAMES], resetAll: true }).then((updated) => {
       if (updated) updateShotLocal(shot.id, toShotPatch(updated))
     })
   }
@@ -169,6 +171,7 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
     derivationStatus === 'running'
       ? CAMERA_FIELD_NAMES.filter((f) => !pendingFields.has(f) && origins[f] === 'override').map((f) => CAMERA_FIELD_LABELS[f])
       : []
+  const showResetAll = CAMERA_FIELD_NAMES.some((f) => origins[f] !== 'auto')
 
   const cardBorderClassName = rollup.kind === 'failed' ? 'border-status-failed-line' : 'border-border-subtle'
   const durationLabel = shot.duration_sec === null ? '—' : `${shot.duration_sec.toFixed(1)}s`
@@ -315,6 +318,8 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
               pendingFieldLabels={pendingFieldLabels}
               heldFieldLabels={heldFieldLabels}
               onRetry={retryDerivation}
+              showResetAll={showResetAll}
+              onResetAll={handleResetAll}
             />
           </div>
 

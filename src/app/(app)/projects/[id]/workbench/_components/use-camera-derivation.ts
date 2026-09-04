@@ -7,7 +7,7 @@ export type CameraDerivationStatusValue = 'idle' | 'running' | 'succeeded' | 'fa
 
 export type CameraFieldUpdate = { value: string; origin: 'auto' | 'derived' }
 
-type DerivationRequest = { fields?: CameraFieldName[]; revertField?: CameraFieldName }
+type DerivationRequest = { fields: CameraFieldName[]; revertField?: CameraFieldName; resetAll?: boolean }
 
 /**
  * One instance per ShotCard (= per shot) - the correct guard granularity, since the
@@ -41,7 +41,7 @@ export function useCameraDerivation(projectId: string, shotId: string) {
   ): Promise<Partial<Record<CameraFieldName, CameraFieldUpdate>> | undefined> {
     runningRef.current = true
     lastRequestRef.current = request
-    const activeFields = request.fields ?? (request.revertField ? [request.revertField] : [...CAMERA_FIELD_NAMES])
+    const activeFields = request.fields
     setStatus('running')
     setPendingFields(new Set(activeFields))
 

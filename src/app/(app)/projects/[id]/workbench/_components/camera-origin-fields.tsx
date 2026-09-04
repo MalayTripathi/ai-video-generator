@@ -10,7 +10,7 @@ import { CustomSelect, type SelectOption } from './custom-select'
 import { useFieldSave, type FieldSaveStatus } from './use-field-save'
 import { Spinner } from '@/components/spinner'
 
-function RevertIcon() {
+export function RevertIcon() {
   return (
     <svg width="11" height="10" viewBox="0 0 12 11" fill="none" aria-hidden="true" className="flex-none">
       <path d="M1.5 5.5a4.5 4.5 0 1 0 1.6-3.45" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
@@ -108,17 +108,26 @@ function CameraField({
             ) : (
               <>
                 {origin === 'auto' && (
-                  <span className="flex-none rounded-badge bg-bg-inset px-[6px] py-[1px] text-mono uppercase tracking-[0.06em] text-text-tertiary">
+                  <span
+                    title="AI chose this."
+                    className="flex-none rounded-badge bg-bg-inset px-[6px] py-[1px] text-mono uppercase tracking-[0.06em] text-text-tertiary"
+                  >
                     auto
                   </span>
                 )}
                 {origin === 'derived' && (
-                  <span className="flex-none rounded-badge bg-bg-inset px-[6px] py-[1px] text-mono uppercase tracking-[0.06em] text-text-tertiary">
+                  <span
+                    title="Taken from your visual description."
+                    className="flex-none rounded-badge bg-bg-inset px-[6px] py-[1px] text-mono uppercase tracking-[0.06em] text-text-tertiary"
+                  >
                     described
                   </span>
                 )}
                 {origin === 'override' && (
-                  <span className="flex-none rounded-badge bg-bg-inset px-[6px] py-[1px] text-mono uppercase tracking-[0.06em] text-text-tertiary">
+                  <span
+                    title="You picked this. It stays until you reset it."
+                    className="flex-none rounded-badge bg-bg-inset px-[6px] py-[1px] text-mono uppercase tracking-[0.06em] text-text-tertiary"
+                  >
                     set by you
                   </span>
                 )}
@@ -139,7 +148,7 @@ function CameraField({
           className="flex cursor-pointer items-center gap-[5px] text-meta text-accent hover:underline"
         >
           <RevertIcon />
-          Revert to auto
+          Reset to auto
         </button>
       )}
     </div>
