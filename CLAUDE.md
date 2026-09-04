@@ -31,6 +31,16 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   source itself), bound as `:root` / `.dark` CSS variables and mapped into
   the Tailwind theme. **Light is the default mode.** Use tokens, never
   hard-coded hex.
+- **The canvas must be opened and read via the Claude Design MCP tools
+  before any UI work in this repo — never assumed from a prior session's
+  claim to have read it, and never built from a prose description of it.**
+  C3's shot-card presentation was built exactly that way (from descriptions,
+  not the canvas) across its first three prompts, and had to be rebuilt
+  wholesale once the canvas was actually opened — see the "C3 presentation
+  rebuild" entry under Done. The canvas can also contain more than one
+  vintage of a component's spec (an older section reflecting a schema that
+  has since changed, alongside a newer authoritative one) — check for a
+  superseding section before treating any single frame as current.
 - The rail nav is always dark, in both light and dark mode — never
   inverted. Its tokens (`--rail-bg`, `--rail-fg`, `--rail-fg-muted`,
   `--rail-item-active-bg`, `--rail-border`) carry different-but-both-dark
@@ -89,6 +99,70 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
 - Model and provider config lives in `src/lib/config/models.ts`, read from
   env with defaults. Never hard-code a model name at a call site. Config
   sections are added when a step is built, not ahead of it.
+- **Video-model duration registry.** `src/lib/config/models.ts` also
+  exports `VIDEO_MODELS` (added C3 prompt 1) — a registry keyed by
+  `VideoModelId`, each entry an internal identifier, a user-facing
+  `label`, and `durationMin`/`durationMax` in fractional seconds — for
+  the Step 2 duration stepper to clamp against (built C3 prompt 2).
+  `DEFAULT_VIDEO_MODEL` is `'mochi-1'` (`Mochi 1`, 1.4s – 5.4s), and
+  `modelsConfig.video.model`'s default now derives from it
+  (`VIDEO_MODELS[DEFAULT_VIDEO_MODEL].id`) rather than the old hardcoded
+  `'Kling 2.1'` literal — `actions.ts`'s intake-creation fallback is the
+  only reader, unchanged in shape. `ProjectHeader`'s model chip resolves
+  `project.video_model` through this registry for its label, falling
+  back to the raw stored value for a project created before the registry
+  existed. This registry is additive to `modelsConfig` (a different
+  axis — provider-call config vs. a duration-bounds catalog); adding a
+  model is one entry here, not edits scattered across several places.
+  **C3 prompt 2 added `'Kling 2.1'` itself** (`durationMin: 5,
+  durationMax: 10`), sourced directly from fal.ai's own API docs for
+  `fal-ai/kling-video/v2.1` (standard/pro/master all agree) rather than
+  invented — the key is the literal `'Kling 2.1'` string (Title Case,
+  with a space), not a kebab-case slug, because it has to match what old
+  rows were backfilled with
+  (`20260827105542_backfill_video_model_default.sql`) and there's no
+  normalization layer between a stored `video_model` value and this
+  registry lookup. Kling's real API is a **two-value duration enum (5s
+  or 10s)**, not a continuous range like Mochi's — C3 prompt 2 recorded
+  it as `durationMin: 5, durationMax: 10` anyway, so the stepper's 0.1s
+  steps between them could produce a value (e.g. 7.3s) the real Kling API
+  would reject, a correctness bug (not just a gap) since that failure
+  wouldn't surface until Step 7, the most expensive step, after the user
+  had already paid for everything upstream. **C3 prompt 3 closes this**:
+  `VideoModelConfig` is now a discriminated union —
+  `{ kind: 'continuous'; durationMin; durationMax }` or `{ kind:
+  'discrete'; allowedDurations: number[] }` — so a model can't be defined
+  without picking which kind it is; there is no optional field that
+  silently defaults to continuous. `mochi-1` stays `continuous`
+  (1.4s–5.4s); `'Kling 2.1'` is now `discrete` with `allowedDurations:
+  [5, 10]`. `isDurationAllowed(config, seconds)` (same file) is the one
+  place both kinds are checked uniformly. The duration stepper
+  (`duration-stepper.tsx`) branches on `kind`: continuous still steps by
+  0.1s and clamps at the nearer bound; discrete steps to the
+  nearest-neighbor **allowed** value in the direction of travel, so a
+  click from an out-of-range value (e.g. 7.3s) lands exactly on the
+  nearest real value (10.0s) rather than an intermediate one, and the
+  helper copy states the allowed values themselves ("5s or 10s") rather
+  than a "between X and Y" range, which would be actively false for a
+  model that only renders exact values. **Existing `'Kling 2.1'`
+  projects with now-invalid durations are not migrated or rewritten** —
+  they render amber (the existing out-of-range warning already covers
+  both kinds uniformly via `isDurationAllowed`) and the user resolves
+  them manually, same principle as every other "never silently rewrite a
+  locked duration" case in this file. This closes the duration-bounds
+  half of the "Per-step model selection" open question below for good
+  (moved to Done — see the C3 prompt 3 entry); the broader per-step
+  provider model map remains open.
+  `resolveVideoModel(id)` (same file) is the stepper's lookup: an
+  unresolved id throws outside production (catches a missing registry
+  entry during development) and returns `null` in production (the
+  stepper degrades to a disabled, explanatory state instead of crashing
+  the page) — deliberately never falls back to another model's bounds,
+  since that would be exactly the silent-truncation risk this registry
+  exists to prevent. This is a different, stricter fallback than
+  `ProjectHeader`'s chip-label lookup above, which must never blank a
+  chip for an unregistered value — two different failure costs, two
+  different fallbacks, both correct for their own call site.
 - Pricing lives in `src/lib/config/pricing.ts`, separate from
   `models.ts` — the single place a rate is edited, and the single source
   of `computeCost`, which turns a provider's raw usage report into the
@@ -121,7 +195,7 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   in `src/lib/prompts/shot-generation.ts` sets `maxItems` on the `shots`
   property — the primary enforcement, since it's a constraint the model
   can't exceed rather than an instruction it might weigh against the user's
-  request); the system prompt (`SHOT_GENERATION_SYSTEM_PROMPT_V3` states the
+  request); the system prompt (`SHOT_GENERATION_SYSTEM_PROMPT_V4` states the
   count is a hard maximum, and `buildShotsDynamicBlock` says "up to N shots
   (hard maximum)", not "about N" — belt-and-braces with the schema, not a
   substitute for it); and a non-blocking intake warning (`intake-form.tsx`
@@ -141,6 +215,17 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   ending, which is worse than a slightly long shot list — it persists the
   full array and logs a `[shots] over_count ...` warning with the project
   id, generation id, target, and actual count instead.
+- **Tool-schema cost note (C3 prompt 1).** `write_shots`' schema grew a
+  third time — `shot_size_origin`/`camera_angle_origin`/
+  `camera_movement_origin` (system prompt bumped to `_V4`) — which shifts
+  the pre-flight quote again, since `estimateInputTokens`
+  `JSON.stringify`'s the whole tool schema (see the `reserveUsage`
+  paragraph under Database). No attempt was made to preserve the previous
+  serialized size. The input-estimate calibration ratio (see
+  `usage.quoted_cost` under Database) was already stale twice over from
+  earlier enum-consolidation and camera-field changes; this makes it
+  stale a third time. The next live run is the new baseline, not a
+  regression to chase.
 - `src/lib/config/pipeline.ts` is the single source for the pipeline's
   step/operation/provider vocabulary: `STEPS`/`Step`, `OPERATIONS`/
   `Operation`, `PROVIDERS`/`Provider`, the `STEP_OPERATIONS` map of which
@@ -152,6 +237,31 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   arrays change. **Users must never see a raw step/operation value or a
   provider/model name anywhere in the UI** — `stepOperationLabel` is the
   only sanctioned renderer.
+- `src/lib/config/enums.ts` is the single hand-written source for
+  `video_type` (plus `CLASSIFIABLE_VIDEO_TYPES`, the `'auto'`-excluded
+  subset `write_shots` classifies into), `aspect_ratio`, `shot_size`,
+  `camera_angle`, `camera_movement`, and `element_type` — each an
+  `as const` tuple plus its derived union type, the same idiom
+  `pipeline.ts` uses for `STEPS`/`Step`. Never derived from
+  `database.types.ts`: a CHECK-constrained text column is typed as plain
+  `string` by the Supabase codegen, so derivation isn't available for some
+  of these, and mixing derived/hand-written would mean two patterns for
+  one job. This is a different axis from `pipeline.ts` — that file
+  describes the pipeline itself (steps/operations/providers); this one
+  describes shot attributes and project settings — so keep them in
+  separate modules. `buildWriteShotsTool` (`src/lib/prompts/
+  shot-generation.ts`) and `sanitizeEnum`'s call sites
+  (`/api/projects/[id]/shots/logic.ts`) both import from here, so the tool
+  schema Claude sees can never drift from the validator that checks its
+  output. `elements.type` **does** have a DB CHECK constraint
+  (`elements_type_check`, added in
+  `20260827051112_elements_and_shot_elements.sql`, matching `ELEMENT_TYPES`
+  exactly) — an earlier version of this note claimed otherwise; corrected
+  during C3 prompt 1, which also added `element_type` coverage to
+  `tests/enums-drift.spec.ts` now that there's a constraint to test
+  against. `camera_origin` (`CAMERA_ORIGINS` in this same module) is a
+  fourth enum added by C3 prompt 1 — see the three-origin camera model
+  under Database.
 - `displayTitle(project)` (`src/lib/display-title.ts`) is the single title
   fallback helper (`title` → truncated `source_text` → `'Untitled
   project'`) — used by the dashboard card, the workbench header, and the
@@ -210,6 +320,78 @@ The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
   — see `src/components/workbench/agent-message.tsx`. Only `assistant` is
   populated today (from `write_shots`'s `message` field); the other five
   render structurally but have no real caller yet.
+- **Per-field save model (C3 prompt 2).** The Step 2 shot card has no
+  Save button and no dirty state, anywhere. Every field saves
+  independently the moment the person leaves it: text fields
+  (`voice_over`, `visual_description`) on blur, dropdowns (dialogue
+  speaker) on change, the duration stepper on change (each +/- press).
+  One field's write never touches another's — there is no batched
+  "save the card" action to accidentally couple two fields together.
+  Server actions live in `src/app/(app)/projects/[id]/workbench/
+  actions.ts` (`updateShotVoiceOver`/`updateShotVisualDescription`/
+  `updateShotDuration`/`saveDialogueLine`/`deleteDialogueLine`), follow
+  the same shape `updateProjectTitle` established (plain result object,
+  never thrown, ownership verified via an explicit `projects!inner(user_id)`
+  join since `shots`/`shot_dialogue` have no `user_id` column of their
+  own — RLS is the backstop, not the only check) but add **field
+  attribution**: every result names which field it saved
+  (`{ field, success, unchanged? } | { field, success: false, error }`)
+  so a card with several fields mid-edit can retry exactly the one that
+  failed, never the whole card. Each action diffs the incoming value
+  against what's persisted before writing anything — an edit that
+  resolves to the same value performs no write and sets no staleness
+  flag (see the Staleness paragraph under Database). No `revalidatePath`
+  is used (consistent with the rest of this repo, which uses none) —
+  the client already holds the value it just sent, so a successful save
+  updates local state directly (`ShotsProvider`'s `updateShotLocal`)
+  instead of re-fetching.
+  Save status renders in two tiers: **per field**, a small slot (saving
+  / saved / save-failed-with-Retry) that decays from "saved" to nothing
+  after 2s (`use-field-save.ts`'s `useFieldSave` hook,
+  `save-status-indicator.tsx`) — the field stays fully editable while
+  saving, never disabled; and **per card**, a header rollup
+  (`shot-card.tsx`) that shows the worst state across every field on the
+  card (precedence failed > saving > saved > quiet), naming the specific
+  field on a single failure and collapsing to "N fields didn't save" +
+  "Retry all" on several. Each field subcomponent is wrapped in
+  `React.memo` so one field's status change re-renders the card's
+  status map without forcing sibling fields to re-render.
+  **Camera fields (`shot_size`/`camera_angle`/`camera_movement`) stayed
+  read-only through this prompt (C3 prompt 2)** — origin display only,
+  no dropdown, no change handler; setting `'override'` and triggering a
+  `'derived'` re-check both landed together in C3 prompt 3 so the three
+  origins were never partially wired (override with no re-derivation, or
+  vice versa, would have been a half-built feature). **As of C3 prompt
+  3, both are wired**: `camera-origin-fields.tsx` renders a real
+  `<select>` per field with its own `useFieldSave`/save action, and
+  `Revert to auto` is a real button — see the "Camera fields are
+  editable and AI-re-derivable" paragraph under Database for the full
+  mechanics. The bound-elements `+` toggle and `Delete shot` remain
+  inert, per the same design-fidelity-without-functionality treatment,
+  since their real functionality still belongs to C5 and C4
+  respectively.
+- **Duration stepper bounds and the over-target/out-of-range split (C3
+  prompt 2).** `duration-stepper.tsx` moves in 0.1s increments, always
+  displaying one decimal (`5` renders as `5.0s`), against bounds pulled
+  from the project's `video_model` via `resolveVideoModel` — never a
+  fixed constant, never frame counts or a provider name in copy. These
+  are two independent conditions, deliberately not conflated: a **saved
+  duration outside the current model's range** (reachable when a
+  project's model changes after durations were locked) is a per-shot,
+  deterministic fact — amber on that shot's own stepper, value never
+  silently rewritten, copy naming what's wrong and the way out
+  ("bring it down to `{max}`s, or pick a model that can hold `{value}`s").
+  An **aggregate over-target overrun** (sum of shot durations exceeds
+  the project's `duration_target` tier ceiling —
+  `durationConfig[...].targetSecondsMax`, added C3 prompt 2 alongside
+  `targetShots`/`estimatedCredits`) is a project-level fact, stated once
+  on the workbench header's Current total (amber), **not** repeated on
+  every locked shot's stepper — a locked duration is an independent,
+  deliberate choice, and the header's existing aggregate lock count
+  already makes the cost of manual durations visible without also
+  diluting the signal by painting every lock amber. `ProjectHeader`
+  computes both `totalSeconds` and `isOverTarget` from the `shots` array
+  it already receives; no new fetch.
 - The step indicator (`workbench-step-indicator.tsx`) only links a step
   if it's actually built and has a real per-project route
   (`/projects/[id]/{step}`); `intake` has no such route (`/projects/new`
@@ -376,13 +558,273 @@ than a join — see `usage`'s own paragraph below for why. Private
 with a `(project_id, shot_key)` unique constraint — not the ordinal
 `s001`-style values it originally shipped with.
 
-`shots` craft fields: `visual_description`; `dialogue` (jsonb
-`{element_id, line}[]`, resolved against `elements` for display — never
-raw speaker names); `shot_size` / `camera_angle` / `camera_movement`
-(each DB-CHECK-constrained to a fixed enum — read the migration, not just
-the types file, for the allowed values); `section_label`;
-`camera_overridden` / `duration_locked` (booleans marking a field as
-user-set vs. still free to regenerate).
+`shots` craft fields: `visual_description`; `shot_size` / `camera_angle` /
+`camera_movement` (each DB-CHECK-constrained to a fixed enum, hand-written
+in `src/lib/config/enums.ts` — see Conventions); `section_label`;
+`duration_locked` (boolean marking duration as user-set vs. still free to
+regenerate); `image_prompt_stale` / `video_prompt_stale` (booleans, see
+the Staleness paragraph below). Character dialogue lives in its own
+`shot_dialogue` table, not a column — see the dedicated paragraph below.
+
+**Camera fields have three independent origins, not a boolean.** As of
+C3 prompt 1, `shots.camera_overridden` (a single boolean covering all
+three camera fields together) is replaced by `shot_size_origin` /
+`camera_angle_origin` / `camera_movement_origin` — each DB-CHECK-
+constrained to exactly `'auto'` / `'derived'` / `'override'`
+(`CAMERA_ORIGINS` in `src/lib/config/enums.ts`), one origin per field
+independently:
+- `auto` — the visual description said nothing about this camera choice,
+  so the AI chose it freely.
+- `derived` — the visual description explicitly named this choice (e.g.
+  "**Wide shot** of the Taj Mahal at sunrise"), so the AI was forced to
+  it. The UI shows a note that this came from the description.
+- `override` — a person picked the value manually. No AI was involved,
+  and the model can never return this value itself — `write_shots`'
+  tool schema for these three fields is `MODEL_REPORTABLE_CAMERA_ORIGINS`
+  (`CAMERA_ORIGINS` filtered to drop `'override'`), so this is enforced
+  structurally, not only by validation.
+
+`runShotsPipeline` sanitizes an unrecognized/missing origin to `'auto'`
+(the columns are `NOT NULL`) rather than nulling — `'auto'` is the
+conservative default, since it never claims the description names a
+camera choice when the model didn't say so. The migration that
+introduced these columns backfilled existing `camera_overridden = true`
+rows to `'override'` on all three and left everything else at the
+`'auto'` default — **nothing backfills to `'derived'`**: determining
+which existing shots have a camera term in their visual description
+would require a paid Claude call per shot for a purely cosmetic result,
+so existing shots read as `auto` and become accurate the first time
+they're re-derived (C3 prompt 3).
+
+**Camera fields are editable and AI-re-derivable as of C3 prompt 3.**
+The three dropdowns (`shot_size`/`camera_angle`/`camera_movement`) in the
+expanded shot card save independently on `onChange` (a select's change
+*is* its commit — no blur moment the way a text field has), following
+the exact per-field save pattern prompt 2 established: same
+`loadOwnedShot` ownership join, same field-attributed `ShotFieldSaveResult`
+shape, same `useFieldSave`/`SaveStatusIndicator` pair
+(`updateShotSize`/`updateShotCameraAngle`/`updateShotCameraMovement` in
+`actions.ts`). Changing a field sets **that field's** origin to
+`'override'` and that shot's `image_prompt_stale`/`video_prompt_stale` —
+the other two fields' origins are completely untouched, since the three
+origins are independent, not a shared flag. The diff-before-write check
+compares the `(value, origin)` pair, not value alone — re-selecting an
+already-`'override'` value is a real no-op, but the same value while
+origin is still `'auto'`/`'derived'` is not, since origin still needs to
+move to `'override'`.
+
+**Camera-scope invariant.** A camera field may be written ONLY if it is
+explicitly named in the request's `fields` scope. A field outside scope
+is a read-only input at most, never a write target, regardless of what
+the model returns about it. Scope is decided by the caller and is never
+inferred, defaulted, or widened by the server — `fields` is a required,
+server-validated parameter (`route.ts`'s `parseFields`: non-empty array,
+every member a real camera field name, no duplicates, else `400` before
+any DB read or AI call) and `runCameraDerivation` (`logic.ts`) uses it
+as-is (`const requestedFields = [...fields]`), with no fallback to "all
+three" and no auto-widening to include a revert/reset target the caller
+forgot to list. Corollary: a single-field "Reset to auto" has a scope of
+exactly one field; a description edit and "Reset all to auto" both have
+a scope of all three, passed explicitly by the client — never inferred
+server-side. This closed a real bug: the server used to fall back to all
+three fields whenever a caller's `fields` was missing, so a single-field
+revert (which never sent `fields`) could ask about, and overwrite, a
+sibling field the user never touched.
+
+**`POST /api/projects/[id]/shots/[shotId]/camera`** (`logic.ts`'s
+`runCameraDerivation`) is the AI re-derivation call that produces
+`'derived'`. Three trigger shapes, all client-side in `shot-card.tsx`,
+share this one function: (a) a `visual_description` save whose value
+actually changed (the existing `VisualDescriptionField`'s own
+`if (trimmed === persisted) return` guard already encodes "actually
+changed" — the trigger hooks into `onSaved`, not a new check) — sends
+`fields` listing all three, unconditionally, even when every field is
+currently `'override'` (see "Change B" below); (b) a single-field "Reset
+to auto" click — sends `fields: [thatField], revertField: thatField`,
+**one combined route call**, not a separate origin-flip action followed
+by a route call — the route itself flips that field's origin away from
+`'override'` (implicitly, by force-applying its write-back regardless of
+what Claude answers) and re-derives it atomically; (c) a "Reset all to
+auto" click (below the three fields, once per card) — sends `fields`
+listing all three plus `resetAll: true`, one combined call that
+force-applies Claude's answer for every field, landing each
+independently on `'auto'` or `'derived'` (both legitimate, neither
+coerced to the other). All three of (b)/(c)'s force-apply paths share
+the same rationale over a two-step alternative: a failed
+revert/reset-all leaves every touched field completely untouched (still
+its old origin and value) rather than stuck with a flipped origin and a
+stale value, since nothing is written to `shots` until a successful
+response's write-back step.
+
+**Change B: there is no "all fields already override → skip" guard.**
+An earlier version of this call refused (client-side skip, then a
+server-side `400`) to re-derive on a description edit when all three
+fields were already `'override'`, on the theory that nothing was left to
+re-derive. This was wrong on the merits and was removed: if a user edits
+the description to explicitly name a camera choice, that's real evidence
+and deserves a real check, even when every field happens to be a manual
+choice already — the guard was blocking exactly the case where the
+user's intent is most deliberate. There is no replacement guard inside
+`runCameraDerivation` for this, because there's nothing left to guard:
+the route already refuses an empty/missing `fields` before this function
+is ever called (see the camera-scope invariant above), so "scope is
+empty" can't reach here.
+
+**Trigger (a) always asks Claude about all three fields, including ones
+currently `'override'`; code alone decides, per field, whether to apply
+the answer.** This was the resolved design over dynamically filtering the
+tool schema per call: Claude can't judge whether new description text
+names a camera choice for a field it's never told about, so a
+per-call-filtered schema can't implement "description wins" at all — the
+model has to see every field's enum options to answer any of them.
+Write-back (`logic.ts`) then applies unconditionally to a field whose
+origin is `'auto'`/`'derived'`, to any field on a `resetAll`/matching
+`revertField` call, and to a field whose origin is `'override'`
+**only when Claude's answer for that field is `'derived'`** (explicit
+textual evidence) — otherwise that field is left completely untouched,
+value and origin alike. This is **the description-wins-over-a-prior-manual-choice
+rule**: a camera term the user just typed into the description is a
+stronger, more recent signal than a dropdown they set earlier, but only
+when Claude found real textual evidence for that specific field — a
+model answer of `'auto'` for an override field means "no evidence," not
+"revert this," and changes nothing. `'override'` is enforced as
+structurally unreachable from the model exactly like `write_shots` — the
+tool schema's origin enum is `MODEL_REPORTABLE_CAMERA_ORIGINS`.
+
+**`derive_camera` writes a `usage` row but deliberately never a
+`generations` row** — the one thing in this task that spends money, and
+the only paid call in the repo with no claim. `generations`' insert-to-claim
+contract exists for expensive, resumable work; this is a sub-second Haiku
+call answering 1–3 enum questions, and a claim row would be actively
+harmful here: `'succeeded'` is terminal (see the `generations` claim
+algorithm above), so a claim row would block every *subsequent* edit of
+the same shot's description forever after the first successful
+derivation — there is no real "job" to resume. This is the same problem
+a future `agent_turn` claim would hit (see Current focus's existing
+"Agent chat turns deliberately get a `usage` row but no `generations`
+row" note) — a proper fix needs a policy for which operations are
+claim-worthy at all (an `OPERATION_POLICY` module), which is explicitly
+**C4's job, not solved here**. Concurrency here is handled entirely
+client-side instead: a **coalescing in-flight guard**
+(`use-camera-derivation.ts`'s `useCameraDerivation`, one instance per
+`ShotCard` = per shot) tracks whether a call is running; a second trigger
+that arrives mid-flight replaces any already-queued trigger (so at most
+one is ever waiting) and fires automatically once the running call
+finishes — it does **not** drop. Dropping was considered and rejected:
+a dropped "Reset to auto" click would leave that field on `'override'`
+with no feedback at all, which is worse than the accepted cost of
+allowing up to 2 billed calls for 2 rapid *distinct* edits to the same
+shot (never more than 2, regardless of how many times a trigger re-fires
+while one is already running — repeated re-fires just keep replacing the
+single queued slot).
+
+**`reserveUsage`'s `generationId` param is now `string | null`** (was
+`string`) — a minimal, additive widening for this one call site, which
+has no `generations` row to attach to. `usage.generation_id` was already
+nullable (`ON DELETE SET NULL`, from Phase 1's drop-and-recreate
+migration), so this is a pure application-layer typing change; no
+migration was needed for that column. Every other call site
+(`/shots`, `/prompts`) keeps passing a real `generation.id`.
+
+**`CLAUDE_CAMERA_MODEL`/`CLAUDE_CAMERA_MAX_TOKENS`** are new entries in
+`modelsConfig.camera` (`models.ts`) and `.env.example`.
+`modelsConfig.camera.model` deliberately does **not** follow the
+`isProduction ? sonnet : haiku` ternary every other section uses — it is
+**Haiku permanently, including production, a locked cost decision**:
+deriving 1–3 enum values from a sentence is mechanical work that never
+benefits from Sonnet's extra quality, and this call fires on nearly
+every visual-description blur, so the cost delta compounds across every
+edit of every shot in a way the other, rarer pipeline calls don't. Still
+overridable via the env var for ops flexibility, but the code default is
+Haiku in both environments. `modelsConfig.camera.maxTokens` defaults to
+**128**, deliberately small: `reserveUsage` reserves the *full*
+`max_tokens` as its worst-case pre-flight quote (see the `reserveUsage`
+paragraph below), so reusing `shots`'/`prompts`' ~8192-scale ceiling
+here would reserve roughly 25× the real cost of a 1–3 enum-field
+answer, on every description edit. A representative 3-field call quotes
+at input≈768 / output=128 tokens ≈ **$0.0014** against Haiku's real
+rates — see `RATE_VERSION` in `pricing.ts`.
+
+**Staleness is set by user edits only, never by a pipeline.**
+`shots.image_prompt_stale` / `shots.video_prompt_stale` and
+`projects.voiceover_stale` (all booleans, `DEFAULT false`, added in C3
+prompt 1) mark a downstream output as invalidated by a later edit. C3
+prompt 1 shipped them with no writers; **C3 prompt 2's per-field save
+actions are now those writers** (`src/app/(app)/projects/[id]/workbench/
+actions.ts` — see the per-field save model under Conventions). Step 3's
+voiceover pipeline writes `duration_sec` back onto every shot where
+`duration_locked = false`; if that pipeline also set `voiceover_stale`,
+it would invalidate its own output on every successful run — the user
+regenerates, the pipeline writes durations again, the flag sets again,
+unbounded, and every cycle is a paid ElevenLabs call.
+**`runVoiceoverPipeline` must never write `voiceover_stale`.** Which
+edits set what (implemented as described, C3 prompt 2): editing a shot's
+**voiceover text** sets `projects.voiceover_stale` (Step 3 produces one
+continuous narration file for the whole project, so any narration edit
+invalidates the whole render) and that shot's `image_prompt_stale` and
+`video_prompt_stale`. Editing a shot's **visual description** sets that
+shot's `image_prompt_stale` and `video_prompt_stale`. Editing
+**character dialogue** sets that shot's `video_prompt_stale` only —
+dialogue is on-camera speech, not narration, so it doesn't touch the
+voiceover. Editing **duration** sets nothing stale: audio is derived
+from narration text, duration doesn't change what's spoken, and the
+mismatch between a locked duration and actual narration length is
+resolved at Step 5 by retiming visuals against the narration, which
+costs nothing. Staleness is a flag, never a null — the output was paid
+for and the user may still accept it (see the never-discard-paid-output
+principle under `## Phase 1`'s `usage` section). Editing a **camera
+field** (`shot_size`/`camera_angle`/`camera_movement`), by dropdown or by
+AI re-derivation, sets that shot's `image_prompt_stale` and
+`video_prompt_stale` — the same two flags a visual description edit
+sets, since a camera framing change is exactly as visually invalidating
+(as of C3 prompt 3; camera fields were read-only with no edit path
+through prompt 2, so this exception no longer applies).
+
+Every field write above is preceded by a diff against the persisted
+value: an edit that resolves to the same value performs no write and
+sets no flag (a field is only ever marked stale by an edit that actually
+changed something) — see the per-field save model under Conventions.
+
+**Character dialogue lives in `shot_dialogue`, a separate table — not a
+jsonb column on `shots`.** (As of C3 prompt 1; it was previously
+`shots.dialogue jsonb`.) Columns: `id`, `shot_id` (`ON DELETE CASCADE`),
+`project_id` (denormalized — see below), `element_id` (`ON DELETE
+CASCADE`, the speaking character), `line`, `order_index`, `created_at`.
+RLS mirrors `shots`'s own single blanket policy exactly (one `USING`
+covering every command, not the split SELECT/INSERT/UPDATE pattern
+`generations`/`usage` use), keyed directly on the denormalized
+`project_id` rather than joining through `shots`. It's a table rather
+than a jsonb array specifically because a shared array can't support
+independent per-row saves without a read-modify-write race: the C3 UI
+(a later slice) saves each dialogue row independently, and C4's future
+agent-mutation tools will write dialogue concurrently with the UI — two
+concurrent writers sharing one array would silently clobber each other.
+`runShotsPipeline` writes resolved dialogue as one uniform batch insert
+into `shot_dialogue` (replacing the old per-shot `Promise.all` of
+`.update({ dialogue: ... })` calls); no explicit cleanup is needed on
+retry/recovery, since the pipeline's existing `shots` delete-before-
+reinsert already cascades `shot_dialogue` rows via `shot_id ON DELETE
+CASCADE`, the same way it already cascades `shot_elements`.
+
+**C3 prompt 2's dialogue speaker rule.** The speaker dropdown in the
+expanded shot card only ever lists elements bound to *that shot* via
+`shot_elements`, filtered to `type === 'character'` — not every character
+in the project. A saved `shot_dialogue` row whose `element_id` isn't
+among that shot's bound characters renders as a **read-only, out-of-list
+value** (the speaker's name, resolved from the row's own joined element,
+not blanked and not silently reassigned to some other character) rather
+than an error state. This is reachable today two ways: dialogue migrated
+from the old `shots.dialogue` jsonb column may reference an element that
+was never (re-)bound to that shot, and generation itself can resolve a
+dialogue speaker to an element without that binding being reflected in
+`shot_elements` (binding is C5's job — see Current focus). When a shot
+has zero bound characters, `+ Add line` is disabled with the reason shown
+beside it ("Bind a character to this shot first") rather than after a
+click. A new row saves nowhere until both speaker and line are filled —
+there's no half-formed `shot_dialogue` row and no card-wide dirty state
+for it; discarding an incomplete row costs nothing. Row removal
+re-sequences the remaining rows' `order_index` to stay contiguous (a
+plain re-`UPDATE` loop — no RPC).
 
 `elements` (character / location / prop) are deduped per project by
 `lower(name)` (unique index), so a recurring character reuses one row —
@@ -517,6 +959,19 @@ this get "simplified" to null-until-settled later.
 A `max_tokens` truncation is not its own status: it settles as `status:
 'failed'` with `stop_reason: 'max_tokens'` — `stop_reason` is data, never
 a status value.
+
+**Never discard paid output to signal that it may be wrong.** Earlier
+behaviour (in the pre-rename `script/` step, removed wholesale before C3)
+nulled `image_prompt` and `video_prompt` when the voiceover changed. The
+staleness flag strictly dominates: nulling forces a paid regeneration to
+recover text that already existed, destroys any hand-editing the user did
+at Step 4, removes the user's judgement about whether the change actually
+matters, and renders identically to a shot that was never generated. A
+flag preserves the output, keeps the edit reversible for free, and lets
+the UI offer "may be out of date · regenerate" instead of showing an
+empty field. C3 prompt 2's per-field save actions
+(`src/app/(app)/projects/[id]/workbench/actions.ts`) follow this: every
+field write sets staleness flags, never nulls a prompt column.
 
 **As of Phase 1 prompt 4, `logClaudeUsage` no longer exists.** `usage`
 rows are written by `src/lib/usage/` (`reserveUsage`/`settleUsage`/
@@ -780,15 +1235,89 @@ Read `src/lib/database.types.ts` for columns — don't rely on this file.
 Conventions not visible in the types: `projects.status` is unconstrained
 text (draft / in_progress / completed / failed). `current_step` is one of
 `workbench` / `voiceover` / `image_prompts` / `storyboard` /
-`video_prompts` / `generation` / `assembly` — also unconstrained text, with
-no DB CHECK (unlike `aspect_ratio`/`duration_target`/`video_type`, which do
-have one), so the vocabulary is enforced by app code only. `intake` is a
+`video_prompts` / `generation` / `assembly` — as of Phase 3, DB-CHECK-
+constrained to exactly these seven values
+(`supabase/migrations/20260901125544_add_current_step_check.sql`),
+matching `aspect_ratio`/`duration_target`/`video_type` (it was
+unconstrained text, app-code-enforced only, before then). `intake` is a
 pre-project screen, not a real `current_step` value — it only exists as
 the step-1 anchor in `furthest_step`'s mapping. `furthest_step` (smallint,
 default 1) tracks the deepest step a project has reached, 1-8 over that
-same vocabulary (intake=1 ... assembly=8). `projects.video_model` holds a
-single model string and is currently populated with a placeholder value —
-see Open questions.
+same vocabulary (intake=1 ... assembly=8). As of Phase 2, `current_step`'s
+column default is `'workbench'` (migration
+`20260901104929_current_step_default_workbench.sql`; it was still the
+pre-rename `'script'` until then, and that migration also backfilled any
+stray `'script'` row to `'workbench'` — see `## Phase 2` below).
+`projects.video_model` holds a single model string and is currently
+populated with a placeholder value — see Open questions.
+
+## Phase 2: `current_step` / `furthest_step` and `advanceStep()`
+
+These two `projects` columns have precise, distinct meanings, and conflating them was the
+root cause of both being broken before Phase 2:
+
+- `current_step` = the step the user is currently on. It is "where they are," not "how
+  far they got." It moves **backward** when the user navigates back via the step
+  indicator, and forward via Continue.
+- `furthest_step` = how far the user has unlocked. It **never decreases**.
+
+`intake` is not a tracked step and needs no runtime lower-bound guard against it: it never
+appears as a `current_step` value and has no per-project route (`/projects/new` is a
+pre-project screen, and the project row doesn't exist until submit), so "the user can't
+navigate back to intake" already follows from the enum and the route topology — no
+separate enforcement point is needed, and none should be added (a `MIN_NAVIGABLE_STEP`
+constant would be exactly the kind of scattered second enforcement point this phase
+exists to avoid).
+
+**`advanceStep(supabase, projectId, step)`** (`src/lib/projects/advance-step.ts`) is now
+the **sole permitted write site for both columns outside project creation**. It runs two
+statements, in order, no `.rpc()`, no read-then-write:
+1. An unconditional `current_step` update — it follows the user, forward or backward.
+2. A conditional `furthest_step` update, filtered `.lt('furthest_step', idx)` — a no-op
+   when navigating backward or re-entering an already-unlocked step. The `.lt()` filter
+   makes the never-decreases guarantee at the database, not by reading the current value
+   and computing a max in application code.
+
+`idx` comes from `stepIndex(step)` (`src/lib/config/pipeline.ts`), which derives from the
+existing `STEPS` array (`STEPS.indexOf(step) + 2`, the `+2` accounting for `intake`
+occupying the conceptual first slot without being a member of `Step`) rather than a
+separate hand-maintained map. **Known gap**: `storyboard` is a real `current_step` value
+(see the 8-step route list above) but isn't a member of `Step` — deliberately, since
+`Step`/`STEPS` is the operations-attribution vocabulary mirrored into the
+`generations`/`usage` CHECK constraints, and storyboard claims no generation and logs no
+usage (see the `pipeline.ts` file header). Widening `STEPS` to include it would wrongly
+imply storyboard belongs in those CHECK constraints too. Nothing writes `current_step`
+past `'workbench'` today, so this has no live consequence yet — whoever builds Step 5's
+slice must extend the `current_step` vocabulary (and `stepIndex`, and `advanceStep`'s
+parameter type) at that time, rather than this being pre-solved now.
+
+`advanceStep` is called **only on an explicit step transition — never on a save**. Saving
+an edit on a revisited step (e.g. editing a shot's camera fields on the workbench) persists
+via its own save action and must not call `advanceStep`; if saving advanced the step,
+`current_step` would start tracking edits instead of navigation and lose its meaning.
+Unsaved edits may live in component state but must never reach the database without an
+explicit save. The agent is available throughout steps 2 through 8.
+
+**`advanceStep` ships with zero callers as of Phase 2** — the Continue buttons and step
+indicator that will call it are a later slice. This is deliberate: the helper exists so
+the first real transition has somewhere correct to go, not so it can be exercised yet.
+
+**COUPLING WARNING**: `workbench-step-indicator.tsx` currently derives complete/current/
+locked from `current_step`'s position alone (`STEPS.findIndex`) and does not consult
+`furthest_step` — see Current focus. That is correct **only** because `advanceStep` has
+no callers yet, so `current_step` never regresses in practice. The moment the first
+`advanceStep` caller lands, `current_step` starts regressing on backward navigation, and
+the indicator would then render an already-unlocked step as locked — locking a user out
+of work they've already finished. **The indicator must switch to consulting
+`furthest_step` in the same slice that adds the first `advanceStep` caller, not in a
+later one.**
+
+Prior to Phase 2, `/api/projects/[id]/prompts` wrote `current_step: 'voiceover'` directly
+on success — wrong three ways (advanced to a route that doesn't exist as a per-project
+page yet, could do so with zero shots, and the route itself is slated to split into
+separate image-prompts/video-prompts routes before Step 4 ships). That write is removed
+entirely, with no substitute destination (any destination chosen now would encode an
+ordering that's about to change) — see Done.
 
 ## Done
 - Supabase email/password auth: signup, login, sign-out, protected dashboard
@@ -811,11 +1340,14 @@ see Open questions.
   unmount/remount.
 - `/api/projects/[id]/prompts` generates `image_prompt`/`video_prompt` per
   shot, validated (min 50 chars, non-empty) before persistence — invalid
-  entries stay null and are regenerable. Partial failure returns 422 and
-  does not advance `current_step`, enforced by the same claim/recover
-  contract `/shots` uses (`step: 'image_prompts'`, `operation:
-  'write_prompts'` — see Database's `generations` section, and its
-  provisional-attribution blocker note). As of Phase 1 prompt 3 the raw
+  entries stay null and are regenerable. Partial failure returns 422,
+  enforced by the same claim/recover contract `/shots` uses (`step:
+  'image_prompts'`, `operation: 'write_prompts'` — see Database's
+  `generations` section, and its provisional-attribution blocker note). As
+  of Phase 2 the route no longer writes `current_step` on success either —
+  see `## Phase 2`. As of Phase 3 it no longer writes `status: 'in_progress'`
+  either — dead vocabulary from the old script-generation era, removed with
+  no substitute (see the Phase 3 Done-log entry). As of Phase 1 prompt 3 the raw
   Claude payload is persisted before any `shots.update()` (previously it
   wrote straight from the in-memory response — a real crash-safety
   improvement, not just a lock swap). Prompt caching is wired but inert
@@ -900,6 +1432,372 @@ see Open questions.
   (`usage/data.ts`, wrapped in React's `cache()`) so the shared layout and
   the `/usage` page itself don't double-query when both render in the same
   request.
+- **Phase 2 complete**: `advanceStep()` (`src/lib/projects/advance-step.ts`) is now the
+  sole permitted write site for `current_step`/`furthest_step` outside project creation
+  (see `## Phase 2`) — ships with zero callers this phase, by design. The bad
+  `current_step: 'voiceover'` write in `/prompts` is removed with no substitute
+  destination. `stepIndex()` (`src/lib/config/pipeline.ts`) derives a project's progress
+  index from `STEPS`. A migration
+  (`20260901104929_current_step_default_workbench.sql`) fixed the column default
+  (`'script'` → `'workbench'`) and backfilled any stray `'script'` row. Read-only audits:
+  the dashboard resume link (`project-card.tsx`) is the one `current_step` read that
+  would 404 against a stale `'script'` row — closed by the migration above, no code
+  change needed at the read site itself; `runShotsPipeline`'s batch shot insert is clean
+  (`duration_locked`/`camera_overridden` are unconditional `false` on every row, no
+  heterogeneous-key PostgREST risk). `loading.tsx` skeletons added for `dashboard` and
+  `/usage`, mirroring each page's real layout so navigation streams immediately instead
+  of blocking on the server fetch.
+- **Phase 3 complete**: duplication and dead vocabulary from the script-generation
+  rename are cleaned up. `src/lib/config/enums.ts` (see Conventions) is now the single
+  hand-written source for `video_type`/`CLASSIFIABLE_VIDEO_TYPES`, `aspect_ratio`,
+  `shot_size`, `camera_angle`, `camera_movement`, and `element_type` — previously
+  duplicated across `video-type-labels.ts`, `projects/new/actions.ts`,
+  `intake-form.tsx`, `/api/projects/[id]/shots/logic.ts`, and the `write_shots` tool
+  schema (`src/lib/prompts/shot-generation.ts`), which now imports from it directly so
+  the schema Claude sees can never drift from the validator that checks its output
+  (this does change the tool schema's serialised size and therefore the pre-flight
+  quote in `estimateInputTokens` — expected, not a regression). A drift test
+  (`tests/enums-drift.spec.ts`) inserts every member of each DB-CHECK-constrained enum
+  and asserts acceptance, then one bogus value per enum and asserts rejection, turning
+  TS-vs-CHECK-constraint drift into a test failure instead of a runtime surprise
+  (`element_type` was believed to have no DB CHECK constraint to test against at the time,
+  so it was consolidated into the module but excluded from the drift test — this turned
+  out to be wrong; `elements_type_check` already existed, and C3 prompt 1 added the
+  coverage and corrected the stale claim, see Conventions and the C3 prompt 1 entry
+  below). `/api/projects/[id]/prompts` no longer
+  writes `status: 'in_progress'` — dead vocabulary from the old script-generation era,
+  removed with no substitute (the project-lifecycle status design is still open, see
+  Current focus). `projects.current_step` gets its first-ever DB CHECK constraint
+  (`20260901125544_add_current_step_check.sql`) — it was previously app-code-enforced
+  only, despite `aspect_ratio`/`duration_target`/`video_type` having had one all along —
+  added in a migration that verifies no row holds `'script'` before adding the
+  constraint, so it fails loudly rather than silently if that assumption is ever wrong.
+  The old script-generation vocabulary (`modelsConfig.script`, a `'script'` literal in
+  the usage module, `CLAUDE_SCRIPT_*` env vars) turned out to already be fully gone —
+  removed in earlier phases — and `.env.example` already carried
+  `CLAUDE_PROMPTS_MODEL`/`CLAUDE_PROMPTS_MAX_TOKENS`/`CLAUDE_SHOTS_MODEL`/
+  `CLAUDE_SHOTS_MAX_TOKENS`, so Phase 3 confirmed rather than performed that cleanup.
+- **C3 prompt 1 complete** (schema, config, and generation only — no editing UI, no save
+  actions, no AI re-derivation route; those are prompts 2 and 3): `shots.camera_overridden`
+  is replaced by three independent origin columns (`shot_size_origin` /
+  `camera_angle_origin` / `camera_movement_origin`, each `'auto'`/`'derived'`/`'override'`
+  — see the three-origin camera model under Database); `runShotsPipeline` now has
+  `write_shots` report a real origin per camera field (schema-restricted to
+  `MODEL_REPORTABLE_CAMERA_ORIGINS`, which excludes `'override'` — only a manual edit sets
+  that), replacing the old unconditional `camera_overridden: false` on every generated
+  shot. Downstream staleness flags (`shots.image_prompt_stale` / `video_prompt_stale`,
+  `projects.voiceover_stale`) are added with no writers yet — see the Staleness paragraph
+  under Database for the full rule, including why `runVoiceoverPipeline` must never write
+  `voiceover_stale`. Character dialogue moves off `shots.dialogue` (jsonb) onto its own
+  `shot_dialogue` table, migrated in place in the same migration that drops the old
+  column — a table rather than jsonb specifically so the C3 edit UI and C4's future agent
+  mutation tools can save dialogue rows independently without a read-modify-write race.
+  `src/lib/config/models.ts` gains a `VIDEO_MODELS` duration-bounds registry
+  (`DEFAULT_VIDEO_MODEL` = `'mochi-1'`), partially closing the "Per-step model selection"
+  open question. Corrected two stale claims found while implementing this: `elements.type`
+  already had a DB CHECK constraint (contradicting both the task brief and this file's own
+  prior wording — see the enums.ts Conventions bullet and the Phase 3 entry above), so no
+  new constraint migration was created; `element_type` drift-test coverage was added
+  against the existing constraint instead. Three migrations:
+  `20260902125700_add_camera_origin_columns.sql`, `20260902125702_add_staleness_flags.sql`,
+  `20260902125705_create_shot_dialogue_and_drop_shots_dialogue.sql`.
+- **C3 prompt 2 complete** (the editing UI and its save path — no camera re-derivation, no
+  Claude call, no usage reserve/settle path; those remain prompt 3's job): the Step 2 shot
+  card is now expandable and editable, built on the per-field save model described under
+  Conventions above (no Save button anywhere, text-on-blur/dropdown-on-change, per-field
+  status decaying to a card-level worst-state rollup). New server actions in
+  `src/app/(app)/projects/[id]/workbench/actions.ts` — `updateShotVoiceOver`/
+  `updateShotVisualDescription`/`updateShotDuration`/`saveDialogueLine`/
+  `deleteDialogueLine` — are `shots`'/`shot_dialogue`'s first writers of any kind outside
+  the generation pipeline, and are the staleness flags' first writers ever (see the
+  Staleness paragraph under Database, updated in place). `src/lib/config/models.ts` gains
+  `'Kling 2.1'` (`durationMin: 5, durationMax: 10`, sourced from fal.ai's own API docs) and
+  `resolveVideoModel`, closing the gap C3 prompt 1 left where the registry held only
+  `'mochi-1'` while existing projects reference `'Kling 2.1'`. `src/lib/config/duration.ts`
+  gains `targetSecondsMax` per tier, read by `ProjectHeader`'s new over-target amber state.
+  Camera fields render read-only (origin display only, per the three-origin model);
+  `Revert to auto`, the bound-elements `+` toggle, and `Delete shot` all render inert, per
+  the same design-fidelity-without-functionality treatment the task brief specified for the
+  camera dropdowns — three later slices (prompt 3, C5, C4) each add one handler to
+  already-correct markup rather than building new UI. No schema change this task (every
+  touched column already existed from prompt 1); `npm run types:db` confirmed a no-op diff.
+  One real bug found and fixed during implementation: `DialogueSection` was calling
+  `updateShotLocal` (a different component's `setState`) from inside a `setRows` updater
+  function - React updater functions must stay pure, since React may invoke them during
+  render; moved the sync to a `useEffect` keyed on the local `rows` state instead. New
+  Playwright spec `tests/shot-editing.spec.ts` (10 tests) covers per-field save-on-blur,
+  the no-op-blur-writes-nothing case, the staleness table, the old-nulling-behavior
+  regression (prompts survive a voiceover edit), duration clamping and the out-of-range
+  warning, the dialogue fill-both-before-persisting rule, the out-of-list read-only
+  render, the no-bound-characters disabled state, and that nothing in this task writes
+  `current_step`/`furthest_step`.
+- **C3 prompt 3 complete — C3 is now fully shipped.** Two independent pieces: (1) a
+  correctness fix to the video-model duration registry, and (2) editable/re-derivable
+  camera fields, the only paid call in the C3 slice. `src/lib/config/models.ts`'s
+  `VideoModelConfig` becomes a discriminated union (`kind: 'continuous' | 'discrete'`) —
+  see the Video-model duration registry paragraph under Conventions for the full
+  rationale and `duration-stepper.tsx`'s kind-branching logic; `'Kling 2.1'` is now
+  `discrete` (`allowedDurations: [5, 10]`), closing the duration-bounds gap prompt 2 left
+  open. The three camera dropdowns are wired to new per-field save actions
+  (`updateShotSize`/`updateShotCameraAngle`/`updateShotCameraMovement` in `actions.ts`),
+  following prompt 2's exact per-field pattern. New route
+  `POST /api/projects/[id]/shots/[shotId]/camera` (`logic.ts`'s `runCameraDerivation`)
+  re-derives camera framing via a new Haiku-permanent, 128-max-token Claude call — see
+  the "Camera fields are editable and AI-re-derivable" paragraph under Database for the
+  full trigger/guard/write-back mechanics, and the `derive_camera` paragraph for why it
+  has a `usage` row but no `generations` row. New client-side coalescing in-flight guard
+  (`use-camera-derivation.ts`) and a dedicated `CameraDerivationStatus` component, kept
+  separate from the existing per-field `fieldStatus`/`rollupStatus` rollup in
+  `shot-card.tsx` since a description save can succeed even when the derivation it
+  triggered afterward fails. One migration
+  (`20260902200658_add_derive_camera_operation.sql`) widens `usage_operation_check` to
+  include `'derive_camera'` — `generations_operation_check` is deliberately not widened,
+  since no writer will ever insert a `generations` row with that operation.
+  `reserveUsage`'s `generationId` param widens to `string | null` (additive; every other
+  call site is unaffected). One real, pre-existing race found and fixed while building
+  the discrete-duration stepper: `handleStep`'s no-op guard compared a computed next
+  value against the async `persisted` state (only updated once the save round-trip
+  resolves) rather than the synchronous `value` state, so a second step fired before the
+  first's network round trip completed could read a stale `persisted` and silently
+  no-op instead of committing — this was latent in the original continuous-only stepper
+  too, just never exercised by an existing test; fixed by comparing against
+  `displayValue` instead, and the now-unused `persisted` state was removed. New spec
+  `tests/camera-derivation.spec.ts` (11 tests) covers the per-field origin-independence
+  rule, the two staleness flags, prompt-preservation, the all-override guard, the
+  no-op-blur guard, the combined revert-to-auto call, the coalescing in-flight guard (two
+  rapid distinct triggers producing at most 2 calls, never dropped), the
+  description-wins-over-override write-back rule end to end (via a fake gateway), the
+  blocked-pre-network-call settle path, and a failed derivation leaving prior values
+  untouched; `tests/shot-editing.spec.ts` gains 3 tests for the discrete-model stepper
+  (exact-values-only stepping, out-of-range amber-and-not-rewritten, and many
+  simultaneously out-of-range shots rendering independently without breaking the
+  project-level aggregate). This resolves the "Camera re-derivation trigger" and the
+  duration-bounds half of "Per-step model selection" open questions below — both moved
+  here from Open questions.
+- **C3 presentation rebuild complete.** C3's three prompts had shipped correct logic
+  built from prose descriptions of the Reelcraft canvas rather than the canvas itself —
+  the shot card's visual language (text-field resting state, camera-field treatment,
+  bound-element chips, save-status visibility, expand/collapse) didn't match the design.
+  This task opened the canvas via the Claude Design MCP tools (project "AI short-video
+  generator design", `Reelcraft.dc.html`) and read section `09 — Step 2 · expanded shot
+  card · editing states` plus its four close-ups ("Camera fields · three origins",
+  "Dialogue rows", "Duration · tenths inside the model's bounds", "Save status · two
+  tiers") — the authoritative, current three-origin-model spec, as opposed to the
+  older `08 — Step 2 · Workbench` section, which still reflects the retired
+  `camera_overridden` boolean and was not used as a build target. No schema, server
+  action, staleness/origin-write logic, or re-derivation guard changed — this was a
+  presentation-only rebuild. Changes: `voiceover-field.tsx`/`visual-description-field.tsx`
+  gained a real border/fill at rest (previously fully transparent until focus — the
+  headline defect); `camera-origin-fields.tsx`'s override treatment became a subtle
+  accent inset-edge instead of a full accent-wash fill, its control text moved to the
+  `text-control` token, and pending fields now dim/grey with a spinner replacing the
+  origin badge; `camera-derivation-status.tsx` was repurposed as the shared note lane
+  below the three camera fields (a static explainer at rest/settled, a sentence naming
+  which fields are rechecking and which is held while running, a calmer "last values
+  unchanged" message on a failed recheck) and moved below the grid; a settled camera
+  field now shows "· was {prior value}" via a small snapshot-before-trigger state in
+  `shot-card.tsx` (client-side presentation state only, not persisted); `bound-elements.tsx`
+  became 60px tiles (striped/lettered/generating/failed, driven by each element's
+  already-loaded `status`/`reference_image_path` — no new interactivity, matching the
+  existing "binding is C5's job" scope line) instead of small chips, but only in the
+  expanded card — the collapsed card's small-chip treatment already matched the canvas
+  and was left alone; `dialogue-row.tsx`'s line field gained the same bordered-shell
+  treatment as the speaker control, with its save-status indicator moved inside the
+  field; `duration-stepper.tsx`'s buttons grew to the canvas's 32×32px and the amber
+  out-of-range state now colors the value text, not just the pill; `save-status-indicator.tsx`'s
+  "saved" color changed from green to quiet grey (canvas: deliberately not a celebratory
+  color). The card's expand interaction changed from a dedicated "Expand" text button to
+  a click-anywhere-on-the-collapsed-card affordance (`role="button"`, no visible button
+  element) — "Collapse" remains a real, explicit text link in the expanded header, and
+  clicking inside the expanded body never collapses the card. This required updating the
+  shared `expandFirstCard()` helper in both `tests/shot-editing.spec.ts` and
+  `tests/camera-derivation.spec.ts`, plus one direct loop call, from
+  `getByRole('button', { name: 'Expand' }).click()` to clicking the card container
+  directly — the one DOM-structure exception permitted by this task, since the canvas
+  itself removes that button. One new test was added
+  (`tests/shot-editing.spec.ts`, "clicking a collapsed card expands it"). All 131 tests
+  (130 pre-existing + 1 new) pass unchanged otherwise.
+- **Shot card select/label/indicator/casing fixes complete.** The C3 presentation
+  rebuild (above) had read canvas section 09 but not section **10 — Step 2 · shot card ·
+  select, labels, header slot**, which exists specifically to correct it — its own intro
+  states the build fell through to the native `<select>`'s unstylable OS menu, and read
+  label weight and the per-field save indicator's placement differently from the design.
+  This task closed all three, plus a real bug and a display-only gap:
+  - **Custom select** (new `custom-select.tsx`): a from-scratch WAI-ARIA "select-only
+    combobox" (`role="combobox"` trigger button + `role="listbox"` popup,
+    `aria-activedescendant` — DOM focus never leaves the trigger) replaces the native
+    `<select>` for the three camera fields and the dialogue speaker field. No headless
+    UI/accessible-primitive package exists in this repo, so it was built in-house;
+    callers keep full control of trigger visuals (origin borders/badges) via
+    `triggerClassName`/`trailing`, the component owns only the interactive/keyboard/menu
+    mechanics. Implements the canvas's full keyboard spec (Space/Enter opens with focus
+    landing on the selected option; ↑/↓ move the active option when open and directly
+    step-and-commit when closed, native-`<select>`-like; Home/End; a–z typeahead
+    resetting after ~1s; Escape/Tab/click-out close without commit; 260px scroll cap
+    with a bottom gradient fade above ~8 options; opens upward near the pane's bottom
+    edge) and disables the trigger with a real HTML `disabled` attribute (genuinely
+    non-interactive, not styled-only). One deliberate simplification: the scroll
+    container uses the browser's native scrollbar rather than a hand-drawn decorative
+    thumb — the functional gradient-fade cut is kept, the pixel-exact scrollbar isn't.
+    The dedup-on-re-selecting-the-same-value decision (a no-op only once a camera
+    field's origin is already `'override'`) stays exactly where it was, in
+    `camera-origin-fields.tsx`'s own commit handler — `CustomSelect` always calls
+    `onCommit` on any explicit choice and leaves dedup to the caller, since a generic
+    widget can't know a camera field's origin-aware diff rule.
+  - **Label weight/spacing** (`voiceover-field.tsx`, `visual-description-field.tsx`,
+    `duration-stepper.tsx`, `camera-origin-fields.tsx`, `dialogue-section.tsx`'s
+    "Character dialogue" label, `bound-elements.tsx`): every field label on the card
+    gains `font-medium` (500 — canvas: "the build renders 400, this is the visible
+    miss") and `leading-4` (16px, fixed, so a row a label shares with a status
+    indicator never changes height); the label→field gap changes from a hardcoded 3px
+    to `gap-rc-2xs` (6px), the canvas's stated value.
+  - **Per-field indicator placement**: each label's row gains `justify-between` and
+    `min-h-4` so the status indicator sits right-aligned, opposite the label, in a
+    fixed-height slot — a status appearing/disappearing never reflows the row. The
+    card-header rollup's own placement was already correct and untouched. **Judgement
+    call**: dialogue rows were left exactly as they were (indicator trailing inside the
+    line-input control) — the canvas's own "Dialogue rows" close-up shows this
+    placement explicitly and unchanged, since a dialogue row has no per-row label for
+    an indicator to sit "opposite"; the task's prose ("including dialogue rows") is
+    read as a verification instruction, not a mandate to contradict the canvas's own
+    spec for that component.
+  - **Stuck save spinner (real bug, not a canvas-fidelity issue)**: `shot-card.tsx`'s
+    per-field `fieldStatus` map was append-only — nothing ever deleted a key. The
+    primary trigger, found by direct reproduction of the task's own repro steps, is
+    **not** row removal but the ordinary success path: `dialogue-section.tsx` promotes
+    a saved draft from the `drafts` array (React key `` `dialogue:${draftKey}` ``) to
+    the `rows` array (key `` `dialogue:${row.id}` ``) — a different key forces React to
+    unmount-then-remount `DialogueRow` rather than update the same instance, and the
+    old instance's own `'saving'` → `'saved'` transition loses the race against that
+    remount (React tears the old subtree down as part of applying the same state
+    update, so the old instance's pending status effect never runs). The header's map
+    is left holding the draft-keyed entry stuck at `'saving'` forever, since nothing
+    under that key will ever report again. Explicit row removal (`handleRemoveDraft`/
+    `handleRemoveSavedRow`) has the identical defect for the same reason. **Fix**: a
+    new `clearFieldStatus(key)` in `shot-card.tsx`, passed to `DialogueSection` as
+    `onFieldStatusClear`, prunes the key outright (not a `'idle'` write — a pruned key
+    occupies no slot at all) at the exact three points that retire one:
+    `handleDraftSaved` (the actual root cause), `handleRemoveDraft`, and
+    `handleRemoveSavedRow`. Two new tests in `tests/shot-editing.spec.ts` cover both:
+    adding a line and letting it save resolves the header rollup on its own with no
+    removal needed, and removing a row shortly after its save completes (inside the 2s
+    decay window, reproducing the "entry never cleared on completion" sub-case) also
+    leaves no residual status.
+  - **Camera value display casing** (new `src/lib/camera-labels.ts`, mirroring
+    `language-labels.ts`'s `Record<string, string>` + fallback-to-raw-value lookup
+    pattern exactly): `shotSizeLabel`/`cameraAngleLabel`/`cameraMovementLabel` render
+    `'extreme_close_up'` as "Extreme close up", `'eye_level'` as "Eye level", etc.
+    **Display-only** — `src/lib/config/enums.ts`'s tuples, the DB CHECK constraints,
+    the `write_shots` tool schema, and `tests/enums-drift.spec.ts` are all untouched;
+    stored values stay exactly as persisted (lowercase, underscore-separated). Wired
+    into `CameraField`'s options (closed trigger value and every menu option) via
+    `CustomSelect`'s new `options: {value, label}[]` shape, retiring the ad hoc
+    `humanize()` it replaced. The collapsed card summary never rendered camera values
+    at all (verified directly), so there was nothing to change there.
+  - **Test-compatibility exception (Task-scope pre-authorized)**: `.selectOption()` and
+    `.toHaveValue()` only work on native form elements, so 6 lines across
+    `tests/camera-derivation.spec.ts` and `tests/shot-editing.spec.ts` were rewritten
+    from native-select interaction to role-based (`getByRole('combobox').click()` +
+    `getByRole('option', { name, exact: true }).click()`, and
+    `toHaveAttribute('data-value', ...)` in place of `toHaveValue(...)`) — the one
+    exception a DOM-structure change the custom select itself necessitates, not a
+    weakened assertion. `exact: true` was required once "Close up"/"Extreme close up"
+    existed as sibling option labels (a substring match resolved both).
+  - Verification: `npm run build`, `npx tsc --noEmit`, and `npm run lint` all clean;
+    the full Playwright suite (133 tests, including the 2 new ones) passes. A manual
+    keyboard-only smoke pass (Tab, Space-open, arrows, Enter-commit, Escape/Tab-close-
+    without-commit with focus returning to the trigger, closed-trigger arrow direct
+    commit, a–z typeahead, and the disabled state's real unreachability) was run and
+    removed afterward — not part of the permanent suite.
+- **Custom select follow-up: three of four reported defects fixed.** Found on first use
+  of the shot card built above.
+  - **Menu/trigger width (two of the four reports, one root cause).** `CustomSelect`'s
+    root `<div className="relative">` had no `w-full`/`flex-1` — unlike the native
+    `<select className="flex-1 ...">` it replaced. As a flex item with no `flex-grow`,
+    it shrank to its own content's intrinsic width instead of filling its caller's
+    container (a circular reference: the button inside declares `width:100%`, but that
+    resolves against `.relative`'s own auto/content-based width, which itself is driven
+    by that same button's content). The absolutely-positioned menu (`left-0 right-0`)
+    uses `.relative` as its containing block, so it inherited that same narrow,
+    selected-value-dependent width — explaining both the menu-narrower-than-trigger
+    report and the dialogue-speaker-trigger-jumps-on-open report as one mechanism, not
+    two. Fixed by adding `w-full` to that root div — this gives it a definite width
+    (100% of its actual, already-correctly-sized parent: grid-stretched for camera
+    fields, explicit `w-[156px]` for the dialogue speaker), which is now static
+    regardless of `open` state or the selected label's length.
+  - **Origin badge casing.** Canvas section 10's badge spans (`auto`, `described`) both
+    carry `text-transform:uppercase` plus `letter-spacing:0.06em` (for legibility at
+    that size, the same reasoning already applied to field labels). The badge spans in
+    `camera-origin-fields.tsx` had no `uppercase` class at all, so the lowercase JSX
+    source text rendered literally lowercase. Fixed by adding `uppercase
+    tracking-[0.06em]` to both badges; the `override` treatment (the "· set by you"
+    label suffix, deliberately `normal-case` — it's not a badge in the canvas at all)
+    was confirmed already correct, no change needed.
+  - **The fourth report — manually overriding a camera field emptying that field's
+    dropdown — could not be reproduced and remains open.** Extensive live
+    reproduction (a real dev server plus scripted Playwright interaction, not just
+    static reading) was attempted against eight distinct scenarios: a plain override,
+    overriding all three fields in sequence (reaching the `allCameraFieldsOverride`
+    all-override state the report specifically flagged as worth checking), overriding a
+    field immediately after a real re-derivation attempt, rapid double-selection on the
+    same field, keyboard-driven override (the closed-trigger direct-commit path),
+    clicking "Revert to auto" on one field immediately after overriding a different one,
+    overriding a field whose value started `null`, and re-selecting an
+    already-`override`-and-already-selected value. Every one of these rendered
+    correctly — `data-value`, text content, computed styles, and screenshots all showed
+    the selected value displayed normally, the other two fields untouched, and the
+    options list intact on reopening. The `allCameraFieldsOverride` guard (the report's
+    other specific suspicion) was re-confirmed live to only gate the `trigger()`
+    re-derivation call in `handleVisualDescriptionSaved` — it has no effect on any
+    render path. It's plausible the report was actually the width bug above (a
+    severe-enough content/width collapse could plausibly read as "the value
+    disappeared"), since reverting the `w-full` fix and repeating several of the above
+    scenarios still never produced an empty `data-value` or blank text — only the
+    already-diagnosed narrow-rendering symptom. This was not treated as confirmed,
+    though, since it wasn't proven either way live before the session ended (see below).
+    **No fix was attempted for this item — do not assume it's resolved.** Whoever picks
+    this up next should start from a real repro (ideally get the exact steps from
+    whoever originally saw it) rather than re-deriving hypotheses from source reading
+    alone, since that path was already exhausted here without success.
+  - Verification: `npm run build`, `npx tsc --noEmit`, `npm run lint` all clean; the
+    full Playwright suite (133 tests, unchanged) passes. No new test was added — the
+    task's requested regression test was for the fourth (unreproduced, unfixed) item,
+    and per this file's own standing rule a test must not assert on hoped-for behavior
+    that hasn't been confirmed.
+- **Camera re-derivation scope-widening bug fixed; all-override skip guard removed;
+  "Reset all to auto" added.** Root cause of a confirmed bug (a shot with all three
+  camera fields overridden; reverting just one also silently overwrote a different,
+  untouched field): `runCameraDerivation` (`logic.ts`) fell back to asking about all
+  three fields whenever a caller's `fields` list was missing/empty, and the client's
+  single-field revert request never sent one, so the sibling field entered scope and
+  could be overwritten by the "description wins over override" rule. Fixed by making
+  `fields` a required, server-validated parameter with no fallback and no
+  server-side widening — see the "Camera-scope invariant" paragraph under Database for
+  the full rule and both call sites' fix. Two related changes shipped alongside: (1)
+  the "all three fields already override → skip the call" guard on the description-edit
+  trigger is removed — it was blocking exactly the case (an explicit new description)
+  where re-derivation should always win; see "Change B" under Database. (2) A "Reset all
+  to auto" control (`camera-derivation-status.tsx`, right-aligned on the same line as
+  the (rewritten) helper text, hidden only when every field is already `'auto'`) issues
+  one combined three-field call (`fields` = all three, `resetAll: true`) rather than
+  three sequential per-field reverts, force-applying Claude's answer for every field so
+  each lands independently on `'auto'` or `'derived'`. The per-field control was renamed
+  "Revert to auto" → "Reset to auto" (sentence case, same position/icon/visibility rule)
+  to read clearly alongside the new "Reset all to auto". `RevertIcon` was exported from
+  `camera-origin-fields.tsx` so both controls share the exact same glyph. New/updated
+  tests in `tests/camera-derivation.spec.ts`: a direct-call regression test proving a
+  single-field revert leaves two overridden sibling fields byte-identical (value and
+  origin); a direct-call test proving a judgement for a field outside the requested
+  scope is discarded, not written; three `page.request.post` tests proving `fields`
+  omitted/empty/containing an unknown member all `400` before any DB read or AI call,
+  with zero `usage` rows and zero shot mutation; a UI test replacing the old (now
+  incorrect) "no re-derivation when all-override" test, proving a description edit
+  while all three fields are override still re-derives and honors explicit new
+  evidence; four "Reset all to auto" UI tests (hidden-when-all-auto, visible-with-one
+  non-auto, exactly-one-call-scoped-to-all-three, and per-field-vs-reset-all
+  cardinality). The pre-existing "Revert to auto"/coalescing tests were updated for the
+  rename and the now-required `fields` field in the request body. All 142 Playwright
+  tests pass; `npm run build`, `npx tsc --noEmit`, `npm run lint` all clean.
 
 ## Superseded
 The old 4-step wizard (`script`/`voiceover`/`images`/`video`, driven by a
@@ -918,6 +1816,11 @@ today:
   split into separate image-prompt and video-prompt routes.
 
 ## Current focus
+- **Open bug, unreproduced**: manually overriding a camera field is reported to empty
+  that field's dropdown. See the "Custom select follow-up" Done-log entry for the eight
+  live-reproduction attempts that all failed to reproduce it, and the working theory
+  (possibly the same root cause as the now-fixed menu/trigger width bug) that was never
+  confirmed. Not fixed — start from a real repro next time, not source-reading alone.
 - **Blocker for Step 4**: `/api/projects/[id]/prompts` must be split into
   separate image-prompts and video-prompts routes before Step 4 ships —
   see the "step attribution is provisional" note in Database's
@@ -928,14 +1831,22 @@ today:
   `generations` (see Database) — `claimGeneration` /
   `persistGenerationPayload` / `settleGeneration` are the only locking
   mechanism left in the codebase.
-- Shot editing: expand/collapse a shot card, edit voice_over / visual
-  description / camera fields, duration stepper, delete
+- Shot editing: expand/collapse, `voice_over`/`visual_description` text
+  fields, the duration stepper (now discrete-model-aware), and dialogue
+  rows are done, and camera field editing + AI re-derivation is done too
+  — **C3 is complete as of prompt 3** (see Conventions and Done). Still
+  open: shot deletion (C4, alongside the agent's `delete_shot` tool —
+  `Delete shot` renders inert today).
 - Agent chat mutations on the workbench (composer is rendered but disabled
   today)
 - Element upload/generation (reference images) from the Assets tab
 - Step-guard navigation: gate step-to-step links on `furthest_step`, not
-  just `current_step` position — blocked on `furthest_step` actually
-  being live-tracked (see Phase 2 open items below).
+  just `current_step` position. `advanceStep()` (see `## Phase 2`) is now the
+  write site that will keep `furthest_step` live-tracked once wired up, but
+  it has zero callers yet, so this is still blocked in practice. Per the
+  coupling warning in `## Phase 2`, `workbench-step-indicator.tsx` must
+  switch from `current_step`-position to `furthest_step` in the same slice
+  that adds `advanceStep`'s first caller — not before, not after.
 - The actual product decision on when/whether to flip
   `SPEND_CAP_ENABLED` on is still open — Phase 1 only wired the
   mechanism (see `## Phase 1` in Database and the `/usage` page).
@@ -946,35 +1857,43 @@ today:
   page refresh mid-turn can cause the turn to re-fire and be billed
   twice. Known, accepted gap, not an oversight — revisit when C4 (the
   agent-turn work) is built.
-- **Going into Phase 2, four open items carried over from Phase 1:**
-  - `current_step` has no DB CHECK constraint (unconstrained text,
-    app-code-enforced only) — unlike `aspect_ratio`/`duration_target`/
-    `video_type`, which do have one.
-  - `furthest_step` is written once, at project creation
-    (`createProjectFromIntake`, `= 2`), and never incremented anywhere
-    else in the codebase — step-guard navigation (above) can't gate on it
-    until something advances it as a project progresses.
-  - `/prompts` advances `current_step` straight to `'voiceover'`
-    (`runPromptGeneration`), skipping storyboard/video_prompts — a
-    leftover of the pre-8-step single-call design, the same root cause as
-    the provisional step-attribution issue in the `generations` section
-    under Database.
+- **Out of the four open items carried into Phase 2 from Phase 1, three are now resolved
+  and one remains open:**
   - The `/prompts` split blocker before Step 4 (see Database's
     `generations` section and the Current focus bullet above) — not yet
     closed.
 
+  The other three are resolved: two by Phase 2 (see `## Phase 2` above): `furthest_step`
+  now has a real, single write site (`advanceStep()`) rather than being written once and
+  never touched again — though it still has no live callers, so `furthest_step` won't
+  actually advance past project creation until the step-guard navigation item above is
+  built. And `/prompts` no longer advances `current_step` to `'voiceover'` at all — the
+  write was removed outright rather than redirected, since any destination chosen now
+  would encode an ordering that's about to change once `/prompts` splits. The third —
+  `current_step` had no DB CHECK constraint, unlike `aspect_ratio`/`duration_target`/
+  `video_type` — is resolved by Phase 3 (see the Done log).
+
 ## Open questions
 - **Per-step model selection.** `projects.video_model` is a single column
-  holding one model string, currently a placeholder. But model choice is
-  per-step, not per-project: OpenAI models for image generation,
-  ElevenLabs models for voiceover, fal.ai models for video clips. The
-  schema needs to reflect that before Step 3 — likely a per-step model
-  map on the project rather than one column — and `models.ts` needs to
-  carry provider → model → `{ costPerUnit, ... }` plus, for video models,
-  the clip-duration constraints (`durationMin` / `durationMax` /
-  `durationStep`) that bound the workbench duration stepper.
-- **Camera re-derivation trigger.** Editing `visual_description` should
-  re-derive `shot_size`/`camera_angle`/`camera_movement` only while
-  `camera_overridden` is false — but whether that fires automatically on
-  save or behind an explicit user action is undecided. It costs a model
-  call per save at production model tiers, multiplied across users.
+  holding one model string. Model choice is per-step, not per-project:
+  OpenAI models for image generation, ElevenLabs models for voiceover,
+  fal.ai models for video clips. The schema needs to reflect that before
+  Step 3 — likely a per-step model map on the project rather than one
+  column — and `models.ts` needs to carry provider → model →
+  `{ costPerUnit, ... }` for each. **The duration-bounds half is now
+  fully closed (C3 prompt 3, see Done)**: `models.ts`'s `VIDEO_MODELS`
+  registry holds a real discriminated-union duration shape
+  (`kind: 'continuous' | 'discrete'`) correctly modeling both Mochi's
+  continuous range and Kling's true two-value enum — no longer a
+  min/max-only approximation. Still open: the broader per-step provider
+  model map itself, and per-model cost config.
+
+Resolved (moved to Done, C3 prompt 3): the "Camera re-derivation
+trigger" question — editing `visual_description` fires the trigger
+automatically on a successful, actually-changed save (not behind a
+separate explicit action), always asking Claude about all three fields
+(including `'override'` ones) so it can judge whether new text names a
+choice for any of them; write-back code then applies the answer per
+field based on that field's current origin. See the "Camera fields are
+editable and AI-re-derivable" paragraph under Database for the full
+mechanics.

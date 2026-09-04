@@ -1,10 +1,18 @@
 import type Anthropic from '@anthropic-ai/sdk'
+import {
+  CLASSIFIABLE_VIDEO_TYPES,
+  SHOT_SIZES,
+  CAMERA_ANGLES,
+  CAMERA_MOVEMENTS,
+  ELEMENT_TYPES,
+  MODEL_REPORTABLE_CAMERA_ORIGINS,
+} from '@/lib/config/enums'
 
-// v3 - target shot count is now a hard ceiling, not a soft target: added an
-// explicit instruction that the count may never be exceeded. Bump the
-// suffix (and this comment) on any content change so usage logs / evals can
-// be attributed to a specific wording.
-export const SHOT_GENERATION_SYSTEM_PROMPT_V3 = `You are breaking a video brief into a structured shot list for a short narrated video.
+// v4 - shot_size_origin/camera_angle_origin/camera_movement_origin added: the model now
+// reports whether each camera value was freely chosen (auto) or forced by the visual
+// description explicitly naming it (derived). Bump the suffix (and this comment) on any
+// content change so usage logs / evals can be attributed to a specific wording.
+export const SHOT_GENERATION_SYSTEM_PROMPT_V4 = `You are breaking a video brief into a structured shot list for a short narrated video.
 
 Write the shot list as structured data via the write_shots tool - never as free-text JSON in your reply. Call write_shots exactly once.
 
@@ -12,6 +20,7 @@ For each shot, write:
 - voice_over: the narration line spoken over this shot (can be empty only if the shot carries character dialogue instead)
 - visual_description: what the camera sees, self-contained enough to brief an image generator
 - shot_size, camera_angle, camera_movement: your best judgment for how this shot should be framed and moved
+- shot_size_origin, camera_angle_origin, camera_movement_origin: report 'derived' when and only when visual_description explicitly names that camera choice (e.g. "wide shot" names shot_size); otherwise report 'auto'
 - duration_sec: how long the shot needs to breathe given its voice_over/dialogue, in whole seconds
 - section_label: a short label (e.g. "Introduction", "Foundation") grouping this shot with its neighbors into the film's sections - reuse the same label across consecutive shots that belong to the same section
 - dialogue: spoken lines by name, only when a character speaks on camera - usually empty
@@ -44,14 +53,7 @@ export function buildWriteShotsTool(targetShots: number): Anthropic.Tool {
         video_type: {
           type: 'string',
           description: 'Best-matching classification of this video based on the brief and shots.',
-          enum: [
-            'narrated_story',
-            'explainer',
-            'facts_listicle',
-            'character_drama',
-            'product_ad',
-            'trailer',
-          ],
+          enum: [...CLASSIFIABLE_VIDEO_TYPES],
         },
         shots: {
           type: 'array',
@@ -68,15 +70,30 @@ export function buildWriteShotsTool(targetShots: number): Anthropic.Tool {
               },
               shot_size: {
                 type: 'string',
-                enum: ['wide', 'full', 'medium', 'close_up', 'extreme_close_up'],
+                enum: [...SHOT_SIZES],
               },
               camera_angle: {
                 type: 'string',
-                enum: ['eye_level', 'low', 'high', 'over_the_shoulder', 'top_down'],
+                enum: [...CAMERA_ANGLES],
               },
               camera_movement: {
                 type: 'string',
-                enum: ['static', 'slow_push_in', 'pull_out', 'pan', 'tilt', 'orbit', 'handheld'],
+                enum: [...CAMERA_MOVEMENTS],
+              },
+              shot_size_origin: {
+                type: 'string',
+                description: "'derived' only when visual_description explicitly names this shot size; otherwise 'auto'.",
+                enum: [...MODEL_REPORTABLE_CAMERA_ORIGINS],
+              },
+              camera_angle_origin: {
+                type: 'string',
+                description: "'derived' only when visual_description explicitly names this camera angle; otherwise 'auto'.",
+                enum: [...MODEL_REPORTABLE_CAMERA_ORIGINS],
+              },
+              camera_movement_origin: {
+                type: 'string',
+                description: "'derived' only when visual_description explicitly names this camera movement; otherwise 'auto'.",
+                enum: [...MODEL_REPORTABLE_CAMERA_ORIGINS],
               },
               duration_sec: { type: 'number', description: 'Shot duration in whole seconds.' },
               section_label: {
@@ -103,7 +120,7 @@ export function buildWriteShotsTool(targetShots: number): Anthropic.Tool {
                   type: 'object',
                   properties: {
                     name: { type: 'string' },
-                    type: { type: 'string', enum: ['character', 'location', 'prop'] },
+                    type: { type: 'string', enum: [...ELEMENT_TYPES] },
                     description: { type: 'string' },
                   },
                   required: ['name', 'type', 'description'],
@@ -117,6 +134,9 @@ export function buildWriteShotsTool(targetShots: number): Anthropic.Tool {
               'shot_size',
               'camera_angle',
               'camera_movement',
+              'shot_size_origin',
+              'camera_angle_origin',
+              'camera_movement_origin',
               'duration_sec',
               'section_label',
               'dialogue',

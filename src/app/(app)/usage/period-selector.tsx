@@ -1,5 +1,24 @@
+'use client'
+
+import type { ReactNode } from 'react'
 import Link from 'next/link'
+import { useLinkStatus } from 'next/link'
 import { PERIODS, type Period } from './period'
+
+// Same-route/searchParams-only navigations (this Link's href only changes
+// `period`) land inside an already-resolved Suspense boundary, so
+// usage/loading.tsx's fallback never re-fires - Next/React keep the stale
+// period's numbers on screen until the new payload streams in. This inline
+// hint is the documented fix (useLinkStatus, not another loading.tsx). The
+// `delay-100` keeps a fast response from flashing the dimmed state at all.
+function PeriodLabel({ children }: { children: ReactNode }) {
+  const { pending } = useLinkStatus()
+  return (
+    <span className={`transition-opacity delay-100 duration-200 ${pending ? 'opacity-50' : 'opacity-100'}`}>
+      {children}
+    </span>
+  )
+}
 
 export function PeriodSelector({ active }: { active: Period }) {
   return (
@@ -16,7 +35,7 @@ export function PeriodSelector({ active }: { active: Period }) {
                 : 'text-text-secondary hover:bg-bg-inset hover:text-text-primary'
             }`}
           >
-            {label}
+            <PeriodLabel>{label}</PeriodLabel>
           </Link>
         )
       })}

@@ -1,3 +1,5 @@
+import type { CameraOrigin } from '@/lib/config/enums'
+
 export type DisplayElement = {
   id: string
   name: string
@@ -6,7 +8,13 @@ export type DisplayElement = {
   reference_image_path: string | null
 }
 
-export type DisplayDialogueLine = { element_id: string; element_name: string; line: string }
+export type DisplayDialogueLine = {
+  id: string
+  order_index: number
+  element_id: string
+  element_name: string
+  line: string
+}
 
 export type DisplayShot = {
   id: string
@@ -17,6 +25,12 @@ export type DisplayShot = {
   visual_description: string | null
   duration_sec: number | null
   duration_locked: boolean
+  shot_size: string | null
+  shot_size_origin: CameraOrigin
+  camera_angle: string | null
+  camera_angle_origin: CameraOrigin
+  camera_movement: string | null
+  camera_movement_origin: CameraOrigin
   elements: DisplayElement[]
   dialogue: DisplayDialogueLine[]
 }

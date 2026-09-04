@@ -32,7 +32,11 @@ export async function reserveUsage(params: {
   supabase: SupabaseServerClient
   userId: string
   projectId: string
-  generationId: string
+  // Nullable: derive_camera has no `generations` row to attach to (see pipeline.ts's
+  // OPERATIONS comment) - every other call site keeps passing a real generation id.
+  // usage.generation_id is already ON DELETE SET NULL, so this is a pure
+  // application-layer typing change, no migration needed.
+  generationId: string | null
   shotId: string | null
   step: Step
   operation: Operation

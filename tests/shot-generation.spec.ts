@@ -18,6 +18,9 @@ const RICH_INPUT = {
       shot_size: 'wide',
       camera_angle: 'eye_level',
       camera_movement: 'static',
+      shot_size_origin: 'derived',
+      camera_angle_origin: 'auto',
+      camera_movement_origin: 'auto',
       duration_sec: 5,
       section_label: 'Intro',
       dialogue: [],
@@ -29,6 +32,9 @@ const RICH_INPUT = {
       shot_size: 'close_up',
       camera_angle: 'eye_level',
       camera_movement: 'slow_push_in',
+      shot_size_origin: 'auto',
+      camera_angle_origin: 'auto',
+      camera_movement_origin: 'auto',
       duration_sec: 4,
       section_label: 'Intro',
       // Same name as above, different casing - proves case-insensitive dedup.
@@ -41,6 +47,9 @@ const RICH_INPUT = {
       shot_size: 'medium',
       camera_angle: 'low',
       camera_movement: 'pan',
+      shot_size_origin: 'auto',
+      camera_angle_origin: 'auto',
+      camera_movement_origin: 'auto',
       duration_sec: 4,
       section_label: 'Rescue',
       dialogue: [],
@@ -74,6 +83,9 @@ function buildShots(count: number) {
     shot_size: 'wide',
     camera_angle: 'eye_level',
     camera_movement: 'static',
+    shot_size_origin: 'auto',
+    camera_angle_origin: 'auto',
+    camera_movement_origin: 'auto',
     duration_sec: 3,
     section_label: 'Section',
     dialogue: [],
@@ -162,18 +174,68 @@ test.describe('Step 2 workbench - shot generation', () => {
       const mara = elements!.find((e) => e.name.toLowerCase() === 'mara')
       expect(mara).toBeTruthy()
 
-      const { data: shotsWithDialogue, error: shotsError } = await admin
+      const { data: shots, error: shotsError } = await admin
         .from('shots')
-        .select('order_index, dialogue')
+        .select('id, order_index')
         .eq('project_id', projectId)
         .order('order_index', { ascending: true })
       expect(shotsError).toBeNull()
 
-      const dialogueShot = shotsWithDialogue!.find((s) => s.order_index === 1)
-      expect(dialogueShot).toBeTruthy()
-      const dialogue = dialogueShot!.dialogue as { element_id: string; line: string }[]
-      expect(dialogue.length).toBe(1)
-      expect(dialogue[0].element_id).toBe(mara!.id)
+      const dialogueShotId = shots!.find((s) => s.order_index === 1)!.id
+
+      const { data: dialogue, error: dialogueError } = await admin
+        .from('shot_dialogue')
+        .select('shot_id, element_id, line, order_index')
+        .eq('shot_id', dialogueShotId)
+        .order('order_index', { ascending: true })
+      expect(dialogueError).toBeNull()
+      expect(dialogue!.length).toBe(1)
+      expect(dialogue![0].element_id).toBe(mara!.id)
+    }
+  })
+
+  test('persists reported camera origins, and sanitizes an unrecognized origin (including a hypothetical override) to auto', async () => {
+    const user = primary.user
+    {
+      const projectId = await insertProject(user.id)
+      const input = {
+        title: 'Origin Test',
+        message: 'Here is your shot list.',
+        video_type: 'narrated_story',
+        shots: [
+          {
+            voice_over: 'Narration.',
+            visual_description: 'Wide shot of a lighthouse.',
+            shot_size: 'wide',
+            camera_angle: 'eye_level',
+            camera_movement: 'static',
+            shot_size_origin: 'derived',
+            camera_angle_origin: 'auto',
+            // The tool schema structurally blocks 'override' from the model, but this
+            // exercises the sanitizeEnum ?? 'auto' fallback directly in case a stored
+            // pending payload predates the schema change.
+            camera_movement_origin: 'override',
+            duration_sec: 3,
+            section_label: 'Intro',
+            dialogue: [],
+            element_names: [],
+          },
+        ],
+      }
+      const gateway: ClaudeGateway = { async createMessage() { return successMessage(input) } }
+
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      expect(result.ok).toBe(true)
+
+      const { data: shots, error: shotsError } = await admin
+        .from('shots')
+        .select('shot_size_origin, camera_angle_origin, camera_movement_origin')
+        .eq('project_id', projectId)
+      expect(shotsError).toBeNull()
+      expect(shots!.length).toBe(1)
+      expect(shots![0].shot_size_origin).toBe('derived')
+      expect(shots![0].camera_angle_origin).toBe('auto')
+      expect(shots![0].camera_movement_origin).toBe('auto')
     }
   })
 

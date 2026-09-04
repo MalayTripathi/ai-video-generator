@@ -10,25 +10,35 @@ import { AssetsTab } from './_components/assets-tab'
 import { ScriptTab } from './_components/script-tab'
 import { WorkbenchFooter } from './_components/workbench-footer'
 import type { DisplayDialogueLine, DisplayShot } from './_components/types'
-import type { Json, Tables } from '@/lib/database.types'
+import type { Tables } from '@/lib/database.types'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import type { CameraOrigin } from '@/lib/config/enums'
 
 type ElementRow = Tables<'elements'>
 type ShotRow = Tables<'shots'> & { shot_elements: { elements: ElementRow | null }[] }
+type ShotDialogueRow = Pick<
+  Tables<'shot_dialogue'>,
+  'id' | 'shot_id' | 'element_id' | 'line' | 'order_index'
+>
 
-function resolveDialogue(
-  dialogue: Json,
+function groupDialogueByShot(
+  rows: ShotDialogueRow[],
   elementsById: Map<string, ElementRow>
-): DisplayDialogueLine[] {
-  if (!Array.isArray(dialogue)) return []
-  return dialogue.flatMap((entry) => {
-    if (typeof entry !== 'object' || entry === null) return []
-    const v = entry as Record<string, unknown>
-    if (typeof v.element_id !== 'string' || typeof v.line !== 'string') return []
-    const element = elementsById.get(v.element_id)
-    if (!element) return []
-    return [{ element_id: v.element_id, element_name: element.name, line: v.line }]
-  })
+): Map<string, DisplayDialogueLine[]> {
+  const byShot = new Map<string, DisplayDialogueLine[]>()
+  for (const row of rows) {
+    const element = elementsById.get(row.element_id)
+    const lines = byShot.get(row.shot_id) ?? []
+    lines.push({
+      id: row.id,
+      order_index: row.order_index,
+      element_id: row.element_id,
+      element_name: element?.name ?? '',
+      line: row.line,
+    })
+    byShot.set(row.shot_id, lines)
+  }
+  return byShot
 }
 
 export default async function WorkbenchPage({
@@ -54,7 +64,7 @@ export default async function WorkbenchPage({
   const { data: project } = await supabase
     .from('projects')
     .select(
-      'id, title, source_text, status, current_step, video_type, aspect_ratio, language, video_model, duration_target'
+      'id, title, source_text, current_step, video_type, aspect_ratio, language, video_model, duration_target'
     )
     .eq('id', projectId)
     .eq('user_id', user.id)
@@ -64,31 +74,42 @@ export default async function WorkbenchPage({
     notFound()
   }
 
-  const [{ data: shotsRows }, { data: elementsRows }, { data: messageRows }, { data: generation }] =
-    await Promise.all([
-      supabase
-        .from('shots')
-        .select('*, shot_elements(elements(id, name, type, status, reference_image_path))')
-        .eq('project_id', projectId)
-        .order('order_index', { ascending: true }),
-      supabase.from('elements').select('*').eq('project_id', projectId),
-      supabase
-        .from('messages')
-        .select('*')
-        .eq('project_id', projectId)
-        .eq('role', 'assistant')
-        .order('created_at', { ascending: true }),
-      supabase
-        .from('generations')
-        .select('state, payload')
-        .eq('project_id', projectId)
-        .eq('step', 'workbench')
-        .eq('operation', 'generate_shots')
-        .is('shot_id', null)
-        .maybeSingle(),
-    ])
+  const [
+    { data: shotsRows },
+    { data: elementsRows },
+    { data: dialogueRows },
+    { data: messageRows },
+    { data: generation },
+  ] = await Promise.all([
+    supabase
+      .from('shots')
+      .select('*, shot_elements(elements(id, name, type, status, reference_image_path))')
+      .eq('project_id', projectId)
+      .order('order_index', { ascending: true }),
+    supabase.from('elements').select('*').eq('project_id', projectId),
+    supabase
+      .from('shot_dialogue')
+      .select('id, shot_id, element_id, line, order_index')
+      .eq('project_id', projectId)
+      .order('order_index', { ascending: true }),
+    supabase
+      .from('messages')
+      .select('*')
+      .eq('project_id', projectId)
+      .eq('role', 'assistant')
+      .order('created_at', { ascending: true }),
+    supabase
+      .from('generations')
+      .select('state, payload')
+      .eq('project_id', projectId)
+      .eq('step', 'workbench')
+      .eq('operation', 'generate_shots')
+      .is('shot_id', null)
+      .maybeSingle(),
+  ])
 
   const elementsById = new Map((elementsRows ?? []).map((el) => [el.id, el]))
+  const dialogueByShot = groupDialogueByShot(dialogueRows ?? [], elementsById)
   const typedShotsRows = (shotsRows ?? []) as unknown as ShotRow[]
 
   const shots: DisplayShot[] = typedShotsRows.map((row) => ({
@@ -100,6 +121,12 @@ export default async function WorkbenchPage({
     visual_description: row.visual_description,
     duration_sec: row.duration_sec,
     duration_locked: row.duration_locked,
+    shot_size: row.shot_size,
+    shot_size_origin: row.shot_size_origin as CameraOrigin,
+    camera_angle: row.camera_angle,
+    camera_angle_origin: row.camera_angle_origin as CameraOrigin,
+    camera_movement: row.camera_movement,
+    camera_movement_origin: row.camera_movement_origin as CameraOrigin,
     elements: (row.shot_elements ?? [])
       .map((se) => se.elements)
       .filter((el): el is ElementRow => el !== null)
@@ -110,7 +137,7 @@ export default async function WorkbenchPage({
         status: el.status,
         reference_image_path: el.reference_image_path,
       })),
-    dialogue: resolveDialogue(row.dialogue, elementsById),
+    dialogue: dialogueByShot.get(row.id) ?? [],
   }))
 
   const agentMessages: AgentMessage[] = (messageRows ?? []).map((message) => ({
@@ -131,6 +158,7 @@ export default async function WorkbenchPage({
       projectId={projectId}
       initialShots={shots}
       initialVideoType={project.video_type}
+      initialVideoModel={project.video_model}
       initialGenerationState={generation?.state ?? null}
       initialHasPendingPayload={hasPendingPayload}
       estimatedCredits={estimatedCredits}
