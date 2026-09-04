@@ -28,6 +28,10 @@ export const OPERATIONS = [
   'generate_image',
   'generate_clip',
   'merge',
+  // derive_camera writes a `usage` row but deliberately never a `generations` row - see
+  // CLAUDE.md: a claim's terminal 'succeeded' state would block every subsequent edit
+  // of the same shot's description. generations_operation_check is not widened for it.
+  'derive_camera',
 ] as const
 
 export type Operation = (typeof OPERATIONS)[number]
@@ -37,7 +41,7 @@ export const PROVIDERS = ['anthropic', 'openai', 'elevenlabs', 'fal'] as const
 export type Provider = (typeof PROVIDERS)[number]
 
 export const STEP_OPERATIONS: Record<Step, readonly Operation[]> = {
-  workbench: ['generate_shots', 'agent_turn'],
+  workbench: ['generate_shots', 'agent_turn', 'derive_camera'],
   voiceover: ['voiceover', 'background_music'],
   image_prompts: ['write_prompts', 'generate_image'],
   video_prompts: ['write_prompts'],
@@ -58,7 +62,7 @@ const STEP_LABELS: Record<Step, string> = {
 }
 
 const OPERATION_LABELS: Record<Step, Partial<Record<Operation, string>>> = {
-  workbench: { generate_shots: 'New shots', agent_turn: 'Agent turn' },
+  workbench: { generate_shots: 'New shots', agent_turn: 'Agent turn', derive_camera: 'Camera framing' },
   voiceover: { voiceover: 'Generation', background_music: 'Background music' },
   image_prompts: { write_prompts: 'Prompt writing', generate_image: 'Image generation' },
   video_prompts: { write_prompts: 'Prompt writing' },

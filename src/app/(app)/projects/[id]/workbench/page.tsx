@@ -12,10 +12,14 @@ import { WorkbenchFooter } from './_components/workbench-footer'
 import type { DisplayDialogueLine, DisplayShot } from './_components/types'
 import type { Tables } from '@/lib/database.types'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import type { CameraOrigin } from '@/lib/config/enums'
 
 type ElementRow = Tables<'elements'>
 type ShotRow = Tables<'shots'> & { shot_elements: { elements: ElementRow | null }[] }
-type ShotDialogueRow = Pick<Tables<'shot_dialogue'>, 'shot_id' | 'element_id' | 'line'>
+type ShotDialogueRow = Pick<
+  Tables<'shot_dialogue'>,
+  'id' | 'shot_id' | 'element_id' | 'line' | 'order_index'
+>
 
 function groupDialogueByShot(
   rows: ShotDialogueRow[],
@@ -24,9 +28,14 @@ function groupDialogueByShot(
   const byShot = new Map<string, DisplayDialogueLine[]>()
   for (const row of rows) {
     const element = elementsById.get(row.element_id)
-    if (!element) continue
     const lines = byShot.get(row.shot_id) ?? []
-    lines.push({ element_id: row.element_id, element_name: element.name, line: row.line })
+    lines.push({
+      id: row.id,
+      order_index: row.order_index,
+      element_id: row.element_id,
+      element_name: element?.name ?? '',
+      line: row.line,
+    })
     byShot.set(row.shot_id, lines)
   }
   return byShot
@@ -80,7 +89,7 @@ export default async function WorkbenchPage({
     supabase.from('elements').select('*').eq('project_id', projectId),
     supabase
       .from('shot_dialogue')
-      .select('shot_id, element_id, line')
+      .select('id, shot_id, element_id, line, order_index')
       .eq('project_id', projectId)
       .order('order_index', { ascending: true }),
     supabase
@@ -112,6 +121,12 @@ export default async function WorkbenchPage({
     visual_description: row.visual_description,
     duration_sec: row.duration_sec,
     duration_locked: row.duration_locked,
+    shot_size: row.shot_size,
+    shot_size_origin: row.shot_size_origin as CameraOrigin,
+    camera_angle: row.camera_angle,
+    camera_angle_origin: row.camera_angle_origin as CameraOrigin,
+    camera_movement: row.camera_movement,
+    camera_movement_origin: row.camera_movement_origin as CameraOrigin,
     elements: (row.shot_elements ?? [])
       .map((se) => se.elements)
       .filter((el): el is ElementRow => el !== null)
@@ -143,6 +158,7 @@ export default async function WorkbenchPage({
       projectId={projectId}
       initialShots={shots}
       initialVideoType={project.video_type}
+      initialVideoModel={project.video_model}
       initialGenerationState={generation?.state ?? null}
       initialHasPendingPayload={hasPendingPayload}
       estimatedCredits={estimatedCredits}

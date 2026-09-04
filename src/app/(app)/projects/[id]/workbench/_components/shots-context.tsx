@@ -6,15 +6,18 @@ import type { DisplayShot } from './types'
 import { derivePhase, type Phase } from './derive-phase'
 
 type ShotsContextValue = {
+  projectId: string
   shots: DisplayShot[]
   phase: Phase
   videoType: string | null
+  videoModel: string | null
   hasPendingPayload: boolean
   estimatedCredits: number
   confirmOpen: boolean
   openRetryConfirm: () => void
   closeRetryConfirm: () => void
   confirmRetry: () => void
+  updateShotLocal: (shotId: string, patch: Partial<DisplayShot>) => void
 }
 
 const ShotsContext = createContext<ShotsContextValue | null>(null)
@@ -23,6 +26,7 @@ export function ShotsProvider({
   projectId,
   initialShots,
   initialVideoType,
+  initialVideoModel,
   initialGenerationState,
   initialHasPendingPayload,
   estimatedCredits,
@@ -31,6 +35,7 @@ export function ShotsProvider({
   projectId: string
   initialShots: DisplayShot[]
   initialVideoType: string | null
+  initialVideoModel: string | null
   initialGenerationState: string | null
   initialHasPendingPayload: boolean
   estimatedCredits: number
@@ -43,6 +48,14 @@ export function ShotsProvider({
   const [hasPendingPayload, setHasPendingPayload] = useState(initialHasPendingPayload)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const triggeredRef = useRef(false)
+
+  // video_model isn't edited anywhere in this task - passed through statically rather
+  // than kept in its own useState.
+  const videoModel = initialVideoModel
+
+  function updateShotLocal(shotId: string, patch: Partial<DisplayShot>) {
+    setShots((prev) => prev.map((shot) => (shot.id === shotId ? { ...shot, ...patch } : shot)))
+  }
 
   const phase = derivePhase({
     generation: generationState === null ? null : { state: generationState },
@@ -121,15 +134,18 @@ export function ShotsProvider({
   return (
     <ShotsContext.Provider
       value={{
+        projectId,
         shots,
         phase,
         videoType,
+        videoModel,
         hasPendingPayload,
         estimatedCredits,
         confirmOpen,
         openRetryConfirm,
         closeRetryConfirm,
         confirmRetry,
+        updateShotLocal,
       }}
     >
       {children}
