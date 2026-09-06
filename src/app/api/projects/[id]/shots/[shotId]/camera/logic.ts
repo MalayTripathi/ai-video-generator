@@ -4,6 +4,7 @@ import type { ClaudeGateway } from '@/lib/claude'
 import { modelsConfig } from '@/lib/config/models'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 import { MODEL_REPORTABLE_CAMERA_ORIGINS } from '@/lib/config/enums'
+import { stalenessFor } from '@/lib/shot-staleness'
 import {
   estimateInputTokens,
   quoteClaudeCall,
@@ -212,8 +213,7 @@ export async function runCameraDerivation(params: {
 
     // Camera re-derivation counts as a camera-field edit for staleness purposes, same
     // as a manual dropdown change - see CLAUDE.md's staleness table.
-    updates.image_prompt_stale = true
-    updates.video_prompt_stale = true
+    Object.assign(updates, stalenessFor('camera').shot)
 
     const { error: updateError } = await supabase.from('shots').update(updates).eq('id', shotId)
     if (updateError) {

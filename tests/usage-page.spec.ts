@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
 import { aggregateUsage, type UsageRow, type ProjectMeta } from '../src/app/(app)/usage/aggregate'
 import { getPeriodRange } from '../src/app/(app)/usage/period'
-import { STALE_AFTER_MS } from '../src/lib/generations/claim'
+import { STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -100,6 +100,32 @@ test.describe('aggregateUsage', () => {
 
     expect(aggregation.anomalies.stalePending.count).toBe(1)
     expect(aggregation.anomalies.stalePending.total).toBeCloseTo(0.5, 6)
+  })
+
+  test('the stale-pending boundary is per-operation: an agent_turn row past 180s counts as stale well before the 15-minute default window would flag it', () => {
+    const now = new Date('2026-08-31T12:00:00.000Z')
+    const AGENT_TURN_STALE_AFTER_MS = 180 * 1000
+    // Older than agent_turn's 180s window but younger than the 15-minute default -
+    // a flat global constant would miss this row entirely.
+    const staleAgentTurnRow = row({
+      step: 'workbench',
+      operation: 'agent_turn',
+      status: 'pending',
+      estimated_cost: 0.01,
+      created_at: new Date(now.getTime() - AGENT_TURN_STALE_AFTER_MS - 1_000).toISOString(),
+    })
+    const freshAgentTurnRow = row({
+      step: 'workbench',
+      operation: 'agent_turn',
+      status: 'pending',
+      estimated_cost: 0.01,
+      created_at: new Date(now.getTime() - AGENT_TURN_STALE_AFTER_MS + 1_000).toISOString(),
+    })
+
+    const aggregation = aggregateUsage([staleAgentTurnRow, freshAgentTurnRow], [], now)
+
+    expect(aggregation.anomalies.stalePending.count).toBe(1)
+    expect(aggregation.anomalies.stalePending.total).toBeCloseTo(0.01, 6)
   })
 
   test('calibration is skipped when no settled row has a quoted_cost', () => {

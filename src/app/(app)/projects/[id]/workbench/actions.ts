@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS } from '@/lib/config/enums'
+import { stalenessFor } from '@/lib/shot-staleness'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -54,9 +55,11 @@ export async function updateShotVoiceOver(shotId: string, value: string): Promis
   const trimmed = value.trim()
   if (trimmed === shot.voice_over) return { field, success: true, unchanged: true }
 
+  const staleness = stalenessFor('voice_over')
+
   const { error } = await supabase
     .from('shots')
-    .update({ voice_over: trimmed, image_prompt_stale: true, video_prompt_stale: true })
+    .update({ voice_over: trimmed, ...staleness.shot })
     .eq('id', shotId)
   if (error) return { field, success: false, error: error.message }
 
@@ -66,7 +69,7 @@ export async function updateShotVoiceOver(shotId: string, value: string): Promis
   // failure the user has to retry - the text itself is safely persisted either way.
   const { error: projectError } = await supabase
     .from('projects')
-    .update({ voiceover_stale: true })
+    .update(staleness.project)
     .eq('id', shot.project_id)
   if (projectError) {
     console.error(
@@ -98,7 +101,7 @@ export async function updateShotVisualDescription(
 
   const { error } = await supabase
     .from('shots')
-    .update({ visual_description: trimmed, image_prompt_stale: true, video_prompt_stale: true })
+    .update({ visual_description: trimmed, ...stalenessFor('visual_description').shot })
     .eq('id', shotId)
   if (error) return { field, success: false, error: error.message }
 
@@ -168,7 +171,7 @@ async function updateCameraField(field: CameraField, shotId: string, value: stri
 
   const { error } = await supabase
     .from('shots')
-    .update({ [field]: value, [originColumn]: 'override', image_prompt_stale: true, video_prompt_stale: true })
+    .update({ [field]: value, [originColumn]: 'override', ...stalenessFor('camera').shot })
     .eq('id', shotId)
   if (error) return { field, success: false, error: error.message }
 
@@ -298,7 +301,7 @@ export async function deleteDialogueLine(id: string, shotId: string): Promise<Di
 }
 
 async function markVideoPromptStale(supabase: SupabaseServerClient, shotId: string) {
-  const { error } = await supabase.from('shots').update({ video_prompt_stale: true }).eq('id', shotId)
+  const { error } = await supabase.from('shots').update(stalenessFor('dialogue').shot).eq('id', shotId)
   if (error) {
     console.error(`[workbench] Failed to set video_prompt_stale for shot ${shotId}:`, error.message)
   }

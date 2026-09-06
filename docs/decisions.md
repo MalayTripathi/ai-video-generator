@@ -318,6 +318,38 @@ A deliberate behaviour change from the old CAS lock, which was freely re-callabl
 non-truncation 422 leaves `payload` intact for recovery, mirroring `runShotsPipeline`'s own
 "nothing usable" 422.
 
+## Staleness mapping: consolidation, and the camera flags were already correct
+*Supports: `src/lib/shot-staleness.ts` and the staleness table in `## Database`.*
+
+Six call sites (five in `workbench/actions.ts`, one in `camera/logic.ts`'s
+`runCameraDerivation`) each independently decided which `*_stale` flags a field edit
+sets. The mapping itself had not drifted — every site already set identical flags for
+the same field-change category — but it was duplicated: a manual camera dropdown and an
+AI camera re-derivation each spelled out `{ image_prompt_stale: true, video_prompt_stale:
+true }` in their own code, kept in sync only by comment discipline. `stalenessFor`
+consolidates the field→flags decision into one function; each call site still owns its
+own no-op/diff-before-write check, since that check is field-specific (a value diff for
+most fields, an origin-state gate for AI re-derivation) and out of the mapping's concern.
+
+This corrects a stale premise from C4 planning: both camera-write paths (the dropdown
+and the AI re-derivation) were already setting `image_prompt_stale`/`video_prompt_stale`
+before this consolidation, including the revert-to-auto and reset-all-to-auto trigger
+shapes. There was no open behavior gap here to close — only the duplication to remove.
+
+## Why `client_id` exists alongside the `generations` mutex
+*Supports: `messages.client_id` and `src/lib/messages-idempotency.ts`.*
+
+The `generations` mutex guards *concurrency*: two tabs, a double-clicked send, a second
+turn firing while one is already running. It does not guard *sequential* retry: a turn
+completes and settles to `succeeded`, the response is lost in transit (a dropped
+connection, a client crash), and the client resends the same message. The mutex row is
+by then claimable again — its job is done — so the resend would bill Claude a second
+time for an identical message. `client_id`, minted by the browser once per send and
+enforced by `UNIQUE (project_id, client_id)`, converts that paid duplicate into a free
+no-op: the insert of the user message is itself the idempotency claim, and a `23505` on
+it (detected by error code, never by matching a message string) means this exact message
+was already accepted.
+
 ## Why voiceover merged into storyboard, and `STEPS` now includes it
 
 The pipeline dropped from 8 steps to 7: voiceover is no longer a step of its own. Three

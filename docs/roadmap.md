@@ -45,18 +45,26 @@ are not lost.
 
 ## Added items
 
-- **C4 open:** whether `client_id` is added to the `messages` table. Proposed
-  to deduplicate a sequential retry — a double click or a retried API call
-  producing two identical turns. Under discussion; may ship with C4.
 - **C4 open:** whether token streaming ships in C4 or is deferred to C4.5.
 - **C4 prerequisite:** verify Vercel's function duration limit before
   finalising agent-turn bounds.
-- **C3 carry-overs:** whether a camera revert/reset should set
-  `image_prompt_stale` / `video_prompt_stale` (camera values feed downstream
-  paid steps — decide before Step 3 ships); whether the
-  `image_prompt`/`video_prompt` non-null regression assertion runs against a
-  fixture where those columns are actually populated; a live-table NULL check
-  on pre-existing `camera_overridden`-equivalent data.
+- **Before a regenerate-all UI trigger ships:** `generate_shots` is now
+  claimable from `'succeeded'` with `retry: true` (`OPERATION_POLICY`), and a
+  no-retry claim against a succeeded project now returns `retry_required`
+  instead of `already_ready`. Nothing in the UI reaches this path yet (the
+  workbench only opens the retry confirmation from the `failed`/`partial`
+  phases), so `shots/logic.ts`'s `retry_required` copy — "The last generation
+  failed. Retry to try again." — is still accurate for every path a user can
+  reach today. Whoever wires a real "regenerate all" trigger from the
+  complete phase needs copy that covers both cases (or a distinct reason
+  value), not this string as-is.
+- **C3 carry-overs:** whether the `image_prompt`/`video_prompt` non-null
+  regression assertion runs against a fixture where those columns are
+  actually populated; a live-table NULL check on pre-existing
+  `camera_overridden`-equivalent data. (The camera revert/reset staleness
+  question is resolved — both write paths already set
+  `image_prompt_stale`/`video_prompt_stale`, now consolidated in
+  `src/lib/shot-staleness.ts`.)
 - **Before Step 3:** split `/api/projects/[id]/prompts` into separate
   image-prompts and video-prompts routes, each with its own claim. The route's
   original defect — video prompts written before images existed or retiming

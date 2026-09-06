@@ -117,6 +117,7 @@ export type Database = {
       }
       messages: {
         Row: {
+          client_id: string | null
           content: string
           created_at: string
           id: string
@@ -124,6 +125,7 @@ export type Database = {
           role: string
         }
         Insert: {
+          client_id?: string | null
           content: string
           created_at?: string
           id?: string
@@ -131,6 +133,7 @@ export type Database = {
           role: string
         }
         Update: {
+          client_id?: string | null
           content?: string
           created_at?: string
           id?: string
