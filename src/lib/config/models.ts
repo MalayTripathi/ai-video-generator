@@ -89,7 +89,7 @@ export type ModelsConfig = {
     provider: 'fal'
     model: string
   }
-  // Future steps (voiceover, image) each get their own section here as
+  // Future steps (image, storyboard) each get their own section here as
   // they're implemented - keep this type and the object below in sync.
 }
 

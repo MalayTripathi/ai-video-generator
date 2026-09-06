@@ -3,13 +3,14 @@
 # Reelcraft — AI Video Generator
 
 Users start from an idea, a script, or a screenplay and get a finished
-short video. An 8-step pipeline turns that text into a film-style shot
-list, then takes it through voiceover, images, storyboard, video prompts,
-clip generation, and final assembly with subtitles and social copy.
+short video. A 7-step pipeline turns that text into a film-style shot
+list, then takes it through images, storyboard (voiceover, retiming and a
+narrated still-frame cut), video prompts, clip generation, and final
+assembly with subtitles and social copy.
 
 The steps: **1 Intake** (pre-project) → **2 Workbench** (shot list) →
-**3 Voiceover** → **4 Image prompts** → **5 Storyboard** →
-**6 Video prompts** → **7 Generation** (most expensive) → **8 Assembly**.
+**3 Image prompts** → **4 Storyboard** → **5 Video prompts** →
+**6 Generation** (most expensive) → **7 Assembly**.
 
 ## Hard rules
 
@@ -149,7 +150,7 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   added explicitly, plus `disabled:cursor-not-allowed` where the button
   toggles `disabled`.
 - `workbench-shell.tsx` (`src/components/workbench-shell.tsx`) is the
-  shared chrome for Steps 2–8: a `header` slot, the 8-step indicator, the
+  shared chrome for Steps 2–7: a `header` slot, the 7-step indicator, the
   agent panel, a `children` content slot, and an optional `footer` slot.
   The rail is present on these routes but comes from the `(app)` route
   group's layout, not from the shell — the shell renders no `Rail` of its
@@ -227,8 +228,8 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
 - Do not modify `src/proxy.ts` (Next.js 16's renamed `middleware.ts`) or
   `src/lib/supabase/*` unless the task is explicitly about session handling.
 - Wizard state lives in the DB, not client state. Each step is a real URL
-  (`/projects/[id]/workbench`, `/voiceover`, `/image_prompts`,
-  `/storyboard`, `/video_prompts`, `/generation`, `/assembly`) so work is
+  (`/projects/[id]/workbench`, `/image_prompts`, `/storyboard`,
+  `/video_prompts`, `/generation`, `/assembly`) so work is
   resumable — generation is slow and costs money. `intake` (`/projects/new`)
   is a pre-project screen, not a tracked step: it never appears as a
   `current_step` value, since the project row doesn't exist until submit.
@@ -272,7 +273,7 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   discriminated union on `kind: 'continuous' | 'discrete'` — a model
   cannot be defined without picking one, because a discrete model (Kling
   2.1: exactly 5s or 10s) would otherwise let a stepper produce a value
-  the provider rejects at Step 7, after everything upstream was paid for.
+  the provider rejects at Step 6, after everything upstream was paid for.
   Adding a model is one entry here. `resolveVideoModel` never falls back
   to another model's bounds: it throws outside production and returns
   `null` in production. `ProjectHeader`'s chip-label lookup deliberately
@@ -586,7 +587,7 @@ unreachable from the model by schema, not by validation.
 **Staleness is set by user edits only, never by a pipeline.**
 `shots.image_prompt_stale` / `shots.video_prompt_stale` and
 `projects.voiceover_stale` mark a downstream output invalidated by a later
-edit. **`runVoiceoverPipeline` must never write `voiceover_stale`**: Step 3
+edit. **`runVoiceoverPipeline` must never write `voiceover_stale`**: Step 4
 writes `duration_sec` back onto every unlocked shot, so a pipeline that
 also set the flag would invalidate its own output on every successful run —
 an unbounded loop, every cycle a paid ElevenLabs call. Which edit sets
@@ -598,7 +599,7 @@ shot's two prompt flags; **a camera field** (dropdown or AI re-derivation)
 invalidating; **dialogue** → that shot's `video_prompt_stale` only
 (on-camera speech, not narration); **duration** → nothing (audio derives
 from narration text; a locked-duration mismatch is resolved for free at
-Step 5 by retiming). Staleness is a flag, never a null.
+Step 4 by retiming). Staleness is a flag, never a null.
 
 Every field write above is preceded by a diff against the persisted
 value: an edit that resolves to the same value performs no write and
@@ -641,20 +642,20 @@ step generates one.
 
 Conventions not visible in the generated types: `projects.status` is
 unconstrained text (draft / in_progress / completed / failed).
-`current_step` is one of `workbench` / `voiceover` / `image_prompts` /
-`storyboard` / `video_prompts` / `generation` / `assembly`, DB-CHECK-
-constrained to exactly these seven values. `intake` is a pre-project
-screen, not a real `current_step` value — it only exists as the step-1
+`current_step` is one of `workbench` / `image_prompts` / `storyboard` /
+`video_prompts` / `generation` / `assembly`, DB-CHECK-constrained to
+exactly these six values. `intake` is a pre-project screen, not a real
+`current_step` value — it only exists as the step-1
 anchor in `furthest_step`'s mapping. `furthest_step` (smallint, default 1)
-tracks the deepest step a project has reached, 1-8 over that same
-vocabulary (intake=1 ... assembly=8). `projects.video_model` holds a
+tracks the deepest step a project has reached, 1-7 over that same
+vocabulary (intake=1 ... assembly=7). `projects.video_model` holds a
 single model string, but model choice is really per-step, not per-project.
 
 ## Generations and usage
 
 `generations` holds claim/lock state for every operation that fires a paid
 external API call. It is a table rather than per-step columns on
-`projects` because Step 7 regenerates individual clips per shot: a
+`projects` because Step 6 regenerates individual clips per shot: a
 project-level column cannot express "this one shot's clip is
 mid-generation while the others are idle," but a `shot_id`-scoped row can
 (`shot_id` is null for a project-level operation). `payload` holds the raw
@@ -748,7 +749,7 @@ a status value.
 
 **Never discard paid output to signal that it may be wrong.** Nulling a
 prompt column forces a paid regeneration to recover text that already
-existed, destroys any hand-editing the user did at Step 4, removes the
+existed, destroys any hand-editing the user did at Step 3, removes the
 user's judgement about whether the change actually matters, and renders
 identically to a shot that was never generated. A flag preserves the
 output, keeps the edit reversible for free, and lets the UI offer "may be
@@ -873,8 +874,8 @@ missing) leaves `payload` intact for recovery; a `max_tokens` truncation
 clears it, identically to `/shots`.
 
 `/prompts` produces both `image_prompt` and `video_prompt` in a single Claude
-call, and the whole call is attributed to `step: 'image_prompts'` — so Step 6
-spend currently reports as zero. Do not build a Step 4 or Step 6 caller
+call, and the whole call is attributed to `step: 'image_prompts'` — so Step 5
+spend currently reports as zero. Do not build a Step 3 or Step 5 caller
 against this route as-is; splitting it is tracked in `docs/roadmap.md`.
 
 The workbench shot list derives its UI phase from the `generations` row's
@@ -917,19 +918,16 @@ statements, in order, no `.rpc()`, no read-then-write:
    and computing a max in application code.
 
 `idx` comes from `stepIndex(step)` (`pipeline.ts`), derived from `STEPS`
-rather than a parallel hand-maintained map. **Known gap**: `storyboard` is
-a real `current_step` value but is deliberately not a member of `Step` —
-widening `STEPS` would wrongly imply storyboard belongs in the
-`generations`/`usage` CHECK constraints. Whoever builds Step 5 extends the
-`current_step` vocabulary, `stepIndex`, and `advanceStep`'s parameter type
-at that time.
+rather than a parallel hand-maintained map. `STEPS` covers every
+`current_step` value, so `stepIndex` maps the whole scale (workbench=2 …
+assembly=7) with no gap.
 
 `advanceStep` is called **only on an explicit step transition — never on a save**. Saving
 an edit on a revisited step (e.g. editing a shot's camera fields on the workbench) persists
 via its own save action and must not call `advanceStep`; if saving advanced the step,
 `current_step` would start tracking edits instead of navigation and lose its meaning.
 Unsaved edits may live in component state but must never reach the database without an
-explicit save. The agent is available throughout steps 2 through 8.
+explicit save. The agent is available throughout steps 2 through 7.
 
 `advanceStep` currently has **zero production callers** — it exists so the
 first real transition has somewhere correct to go. The coupling warning

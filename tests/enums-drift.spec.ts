@@ -10,6 +10,7 @@ import {
   CAMERA_ORIGINS,
   ELEMENT_TYPES,
 } from '../src/lib/config/enums'
+import { STEPS } from '../src/lib/config/pipeline'
 
 // Turns TS-vs-CHECK-constraint drift into a test failure instead of a runtime surprise:
 // for every enum in src/lib/config/enums.ts that has a DB CHECK constraint, insert a row
@@ -74,6 +75,23 @@ test.describe('enum drift - projects columns', () => {
         current_step: 'workbench',
         aspect_ratio: 'not_a_real_ratio',
       })
+    expect(badError).not.toBeNull()
+  })
+
+  // current_step's vocabulary is STEPS exactly - intake is the pre-project screen and
+  // never a stored value. This is the check that would have caught the 'script'
+  // divergence, when the column had no CHECK constraint at all.
+  test('accepts every STEPS member as current_step and rejects a bogus value', async () => {
+    for (const value of STEPS) {
+      const { error } = await admin
+        .from('projects')
+        .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: value })
+      expect(error).toBeNull()
+    }
+
+    const { error: badError } = await admin
+      .from('projects')
+      .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: 'not_a_real_step' })
     expect(badError).not.toBeNull()
   })
 })

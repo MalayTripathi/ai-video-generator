@@ -214,7 +214,7 @@ input ≈ 768 / output = 128 tokens ≈ **$0.0014** against Haiku's rates.
 *Supports: the staleness table in `## Database`. (Audit item 67.)*
 
 Audio is derived from narration text; duration does not change what is spoken. The mismatch
-between a locked duration and actual narration length is resolved at Step 5 by retiming
+between a locked duration and actual narration length is resolved at Step 4 by retiming
 visuals against the narration, which costs nothing.
 
 Dialogue is on-camera speech, not narration, so it does not touch the voiceover — hence
@@ -318,14 +318,26 @@ A deliberate behaviour change from the old CAS lock, which was freely re-callabl
 non-truncation 422 leaves `payload` intact for recovery, mirroring `runShotsPipeline`'s own
 "nothing usable" 422.
 
-## Why `STEPS` is not widened to include `storyboard`
-*Supports: the `stepIndex` known-gap note in `## Step progression`. (Audit item 103.)*
+## Why voiceover merged into storyboard, and `STEPS` now includes it
 
-`Step`/`STEPS` is the operations-attribution vocabulary mirrored into the `generations`/`usage`
-CHECK constraints. Storyboard claims no generation and logs no usage, so widening `STEPS` would
-wrongly imply it belongs in those constraints. `stepIndex` is `STEPS.indexOf(step) + 2`, the
-`+2` accounting for `intake` occupying the conceptual first slot without being a member of
-`Step`.
+The pipeline dropped from 8 steps to 7: voiceover is no longer a step of its own. Three
+reasons drove the merge, not just tidiness:
+
+- Voiceover timings were produced one step away from the timeline that actually consumes
+  them. Landing voiceover generation, retiming, and the still-frame storyboard in the same
+  step means the timing data and its consumer are never separated by a navigation boundary.
+- Video prompts were previously written *before* images existed and before retiming — a
+  real ordering defect, since a prompt described a shot whose visual and duration were not
+  yet settled. Under the new order (images at Step 3, storyboard — voiceover + retiming —
+  at Step 4, video prompts at Step 5), prompts are always written against real images and
+  final durations.
+- A useful side effect: Steps 1–4 alone now produce a complete narrated still-frame video,
+  with no clip-provider spend, before Step 5 (video prompts) is ever reached.
+
+Storyboard absorbed `voiceover` and `background_music` and gained `generate_image`, so it
+is now a spending step — unlike the old assumption (see the superseded note this replaces)
+that it "generates nothing of its own." `Step`/`STEPS` therefore includes `storyboard`
+directly, rather than carving out an exception the way `stepIndex` once did.
 
 ---
 
@@ -336,7 +348,7 @@ wrongly imply it belongs in those constraints. `stepIndex` is `STEPS.indexOf(ste
   record). Conversation persistence uses the existing `messages` table. Chat
   is excluded from `generations` cost accounting — agent turns write `usage`
   rows only; the accepted consequence is that a browser refresh mid-turn can
-  double-bill one turn (cents, versus dollars for a double-fired Step 7 clip).
+  double-bill one turn (cents, versus dollars for a double-fired Step 6 clip).
 - **`OPERATION_POLICY` — why it exists.** `STALE_AFTER_MS` is currently one
   global constant of 15 minutes, correct for a long paid shot-generation job
   and catastrophic for a chat turn: a wedged turn would lock the agent for

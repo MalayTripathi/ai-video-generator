@@ -33,16 +33,16 @@ test.describe('advanceStep', () => {
     const user = primary.user
     const projectId = await insertProject(user.id, 'workbench', 2)
 
-    await advanceStep(admin, projectId, 'voiceover')
+    await advanceStep(admin, projectId, 'image_prompts')
 
     const project = await readProject(projectId)
-    expect(project.current_step).toBe('voiceover')
+    expect(project.current_step).toBe('image_prompts')
     expect(project.furthest_step).toBe(3)
   })
 
   test('backward navigation regresses current_step and leaves furthest_step untouched', async () => {
     const user = primary.user
-    const projectId = await insertProject(user.id, 'voiceover', 3)
+    const projectId = await insertProject(user.id, 'image_prompts', 3)
 
     await advanceStep(admin, projectId, 'workbench')
 
@@ -55,10 +55,10 @@ test.describe('advanceStep', () => {
     const user = primary.user
     const projectId = await insertProject(user.id, 'workbench', 3)
 
-    await advanceStep(admin, projectId, 'voiceover')
+    await advanceStep(admin, projectId, 'image_prompts')
 
     const project = await readProject(projectId)
-    expect(project.current_step).toBe('voiceover')
+    expect(project.current_step).toBe('image_prompts')
     expect(project.furthest_step).toBe(3)
   })
 })

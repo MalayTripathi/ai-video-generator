@@ -53,26 +53,30 @@ are not lost.
   finalising agent-turn bounds.
 - **C3 carry-overs:** whether a camera revert/reset should set
   `image_prompt_stale` / `video_prompt_stale` (camera values feed downstream
-  paid steps — decide before Step 4 ships); whether the
+  paid steps — decide before Step 3 ships); whether the
   `image_prompt`/`video_prompt` non-null regression assertion runs against a
   fixture where those columns are actually populated; a live-table NULL check
   on pre-existing `camera_overridden`-equivalent data.
-- **Before Step 4:** split `/api/projects/[id]/prompts` into separate
-  image-prompts and video-prompts routes, each with its own claim. See the
-  attribution constraint in CLAUDE.md.
+- **Before Step 3:** split `/api/projects/[id]/prompts` into separate
+  image-prompts and video-prompts routes, each with its own claim. The route's
+  original defect — video prompts written before images existed or retiming
+  happened — is fixed by the new step order (images at Step 3, video prompts
+  at Step 5, after storyboard). The remaining reasons for the split are
+  per-route claims (one `generations` row per operation, not a shared one)
+  and correct step attribution — see the attribution constraint in CLAUDE.md.
 - **Before C5:** add the missing DB CHECK constraint on `elements.type` if
   verification shows it absent (CLAUDE.md's own claim about this has been
   wrong in both directions historically — verify against the migration, do
   not trust prose).
 - **C6:** fix the unguarded URL interpolation in `project-card.tsx`
   (`/projects/${id}/${current_step}`) — the first `advanceStep()` call
-  writing `'voiceover'` before Step 3's route exists sends users to a 404.
-- **Step 7 architecture:** cannot be request-response at any timeout (75 clips,
+  writing `'image_prompts'` before that step's route exists sends users to a 404.
+- **Step 6 architecture:** cannot be request-response at any timeout (75 clips,
   minutes each). Needs async submit plus webhook or poll; `generations`'
   `external_id` and per-shot rows already support this.
-- **Step 8:** ffmpeg needs a container service, not Vercel (binary size,
+- **Step 7:** ffmpeg needs a container service, not Vercel (binary size,
   memory, CPU).
-- **Before Step 8:** finished videos must be served as Supabase signed URLs
+- **Before Step 7:** finished videos must be served as Supabase signed URLs
   straight from storage, never proxied through a Next.js route. Vercel egress
   is ~$0.15/GB.
 - **Per-tier `max_tokens`:** the 3–5min and 8–10min duration tiers are
@@ -89,7 +93,18 @@ are not lost.
   move the suite to local Supabase (`supabase start`) for full isolation and
   zero rate limits.
 - **Mobile:** one design pass after desktop Steps 1–2 are done. Only four
-  screens get responsive treatment (Step 7 progress, dashboard, intake, final
+  screens get responsive treatment (Step 6 progress, dashboard, intake, final
   review/download); everything else shows a "needs larger screen" interstitial.
-- **Step 3:** ElevenLabs returns per-shot voiceover start/end timestamps
-  alongside the audio file. Storage schema for these is not yet designed.
+- **Steps 3 and 4, to be decided when those steps are designed:**
+  - Where per-shot voiceover start/end timestamps (ElevenLabs returns these
+    alongside the audio file) are stored — storage schema not yet designed.
+  - Whether timeline retiming writes back to `shots.duration_sec` or to a
+    separate offset column.
+  - Whether retiming sets `video_prompt_stale`.
+  - Whether a flag is needed for a stale generated image.
+  - Whether Storyboard's three generations (image, voiceover, background
+    music) are one claimed action or three independent ones.
+  - Whether the still-frame video is server-rendered or a client-side
+    preview.
+  - Whether Step 3's N per-shot image calls need the async submit-and-poll
+    architecture already flagged for Step 6.
