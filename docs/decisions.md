@@ -392,19 +392,107 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   live turn reclaimable mid-flight. The window is derived from
   `iteration_cap × per-call ceiling + margin`, landing near 180s. Open to
   revision with measured data.
-- **C4 mutation tools — settled.** Targeted tools only
-  (`update_shot`/`insert_shot`/`delete_shot`/`get_shot`); never a rewrite-all
-  tool once shots exist (~200 output tokens versus ~15,000 on a 75-shot
-  project). Default agent context is a compact shot index (~<2k tokens) with
-  `get_shot` for detail, not the full list (~20k). Cache breakpoints after
-  system prompt + tool schemas, and after the shot index, before message
-  history. Hard 8-iteration cap, gated behind the existing live-calls env
-  variable, with a test seam via an injectable model client. Agent writes are
-  treated identically to user edits for staleness. Agent-permitted shot
-  regeneration is constrained to projects with no paid artifacts beyond
-  `generate_shots`. Free shot deletion while no paid artifacts exist, with
-  server-side `order_index` maintenance. Last-write-wins concurrency, with
+- **`agent_turn` has no PERSIST/RECOVER — accepted gap, not an oversight.**
+  Every other claimed operation follows CLAIM → RECOVER → PERSIST → SETTLE;
+  `runAgentTurn` never calls `persistGenerationPayload` and never checks for
+  a recoverable payload, so `payload` stays `null` for the whole lifecycle
+  of every `agent_turn` claim. This is deliberate: PERSIST/RECOVER protects
+  one big paid call's *not-yet-applied* output between "Claude answered" and
+  "the derived rows were written" — `write_shots`' one batched tool_use
+  input sitting between paid-for and applied. A turn has no equivalent:
+  it's a loop of up to 8 independent Claude calls, and each tool call's DB
+  write is already durable the instant that iteration dispatches it — there
+  is no batched, not-yet-written payload to protect. **Accepted
+  consequence**: if execution is interrupted after one iteration's call has
+  been paid for but before that iteration's tool writes and the turn's
+  final SETTLE land, that iteration's cost and whatever it was about to
+  apply are both lost — there is nothing to replay, only the mutex to
+  release (`OPERATION_POLICY`'s `agent_turn` entry is reclaimable
+  unconditionally from any terminal state for exactly this reason: the next
+  turn is never blocked by it). **Do not read this as license to drop
+  PERSIST/RECOVER elsewhere.** `generate_shots` keeps its payload-based
+  PERSIST/RECOVER completely unchanged, including when claimed by the
+  agent's own `regenerate_all_shots` tool — that tool calls
+  `runShotGeneration` directly, the same function `/shots/route.ts` calls,
+  so it PERSISTs the payload before writing shots and RECOVERs from it on a
+  reclaimed row exactly as it always has. That operation really does have
+  one big paid call and one batched not-yet-written result to protect;
+  `agent_turn` structurally does not.
+- **`insertAssistantReply` is unconditional on every path that has already
+  inserted a user message.** The `client_id` idempotency guard
+  (`insertUserMessage`) only works if a duplicate resend can always find a
+  persisted reply; a path that inserts the user row but returns without
+  ever persisting a reply leaves that row permanently unanswerable — a
+  resend loops the identical refusal forever instead of ever resolving.
+  This includes `claimGeneration` returning `'error'` or `'blocked'`
+  (`already_generating`): both now persist a terminal, canned explanation
+  for that specific attempt before returning, the same way the read-only
+  lock and a thrown mid-turn exception already did. A dropped client
+  connection does not risk this on its own — `runAgentTurn`'s `finally`
+  block (claim settle, usage settle, the reply insert) runs independently
+  of `onEvent`/the SSE stream, which is wrapped in its own try/catch
+  specifically so a broken pipe can never skip it.
+- **C4 mutation tools — settled.** Four tools, exactly:
+  `get_shot`/`update_shot`/`insert_shot`/`regenerate_all_shots`. **No delete
+  tool, structurally** — not filtered out, never defined — because deleting
+  is a user-only action through a shot's own delete button; no phrasing of a
+  chat request can make the agent delete a shot, since no tool exists that
+  could. `insert_shot` maintains `order_index` server-side, shifting sibling
+  rows itself rather than asking the model to compute indices.
+  `regenerate_all_shots` reuses the existing `generate_shots` claim
+  (`retry: true`) rather than being a separate operation, and is gated to
+  exactly `furthest_step === workbench` — tighter than the general read-only
+  lock below, since paid Step 3+ output must never be silently destroyed by
+  a wholesale replacement. `update_shot`'s `dialogue` field replaces a
+  shot's entire line list in one call: the agent may rewrite an existing
+  bound-character line's text, remove a line, or add a line for a
+  character already bound to that shot. **A speaker not already bound to
+  that shot is refused, not auto-resolved — considered and explicitly
+  rejected.** Auto-creating (or reusing project-wide by name) a character
+  and binding it was tried and reverted: it would make the agent a second
+  production writer of `elements`/`shot_elements` alongside
+  `runShotsPipeline` (currently the only one, and worth keeping that way
+  until C5 — see the next point), risks silent unmergeable duplicates
+  ("Sarah"/"sarah"/"Sarah J." as three separate rows a future C5 asset
+  picker would inherit), and implies an unrequested future paid reference-
+  image render — "one reference image per element, reused across shots" is
+  a standing money rule (see this doc's Cost policy entry). A refusal here
+  is a `refusal` stream event, not an `error`, and states which characters
+  ARE bound so the user has something actionable. `insert_shot` still has
+  no dialogue field, purely as a scope decision — add a line via a
+  follow-up `update_shot` call in the same turn once the shot exists, not
+  because binding is gated. Default
+  agent context is a compact shot index (~<2k tokens) with `get_shot` for
+  detail, not the full list (~20k). Cache breakpoints after system prompt +
+  tool schemas, and after the shot index, before message history. Hard
+  8-iteration cap, gated behind the existing live-calls env variable, with a
+  test seam via an injectable model client. Agent writes are treated
+  identically to user edits for staleness. Last-write-wins concurrency, with
   refetch-and-replace on turn completion, exempting the focused field.
+- **C4 streaming — settled.** Ships in C4, not deferred. One SSE stream
+  carries both token-level text deltas (the model's own prose, forwarded as
+  the SDK produces it) and a small, purpose-built set of structured progress
+  events (`turn_started`, `tool_completed`, `refusal`, `error`, `settled`) —
+  never raw SDK events or a tool's raw arguments, which would leak
+  implementation detail and mean nothing to a user. The structured half
+  exists because a tool-loop turn can go many seconds between any text at
+  all; text deltas alone would leave that stretch looking broken.
+  `tool_completed`/`refusal` additionally carry an optional `shot_key` — the
+  same stable identifier the agent's tools already address shots by, never
+  a display number, since a turn can insert a shot and shift the tail
+  mid-stream. Present whenever the event concerns one specific shot (for
+  card locking and targeted refetch on settle); omitted when it doesn't
+  (`regenerate_all_shots`; a lock refusal before any shot was resolved).
+  `label` stays free-text display copy, kept free to reword — the client
+  must never parse it to recover this, the same class of mistake as
+  detecting an error by matching a message string.
+- **C4 dev caching note.** Prompt caching on the agent call is wired the
+  same way as every other Claude call site (breakpoints on the stable
+  prefix), but it will not activate in development: Haiku's minimum
+  cacheable prefix is 2048 tokens, and the agent's stable prefix (system
+  prompt + tool schemas) doesn't clear it. Zero saving in the dev usage
+  table is expected, not a bug — it only becomes observable in production
+  on Sonnet, whose minimum is 1024.
 - **Credits and dollars — settled.** Dollars are development and future-admin
   instrumentation. Credits are the user currency, purchased via subscription;
   per-step credit prices will be derived from measured dollar data. Both units

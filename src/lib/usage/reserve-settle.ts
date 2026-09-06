@@ -38,6 +38,9 @@ export async function reserveUsage(params: {
   // application-layer typing change, no migration needed.
   generationId: string | null
   shotId: string | null
+  // Nullable and optional: only an agent-turn call groups its spend under a chat
+  // message. Every other call site keeps omitting it and gets null, unchanged.
+  messageId?: string | null
   step: Step
   operation: Operation
   provider: Provider
@@ -54,10 +57,7 @@ export async function reserveUsage(params: {
       project_id: params.projectId,
       generation_id: params.generationId,
       shot_id: params.shotId,
-      // No chat/agent-turn concept exists yet to attach a message to. Left in the
-      // signature so a future caller (C4) doesn't need every reserveUsage call site
-      // touched again just to start passing one.
-      message_id: null,
+      message_id: params.messageId ?? null,
       step: params.step,
       operation: params.operation,
       provider: params.provider,

@@ -99,6 +99,56 @@ test.describe('reserveUsage / settleUsage', () => {
     }
   })
 
+  test('reserveUsage writes the given messageId onto message_id, and defaults to null when omitted', async () => {
+    const user = primary.user
+    {
+      const projectId = await insertProject(user.id)
+      const generationId = await insertGeneration(projectId)
+      const { data: messageRow, error: messageError } = await admin
+        .from('messages')
+        .insert({ project_id: projectId, role: 'user', content: 'change shot 3' })
+        .select('id')
+        .single()
+      expect(messageError).toBeNull()
+      const { estimatedCost, quotedBreakdown } = quoteClaudeCall({ model: MODEL, estimatedInputTokens: 10, maxTokens: 100 })
+
+      const { usageId } = await reserveUsage({
+        supabase: admin,
+        userId: user.id,
+        projectId,
+        generationId,
+        shotId: null,
+        messageId: messageRow!.id,
+        step: 'workbench',
+        operation: 'agent_turn',
+        provider: 'anthropic',
+        model: MODEL,
+        quotedCost: estimatedCost,
+        quotedBreakdown,
+      })
+
+      const { data } = await admin.from('usage').select('message_id').eq('id', usageId).single()
+      expect(data!.message_id).toBe(messageRow!.id)
+
+      const { usageId: usageIdNoMessage } = await reserveUsage({
+        supabase: admin,
+        userId: user.id,
+        projectId,
+        generationId,
+        shotId: null,
+        step: 'workbench',
+        operation: 'generate_shots',
+        provider: 'anthropic',
+        model: MODEL,
+        quotedCost: estimatedCost,
+        quotedBreakdown,
+      })
+
+      const { data: dataNoMessage } = await admin.from('usage').select('message_id').eq('id', usageIdNoMessage).single()
+      expect(dataNoMessage!.message_id).toBeNull()
+    }
+  })
+
   test('reserveUsage writes quoted_cost equal to estimated_cost', async () => {
     const user = primary.user
     {

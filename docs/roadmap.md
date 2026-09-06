@@ -18,9 +18,13 @@ are not lost.
 
 ## Unbuilt product surface
 
-- Shot deletion (C4, alongside the agent's `delete_shot` tool — `Delete shot` renders
-  inert today).
-- Agent chat mutations on the workbench; the composer is rendered but disabled.
+- Shot deletion — `Delete shot` renders inert today. Deleting stays a user-only, UI-only
+  action by design (see docs/decisions.md's C4 mutation-tools entry): the agent has no
+  delete tool and never will, so this is unrelated to and not unlocked by any agent work.
+- Agent chat UI on the workbench; the composer is rendered but disabled. The server-side
+  turn (C4) is built (`POST /api/projects/[id]/agent`, `runAgentTurn`) — this item is now
+  purely the chat panel wiring: sending a message, rendering the SSE stream's events onto
+  `AgentMessageKind`, a `client_id` per send.
 - Element upload and reference-image generation from the Assets tab.
 - Step-guard navigation: gate step-to-step links on `furthest_step`, not `current_step`
   position. Blocked in practice until `advanceStep()` has its first caller. The step
@@ -45,17 +49,18 @@ are not lost.
 
 ## Added items
 
-- **C4 open:** whether token streaming ships in C4 or is deferred to C4.5.
-- **C4 prerequisite:** verify Vercel's function duration limit before
-  finalising agent-turn bounds.
-- **Before a regenerate-all UI trigger ships:** `generate_shots` is now
+- **Before a regenerate-all UI trigger ships:** resolved for the agent's own
+  `regenerate_all_shots` tool — it never surfaces `shots/logic.ts`'s raw
+  `BLOCKED_REASON_MESSAGES` copy to the user, it reports the tool's outcome
+  and the agent explains it in its own reply. Still open for any future UI
+  *button* that triggers a regenerate-all directly: `generate_shots` is
   claimable from `'succeeded'` with `retry: true` (`OPERATION_POLICY`), and a
-  no-retry claim against a succeeded project now returns `retry_required`
+  no-retry claim against a succeeded project returns `retry_required`
   instead of `already_ready`. Nothing in the UI reaches this path yet (the
   workbench only opens the retry confirmation from the `failed`/`partial`
   phases), so `shots/logic.ts`'s `retry_required` copy — "The last generation
-  failed. Retry to try again." — is still accurate for every path a user can
-  reach today. Whoever wires a real "regenerate all" trigger from the
+  failed. Retry to try again." — is still accurate for every UI path a user
+  can reach today. Whoever wires a real "regenerate all" UI trigger from the
   complete phase needs copy that covers both cases (or a distinct reason
   value), not this string as-is.
 - **C3 carry-overs:** whether the `image_prompt`/`video_prompt` non-null
@@ -76,6 +81,15 @@ are not lost.
   verification shows it absent (CLAUDE.md's own claim about this has been
   wrong in both directions historically — verify against the migration, do
   not trust prose).
+- **Before C5:** the agent's `regenerate_all_shots` tool deletes every
+  `shots` row for the project, and `shot_elements` has `ON DELETE CASCADE`
+  on both foreign keys, so any bindings go with it. Harmless today only
+  because `shot_elements` has no writer besides `runShotsPipeline` itself,
+  which repopulates it from the same call. Once C5 lets a person bind
+  characters to shots directly, `regenerate_all_shots` will silently
+  discard those bindings along with the rest of the shot list — worth a
+  sharper warning than the tool's current "destructive and expensive" line
+  once that's true.
 - **C6:** fix the unguarded URL interpolation in `project-card.tsx`
   (`/projects/${id}/${current_step}`) — the first `advanceStep()` call
   writing `'image_prompts'` before that step's route exists sends users to a 404.

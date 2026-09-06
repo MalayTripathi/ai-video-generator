@@ -47,6 +47,10 @@ export async function insertUserMessage(params: {
     .select('*')
     .eq('project_id', projectId)
     .eq('client_id', clientId)
+    // A completed agent turn persists its assistant reply carrying this same client_id
+    // (see migration scope_messages_client_id_to_user_role) - scope to the row that
+    // actually collided, or this would error on >1 row once a reply exists.
+    .eq('role', 'user')
     .maybeSingle()
 
   if (selectError || !existing) {

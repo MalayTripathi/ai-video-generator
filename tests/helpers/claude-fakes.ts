@@ -31,3 +31,40 @@ export function throwingGateway(error: Error | string = 'simulated Claude failur
     },
   }
 }
+
+/** A text-only end_turn reply - no tool_use block. Every existing fake builds a
+ * tool_use turn; this is what a loop's final, non-tool-calling response looks like. */
+export function textMessage(text: string): FakeResult {
+  return {
+    message: {
+      content: [{ type: 'text', text, citations: null }],
+      usage: { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    } as unknown as Anthropic.Message,
+    stopReason: 'end_turn',
+    requestId: 'req_test',
+  }
+}
+
+/** A gateway that pops one scripted result per call, in order, and optionally fires
+ * onTextDelta for each string in that result's `deltas` before resolving - the seam a
+ * multi-iteration agent-turn test needs, since every other fake here answers only once.
+ * Throws loudly if called more times than scripted (a test bug, not a real failure). */
+export function scriptedGateway(results: (FakeResult & { deltas?: string[] })[]): ClaudeGateway & {
+  getCallCount: () => number
+} {
+  let callIndex = 0
+  return {
+    async createMessage(_params, hooks) {
+      if (callIndex >= results.length) {
+        throw new Error(`scriptedGateway called ${callIndex + 1} times but only ${results.length} were scripted`)
+      }
+      const { deltas, ...result } = results[callIndex]
+      callIndex++
+      for (const delta of deltas ?? []) {
+        hooks?.onTextDelta?.(delta)
+      }
+      return result
+    },
+    getCallCount: () => callIndex,
+  }
+}

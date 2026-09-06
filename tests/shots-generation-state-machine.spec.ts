@@ -163,6 +163,38 @@ test.describe('shot generation state machine', () => {
     }
   })
 
+  test('a passed messageId is threaded through to the usage row (regenerate_all_shots groups its spend under the agent turn message)', async () => {
+    const user = primary.user
+    {
+      const projectId = await insertProject(user.id)
+      const { data: messageRow, error: messageError } = await admin
+        .from('messages')
+        .insert({ project_id: projectId, role: 'user', content: 'regenerate everything' })
+        .select('id')
+        .single()
+      expect(messageError).toBeNull()
+      const { gateway } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
+
+      const result = await runShotGeneration({
+        gateway,
+        supabase: admin,
+        projectId,
+        userId: user.id,
+        retry: false,
+        messageId: messageRow!.id,
+      })
+
+      expect(result.ok).toBe(true)
+      const { data: usageRow } = await admin
+        .from('usage')
+        .select('message_id')
+        .eq('project_id', projectId)
+        .eq('operation', 'generate_shots')
+        .single()
+      expect(usageRow!.message_id).toBe(messageRow!.id)
+    }
+  })
+
   test('claim refused when failed without retry - 409 retry_required, gateway never called', async () => {
     const user = primary.user
     {

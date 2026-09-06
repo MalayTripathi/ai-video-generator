@@ -67,4 +67,31 @@ test.describe('insertUserMessage', () => {
     expect(first.error).toBeNull()
     expect(second.error).toBeNull()
   })
+
+  test('a duplicate client_id still resolves to the original user row once an assistant reply shares that client_id', async () => {
+    const projectId = await insertProject(primary.user.id)
+    const clientId = crypto.randomUUID()
+
+    const first = await insertUserMessage({ supabase: admin, projectId, content: 'first attempt', clientId })
+    expect(first.outcome).toBe('inserted')
+
+    // A completed turn persists its reply carrying the SAME client_id as its triggering
+    // user message (see migration scope_messages_client_id_to_user_role - only
+    // role='user' rows are constrained unique on it, so this insert must succeed).
+    const { error: assistantError } = await admin
+      .from('messages')
+      .insert({ project_id: projectId, role: 'assistant', content: 'the reply', client_id: clientId })
+    expect(assistantError).toBeNull()
+
+    const second = await insertUserMessage({
+      supabase: admin,
+      projectId,
+      content: 'resent after a lost response',
+      clientId,
+    })
+
+    expect(second.outcome).toBe('duplicate')
+    expect(second.outcome === 'duplicate' && second.message.role).toBe('user')
+    expect(second.outcome === 'duplicate' && second.message.content).toBe('first attempt')
+  })
 })

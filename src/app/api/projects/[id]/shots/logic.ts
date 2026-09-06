@@ -494,8 +494,12 @@ export async function runShotGeneration(params: {
   projectId: string
   userId: string
   retry: boolean
+  // Set only when called from an agent turn's regenerate_all_shots tool, so this call's
+  // usage row groups under that turn's chat message. /shots/route.ts omits it and gets
+  // null, unchanged.
+  messageId?: string | null
 }): Promise<ShotGenerationResult> {
-  const { gateway, supabase, projectId, userId, retry } = params
+  const { gateway, supabase, projectId, userId, retry, messageId } = params
 
   const project = await loadProjectForClaim(supabase, projectId, userId)
   if (!project) {
@@ -565,6 +569,7 @@ export async function runShotGeneration(params: {
       projectId,
       generationId: generation.id,
       shotId: null,
+      messageId,
       step: 'workbench',
       operation: 'generate_shots',
       provider: 'anthropic',
