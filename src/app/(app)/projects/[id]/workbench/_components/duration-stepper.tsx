@@ -6,6 +6,7 @@ import { updateShotDuration } from '../actions'
 import { SaveStatusIndicator } from './save-status-indicator'
 import { useShots } from './shots-context'
 import { useFieldSave, type FieldSaveStatus } from './use-field-save'
+import { useExternalResync } from './use-external-resync'
 
 function WarningTriangle() {
   return (
@@ -43,14 +44,18 @@ function formatAllowedDurations(sorted: number[]): string {
 // time; see `handleStep`'s asymmetric clamping/nearest-neighbor logic below.
 export const DurationStepper = memo(function DurationStepper({
   shotId,
+  shotKey,
   durationSec,
+  readOnly,
   onStatusChange,
 }: {
   shotId: string
+  shotKey: string
   durationSec: number | null
+  readOnly: boolean
   onStatusChange: (status: FieldSaveStatus, retry: () => void) => void
 }) {
-  const { videoModel, updateShotLocal } = useShots()
+  const { videoModel, updateShotLocal, touchedShotKeys, refreshPending, consumeTouchedShot } = useShots()
   const modelConfig = resolveVideoModel(videoModel)
   const { status, run, retry } = useFieldSave()
 
@@ -60,6 +65,23 @@ export const DurationStepper = memo(function DurationStepper({
     onStatusChange(status, retry)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status])
+
+  // No focus concept for a stepper (no free-text draft to protect mid-keystroke) - always
+  // resync when this shot is touched.
+  useExternalResync(durationSec, touchedShotKeys.has(shotKey), refreshPending, setValue, () =>
+    consumeTouchedShot(shotKey)
+  )
+
+  if (readOnly) {
+    return (
+      <div className="flex flex-col gap-[5px]">
+        <span className="text-label font-medium uppercase leading-4 tracking-label text-text-tertiary">Duration</span>
+        <span className="font-mono text-control text-text-primary">
+          {durationSec === null ? '—' : `${durationSec.toFixed(1)}s`}
+        </span>
+      </div>
+    )
+  }
 
   if (!modelConfig) {
     return (

@@ -26,16 +26,20 @@ export const DialogueRow = memo(function DialogueRow({
   shotId,
   initial,
   boundCharacters,
+  readOnly,
   onSaved,
   onRequestRemove,
   onStatusChange,
+  onFocusChange,
 }: {
   shotId: string
   initial: DialogueRowValue
   boundCharacters: DisplayElement[]
+  readOnly: boolean
   onSaved: (value: { id: string; elementId: string; line: string }) => void
   onRequestRemove: () => void
   onStatusChange: (status: FieldSaveStatus, retry: () => void) => void
+  onFocusChange?: (focused: boolean) => void
 }) {
   const [id, setId] = useState(initial.id)
   const [elementId, setElementId] = useState(initial.elementId)
@@ -48,13 +52,25 @@ export const DialogueRow = memo(function DialogueRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status])
 
-  const isOutOfList = Boolean(id) && elementId !== '' && !boundCharacters.some((el) => el.id === elementId)
-  const canSave = elementId !== '' && line.trim() !== ''
-  const incomplete = !canSave
   const speakerOptions: SelectOption[] = useMemo(
     () => boundCharacters.map((el) => ({ value: el.id, label: el.name })),
     [boundCharacters]
   )
+
+  if (readOnly) {
+    return (
+      <div className="grid grid-cols-[84px_1fr] gap-rc-xs pl-px" data-testid="dialogue-row">
+        <span className="pt-[1px] text-label uppercase tracking-label text-text-tertiary">
+          {initial.elementName || 'Unbound speaker'}
+        </span>
+        <span className="text-body leading-[1.5] text-text-secondary">&ldquo;{line}&rdquo;</span>
+      </div>
+    )
+  }
+
+  const isOutOfList = Boolean(id) && elementId !== '' && !boundCharacters.some((el) => el.id === elementId)
+  const canSave = elementId !== '' && line.trim() !== ''
+  const incomplete = !canSave
 
   function persistIfReady(nextElementId: string, nextLine: string) {
     const trimmedLine = nextLine.trim()
@@ -79,6 +95,7 @@ export const DialogueRow = memo(function DialogueRow({
   }
 
   function handleLineBlur() {
+    onFocusChange?.(false)
     persistIfReady(elementId, line)
   }
 
@@ -115,6 +132,7 @@ export const DialogueRow = memo(function DialogueRow({
               aria-label="Line"
               value={line}
               onChange={(event) => setLine(event.target.value)}
+              onFocus={() => onFocusChange?.(true)}
               onBlur={handleLineBlur}
               placeholder="What they say…"
               className="w-full bg-transparent text-small outline-none text-text-primary placeholder:text-text-quiet"

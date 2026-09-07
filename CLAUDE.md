@@ -159,13 +159,14 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   (sub-tabs, tab bodies, footer contents) is deliberately not in the
   shell — don't hoist a step's specifics into it ahead of the step that
   needs them.
-- The agent panel's message list has a fixed six-kind taxonomy across all
-  steps: `assistant` (accent-wash bubble), `user` (inset bubble,
-  right-aligned), `tool_run` (amber dot + credit cost), `success` (green
-  dot), `error` (failed-hue rule + Retry), `working` (pulsing dot + Stop)
-  — see `src/components/workbench/agent-message.tsx`. Only `assistant` is
-  populated today (from `write_shots`'s `message` field); the other five
-  render structurally but have no real caller yet.
+- The agent panel's message list has a seven-kind taxonomy across all
+  steps: `user` (inset bubble), `agent` (accent-wash bubble; a `streaming`
+  flag adds a caret, not a separate kind), `tool_done` (green dot),
+  `tool_running` (pulsing dot + Stop), `cost` (accent rule + ledger row,
+  `regenerate_all_shots` only), `refusal` (bubble, no Retry — distinct from
+  `error` so it never reads as a failure), `error` (failed-hue rule +
+  Retry) — see `src/components/workbench/agent-message.tsx`. Wired live to
+  `POST /api/projects/[id]/agent`'s SSE stream; only `user`/`agent` persist.
 - **Per-field save model.** The Step 2 shot card has no Save button and no
   dirty state, anywhere. Every field saves independently the moment the
   person leaves it: text on blur, selects on change, the duration stepper

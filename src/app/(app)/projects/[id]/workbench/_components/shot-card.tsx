@@ -90,7 +90,8 @@ function rollupStatus(entries: Record<string, FieldStatusEntry>) {
 }
 
 export function ShotCard({ shot }: { shot: DisplayShot }) {
-  const { projectId, updateShotLocal } = useShots()
+  const { projectId, updateShotLocal, readOnly, lockedShotKeys } = useShots()
+  const isLocked = lockedShotKeys.has(shot.shot_key)
   const [expanded, setExpanded] = useState(false)
   const [fieldStatus, setFieldStatus] = useState<Record<string, FieldStatusEntry>>({})
   const [previousCameraValues, setPreviousCameraValues] = useState<Partial<Record<CameraFieldName, string | null>>>({})
@@ -199,11 +200,26 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
   return (
     <div
       data-testid="shot-card"
-      className={`flex flex-col gap-rc-2xs rounded-control border bg-bg-surface p-3 px-rc-md shadow-card ${cardBorderClassName} ${
-        !expanded ? 'cursor-pointer hover:border-border-strong' : ''
+      data-shot-key={shot.shot_key}
+      data-locked={isLocked}
+      className={`relative flex flex-col overflow-hidden rounded-control border bg-bg-surface shadow-card ${
+        isLocked ? 'border-accent-faint' : `${cardBorderClassName} ${!expanded ? 'cursor-pointer hover:border-border-strong' : ''}`
       }`}
-      {...collapsedInteractionProps}
+      {...(isLocked ? {} : collapsedInteractionProps)}
     >
+      {isLocked && (
+        <>
+          <span className="absolute inset-y-0 left-0 w-[2px] bg-accent" aria-hidden />
+          <div className="flex flex-none items-center gap-[7px] border-b border-border-subtle bg-accent-wash px-rc-md py-[7px]">
+            <span
+              className="h-[5px] w-[5px] flex-none rounded-full bg-accent"
+              style={{ animation: 'rc-pulse 1.3s ease-in-out infinite' }}
+            />
+            <span className="text-meta text-accent">Agent is rewriting this shot</span>
+          </div>
+        </>
+      )}
+      <div className={`flex flex-col gap-rc-2xs p-3 px-rc-md ${isLocked ? 'pointer-events-none cursor-not-allowed opacity-[0.55]' : ''}`}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-rc-xs">
           <span className="text-body font-medium tracking-micro text-text-primary">
@@ -277,22 +293,28 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
         <div className="flex flex-col gap-rc-md pt-rc-2xs">
           <VoiceoverField
             shotId={shot.id}
+            shotKey={shot.shot_key}
             voiceOver={shot.voice_over}
+            readOnly={readOnly}
             onSaved={(patch) => updateShotLocal(shot.id, patch)}
             onStatusChange={(status, retry) => handleFieldStatusChange('voice_over', status, retry)}
           />
 
           <DialogueSection
             shotId={shot.id}
+            shotKey={shot.shot_key}
             dialogue={shot.dialogue}
             boundCharacters={boundCharacters}
+            readOnly={readOnly}
             onFieldStatusChange={handleFieldStatusChange}
             onFieldStatusClear={clearFieldStatus}
           />
 
           <VisualDescriptionField
             shotId={shot.id}
+            shotKey={shot.shot_key}
             visualDescription={shot.visual_description}
+            readOnly={readOnly}
             onSaved={handleVisualDescriptionSaved}
             onStatusChange={(status, retry) => handleFieldStatusChange('visual_description', status, retry)}
           />
@@ -309,18 +331,21 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
               pendingFields={pendingFields}
               previousValues={previousCameraValues}
               justSettled={derivationStatus === 'succeeded'}
+              readOnly={readOnly}
               onFieldSaved={handleCameraFieldSaved}
               onFieldStatusChange={handleFieldStatusChange}
               onRevert={handleRevert}
             />
-            <CameraDerivationStatus
-              status={derivationStatus}
-              pendingFieldLabels={pendingFieldLabels}
-              heldFieldLabels={heldFieldLabels}
-              onRetry={retryDerivation}
-              showResetAll={showResetAll}
-              onResetAll={handleResetAll}
-            />
+            {!readOnly && (
+              <CameraDerivationStatus
+                status={derivationStatus}
+                pendingFieldLabels={pendingFieldLabels}
+                heldFieldLabels={heldFieldLabels}
+                onRetry={retryDerivation}
+                showResetAll={showResetAll}
+                onResetAll={handleResetAll}
+              />
+            )}
           </div>
 
           <BoundElements elements={shot.elements} />
@@ -328,18 +353,24 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
           <div className="flex items-end justify-between gap-rc-md">
             <DurationStepper
               shotId={shot.id}
+              shotKey={shot.shot_key}
               durationSec={shot.duration_sec}
+              readOnly={readOnly}
               onStatusChange={(status, retry) => handleFieldStatusChange('duration_sec', status, retry)}
             />
             {/* Deleting a shot is C4's job (alongside the agent's delete_shot tool) - rendered
                 exactly as the canvas shows it, with no handler, same as the other controls
-                whose real functionality belongs to a later slice. */}
-            <span className="cursor-default text-small text-text-tertiary underline decoration-border-strong">
-              Delete shot
-            </span>
+                whose real functionality belongs to a later slice. Read-only workbench has
+                no delete affordance at all (canvas: "Locked · workbench read-only"). */}
+            {!readOnly && (
+              <span className="cursor-default text-small text-text-tertiary underline decoration-border-strong">
+                Delete shot
+              </span>
+            )}
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }

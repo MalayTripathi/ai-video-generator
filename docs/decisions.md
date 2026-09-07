@@ -486,6 +486,56 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   `label` stays free-text display copy, kept free to reword — the client
   must never parse it to recover this, the same class of mistake as
   detecting an error by matching a message string.
+- **C4 chat panel — per-tool-call lock, not a whole-workbench lock.**
+  Considered and rejected: disabling the entire shot list for the duration
+  of a turn. The agent discovers its targets as the turn runs rather than
+  declaring them up front, so a whole-workbench lock would freeze cards the
+  turn never touches for as long as the slowest one takes, and a user
+  mid-edit on an unrelated shot would be interrupted by a change that has
+  nothing to do with them. Instead, a card locks the moment a
+  `tool_completed`/`refusal` event names its `shot_key`, and every locked
+  card releases together when the turn settles — never per tool call, since
+  `settled` is the only point a turn is fully done writing. `get_shot`
+  (read-only) and `regenerate_all_shots` (whole-list, and its own tool
+  already gates on `furthest_step === workbench`) carry no `shot_key` and
+  so lock nothing; `regenerate_all_shots` needs no lock regardless, since
+  it deletes and reinserts every shot, and the resulting `router.refresh()`
+  remounts those cards outright rather than updating any in place.
+- **C4 chat panel — the focused-field exemption.** On settle, the panel
+  refetches only the shots named during the turn (`ShotsProvider`'s
+  `touchedShotKeys`) and force-resyncs their field components' local drafts
+  from the refreshed value — necessary because a field never resyncs from a
+  plain prop change on its own (see `use-field-save.ts`; that's what
+  already protects a field mid-edit from an unrelated background
+  `router.refresh()`). The one exception: a field currently focused is
+  skipped, unconditionally. Rewriting text under someone's cursor
+  mid-sentence is the one case a user will always notice, and there is no
+  way to merge an agent edit with a still-in-progress keystroke that reads
+  as correct either way. The field simply keeps showing what the user is
+  typing until they leave it; their own blur-save then wins last-write,
+  identically to any other concurrent edit — no new conflict resolution
+  needed for this case. A second flag (`ShotsProvider.refreshPending`,
+  true from the moment a turn settles until its `router.refresh()` has
+  actually landed new props) gates the same resync: `touchedShotKeys`
+  flips true well before the refreshed value arrives, and applying
+  immediately would consume the touch against the still-stale prop,
+  permanently missing the real value — keep the two flags distinct rather
+  than collapsing them.
+- **C4 chat panel — paced discrete events, unpaced text.** `use-agent-
+  turn.ts` awaits a short real delay (150ms) before dispatching every SSE
+  event except `text_delta`. Several discrete events (`tool_completed`,
+  `refusal`, `settled`) routinely arrive in the same network chunk —
+  without a real event-loop turn between them, React batches them into one
+  commit, and a card would lock and unlock in the same paint the user never
+  sees. `text_delta` is deliberately exempt: the canvas states prose
+  streams as fast as tokens arrive with no artificial pacing ("the words
+  are the progress"), and delaying it would work against that. This delay
+  is load-bearing for `tests/agent-chat-panel.spec.ts`'s per-card lock
+  test, which asserts a card is visibly locked before it unlocks - removing
+  the delay as an apparent no-op won't fail `tsc`/lint/build, it will make
+  that assertion flake (the lock and unlock racing into one commit) and,
+  in production, make progress lines and lock/unlock flash in as one
+  invisible batch instead of a legible sequence.
 - **C4 dev caching note.** Prompt caching on the agent call is wired the
   same way as every other Claude call site (breakpoints on the stable
   prefix), but it will not activate in development: Haiku's minimum

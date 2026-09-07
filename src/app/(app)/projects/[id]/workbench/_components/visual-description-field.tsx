@@ -4,6 +4,8 @@ import { memo, useEffect, useState } from 'react'
 import { updateShotVisualDescription } from '../actions'
 import { SaveStatusIndicator } from './save-status-indicator'
 import { useFieldSave, type FieldSaveStatus } from './use-field-save'
+import { useExternalResync } from './use-external-resync'
+import { useShots } from './shots-context'
 
 // Visible border/fill at rest, matching the voiceover field's treatment (canvas: "Text
 // fields" close-up) - only the type-scale role (text-small/secondary vs. text-body/primary)
@@ -13,15 +15,20 @@ const fieldTextareaClassName =
 
 export const VisualDescriptionField = memo(function VisualDescriptionField({
   shotId,
+  shotKey,
   visualDescription,
+  readOnly,
   onSaved,
   onStatusChange,
 }: {
   shotId: string
+  shotKey: string
   visualDescription: string | null
+  readOnly: boolean
   onSaved: (patch: { visual_description: string }) => void
   onStatusChange: (status: FieldSaveStatus, retry: () => void) => void
 }) {
+  const { touchedShotKeys, refreshPending, consumeTouchedShot } = useShots()
   const [value, setValue] = useState(visualDescription ?? '')
   const [persisted, setPersisted] = useState(visualDescription ?? '')
   const { status, run, retry } = useFieldSave()
@@ -31,7 +38,19 @@ export const VisualDescriptionField = memo(function VisualDescriptionField({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status])
 
+  const { setFocused } = useExternalResync(
+    visualDescription ?? '',
+    touchedShotKeys.has(shotKey),
+    refreshPending,
+    (fresh) => {
+      setValue(fresh)
+      setPersisted(fresh)
+    },
+    () => consumeTouchedShot(shotKey)
+  )
+
   function handleBlur() {
+    setFocused(false)
     const trimmed = value.trim()
     if (trimmed === persisted) return
     void run(async () => {
@@ -45,6 +64,17 @@ export const VisualDescriptionField = memo(function VisualDescriptionField({
     })
   }
 
+  if (readOnly) {
+    return (
+      <div className="flex flex-col gap-rc-2xs">
+        <span className="text-label font-medium uppercase leading-4 tracking-label text-text-tertiary">Visual</span>
+        <div className="rounded-control bg-bg-inset px-rc-sm py-[10px] text-small leading-[1.5] text-text-primary">
+          {visualDescription || '—'}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-rc-2xs">
       <div className="flex min-h-4 items-center justify-between gap-rc-xs">
@@ -55,6 +85,7 @@ export const VisualDescriptionField = memo(function VisualDescriptionField({
         aria-label="Visual description"
         value={value}
         onChange={(event) => setValue(event.target.value)}
+        onFocus={() => setFocused(true)}
         onBlur={handleBlur}
         rows={2}
         className={fieldTextareaClassName}

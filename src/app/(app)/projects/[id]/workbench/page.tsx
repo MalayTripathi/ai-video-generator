@@ -64,7 +64,7 @@ export default async function WorkbenchPage({
   const { data: project } = await supabase
     .from('projects')
     .select(
-      'id, title, source_text, current_step, video_type, aspect_ratio, language, video_model, duration_target'
+      'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target'
     )
     .eq('id', projectId)
     .eq('user_id', user.id)
@@ -96,7 +96,6 @@ export default async function WorkbenchPage({
       .from('messages')
       .select('*')
       .eq('project_id', projectId)
-      .eq('role', 'assistant')
       .order('created_at', { ascending: true }),
     supabase
       .from('generations')
@@ -140,12 +139,17 @@ export default async function WorkbenchPage({
     dialogue: dialogueByShot.get(row.id) ?? [],
   }))
 
-  const agentMessages: AgentMessage[] = (messageRows ?? []).map((message) => ({
-    id: message.id,
-    kind: 'assistant',
-    content: message.content,
-    createdAt: message.created_at,
-  }))
+  // Only user/agent turn content is ever persisted - intermediate tool_completed/
+  // refusal/error/cost lines exist only for the live turn that produced them (see
+  // docs/decisions.md), so a reloaded page only ever shows these two kinds.
+  const agentMessages: AgentMessage[] = (messageRows ?? [])
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .map((message) => ({
+      id: message.id,
+      kind: message.role === 'user' ? 'user' : 'agent',
+      content: message.content,
+      createdAt: message.created_at,
+    }))
 
   const hasPendingPayload = generation?.payload != null
   const estimatedCredits =
@@ -161,6 +165,7 @@ export default async function WorkbenchPage({
       initialVideoModel={project.video_model}
       initialGenerationState={generation?.state ?? null}
       initialHasPendingPayload={hasPendingPayload}
+      initialFurthestStep={project.furthest_step}
       estimatedCredits={estimatedCredits}
     >
       <WorkbenchShell
