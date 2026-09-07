@@ -18,9 +18,6 @@ are not lost.
 
 ## Unbuilt product surface
 
-- Shot deletion — `Delete shot` renders inert today. Deleting stays a user-only, UI-only
-  action by design (see docs/decisions.md's C4 mutation-tools entry): the agent has no
-  delete tool and never will, so this is unrelated to and not unlocked by any agent work.
 - Agent chat UI on the workbench; the composer is rendered but disabled. The server-side
   turn (C4) is built (`POST /api/projects/[id]/agent`, `runAgentTurn`) — this item is now
   purely the chat panel wiring: sending a message, rendering the SSE stream's events onto

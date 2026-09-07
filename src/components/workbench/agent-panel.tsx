@@ -6,7 +6,7 @@ import { AgentMessageItem, type AgentMessage } from './agent-message'
 import { useShots } from '@/app/(app)/projects/[id]/workbench/_components/shots-context'
 import { useAgentTurn } from '@/app/(app)/projects/[id]/workbench/_components/use-agent-turn'
 
-const EXAMPLE_PROMPTS = ['make shot 3 shorter', 'add a shot about the artisans', 'rewrite everything, colder tone']
+const EXAMPLE_PROMPTS = ['Make shot 3 shorter', 'Add a shot about the artisans', 'Rewrite everything, colder tone']
 
 // Server-generated cost is embedded in this one tool's label only
 // ("Regenerated all shots ($0.42)") since Claude is never told the figure itself (see

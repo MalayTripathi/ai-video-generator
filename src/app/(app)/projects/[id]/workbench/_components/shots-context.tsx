@@ -19,6 +19,7 @@ type ShotsContextValue = {
   closeRetryConfirm: () => void
   confirmRetry: () => void
   updateShotLocal: (shotId: string, patch: Partial<DisplayShot>) => void
+  removeShotLocal: (shotId: string) => void
   // Read-only workbench: true once furthest_step has reached storyboard. furthest_step
   // never changes client-side (no advanceStep() caller exists yet), so this is computed
   // once from the initial value rather than kept in its own resync effect.
@@ -91,6 +92,10 @@ export function ShotsProvider({
 
   function updateShotLocal(shotId: string, patch: Partial<DisplayShot>) {
     setShots((prev) => prev.map((shot) => (shot.id === shotId ? { ...shot, ...patch } : shot)))
+  }
+
+  function removeShotLocal(shotId: string) {
+    setShots((prev) => prev.filter((shot) => shot.id !== shotId))
   }
 
   function lockShot(shotKey: string) {
@@ -213,6 +218,7 @@ export function ShotsProvider({
         closeRetryConfirm,
         confirmRetry,
         updateShotLocal,
+        removeShotLocal,
         readOnly,
         lockedShotKeys,
         lockShot,

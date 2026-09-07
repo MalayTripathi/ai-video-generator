@@ -600,7 +600,10 @@ shot's two prompt flags; **a camera field** (dropdown or AI re-derivation)
 invalidating; **dialogue** → that shot's `video_prompt_stale` only
 (on-camera speech, not narration); **duration** → nothing (audio derives
 from narration text; a locked-duration mismatch is resolved for free at
-Step 4 by retiming). Staleness is a flag, never a null.
+Step 4 by retiming); **deleting a shot** → `projects.voiceover_stale` only
+(the same one-continuous-file reasoning as a voiceover-text edit — the
+shot's own flags go with the deleted row). Staleness is a flag, never a
+null.
 
 Every field write above is preceded by a diff against the persisted
 value: an edit that resolves to the same value performs no write and

@@ -196,6 +196,34 @@ accepted cost of allowing up to 2 billed calls for 2 rapid *distinct* edits to t
 — never more than 2, regardless of how many times a trigger re-fires while one is running,
 since repeated re-fires just keep replacing the single queued slot.
 
+## Shot deletion: why spend never blocks, and why the figure is dollars for now
+*Supports: the delete-shot control and its confirmation in the Step 2 Workbench.*
+
+Deleting a shot is a creative decision, and the app does not get a vote on it regardless
+of what has already been spent generating that shot's prompts, image, or voiceover. The
+confirmation states the amount when there is one (canvas: "11 Confirm · money spent") but
+never argues, disables, or double-confirms on top of it — the primary action stays at
+full destructive strength (`--status-failed-fg` outline, not greyed) whether the figure
+is $0 or several dollars. This is a different case from "never discard paid output to
+signal it may be stale" elsewhere in this doc: that rule protects a person from an
+accidental silent loss of work they didn't ask to lose; here the person explicitly asked
+to remove the row, and the confirmation's whole job is to make sure they know what goes
+with it before they do.
+
+The figure is shown in dollars, not credits, for the same reason `estimated_cost`
+throughout `usage` is dollars-first (see "Credits and dollars — settled" above):
+`duration.ts`'s `estimatedCredits` is a provisional, uncalibrated per-tier number with no
+stated relationship to measured cost, and there is no per-shot credit derivation yet.
+Inventing one for this one dialog would be a number the user could later see
+contradicted. The amount renders in its own `data-testid="delete-shot-amount"` span,
+mono, right-aligned, specifically so the unit can become credits later by replacing one
+string, not by re-deriving the whole modal.
+
+Only *settled, nonzero* `usage` rows count toward "already spent" - a `status: 'pending'`
+reservation hasn't actually been spent yet (see `reserveUsage`'s worst-case quote), and a
+settled-but-zero row (a blocked local call) paid for nothing. Both would overstate the
+figure if included.
+
 ## Why the camera model is Haiku permanently and its ceiling is 128
 *Supports: the `modelsConfig.camera` note in `## Code conventions`. (Audit item 66.)*
 

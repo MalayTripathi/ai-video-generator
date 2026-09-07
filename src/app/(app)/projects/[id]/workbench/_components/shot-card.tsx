@@ -1,6 +1,7 @@
 'use client'
 
-import { useMemo, useState, type KeyboardEvent } from 'react'
+import { useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useRouter } from 'next/navigation'
 import { VoiceoverField } from './voiceover-field'
 import { VisualDescriptionField } from './visual-description-field'
 import { CameraOriginFields } from './camera-origin-fields'
@@ -9,12 +10,37 @@ import { BoundElements } from './bound-elements'
 import { DialogueSection } from './dialogue-section'
 import { DurationStepper } from './duration-stepper'
 import { SaveStatusIndicator } from './save-status-indicator'
+import { DeleteShotConfirmModal } from './delete-shot-confirm-modal'
 import { useShots } from './shots-context'
 import { useCameraDerivation, type CameraFieldUpdate } from './use-camera-derivation'
 import type { FieldSaveStatus } from './use-field-save'
 import type { DisplayElement, DisplayShot } from './types'
 import { CAMERA_FIELD_NAMES, type CameraFieldName } from '@/lib/prompts/camera-derivation'
 import type { CameraOrigin } from '@/lib/config/enums'
+import { getShotSpend, deleteShot, type ShotSpend } from '../actions'
+
+// canvas: "11 Delete affordance" - the exact bin glyph, shared by the collapsed
+// icon-only trigger and the expanded icon+label trigger so the two read as one control
+// changing size, not two controls.
+function TrashIcon() {
+  return (
+    <svg width="13" height="14" viewBox="0 0 14 15" fill="none" aria-hidden="true">
+      <path
+        d="M1.75 3.9h10.5M5.25 3.9V2.5c0-.36.29-.65.65-.65h2.2c.36 0 .65.29.65.65v1.4M3.2 3.9l.45 8.4c.02.4.35.7.75.7h5.2c.4 0 .73-.3.75-.7l.45-8.4"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+      <path d="M5.8 6.5v4M8.2 6.5v4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+type DeleteState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'confirming'; spend: ShotSpend; error?: string }
+  | { status: 'deleting'; spend: ShotSpend }
 
 const CAMERA_FIELD_LABELS: Record<CameraFieldName, string> = {
   shot_size: 'shot size',
@@ -90,9 +116,11 @@ function rollupStatus(entries: Record<string, FieldStatusEntry>) {
 }
 
 export function ShotCard({ shot }: { shot: DisplayShot }) {
-  const { projectId, updateShotLocal, readOnly, lockedShotKeys } = useShots()
+  const { projectId, updateShotLocal, removeShotLocal, readOnly, lockedShotKeys } = useShots()
+  const router = useRouter()
   const isLocked = lockedShotKeys.has(shot.shot_key)
   const [expanded, setExpanded] = useState(false)
+  const [deleteState, setDeleteState] = useState<DeleteState>({ status: 'idle' })
   const [fieldStatus, setFieldStatus] = useState<Record<string, FieldStatusEntry>>({})
   const [previousCameraValues, setPreviousCameraValues] = useState<Partial<Record<CameraFieldName, string | null>>>({})
   const { status: derivationStatus, pendingFields, trigger, retry: retryDerivation } = useCameraDerivation(
@@ -162,6 +190,38 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
     })
   }
 
+  // Fetches spend before the modal opens rather than after, so a shot that did cost
+  // money never flashes as "nothing spent" while the query is in flight (see
+  // docs/decisions.md's shot-deletion entry).
+  async function handleDeleteTriggerClick(event: MouseEvent) {
+    event.stopPropagation()
+    if (deleteState.status !== 'idle') return
+    setDeleteState({ status: 'loading' })
+    const result = await getShotSpend(shot.id)
+    const spend = result.success ? result.spend : { totalCost: 0, operationLabels: [] }
+    setDeleteState({ status: 'confirming', spend })
+  }
+
+  function handleDeleteTriggerKeyDown(event: KeyboardEvent) {
+    event.stopPropagation()
+  }
+
+  function handleCancelDelete() {
+    setDeleteState({ status: 'idle' })
+  }
+
+  async function handleConfirmDelete() {
+    if (deleteState.status !== 'confirming') return
+    setDeleteState({ status: 'deleting', spend: deleteState.spend })
+    const result = await deleteShot(shot.id)
+    if (!result.success) {
+      setDeleteState({ status: 'confirming', spend: deleteState.spend, error: result.error })
+      return
+    }
+    removeShotLocal(shot.id)
+    router.refresh()
+  }
+
   const pendingFieldLabels = CAMERA_FIELD_NAMES.filter((f) => pendingFields.has(f)).map((f) => CAMERA_FIELD_LABELS[f])
   const origins: Record<CameraFieldName, CameraOrigin> = {
     shot_size: shot.shot_size_origin,
@@ -198,6 +258,7 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
     : {}
 
   return (
+    <>
     <div
       data-testid="shot-card"
       data-shot-key={shot.shot_key}
@@ -273,17 +334,38 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
             <div className="text-small leading-[1.5] text-text-secondary">{shot.visual_description}</div>
           )}
 
-          {shot.elements.length > 0 && (
-            <div className="mt-0.5 flex flex-wrap gap-rc-2xs">
-              {shot.elements.map((el) => (
-                <span
-                  key={el.id}
-                  className="flex items-center gap-[5px] rounded-badge bg-bg-inset px-rc-xs py-[3px] text-chip text-text-secondary"
+          {(shot.elements.length > 0 || !readOnly) && (
+            <div className="mt-0.5 flex items-end justify-between gap-rc-sm">
+              <div className="flex flex-wrap gap-rc-2xs">
+                {shot.elements.map((el) => (
+                  <span
+                    key={el.id}
+                    className="flex items-center gap-[5px] rounded-badge bg-bg-inset px-rc-xs py-[3px] text-chip text-text-secondary"
+                  >
+                    <span className={`h-[5px] w-[5px] rounded-full ${elementDotClassName(el)}`} aria-hidden />
+                    {el.name}
+                  </span>
+                ))}
+              </div>
+              {/* canvas: "11 Delete affordance" (collapsed) - the bin sits in the same
+                  trailing row as the element chips, right-aligned, always visible (not
+                  hover-only: deleting is the only way to remove a shot). Read-only
+                  workbench has no delete affordance at all (canvas: "Locked · workbench
+                  read-only"). */}
+              {!readOnly && (
+                <button
+                  type="button"
+                  data-testid="delete-shot-trigger"
+                  aria-label="Delete shot"
+                  title="Delete shot"
+                  onClick={handleDeleteTriggerClick}
+                  onKeyDown={handleDeleteTriggerKeyDown}
+                  disabled={deleteState.status === 'loading'}
+                  className="-mb-[6px] -mr-[6px] flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-badge text-text-tertiary hover:bg-status-failed-bg hover:text-status-failed-fg disabled:cursor-not-allowed"
                 >
-                  <span className={`h-[5px] w-[5px] rounded-full ${elementDotClassName(el)}`} aria-hidden />
-                  {el.name}
-                </span>
-              ))}
+                  <TrashIcon />
+                </button>
+              )}
             </div>
           )}
         </>
@@ -358,19 +440,40 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
               readOnly={readOnly}
               onStatusChange={(status, retry) => handleFieldStatusChange('duration_sec', status, retry)}
             />
-            {/* Deleting a shot is C4's job (alongside the agent's delete_shot tool) - rendered
-                exactly as the canvas shows it, with no handler, same as the other controls
-                whose real functionality belongs to a later slice. Read-only workbench has
-                no delete affordance at all (canvas: "Locked · workbench read-only"). */}
+            {/* canvas: "11 Delete affordance" (expanded) - the same bin plus its label,
+                the one-control-two-sizes transition from the collapsed trigger. Read-only
+                workbench has no delete affordance at all (canvas: "Locked · workbench
+                read-only"). */}
             {!readOnly && (
-              <span className="cursor-default text-small text-text-tertiary underline decoration-border-strong">
+              <button
+                type="button"
+                data-testid="delete-shot-trigger"
+                onClick={handleDeleteTriggerClick}
+                onKeyDown={handleDeleteTriggerKeyDown}
+                disabled={deleteState.status === 'loading'}
+                className="-mb-[5px] -mr-2 flex h-[26px] flex-none cursor-pointer items-center gap-[6px] rounded-badge py-0 pl-[5px] pr-2 text-small text-text-tertiary hover:bg-status-failed-bg hover:text-status-failed-fg disabled:cursor-not-allowed"
+              >
+                <span className="flex w-4 justify-center">
+                  <TrashIcon />
+                </span>
                 Delete shot
-              </span>
+              </button>
             )}
           </div>
         </div>
       )}
       </div>
     </div>
+    <DeleteShotConfirmModal
+      open={deleteState.status === 'confirming' || deleteState.status === 'deleting'}
+      shotNumber={shot.order_index + 1}
+      elementsCount={shot.elements.length}
+      spend={deleteState.status === 'confirming' || deleteState.status === 'deleting' ? deleteState.spend : null}
+      pending={deleteState.status === 'deleting'}
+      error={deleteState.status === 'confirming' ? deleteState.error : undefined}
+      onConfirm={handleConfirmDelete}
+      onCancel={handleCancelDelete}
+    />
+    </>
   )
 }
