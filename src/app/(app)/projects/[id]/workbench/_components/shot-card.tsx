@@ -17,7 +17,7 @@ import type { FieldSaveStatus } from './use-field-save'
 import type { DisplayElement, DisplayShot } from './types'
 import { CAMERA_FIELD_NAMES, type CameraFieldName } from '@/lib/prompts/camera-derivation'
 import type { CameraOrigin } from '@/lib/config/enums'
-import { getShotSpend, deleteShot, type ShotSpend } from '../actions'
+import { deleteShot } from '../actions'
 
 // canvas: "11 Delete affordance" - the exact bin glyph, shared by the collapsed
 // icon-only trigger and the expanded icon+label trigger so the two read as one control
@@ -36,11 +36,7 @@ function TrashIcon() {
   )
 }
 
-type DeleteState =
-  | { status: 'idle' }
-  | { status: 'loading' }
-  | { status: 'confirming'; spend: ShotSpend; error?: string }
-  | { status: 'deleting'; spend: ShotSpend }
+type DeleteState = { status: 'idle' } | { status: 'confirming'; error?: string } | { status: 'deleting' }
 
 const CAMERA_FIELD_LABELS: Record<CameraFieldName, string> = {
   shot_size: 'shot size',
@@ -116,10 +112,19 @@ function rollupStatus(entries: Record<string, FieldStatusEntry>) {
 }
 
 export function ShotCard({ shot }: { shot: DisplayShot }) {
-  const { projectId, updateShotLocal, removeShotLocal, readOnly, lockedShotKeys } = useShots()
+  const {
+    projectId,
+    updateShotLocal,
+    removeShotLocal,
+    readOnly,
+    lockedShotKeys,
+    expandedShotId,
+    expandShot,
+    collapseShot,
+  } = useShots()
   const router = useRouter()
   const isLocked = lockedShotKeys.has(shot.shot_key)
-  const [expanded, setExpanded] = useState(false)
+  const expanded = expandedShotId === shot.id
   const [deleteState, setDeleteState] = useState<DeleteState>({ status: 'idle' })
   const [fieldStatus, setFieldStatus] = useState<Record<string, FieldStatusEntry>>({})
   const [previousCameraValues, setPreviousCameraValues] = useState<Partial<Record<CameraFieldName, string | null>>>({})
@@ -190,16 +195,10 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
     })
   }
 
-  // Fetches spend before the modal opens rather than after, so a shot that did cost
-  // money never flashes as "nothing spent" while the query is in flight (see
-  // docs/decisions.md's shot-deletion entry).
-  async function handleDeleteTriggerClick(event: MouseEvent) {
+  function handleDeleteTriggerClick(event: MouseEvent) {
     event.stopPropagation()
     if (deleteState.status !== 'idle') return
-    setDeleteState({ status: 'loading' })
-    const result = await getShotSpend(shot.id)
-    const spend = result.success ? result.spend : { totalCost: 0, operationLabels: [] }
-    setDeleteState({ status: 'confirming', spend })
+    setDeleteState({ status: 'confirming' })
   }
 
   function handleDeleteTriggerKeyDown(event: KeyboardEvent) {
@@ -212,10 +211,10 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
 
   async function handleConfirmDelete() {
     if (deleteState.status !== 'confirming') return
-    setDeleteState({ status: 'deleting', spend: deleteState.spend })
+    setDeleteState({ status: 'deleting' })
     const result = await deleteShot(shot.id)
     if (!result.success) {
-      setDeleteState({ status: 'confirming', spend: deleteState.spend, error: result.error })
+      setDeleteState({ status: 'confirming', error: result.error })
       return
     }
     removeShotLocal(shot.id)
@@ -234,7 +233,11 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
       : []
   const showResetAll = CAMERA_FIELD_NAMES.some((f) => origins[f] !== 'auto')
 
-  const cardBorderClassName = rollup.kind === 'failed' ? 'border-status-failed-line' : 'border-border-subtle'
+  // canvas: "08 Workbench" / "09A Card at rest" - the expanded card is border-accent,
+  // distinct from the resting border-subtle. Failed still wins over accent (a red border
+  // must stay findable even on the currently-open card).
+  const cardBorderClassName =
+    rollup.kind === 'failed' ? 'border-status-failed-line' : expanded ? 'border-accent' : 'border-border-subtle'
   const durationLabel = shot.duration_sec === null ? '—' : `${shot.duration_sec.toFixed(1)}s`
 
   // Collapsed: the whole card is the expand target (canvas shows no dedicated "Expand"
@@ -247,11 +250,11 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
         role: 'button' as const,
         tabIndex: 0,
         'aria-expanded': false,
-        onClick: () => setExpanded(true),
+        onClick: () => expandShot(shot.id),
         onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
-            setExpanded(true)
+            expandShot(shot.id)
           }
         },
       }
@@ -302,7 +305,7 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
             {rollup.kind === 'saved' && <SaveStatusIndicator status="saved" label="" />}
             <button
               type="button"
-              onClick={() => setExpanded(false)}
+              onClick={() => collapseShot()}
               className="cursor-pointer text-small text-text-secondary hover:text-text-primary"
             >
               Collapse
@@ -360,7 +363,7 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
                   title="Delete shot"
                   onClick={handleDeleteTriggerClick}
                   onKeyDown={handleDeleteTriggerKeyDown}
-                  disabled={deleteState.status === 'loading'}
+                  disabled={deleteState.status !== 'idle'}
                   className="-mb-[6px] -mr-[6px] flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-badge text-text-tertiary hover:bg-status-failed-bg hover:text-status-failed-fg disabled:cursor-not-allowed"
                 >
                   <TrashIcon />
@@ -377,6 +380,7 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
             shotId={shot.id}
             shotKey={shot.shot_key}
             voiceOver={shot.voice_over}
+            hasDialogue={shot.dialogue.length > 0}
             readOnly={readOnly}
             onSaved={(patch) => updateShotLocal(shot.id, patch)}
             onStatusChange={(status, retry) => handleFieldStatusChange('voice_over', status, retry)}
@@ -450,7 +454,7 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
                 data-testid="delete-shot-trigger"
                 onClick={handleDeleteTriggerClick}
                 onKeyDown={handleDeleteTriggerKeyDown}
-                disabled={deleteState.status === 'loading'}
+                disabled={deleteState.status !== 'idle'}
                 className="-mb-[5px] -mr-2 flex h-[26px] flex-none cursor-pointer items-center gap-[6px] rounded-badge py-0 pl-[5px] pr-2 text-small text-text-tertiary hover:bg-status-failed-bg hover:text-status-failed-fg disabled:cursor-not-allowed"
               >
                 <span className="flex w-4 justify-center">
@@ -468,7 +472,6 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
       open={deleteState.status === 'confirming' || deleteState.status === 'deleting'}
       shotNumber={shot.order_index + 1}
       elementsCount={shot.elements.length}
-      spend={deleteState.status === 'confirming' || deleteState.status === 'deleting' ? deleteState.spend : null}
       pending={deleteState.status === 'deleting'}
       error={deleteState.status === 'confirming' ? deleteState.error : undefined}
       onConfirm={handleConfirmDelete}

@@ -2,7 +2,6 @@ import { test, expect, type Page } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { formatCost } from '../src/lib/format-cost'
 
 let seq = 0
 function nextShotIdentity() {
@@ -103,7 +102,7 @@ test.describe('shot deletion', () => {
     await expect(page.getByTestId('delete-shot-trigger')).toBeVisible()
   })
 
-  test('confirmation appears with no ledger when nothing has been spent on the shot', async ({ page }) => {
+  test('confirmation names the shot and offers cancel/delete', async ({ page }) => {
     const projectId = await seedProject()
     const shotId = await seedShot(projectId)
     const shotNumber = (await readShot(shotId))!.order_index + 1
@@ -113,54 +112,15 @@ test.describe('shot deletion', () => {
 
     await expect(page.getByRole('dialog')).toBeVisible()
     await expect(page.getByRole('dialog').getByText(`Delete shot ${shotNumber}?`)).toBeVisible()
-    await expect(page.getByTestId('delete-shot-ledger')).toHaveCount(0)
     await expect(page.getByRole('dialog').getByRole('button', { name: 'Cancel' })).toBeVisible()
     await expect(page.getByRole('dialog').getByRole('button', { name: 'Delete shot' })).toBeVisible()
   })
 
-  test('confirmation states the exact settled spend and what it was spent on when something has been spent', async ({
+  // The modal deliberately shows no spend figure (see docs/decisions.md) - this only
+  // proves prior spend on the shot has no bearing on whether deletion is allowed.
+  test('a shot with settled usage rows still deletes once confirmed - spend never blocks deletion', async ({
     page,
   }) => {
-    const projectId = await seedProject()
-    const shotId = await seedShot(projectId)
-    await seedUsageRow({
-      project_id: projectId,
-      shot_id: shotId,
-      step: 'image_prompts',
-      operation: 'write_prompts',
-      estimated_cost: 0.3,
-    })
-    await seedUsageRow({
-      project_id: projectId,
-      shot_id: shotId,
-      step: 'storyboard',
-      operation: 'generate_image',
-      estimated_cost: 0.12,
-    })
-    // A pending reservation for a different, unrelated call must not be counted -
-    // only settled rows are "already spent."
-    await seedUsageRow({
-      project_id: projectId,
-      shot_id: shotId,
-      step: 'storyboard',
-      operation: 'voiceover',
-      estimated_cost: 5,
-      status: 'pending',
-    })
-
-    await page.goto(`/projects/${projectId}/workbench`)
-    await page.getByTestId('delete-shot-trigger').click()
-
-    const dialog = page.getByRole('dialog')
-    await expect(dialog).toBeVisible()
-    await expect(page.getByTestId('delete-shot-ledger')).toBeVisible()
-    await expect(page.getByTestId('delete-shot-amount')).toHaveText(formatCost(0.42))
-    await expect(page.getByTestId('delete-shot-ledger')).toContainText('Prompt writing')
-    await expect(page.getByTestId('delete-shot-ledger')).toContainText('Image generation')
-    await expect(page.getByTestId('delete-shot-ledger')).toContainText('not refunded')
-  })
-
-  test('a shot with spend still deletes once confirmed - spend never blocks deletion', async ({ page }) => {
     const projectId = await seedProject()
     const shotId = await seedShot(projectId)
     await seedUsageRow({
@@ -173,8 +133,6 @@ test.describe('shot deletion', () => {
 
     await page.goto(`/projects/${projectId}/workbench`)
     await page.getByTestId('delete-shot-trigger').click()
-    await expect(page.getByTestId('delete-shot-amount')).toBeVisible()
-
     await page.getByRole('dialog').getByRole('button', { name: 'Delete shot' }).click()
 
     await expect(page.getByRole('dialog')).toHaveCount(0)

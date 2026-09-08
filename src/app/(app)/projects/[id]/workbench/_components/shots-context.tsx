@@ -43,6 +43,12 @@ type ShotsContextValue = {
   refreshPending: boolean
   markShotsTouched: (shotKeys: string[]) => void
   consumeTouchedShot: (shotKey: string) => void
+  // Accordion: at most one shot card expanded at a time (canvas: "Only one card is
+  // expanded at a time"). Lives here rather than per-card local state so expanding one
+  // card can coordinate collapsing whichever other card was open.
+  expandedShotId: string | null
+  expandShot: (shotId: string) => void
+  collapseShot: () => void
 }
 
 const ShotsContext = createContext<ShotsContextValue | null>(null)
@@ -83,6 +89,7 @@ export function ShotsProvider({
   // consumes the touch, permanently missing the real value that lands moments later. See
   // use-external-resync.ts.
   const [refreshPending, setRefreshPending] = useState(false)
+  const [expandedShotId, setExpandedShotId] = useState<string | null>(null)
   const triggeredRef = useRef(false)
   const readOnly = initialFurthestStep >= stepIndex('storyboard')
 
@@ -96,6 +103,16 @@ export function ShotsProvider({
 
   function removeShotLocal(shotId: string) {
     setShots((prev) => prev.filter((shot) => shot.id !== shotId))
+  }
+
+  // Overwriting expandedShotId (rather than toggling) is what makes this an accordion -
+  // whichever card held it is implicitly collapsed the instant a different one expands.
+  function expandShot(shotId: string) {
+    setExpandedShotId(shotId)
+  }
+
+  function collapseShot() {
+    setExpandedShotId(null)
   }
 
   function lockShot(shotKey: string) {
@@ -227,6 +244,9 @@ export function ShotsProvider({
         refreshPending,
         markShotsTouched,
         consumeTouchedShot,
+        expandedShotId,
+        expandShot,
+        collapseShot,
       }}
     >
       {children}

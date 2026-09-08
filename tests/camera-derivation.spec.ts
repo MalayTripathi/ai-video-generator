@@ -377,6 +377,44 @@ test.describe('camera field editing and re-derivation', () => {
     expect(shotRow?.video_prompt_stale).toBe(true)
   })
 
+  test('never calls the model when visual_description is empty or whitespace-only - no gateway call, no usage row', async () => {
+    const user = primary.user
+    const projectId = await seedProject()
+
+    let gatewayCalled = false
+    const gateway: ClaudeGateway = {
+      async createMessage() {
+        gatewayCalled = true
+        return successMessage({}, 'derive_camera')
+      },
+    }
+
+    for (const visualDescription of ['', '   ']) {
+      const shotId = await seedShot(projectId, { visual_description: visualDescription })
+
+      const result = await runCameraDerivation({
+        gateway,
+        supabase: admin,
+        projectId,
+        shotId,
+        userId: user.id,
+        fields: [...CAMERA_FIELD_NAMES],
+      })
+
+      expect(result.ok).toBe(false)
+      expect(gatewayCalled).toBe(false)
+
+      const { data: usageRows, error: usageError } = await admin
+        .from('usage')
+        .select('id')
+        .eq('project_id', projectId)
+        .eq('shot_id', shotId)
+        .eq('operation', 'derive_camera')
+      expect(usageError).toBeNull()
+      expect(usageRows!.length).toBe(0)
+    }
+  })
+
   test('a pre-network blocked call settles as failed with zero cost and no stale pending row', async () => {
     const user = primary.user
     const projectId = await seedProject()

@@ -54,12 +54,20 @@ video's shot count. Blocking a legitimate submission on a regex match would cost
 more than the warning is meant to save. It renders amber (`status-active`, never
 `status-failed`) and never touches `BuildButton`'s `disabled` state.
 
-Server-side, `runShotsPipeline` never silently truncates an over-count result even if the
-schema constraint is somehow exceeded (e.g. a payload recovered from before the constraint
-existed). The call is already paid for at that point, and dropping trailing shots would
-leave a story missing its ending — worse than a slightly long shot list. It persists the
-full array and logs `[shots] over_count …` with the project id, generation id, target, and
-actual count.
+Server-side, `runShotsPipeline` never silently truncates an over-count result. This is not
+a rare edge case: the tool-use API has no way to structurally cap an array's length (only
+`minItems` of 0 or 1 is supported, never a `maxItems`), so `buildWriteShotsTool` carries no
+enforceable count constraint at all — the system prompt's "hard maximum" wording and the
+tool's own description are the only enforcement, and the model exceeding them is an
+expected, accept-and-logged outcome, not a defensive fallback for a stale replayed payload.
+The call is already paid for regardless of how many rows get persisted — the `usage` row is
+priced off the actual response's tokens the moment it lands — and dropping trailing shots
+would leave a story missing its ending, worse than a slightly long shot list. It persists
+the full array and logs `[shots] over_count …` with the project id, generation id, target,
+and actual count; `ProjectHeader` surfaces the overshoot to the person, amber and
+non-blocking (same treatment as the duration-overrun figure it sits beside), with cost-
+framed copy — the person can trim the extra shots themselves, with judgment about which
+ones matter that a server-side truncation doesn't have.
 
 ## Per-field save: why no Save button, and why status has two tiers
 *Supports: the per-field save model in `## Code conventions`. (Audit item 36.)*
@@ -196,33 +204,44 @@ accepted cost of allowing up to 2 billed calls for 2 rapid *distinct* edits to t
 — never more than 2, regardless of how many times a trigger re-fires while one is running,
 since repeated re-fires just keep replacing the single queued slot.
 
-## Shot deletion: why spend never blocks, and why the figure is dollars for now
+## Shot deletion: why spend never blocks, and why the modal shows no figure
 *Supports: the delete-shot control and its confirmation in the Step 2 Workbench.*
 
 Deleting a shot is a creative decision, and the app does not get a vote on it regardless
 of what has already been spent generating that shot's prompts, image, or voiceover. The
-confirmation states the amount when there is one (canvas: "11 Confirm · money spent") but
-never argues, disables, or double-confirms on top of it — the primary action stays at
-full destructive strength (`--status-failed-fg` outline, not greyed) whether the figure
-is $0 or several dollars. This is a different case from "never discard paid output to
-signal it may be stale" elsewhere in this doc: that rule protects a person from an
-accidental silent loss of work they didn't ask to lose; here the person explicitly asked
-to remove the row, and the confirmation's whole job is to make sure they know what goes
-with it before they do.
+confirmation states what goes with the shot — its voiceover, visual description, and
+bound elements — but never argues, disables, or double-confirms on top of that; the
+primary action stays at full destructive strength (`--status-failed-fg` outline, not
+greyed) either way. This is a different case from "never discard paid output to signal
+it may be stale" elsewhere in this doc: that rule protects a person from an accidental
+silent loss of work they didn't ask to lose; here the person explicitly asked to remove
+the row, and the confirmation's whole job is to make sure they know what goes with it
+before they do.
 
-The figure is shown in dollars, not credits, for the same reason `estimated_cost`
-throughout `usage` is dollars-first (see "Credits and dollars — settled" above):
-`duration.ts`'s `estimatedCredits` is a provisional, uncalibrated per-tier number with no
-stated relationship to measured cost, and there is no per-shot credit derivation yet.
-Inventing one for this one dialog would be a number the user could later see
-contradicted. The amount renders in its own `data-testid="delete-shot-amount"` span,
-mono, right-aligned, specifically so the unit can become credits later by replacing one
-string, not by re-deriving the whole modal.
+**The modal used to show a per-shot dollar figure and no longer does.** It was sourced
+from `usage` rows filtered by that shot's `shot_id` — accurate for a `derive_camera` row,
+which always names exactly one shot, but the agent (`get_shot`, `update_shot`,
+`insert_shot`, `regenerate_all_shots`, `finish`) writes every one of its `usage` rows
+with `shot_id: null`, on purpose: one agent-turn call can mutate several shots in one
+response, and `get_shot`/`finish` mutate none at all, so there is no single shot to
+attribute a row to. **`shot_id` is null for agent-turn usage by design, not a gap to
+backfill** — a future session finding every agent-turn row `shot_id`-less should read
+this paragraph, not "fix" it by guessing an attribution.
 
-Only *settled, nonzero* `usage` rows count toward "already spent" - a `status: 'pending'`
-reservation hasn't actually been spent yet (see `reserveUsage`'s worst-case quote), and a
-settled-but-zero row (a blocked local call) paid for nothing. Both would overstate the
-figure if included.
+That gap made the figure actively misleading rather than merely incomplete: a shot with
+one `derive_camera` call showed a number, while a shot reshaped entirely through the
+agent — routinely a larger spend — showed nothing, and a user reads "$0" as "nothing was
+spent," not "attribution doesn't reach this row." Inconsistent attribution is worse than
+no attribution, so the line was removed rather than patched, and the query and state
+that fed it were deleted along with it (no dead `getShotSpend` action, no unused
+`ShotSpend` type). The figure was never actionable either way — the spend can't be
+recovered, and the delete decision is creative, not financial — which is what made
+removal the right call rather than a workaround.
+
+Once Steps 4 and 6 exist, image and clip generation cost is `shot_id`-attributed and
+complete — every such call names exactly one shot, with no analogue to the agent's
+zero-or-several-shots problem — so a spend line can be reinstated then, on data that
+actually supports it.
 
 ## Why the camera model is Haiku permanently and its ceiling is 128
 *Supports: the `modelsConfig.camera` note in `## Code conventions`. (Audit item 66.)*
@@ -306,7 +325,7 @@ excluded too: a blocked row settles at `estimated_cost: 0` by design, so its rat
 nonzero `quoted_cost` is always 0 and would drag the calibration mean toward zero for a call
 that was never actually measured.
 
-## The four settle branches
+## The five settle branches
 *Supports: the `settleUsage` paragraph in `## Generations and usage`. (Audit item 88.)*
 
 On success it overwrites `estimated_cost` with the measured cost and writes
@@ -317,8 +336,14 @@ later step failed) it settles `failed` with the cost measured from what is known
 with no usage data at all, the branch depends on *when* the throw happened, not merely that it
 happened.
 
-A network failure, stream error, or timeout after the request has already left the process is
-unverifiable, not provably harmless — hence retaining the quote.
+Two of those "no usage data" throws are *verified* to precede any generation, and both settle
+at zero: `LiveCallsBlockedError` (never left the process) and an SDK `APIError` with
+`status < 500` (a 4xx — Anthropic's own request-validation rejection, e.g. a tool schema
+using an unsupported JSON Schema keyword, returned synchronously before the model ever runs).
+Neither is detected by message text; both are `instanceof` checks, the same rigor. A 5xx
+(`InternalServerError`) or a status-less network/timeout error (`APIConnectionError`,
+`APIConnectionTimeoutError`) is not provably harmless — it can occur after the request already
+left the process and generation began — hence retaining the quote for those, unchanged.
 
 ## Why the claim sequence is ordered this way
 *Supports: CLAIM → RECOVER → PERSIST → SETTLE in `## Generations and usage`. (Audit item 93.)*
@@ -571,6 +596,44 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   prompt + tool schemas) doesn't clear it. Zero saving in the dev usage
   table is expected, not a bug — it only becomes observable in production
   on Sonnet, whose minimum is 1024.
+- **The shot index is not part of a stable cached prefix across turns.**
+  `buildShotIndexBlock`'s output is rebuilt fresh from the DB every turn and
+  carries its own `cache_control` breakpoint, separate from the system
+  prompt's. Within a turn, later tool-loop iterations resend the identical
+  index string and hit a cache read. Across turns it's a different story:
+  editing a shot's `voice_over`/`visual_description` is exactly what changes
+  the index text, so any content-editing turn — the common case — breaks the
+  cache and rewrites the whole index at full price, for every shot, not just
+  the one touched. This is why free-text fields (full `voice_over`, full
+  `visual_description`, bound characters) stay behind `get_shot` rather than
+  being inlined into the index: their per-shot cost would be re-paid on
+  nearly every turn, scaling with project size, whereas a `get_shot` call
+  only costs once, scoped to the shot(s) actually needed. Easy to get
+  backwards — the cache breakpoint makes the index *look* free to grow.
+- **The `finish` tool's savings are a model-behaviour bet, and v5's wording lost
+  that bet.** `finish` only avoids the trailing reply-only call when the model
+  bundles it into the same response as its last mutating call - i.e. declares
+  completion before seeing that call's result. Nothing in the tool-use API forces
+  this; a model that plays it safe and waits for the tool result before calling
+  `finish` reproduces today's call count exactly, just with `finish` standing in
+  for the old text-only reply. A live trial of v5's wording confirmed exactly that:
+  a single-shot edit ran `get_shot`, then `update_shot`, then `finish` alone in a
+  third response - the model waited for every result, including the last one,
+  so the saving this tool exists to produce was zero. v5 had only ever said
+  bundling was *permitted*; v6 rewrites both the prompt's closing paragraph and
+  the tool's own description to state it as the *default* whenever the model is
+  confident, so waiting needs a reason rather than being the unmarked case (see
+  `src/lib/prompts/agent.ts`'s v6 comment). Whether v6's stronger wording actually
+  changes model behaviour still can't be verified without a live call, which this
+  repo's tests never make (see `## Provider calls`) - the next live trial is the
+  real test. If it still runs as separate calls after this change, per the
+  standing instruction the answer is to remove `finish` rather than try a third
+  wording - don't spend a fourth session re-litigating phrasing on a call that
+  clearly won't bundle. The failure path costs nothing extra either way and this
+  part is unaffected by any of the above: when a bundled mutation is refused or
+  errors, the model's `finish` message is discarded and the turn falls through to
+  the same round trip a refusal already requires today - that path was never the
+  one being optimized.
 - **Credits and dollars — settled.** Dollars are development and future-admin
   instrumentation. Credits are the user currency, purchased via subscription;
   per-step credit prices will be derived from measured dollar data. Both units

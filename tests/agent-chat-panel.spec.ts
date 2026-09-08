@@ -223,11 +223,13 @@ test.describe('agent chat panel', () => {
     await page.goto(`/projects/${projectId}/workbench`)
 
     const touchedCard = page.locator(`[data-shot-key="${touched.shotKey}"]`)
-    await touchedCard.click()
+    const untouchedCard = page.locator(`[data-shot-key="${untouched.shotKey}"]`)
 
     // Focus the untouched shot's visual description field and start typing, without
     // blurring - this draft must survive regardless of what the agent does elsewhere.
-    const untouchedCard = page.locator(`[data-shot-key="${untouched.shotKey}"]`)
+    // Only this card is expanded: cards are an accordion (one at a time), so the touched
+    // card's own resync is verified from its collapsed plain-text render below instead
+    // of expanding both at once.
     await untouchedCard.click()
     const untouchedField = untouchedCard.getByLabel('Visual description')
     await untouchedField.click()
@@ -236,9 +238,9 @@ test.describe('agent chat panel', () => {
     await sendMessage(page, 'rewrite shot 1')
     await expect(page.getByText('Updated the description.')).toBeVisible()
 
-    await expect(touchedCard.getByLabel('Visual description')).toHaveValue('Agent-rewritten description.', {
-      timeout: 10000,
-    })
+    // shots-context's local state resyncs regardless of expand/collapse - the collapsed
+    // card's plain-text render already reflects the agent's write.
+    await expect(touchedCard.getByText('Agent-rewritten description.')).toBeVisible({ timeout: 10000 })
 
     // The focused, still-being-typed field was never overwritten by the same refresh.
     await expect(untouchedField).toHaveValue('A draft the user is still typing')

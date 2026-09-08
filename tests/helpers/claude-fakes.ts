@@ -45,6 +45,20 @@ export function textMessage(text: string): FakeResult {
   }
 }
 
+/** A single response carrying multiple tool_use blocks - the shape a model uses to
+ * bundle several actions (e.g. a mutation plus `finish`) into one reply instead of
+ * waiting for a result before calling the next one. */
+export function multiToolMessage(calls: { name: string; input: unknown }[]): FakeResult {
+  return {
+    message: {
+      content: calls.map((call, i) => ({ type: 'tool_use', id: `tu_test_${i}`, name: call.name, input: call.input })),
+      usage: { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    } as unknown as Anthropic.Message,
+    stopReason: 'tool_use',
+    requestId: 'req_test',
+  }
+}
+
 /** A gateway that pops one scripted result per call, in order, and optionally fires
  * onTextDelta for each string in that result's `deltas` before resolving - the seam a
  * multi-iteration agent-turn test needs, since every other fake here answers only once.

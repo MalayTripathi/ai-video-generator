@@ -3,7 +3,9 @@
 import { createClient } from '@/lib/supabase/server'
 import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS } from '@/lib/config/enums'
 import { stalenessFor } from '@/lib/shot-staleness'
-import { stepIndex, stepOperationLabel, type Step, type Operation } from '@/lib/config/pipeline'
+import { stepIndex } from '@/lib/config/pipeline'
+import { voiceOverIsValid, EMPTY_VOICEOVER_MESSAGE } from '@/lib/shot-voiceover'
+import { visualDescriptionIsValid, EMPTY_VISUAL_DESCRIPTION_MESSAGE } from '@/lib/shot-visual-description'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -17,7 +19,7 @@ export type ShotField =
 
 export type ShotFieldSaveResult =
   | { field: ShotField; success: true; unchanged?: true }
-  | { field: ShotField; success: false; error: string }
+  | { field: ShotField; success: false; error: string; reason?: 'invalid' }
 
 export type DialogueSaveResult =
   | { success: true; id: string; unchanged?: true }
@@ -25,8 +27,6 @@ export type DialogueSaveResult =
 
 export type DialogueDeleteResult = { success: true } | { success: false; error: string }
 
-export type ShotSpend = { totalCost: number; operationLabels: string[] }
-export type ShotSpendResult = { success: true; spend: ShotSpend } | { success: false; error: string }
 export type ShotDeleteResult = { success: true } | { success: false; error: string }
 
 // Loads a shot together with its persisted field values, scoped to the caller's own
@@ -58,6 +58,22 @@ export async function updateShotVoiceOver(shotId: string, value: string): Promis
   if (!shot) return { field, success: false, error: 'Shot not found' }
 
   const trimmed = value.trim()
+
+  // Defense-in-depth: the client already refuses to call this action with an
+  // unacceptable value, but the agent path and any direct call must not be able to
+  // bypass it. Only queries shot_dialogue when the value is actually empty (the common
+  // case never pays for it), and checked unconditionally otherwise - not gated on "did
+  // it change" - for the same reason as the client check (see voiceover-field.tsx).
+  if (trimmed === '') {
+    const { count } = await supabase
+      .from('shot_dialogue')
+      .select('id', { count: 'exact', head: true })
+      .eq('shot_id', shotId)
+    if (!voiceOverIsValid(trimmed, (count ?? 0) > 0)) {
+      return { field, success: false, reason: 'invalid', error: EMPTY_VOICEOVER_MESSAGE }
+    }
+  }
+
   if (trimmed === shot.voice_over) return { field, success: true, unchanged: true }
 
   const staleness = stalenessFor('voice_over')
@@ -101,6 +117,16 @@ export async function updateShotVisualDescription(
   if (!shot) return { field, success: false, error: 'Shot not found' }
 
   const trimmed = value.trim()
+
+  // Defense-in-depth, same shape as updateShotVoiceOver's - the client already refuses to
+  // call this action with an empty value, but the agent path and any direct call must not
+  // be able to bypass it. Checked unconditionally, not gated on "did it change" - an
+  // already-persisted empty description must still be refused, not just the edit that
+  // created it.
+  if (!visualDescriptionIsValid(trimmed)) {
+    return { field, success: false, reason: 'invalid', error: EMPTY_VISUAL_DESCRIPTION_MESSAGE }
+  }
+
   const persisted = shot.visual_description ?? ''
   if (trimmed === persisted) return { field, success: true, unchanged: true }
 
@@ -310,44 +336,6 @@ async function markVideoPromptStale(supabase: SupabaseServerClient, shotId: stri
   if (error) {
     console.error(`[workbench] Failed to set video_prompt_stale for shot ${shotId}:`, error.message)
   }
-}
-
-// "Already spent" means settled and non-zero - a pending reservation hasn't actually
-// been spent yet, and a settled-but-zero row (e.g. a blocked local call) paid for
-// nothing, so neither belongs in the confirm modal's ledger.
-export async function getShotSpendForUser(
-  supabase: SupabaseServerClient,
-  shotId: string,
-  userId: string
-): Promise<ShotSpendResult> {
-  // usage's RLS/ownership model is a direct user_id check (see CLAUDE.md's usage
-  // paragraph), not a join through projects - filtering by user_id here mirrors that
-  // directly rather than re-deriving ownership through shots/projects.
-  const { data, error } = await supabase
-    .from('usage')
-    .select('estimated_cost, status, step, operation')
-    .eq('shot_id', shotId)
-    .eq('user_id', userId)
-  if (error) return { success: false, error: error.message }
-
-  const settled = (data ?? []).filter(
-    (row) => (row.status === 'succeeded' || row.status === 'failed') && (row.estimated_cost ?? 0) > 0
-  )
-  const totalCost = settled.reduce((sum, row) => sum + (row.estimated_cost ?? 0), 0)
-  const operationLabels = Array.from(
-    new Set(settled.map((row) => stepOperationLabel(row.step as Step, row.operation as Operation)))
-  )
-  return { success: true, spend: { totalCost, operationLabels } }
-}
-
-export async function getShotSpend(shotId: string): Promise<ShotSpendResult> {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: 'Not authenticated' }
-
-  return getShotSpendForUser(supabase, shotId, user.id)
 }
 
 // The user may always delete a shot, whatever has been spent on it - a creative

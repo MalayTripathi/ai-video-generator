@@ -15,6 +15,51 @@ are not lost.
   source reading, which has already been exhausted without success.
 - `project-card.tsx` interpolates `/projects/${id}/${current_step}` unguarded. See **C6**
   below.
+- **Shot fields still missing server-side validation, found while fixing C4's empty-
+  voiceover bug but deliberately not fixed alongside it (scoped to `voice_over`, then
+  `visual_description`, only):** `updateShotDuration` has no server-side bounds/NaN check
+  (only a client-side display warning); `saveDialogueLine` accepts an empty `line`/
+  `elementId` server-side (currently relies entirely on `dialogue-row.tsx`'s client guard
+  never calling it with either blank). `visual_description` is now validated at all four
+  sites that can write it - client, server action, agent's `update_shot`, and agent's
+  `insert_shot` (`tools.ts`'s `handleInsertShot`, refuses via the shared
+  `shot-visual-description.ts` predicate, same shape as `update_shot`).
+  `write_shots` (full shot-list generation) is the one remaining path that can still
+  persist an empty `visual_description` - `runShotsPipeline`'s `isUsableShot` gate is
+  deliberately an OR against `voice_over`, not an AND, so a shot with narration and no
+  description still gets saved rather than dropping paid-for output. The system prompt
+  now states explicitly that `visual_description` must never be empty
+  (`SHOT_GENERATION_SYSTEM_PROMPT_V5`), but that's an advisory nudge, not an enforced
+  guarantee - the tool schema's `required` already listed the field and didn't stop this
+  either. The resulting gap is made visible rather than silent:
+  `visual-description-field.tsx`/`voiceover-field.tsx` now initialize their `touched`
+  state from the persisted value's own validity, so a shot arriving from generation with
+  an empty required field shows its error on load, with no click required first.
+- **Shot generation's `runShotGeneration` (`shots/logic.ts`) has no guard on
+  `project.source_text` being non-empty before the paid Claude call** - found while
+  auditing every `gateway.createMessage` call site for the camera-derivation empty-input
+  guard (C4). The other three call sites (prompt generation, camera derivation, agent
+  turn) are all guarded one way or another; this one currently is not.
+- **"Router action dispatched before initialization" console error (C4) — unreproduced.**
+  Five distinct reproduction attempts against the workbench route: navigating away
+  immediately after mount during the fire-once shot-generation trigger; the real
+  intake→workbench `redirect()` path, watched immediately; an artificially delayed
+  `/api/projects/[id]/shots` response (`page.route`, no `ALLOW_REAL_CLAUDE` involved) with
+  navigation away to the dashboard before it resolves; the same, navigating to a
+  *different* project's workbench instead; and a hard navigation to the workbench URL
+  interrupted mid-hydration (`waitUntil: 'commit'`) before the delayed response lands.
+  None reproduced the error. Traced every `router.push`/`refresh`/`replace` call site in
+  the workbench tree (`shots-context.tsx`'s fetch-trigger and 3s poll, `shot-card.tsx`'s
+  delete confirm, `agent-panel.tsx`'s post-turn settle) - all fire from inside a
+  `useEffect`, a `setInterval` it arms, or an async handler reached from a real click,
+  never render body or module scope. The originally suspected mechanism (a long-running
+  `fetchShots()` continuation surviving past the owning route's teardown) doesn't hold up
+  either: Next's App Router keeps one `router` instance for the whole SPA session across
+  client-side navigations, so there's no "torn-down router" for a stale continuation to
+  race against in the scenarios tried. Not fixed - needs a real browser repro (ideally
+  the original reporter's exact steps, possibly involving conditions this headless
+  Playwright run doesn't recreate: HMR/Fast Refresh, React DevTools, or a slower real
+  network) rather than further source reading or synthetic timing attempts.
 
 ## Unbuilt product surface
 
@@ -43,6 +88,14 @@ are not lost.
   itself, and per-model cost config.
 - **Project-lifecycle `status` design.** `projects.status` is unconstrained text and
   `/prompts` no longer writes `'in_progress'`; no substitute vocabulary has been chosen.
+- **Whether to inline camera enum values into the agent's shot index.** Today the index
+  (`buildShotIndexBlock`) only flags whether a camera field is overridden, never its actual
+  `shot_size`/`camera_angle`/`camera_movement` value — a camera-only agent request still
+  needs a `get_shot` call to read them. Inlining all three would cost ~9 tokens/shot
+  (~675 tokens at 75 shots), re-paid on every turn that breaks the index's prompt cache
+  (any content edit), including turns that never touch camera — not measured to be worth it
+  against an unmeasured request class. Revisit only if usage rows show `get_shot` calls
+  dominated by camera-only requests.
 
 ## Added items
 

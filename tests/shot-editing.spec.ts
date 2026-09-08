@@ -111,6 +111,59 @@ test.describe('shot card editing', () => {
     await expect(page.getByLabel('Voiceover')).toBeVisible()
   })
 
+  // canvas: "08 Workbench" / "09A Card at rest" - the expanded card's container is
+  // border:1px solid var(--accent), distinct from the resting border-subtle and the
+  // failed border-status-failed-line.
+  test('the expanded card carries the accent border; a collapsed card does not', async ({ page }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId)
+
+    await page.goto(`/projects/${projectId}/workbench`)
+
+    const card = page.getByTestId('shot-card').first()
+    await expect(card).not.toHaveClass(/\bborder-accent\b/)
+
+    await card.click()
+    await expect(card).toHaveClass(/\bborder-accent\b/)
+  })
+
+  test('expanding a card collapses whichever other card was open (accordion)', async ({ page }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId)
+    await seedShot(projectId)
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    const cards = page.getByTestId('shot-card')
+
+    await cards.nth(0).click()
+    await expect(cards.nth(0).getByLabel('Voiceover')).toBeVisible()
+
+    await cards.nth(1).click()
+    await expect(cards.nth(1).getByLabel('Voiceover')).toBeVisible()
+    await expect(cards.nth(0).getByLabel('Voiceover')).not.toBeVisible()
+  })
+
+  test('typing into voiceover, then expanding a different card, still saves the value', async ({ page }) => {
+    const projectId = await seedProject()
+    const shotId = await seedShot(projectId)
+    await seedShot(projectId)
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    const cards = page.getByTestId('shot-card')
+
+    await cards.nth(0).click()
+    const voiceoverField = cards.nth(0).getByLabel('Voiceover')
+    await voiceoverField.fill('Edited but never blurred by hand.')
+    // No explicit .blur() - this exercises the real interaction: clicking straight into
+    // a different card's collapsed header, which must blur the focused field (native
+    // focus-management ordering) before the accordion's own click handler collapses it.
+    await cards.nth(1).click()
+
+    await expect
+      .poll(async () => (await readShot(shotId))?.voice_over)
+      .toBe('Edited but never blurred by hand.')
+  })
+
   test('voiceover saves on blur, shows Saved, sets voiceover_stale and both prompt-stale flags, and preserves existing prompts', async ({
     page,
   }) => {
@@ -144,6 +197,102 @@ test.describe('shot card editing', () => {
     expect(projectRow?.voiceover_stale).toBe(true)
   })
 
+  test('blurring an empty voiceover with no dialogue shows the error below the field only, and writes nothing', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    const shotId = await seedShot(projectId, { voice_over: 'Original voiceover text.' })
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+
+    const voiceoverField = page.getByLabel('Voiceover')
+    await voiceoverField.fill('')
+    await voiceoverField.blur()
+
+    const message = 'A shot needs narration or a dialogue line — otherwise it plays silent. Add one, or ask the agent to write it.'
+    // Exactly once - validation never touches the save-status channel, so the header
+    // slot (which used to duplicate this as "Voiceover can't be empty") must stay silent.
+    await expect(page.getByText(message)).toHaveCount(1)
+    await expect(page.getByText("Voiceover can't be empty")).toHaveCount(0)
+    // A validation rejection has no Retry - there is nothing to retry until the value
+    // itself changes.
+    await expect(page.getByRole('button', { name: 'Retry' })).not.toBeVisible()
+    // Never wrote the empty value - this never even reached the network.
+    await expect.poll(async () => (await readShot(shotId))?.voice_over).toBe('Original voiceover text.')
+  })
+
+  test('the voiceover error clears when the original text is pasted back, with no extra keystroke needed', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId, { voice_over: 'Original voiceover text.' })
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+
+    const voiceoverField = page.getByLabel('Voiceover')
+    await voiceoverField.fill('')
+    await voiceoverField.blur()
+    await expect(page.getByText(/A shot needs narration or a dialogue line/)).toBeVisible()
+
+    // Simulates "cut, then paste the identical text back" - the value returns to exactly
+    // what was persisted, which must not stop the error from being re-evaluated and cleared.
+    await voiceoverField.fill('Original voiceover text.')
+    await voiceoverField.blur()
+    await expect(page.getByText(/A shot needs narration or a dialogue line/)).not.toBeVisible()
+  })
+
+  test('adding a dialogue line clears a showing voiceover error, even though voiceover itself is never touched again', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    const shotId = await seedShot(projectId, { voice_over: 'Original voiceover text.' })
+    await seedCharacter(projectId, shotId, 'Shah Jahan')
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+
+    const voiceoverField = page.getByLabel('Voiceover')
+    await voiceoverField.fill('')
+    await voiceoverField.blur()
+    await expect(page.getByText(/A shot needs narration or a dialogue line/)).toBeVisible()
+
+    await page.getByRole('button', { name: '+ Add line' }).click()
+    const row = page.getByTestId('dialogue-row')
+    await row.getByLabel('Line').fill('Let it be built of light.')
+    await chooseOption(row, 'Speaker', 'Shah Jahan')
+
+    await expect
+      .poll(async () => {
+        const { data } = await admin.from('shot_dialogue').select('id').eq('shot_id', shotId)
+        return data?.length ?? 0
+      })
+      .toBe(1)
+
+    await expect(page.getByText(/A shot needs narration or a dialogue line/)).not.toBeVisible()
+  })
+
+  test('an empty voiceover saves normally when the shot already has a dialogue line', async ({ page }) => {
+    const projectId = await seedProject()
+    const shotId = await seedShot(projectId, { voice_over: 'Original voiceover text.' })
+    const elementId = await seedCharacter(projectId, shotId, 'Narrator')
+    const { error: dialogueError } = await admin
+      .from('shot_dialogue')
+      .insert({ project_id: projectId, shot_id: shotId, element_id: elementId, line: 'A spoken line.', order_index: 0 })
+    expect(dialogueError).toBeNull()
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+
+    const voiceoverField = page.getByLabel('Voiceover')
+    await voiceoverField.fill('')
+    await voiceoverField.blur()
+
+    await expect(page.getByText('Saved').first()).toBeVisible()
+    await expect.poll(async () => (await readShot(shotId))?.voice_over).toBe('')
+  })
+
   test('visual description saves on blur and sets its two shot flags, but not voiceover_stale', async ({ page }) => {
     const projectId = await seedProject()
     const shotId = await seedShot(projectId)
@@ -165,6 +314,68 @@ test.describe('shot card editing', () => {
 
     const projectRow = await readProject(projectId)
     expect(projectRow?.voiceover_stale).toBe(false)
+  })
+
+  test('blurring an empty visual description shows a validation error below the field and writes nothing', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    const shotId = await seedShot(projectId, { visual_description: 'Original visual description.' })
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+
+    const descriptionField = page.getByLabel('Visual description')
+    await descriptionField.fill('')
+    await descriptionField.blur()
+
+    await expect(page.getByText(/A shot needs a visual description/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Retry' })).not.toBeVisible()
+    await expect.poll(async () => (await readShot(shotId))?.visual_description).toBe('Original visual description.')
+  })
+
+  test('a shot loaded with an empty visual description shows its error on mount, with no interaction', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId, { visual_description: '' })
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+
+    await expect(page.getByText(/A shot needs a visual description/)).toBeVisible()
+  })
+
+  test('a shot loaded with a valid visual description shows no error on mount', async ({ page }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId, { visual_description: 'Original visual description.' })
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+
+    await expect(page.getByText(/A shot needs a visual description/)).not.toBeVisible()
+  })
+
+  test('a shot loaded with an empty voiceover and no dialogue shows its error on mount, with no interaction', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId, { voice_over: '' })
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+
+    await expect(page.getByText(/A shot needs narration or a dialogue line/)).toBeVisible()
+  })
+
+  test('a shot loaded with a valid voiceover shows no error on mount', async ({ page }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId, { voice_over: 'Original voiceover text.' })
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+
+    await expect(page.getByText(/A shot needs narration or a dialogue line/)).not.toBeVisible()
   })
 
   test('a blur with no change performs no write and marks nothing stale', async ({ page }) => {
@@ -285,7 +496,10 @@ test.describe('shot card editing', () => {
     await expect.poll(async () => (await readShot(shotId))?.duration_sec).toBe(10)
   })
 
-  test('many simultaneously out-of-range shots on a discrete model each render amber independently', async ({ page }) => {
+  // Cards are an accordion (only one expanded at a time - see the accordion test above),
+  // so "independently" is checked one at a time rather than all expanded at once: each
+  // shot's amber-invalid-duration render must not depend on any sibling's state.
+  test('out-of-range shots on a discrete model each render amber independently', async ({ page }) => {
     const projectId = await seedProject({ video_model: 'Kling 2.1' })
     for (let i = 0; i < 8; i++) {
       await seedShot(projectId, { duration_sec: 7.3, duration_locked: true })
@@ -297,16 +511,13 @@ test.describe('shot card editing', () => {
     await expect(cards).toHaveCount(8)
     for (let i = 0; i < 8; i++) {
       await cards.nth(i).click()
+      await expect(cards.nth(i).getByTestId('duration-value')).toHaveText('7.3s')
+      await expect(cards.nth(i).getByText(/5s or 10s/)).toBeVisible()
     }
-
-    await expect(page.getByTestId('duration-value')).toHaveCount(8)
-    const values = await page.getByTestId('duration-value').allTextContents()
-    expect(values.every((v) => v === '7.3s')).toBe(true)
-    await expect(page.getByText(/5s or 10s/)).toHaveCount(8)
 
     // ProjectHeader's aggregate total still renders without throwing - it only reads
     // duration_sec/duration_locked, unaffected by per-model validity.
-    await expect(page.getByText(/shots ·/)).toBeVisible()
+    await expect(page.getByText(/shots$/)).toBeVisible()
   })
 
   test('a dialogue line persists only once both speaker and line are filled', async ({ page }) => {

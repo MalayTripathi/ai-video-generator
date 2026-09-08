@@ -82,11 +82,16 @@ test.describe('estimateInputTokens', () => {
     const texts = ['A fixed system prompt.', 'A fixed user message.']
 
     const withSmallTarget = estimateInputTokens({ texts, tools: [buildWriteShotsTool(8)] })
-    const withLargeTarget = estimateInputTokens({ texts, tools: [buildWriteShotsTool(75)] })
+    // A wide gap in digit count, not a realistic duration tier - the schema has no
+    // maxItems to vary by (the tool-use API doesn't support one; see
+    // tests/tool-schema-keywords.spec.ts), so the only thing that varies with
+    // targetShots now is the description text's own digit count. A small gap (8 vs 75)
+    // is only a 1-character difference, which the chars/4 heuristic can round away; this
+    // gap is wide enough to survive that rounding regardless.
+    const withLargeTarget = estimateInputTokens({ texts, tools: [buildWriteShotsTool(750_000)] })
 
-    // buildWriteShotsTool builds a per-call schema whose maxItems and description text
-    // vary with targetShots - estimateInputTokens must reflect that difference, not a
-    // stale/shared schema size.
+    // estimateInputTokens must reflect the actual per-call schema passed to it, not a
+    // stale/shared one.
     expect(withLargeTarget).not.toBe(withSmallTarget)
   })
 })

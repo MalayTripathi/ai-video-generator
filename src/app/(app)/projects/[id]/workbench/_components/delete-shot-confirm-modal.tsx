@@ -2,18 +2,15 @@
 
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { formatCost } from '@/lib/format-cost'
-import type { ShotSpend } from '../actions'
 
 // The reusable confirm pattern (canvas: "Anatomy - the reusable confirm") - title as a
-// question naming its object, a body stating consequence not persuasion, an optional
-// ledger strip, and a destructive action that stays at full strength regardless of
-// spend. This is the first of several; later confirmations should copy this shape.
+// question naming its object, a body stating consequence not persuasion, and a
+// destructive action that stays at full strength regardless of spend. This is the
+// first of several; later confirmations should copy this shape.
 export function DeleteShotConfirmModal({
   open,
   shotNumber,
   elementsCount,
-  spend,
   pending,
   error,
   onConfirm,
@@ -22,7 +19,6 @@ export function DeleteShotConfirmModal({
   open: boolean
   shotNumber: number
   elementsCount: number
-  spend: ShotSpend | null
   pending: boolean
   error?: string
   onConfirm: () => void
@@ -61,26 +57,6 @@ export function DeleteShotConfirmModal({
           Delete shot {shotNumber}?
         </span>
         <span className="text-small leading-[1.5] text-text-secondary">{bodyText}</span>
-        {spend && spend.totalCost > 0 && (
-          <div
-            data-testid="delete-shot-ledger"
-            className="flex flex-col gap-[7px] rounded-control bg-bg-inset px-3 py-[10px]"
-          >
-            <div className="flex items-baseline justify-between gap-rc-sm">
-              <span className="text-small text-text-secondary">Spent on this shot</span>
-              <span
-                data-testid="delete-shot-amount"
-                className="flex-none font-mono text-control font-medium text-text-primary"
-              >
-                {formatCost(spend.totalCost)}
-              </span>
-            </div>
-            <div className="flex items-baseline justify-between gap-rc-sm">
-              <span className="text-meta text-text-tertiary">{spend.operationLabels.join(', ')}</span>
-              <span className="flex-none text-meta text-text-tertiary">not refunded</span>
-            </div>
-          </div>
-        )}
         {error && <span className="text-small leading-[1.5] text-status-failed-fg">{error}</span>}
         <div className="mt-rc-2xs flex justify-end gap-rc-xs">
           <button

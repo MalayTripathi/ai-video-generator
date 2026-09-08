@@ -7,6 +7,8 @@ import { stepIndex } from '@/lib/config/pipeline'
 import { generateUniqueShotKeys, MAX_SHOT_KEY_INSERT_ATTEMPTS, isUniqueViolation } from '@/lib/shot-key'
 import { buildShotIndexBlock } from '@/lib/prompts/agent'
 import { runShotGeneration } from '@/app/api/projects/[id]/shots/logic'
+import { voiceOverIsValid, EMPTY_VOICEOVER_MESSAGE } from '@/lib/shot-voiceover'
+import { visualDescriptionIsValid, EMPTY_VISUAL_DESCRIPTION_MESSAGE } from '@/lib/shot-visual-description'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type ShotRow = Tables<'shots'>
@@ -263,6 +265,39 @@ export async function handleUpdateShot(input: unknown, ctx: AgentToolContext): P
     dialogueWrite = result.resolved
   }
 
+  // A shot needs narration or dialogue, not necessarily both - see shot-voiceover.ts.
+  // Checked against the EFFECTIVE post-call state (this call's own voice_over/dialogue
+  // if included, else the shot's persisted values), before any write, same as every
+  // other refusal in this function.
+  const effectiveVoiceOver = has(raw, 'voice_over') && typeof raw.voice_over === 'string' ? raw.voice_over.trim() : shot.voice_over
+  if (effectiveVoiceOver === '') {
+    const effectiveDialogueCount = dialogueWrite !== null ? dialogueWrite.length : (await loadDialogue(ctx.supabase, shot.id)).length
+    if (!voiceOverIsValid(effectiveVoiceOver, effectiveDialogueCount > 0)) {
+      return {
+        kind: 'refused',
+        label: `Couldn't update Shot ${raw.shot_number} - no narration or dialogue`,
+        forModel: { error: EMPTY_VOICEOVER_MESSAGE },
+        shotKey: shot.shot_key,
+      }
+    }
+  }
+
+  // visual_description is the sole input to image/video prompts (both paid) and to
+  // camera re-derivation - same effective-post-call-state check as voice_over above,
+  // before any write.
+  const effectiveVisualDescription =
+    has(raw, 'visual_description') && typeof raw.visual_description === 'string'
+      ? raw.visual_description.trim()
+      : (shot.visual_description ?? '')
+  if (!visualDescriptionIsValid(effectiveVisualDescription)) {
+    return {
+      kind: 'refused',
+      label: `Couldn't update Shot ${raw.shot_number} - visual description can't be empty`,
+      forModel: { error: EMPTY_VISUAL_DESCRIPTION_MESSAGE },
+      shotKey: shot.shot_key,
+    }
+  }
+
   const updates: Record<string, unknown> = {}
   const staleChanges: ShotFieldChange[] = []
 
@@ -392,6 +427,15 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
     return { kind: 'errored', message: 'voice_over is required', forModel: { error: 'invalid_input' } }
   }
 
+  const visualDescription = typeof raw.visual_description === 'string' ? raw.visual_description.trim() : ''
+  if (!visualDescriptionIsValid(visualDescription)) {
+    return {
+      kind: 'refused',
+      label: "Couldn't insert a shot - visual description can't be empty",
+      forModel: { error: EMPTY_VISUAL_DESCRIPTION_MESSAGE },
+    }
+  }
+
   const { data: existingShots } = await ctx.supabase
     .from('shots')
     .select('id, order_index')
@@ -452,7 +496,7 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
       order_index: newOrderIndex,
       shot_key: shotKey,
       voice_over: raw.voice_over.trim(),
-      visual_description: typeof raw.visual_description === 'string' ? raw.visual_description.trim() || null : null,
+      visual_description: visualDescription,
       duration_sec: typeof raw.duration_sec === 'number' ? raw.duration_sec : null,
       section_label: typeof raw.section_label === 'string' ? raw.section_label.trim() || null : null,
       duration_locked: false,

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
-import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V3 } from '../src/lib/prompts/agent'
+import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V6 } from '../src/lib/prompts/agent'
 import {
   handleGetShot,
   handleUpdateShot,
@@ -11,7 +11,7 @@ import {
   type AgentToolContext,
 } from '../src/app/api/projects/[id]/agent/tools'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { successMessage, throwingGateway, textMessage, scriptedGateway } from './helpers/claude-fakes'
+import { successMessage, throwingGateway, textMessage, scriptedGateway, multiToolMessage } from './helpers/claude-fakes'
 import type { ClaudeGateway } from '../src/lib/claude'
 import { runAgentTurn, type AgentStreamEvent } from '../src/app/api/projects/[id]/agent/logic'
 import { STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
@@ -149,8 +149,22 @@ test.describe('buildShotIndexBlock', () => {
       shot({ order_index: 0, visual_description: null, voice_over: 'Once upon a time' }),
       shot({ order_index: 1, visual_description: null, voice_over: '' }),
     ])
-    expect(block).toContain('1. Once upon a time')
+    expect(block).toContain('1. Once upon a time (no visual description)')
     expect(block).toContain('2. (empty shot)')
+  })
+
+  test('marks a voice_over-fallback slug as missing a visual description, but not the empty-shot placeholder', () => {
+    const block = buildShotIndexBlock([
+      shot({ order_index: 0, visual_description: '', voice_over: 'The vendor calls out at dawn' }),
+    ])
+    const lines = block.split('\n')
+    expect(lines[0]).toBe('1. The vendor calls out at dawn (no visual description)')
+    expect(lines[0]).not.toContain('(empty shot)')
+  })
+
+  test('does not mark a shot that already has a visual description', () => {
+    const block = buildShotIndexBlock([shot({ order_index: 0, visual_description: 'A dusty market street' })])
+    expect(block).not.toContain('no visual description')
   })
 
   test('truncates a long slug to 50 characters with an ellipsis', () => {
@@ -184,13 +198,26 @@ test.describe('buildShotIndexBlock', () => {
 })
 
 test.describe('AGENT_TOOLS', () => {
-  test('is exactly get_shot, update_shot, insert_shot, regenerate_all_shots - no delete tool, ever', () => {
+  test('is exactly get_shot, update_shot, insert_shot, regenerate_all_shots, finish - no delete tool, ever', () => {
     expect(AGENT_TOOLS.map((t) => t.name)).toEqual([
       'get_shot',
       'update_shot',
       'insert_shot',
       'regenerate_all_shots',
+      'finish',
     ])
+  })
+
+  test('finish takes only a required message string, no other properties', () => {
+    const finish = AGENT_TOOLS.find((t) => t.name === 'finish')!
+    const schema = finish.input_schema as unknown as {
+      properties: Record<string, unknown>
+      required: string[]
+      additionalProperties: boolean
+    }
+    expect(Object.keys(schema.properties)).toEqual(['message'])
+    expect(schema.required).toEqual(['message'])
+    expect(schema.additionalProperties).toBe(false)
   })
 
   test('update_shot and insert_shot reject unknown properties', () => {
@@ -207,9 +234,34 @@ test.describe('AGENT_TOOLS', () => {
   })
 })
 
-test.describe('AGENT_SYSTEM_PROMPT_V3', () => {
+test.describe('AGENT_SYSTEM_PROMPT_V6', () => {
   test('explicitly instructs the model never to delete a shot', () => {
-    expect(AGENT_SYSTEM_PROMPT_V3.toLowerCase()).toContain('delete')
+    expect(AGENT_SYSTEM_PROMPT_V6.toLowerCase()).toContain('delete')
+  })
+
+  test('defaults to acting on a content request rather than asking a clarifying question', () => {
+    expect(AGENT_SYSTEM_PROMPT_V6.toLowerCase()).toContain('default to acting')
+  })
+
+  test('directs the model to use other shots as a style reference instead of asking the user to specify one', () => {
+    expect(AGENT_SYSTEM_PROMPT_V6.toLowerCase()).toContain('style reference')
+  })
+
+  test('reserves clarifying questions for which-shot/which-field ambiguity or a destructive guess', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V6.toLowerCase()
+    expect(prompt).toContain('which shot or which field')
+    expect(prompt).toContain('destructive')
+  })
+
+  test('states bundling finish with the final tool call as the default, not merely an option', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V6.toLowerCase()
+    expect(prompt).toContain('finish')
+    expect(prompt).toContain('same response as your final tool call')
+    expect(prompt).toContain('default to calling finish')
+  })
+
+  test('warns finish must only accompany the LAST action, not the first of several', () => {
+    expect(AGENT_SYSTEM_PROMPT_V6.toLowerCase()).toContain('not finished after the first one')
   })
 })
 
@@ -302,6 +354,34 @@ test.describe('handleUpdateShot', () => {
     expect(project!.voiceover_stale).toBe(true)
   })
 
+  test('refuses to clear visual_description to empty, and writes nothing', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId, { visual_description: 'Original description.' })
+    const shotNumber = (await readShot(shotId)).order_index + 1
+
+    const outcome = await handleUpdateShot(
+      { shot_number: shotNumber, visual_description: '' },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('refused')
+    expect((await readShot(shotId)).visual_description).toBe('Original description.')
+  })
+
+  test('refuses to clear visual_description to whitespace-only, and writes nothing', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId, { visual_description: 'Original description.' })
+    const shotNumber = (await readShot(shotId)).order_index + 1
+
+    const outcome = await handleUpdateShot(
+      { shot_number: shotNumber, visual_description: '   ' },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('refused')
+    expect((await readShot(shotId)).visual_description).toBe('Original description.')
+  })
+
   test('dialogue: a bound character speaker writes the line and sets video_prompt_stale only', async () => {
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId)
@@ -344,6 +424,51 @@ test.describe('handleUpdateShot', () => {
     expect(lines.length).toBe(1)
     expect(lines[0].line).toBe('New line.')
     expect(lines[0].element_id).toBe(characterId)
+  })
+
+  test('refuses to clear voice_over to empty on a shot with no dialogue, and writes nothing', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId, { voice_over: 'Original narration.' })
+    const shotNumber = (await readShot(shotId)).order_index + 1
+
+    const outcome = await handleUpdateShot({ shot_number: shotNumber, voice_over: '' }, buildContext({ projectId }))
+
+    expect(outcome.kind).toBe('refused')
+    expect((await readShot(shotId)).voice_over).toBe('Original narration.')
+  })
+
+  test('allows clearing voice_over to empty when dialogue is included in the same call', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId, { voice_over: 'Original narration.' })
+    const characterId = await seedCharacter(projectId, 'Mara')
+    await bindElement(shotId, characterId)
+    const shotNumber = (await readShot(shotId)).order_index + 1
+
+    const outcome = await handleUpdateShot(
+      { shot_number: shotNumber, voice_over: '', dialogue: [{ speaker_name: 'Mara', line: 'Hello there.' }] },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('applied')
+    expect((await readShot(shotId)).voice_over).toBe('')
+    const lines = await readDialogue(shotId)
+    expect(lines.length).toBe(1)
+  })
+
+  test('allows clearing voice_over to empty when the shot already has bound dialogue', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId, { voice_over: 'Original narration.' })
+    const characterId = await seedCharacter(projectId, 'Mara')
+    await bindElement(shotId, characterId)
+    await admin
+      .from('shot_dialogue')
+      .insert({ project_id: projectId, shot_id: shotId, element_id: characterId, line: 'Already there.', order_index: 0 })
+    const shotNumber = (await readShot(shotId)).order_index + 1
+
+    const outcome = await handleUpdateShot({ shot_number: shotNumber, voice_over: '' }, buildContext({ projectId }))
+
+    expect(outcome.kind).toBe('applied')
+    expect((await readShot(shotId)).voice_over).toBe('')
   })
 
   test('dialogue: omitting a line from the array removes it', async () => {
@@ -500,7 +625,7 @@ test.describe('handleInsertShot', () => {
     const shotC = await seedToolShot(projectId, { order_index: 2 })
 
     const outcome = await handleInsertShot(
-      { insert_after_shot_number: 2, voice_over: 'A brand new shot.' },
+      { insert_after_shot_number: 2, voice_over: 'A brand new shot.', visual_description: 'A brand new visual.' },
       buildContext({ projectId })
     )
 
@@ -531,7 +656,7 @@ test.describe('handleInsertShot', () => {
     await seedToolShot(projectId, { order_index: 0 })
 
     const outcome = await handleInsertShot(
-      { insert_after_shot_number: 1, voice_over: 'A brand new shot.' },
+      { insert_after_shot_number: 1, voice_over: 'A brand new shot.', visual_description: 'A brand new visual.' },
       buildContext({ projectId })
     )
 
@@ -551,6 +676,30 @@ test.describe('handleInsertShot', () => {
 
     expect(outcome.kind).toBe('refused')
     expect(outcome.kind === 'refused' && outcome.shotKey).toBeUndefined()
+  })
+
+  test('refuses to insert a shot with an empty visual_description, and writes nothing', async () => {
+    const projectId = await seedToolProject()
+
+    const outcome = await handleInsertShot(
+      { insert_after_shot_number: 0, voice_over: 'A brand new shot.', visual_description: '' },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('refused')
+    expect(await readShots(projectId)).toHaveLength(0)
+  })
+
+  test('refuses to insert a shot with a whitespace-only visual_description, and writes nothing', async () => {
+    const projectId = await seedToolProject()
+
+    const outcome = await handleInsertShot(
+      { insert_after_shot_number: 0, voice_over: 'A brand new shot.', visual_description: '   ' },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('refused')
+    expect(await readShots(projectId)).toHaveLength(0)
   })
 })
 
@@ -743,6 +892,93 @@ test.describe('runAgentTurn', () => {
     expect(usageRows!.length).toBe(3)
     const messageIds = new Set(usageRows!.map((r) => r.message_id))
     expect(messageIds.size).toBe(1)
+  })
+
+  test('finish bundled with a successful mutation ends the turn in one call and persists its message', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId)
+    const shotNumber = (await readShot(shotId)).order_index + 1
+    const gateway = scriptedGateway([
+      multiToolMessage([
+        { name: 'update_shot', input: { shot_number: shotNumber, voice_over: 'Changed by the agent.' } },
+        { name: 'finish', input: { message: 'Added the change you asked for.' } },
+      ]),
+    ])
+
+    const result = await runAgentTurn({
+      gateway,
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'change the narration',
+      clientId: crypto.randomUUID(),
+    })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.message.content).toBe('Added the change you asked for.')
+    expect(gateway.getCallCount()).toBe(1)
+    expect((await readShot(shotId)).voice_over).toBe('Changed by the agent.')
+  })
+
+  test('finish bundled with a refused mutation is discarded and the loop continues', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId)
+    const shot = await readShot(shotId)
+    const shotNumber = shot.order_index + 1
+    const gateway = scriptedGateway([
+      multiToolMessage([
+        // visual_description: '' with no voice_over fallback text is refused by
+        // handleUpdateShot's empty-visual-description check.
+        { name: 'update_shot', input: { shot_number: shotNumber, visual_description: '' } },
+        { name: 'finish', input: { message: 'Cleared the visual description.' } },
+      ]),
+      textMessage('That description cannot be empty, so I left it as is.'),
+    ])
+
+    const result = await runAgentTurn({
+      gateway,
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'clear the visual description',
+      clientId: crypto.randomUUID(),
+    })
+
+    expect(result.ok).toBe(true)
+    // The bundled finish message must never surface - the mutation it assumed would
+    // succeed was refused, so the model's second, informed reply is what persists.
+    if (result.ok) expect(result.message.content).toBe('That description cannot be empty, so I left it as is.')
+    expect(gateway.getCallCount()).toBe(2)
+    expect((await readShot(shotId)).visual_description).toBe(shot.visual_description)
+  })
+
+  test('a "write me X" content request can loop from get_shot into update_shot rather than stopping at a text-only reply', async () => {
+    // This scripts the fake model to look then write, so it only proves the turn loop
+    // supports that shape end-to-end (persists the write, doesn't stop at the get_shot
+    // reply). Whether the real model chooses this shape for a given prompt needs a live
+    // Claude call, which this repo's tests never make - see the AGENT_SYSTEM_PROMPT_V6
+    // content assertions above for the prompt-shape half of this check.
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId)
+    const shotNumber = (await readShot(shotId)).order_index + 1
+    const gateway = scriptedGateway([
+      successMessage({ shot_number: shotNumber }, 'get_shot'),
+      successMessage({ shot_number: shotNumber, visual_description: 'A dusty market street at dawn.' }, 'update_shot'),
+      textMessage('Added a visual description.'),
+    ])
+
+    const result = await runAgentTurn({
+      gateway,
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'Add a visual description to shot 1',
+      clientId: crypto.randomUUID(),
+    })
+
+    expect(result.ok).toBe(true)
+    expect(gateway.getCallCount()).toBe(3)
+    expect((await readShot(shotId)).visual_description).toBe('A dusty market street at dawn.')
   })
 
   test('hits the 8-iteration cap: exactly 8 calls, no 9th, claim settles succeeded not stuck', async () => {

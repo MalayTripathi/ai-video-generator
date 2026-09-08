@@ -77,7 +77,7 @@ video_prompt describes the motion within that shot's image (~400-700 characters)
 
 Use the full script below only for continuity (recurring characters, setting, visual style) between shots - do not write prompts for any shot_key not explicitly requested.`
 
-const WRITE_PROMPTS_TOOL: Anthropic.Tool = {
+export const WRITE_PROMPTS_TOOL: Anthropic.Tool = {
   name: 'write_prompts',
   description: 'Write image_prompt and video_prompt for the requested shots only.',
   input_schema: {

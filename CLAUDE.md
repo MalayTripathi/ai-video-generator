@@ -305,15 +305,19 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   against the constant instead of a hardcoded string. Every billed generation
   outside the initial `pending` trigger (i.e. every retry) is confirmed
   through that modal before the request fires.
-- **`targetShots` is a hard ceiling, not a soft target** — fewer shots than
-  the tier is honored, more is never persisted. Enforced at three points,
-  all of which must stay: `buildWriteShotsTool(targetShots)`'s `maxItems`
-  (primary — a constraint the model cannot exceed), the system prompt's
-  "hard maximum" wording, and a non-blocking amber intake hint. The intake
-  check warns and must never block (the regex has no semantics and
-  false-positives readily); `runShotsPipeline` must never truncate an
-  over-count result (the call is already paid for) — it persists in full
-  and logs `[shots] over_count …`.
+- **`targetShots` is a hard maximum by instruction, not a structural cap**
+  — fewer shots than the tier is honored; more is discouraged, never
+  truncated. The tool-use API supports no array-count constraint beyond
+  `minItems` of 0 or 1, so `buildWriteShotsTool(targetShots)` cannot
+  enforce an upper bound structurally — enforcement is the system
+  prompt's "hard maximum" wording plus the tool's own description, and a
+  non-blocking amber intake hint. The intake check warns and must never
+  block (the regex has no semantics and false-positives readily);
+  `runShotsPipeline` must never truncate an over-count result (the call
+  is already paid for regardless of persisted row count) — it persists
+  in full and logs `[shots] over_count …`. `ProjectHeader` surfaces an
+  overshoot to the user, amber and non-blocking, so accept-and-log stays
+  actionable.
 - `src/lib/config/pipeline.ts` is the single source for the pipeline's
   step/operation/provider vocabulary: `STEPS`/`Step`, `OPERATIONS`/
   `Operation`, `PROVIDERS`/`Provider`, the `STEP_OPERATIONS` map of which
@@ -793,15 +797,18 @@ still a list-price figure from token counts, not a provider invoice — the
 `/usage` copy says "estimated" throughout for exactly that reason.
 
 `settleUsage` runs in a `finally` — on success, on a throw, and on
-`max_tokens` alike. A throw *verified* to precede the network call —
-today exactly `LiveCallsBlockedError`, identified by `instanceof`, never
-by message text — settles at `estimated_cost: 0` with
-`raw_usage.blocked`. Every other throw with no usage data is
-unverifiable and **retains the pre-flight quote**: over-counting is the
-safe direction for a spend cap. **This is a single, deliberately narrow
-exception, not a pattern** — do not add a second branch for a throw that
-merely seems unlikely to have been billed. Blocked rows show in
-`/usage`'s Anomalies but are excluded from `callCount`. **`settleUsage`
+`max_tokens` alike. A throw *verified* to precede any generation — either
+`LiveCallsBlockedError` (never left the process) or an SDK `APIError`
+with `status < 500` (a 4xx: Anthropic's own request-validation rejection,
+returned before the model ever runs) — settles at `estimated_cost: 0`,
+identified by `instanceof` and, for the latter, `status`, never by
+message text. Every other throw with no usage data (a 5xx, or a
+status-less network/timeout error) is unverifiable and **retains the
+pre-flight quote**: over-counting is the safe direction for a spend cap.
+**These are two verified, deliberately narrow branches, not a pattern**
+— do not add a third for a throw that merely seems unlikely to have been
+billed. Blocked and verified-4xx rows show in `/usage`'s Anomalies but
+are excluded from `callCount`. **`settleUsage`
 never throws**: a failed UPDATE logs the usage id and leaves the row
 `'pending'`, because by then the money may be spent and failing the
 request would lose the user's work too. A `usage` row stuck `'pending'`

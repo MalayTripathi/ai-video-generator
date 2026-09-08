@@ -14,7 +14,7 @@ import {
   settleUsage,
   AllowanceExceededError,
 } from '@/lib/usage'
-import { AGENT_SYSTEM_PROMPT_V3, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
+import { AGENT_SYSTEM_PROMPT_V6, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
 import { dispatchAgentTool, type AgentToolContext } from './tools'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
@@ -61,6 +61,11 @@ async function loadProjectForTurn(
     .eq('user_id', userId)
     .single()
   return data
+}
+
+function extractFinishMessage(input: unknown): string {
+  const message = (input as { message?: unknown } | null)?.message
+  return typeof message === 'string' && message.trim().length > 0 ? message : 'Done.'
 }
 
 const READ_ONLY_LOCK_REPLY =
@@ -285,7 +290,7 @@ export async function runAgentTurn(params: {
 
     for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       const estimatedInputTokens = estimateInputTokens({
-        texts: [AGENT_SYSTEM_PROMPT_V3, shotIndexBlock, ...history.map((m) => m.content), content],
+        texts: [AGENT_SYSTEM_PROMPT_V6, shotIndexBlock, ...history.map((m) => m.content), content],
         tools: AGENT_TOOLS,
       })
       const { markSettled } = await reserveAndSettle(estimatedInputTokens)
@@ -295,7 +300,7 @@ export async function runAgentTurn(params: {
           model: modelsConfig.agent.model,
           max_tokens: modelsConfig.agent.maxTokens,
           system: [
-            { type: 'text', text: AGENT_SYSTEM_PROMPT_V3, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: AGENT_SYSTEM_PROMPT_V6, cache_control: { type: 'ephemeral' } },
             { type: 'text', text: shotIndexBlock, cache_control: { type: 'ephemeral' } },
           ],
           tools: AGENT_TOOLS,
@@ -326,12 +331,19 @@ export async function runAgentTurn(params: {
         break
       }
 
+      // finish never reaches dispatchAgentTool - it mutates nothing, so it's pulled out
+      // before dispatch rather than routed through the same switch as a real tool.
+      const finishBlock = toolUseBlocks.find((block) => block.name === 'finish')
+      const mutationBlocks = toolUseBlocks.filter((block) => block.name !== 'finish')
+
       const toolResultBlocks: Anthropic.ToolResultBlockParam[] = []
-      for (const block of toolUseBlocks) {
+      let allMutationsApplied = true
+      for (const block of mutationBlocks) {
         const result = await dispatchAgentTool(block.name, block.input, toolCtx)
         if (result.kind === 'applied') emit({ type: 'tool_completed', label: result.label, shotKey: result.shotKey })
         if (result.kind === 'refused') emit({ type: 'refusal', label: result.label, shotKey: result.shotKey })
         if (result.kind === 'errored') emit({ type: 'error', message: result.message })
+        if (result.kind !== 'applied') allMutationsApplied = false
         toolResultBlocks.push({
           type: 'tool_result',
           tool_use_id: block.id,
@@ -339,6 +351,28 @@ export async function runAgentTurn(params: {
           is_error: result.kind !== 'applied',
         })
       }
+
+      if (finishBlock) {
+        // A check on what already happened, not a prediction: only trust the model's
+        // closing message when every mutation bundled alongside it actually applied.
+        // A refusal or error means the model predicted success it didn't get, so its
+        // message is discarded and the turn falls through to the same round trip a
+        // refusal already requires today - see docs/decisions.md.
+        if (allMutationsApplied) {
+          finalText = extractFinishMessage(finishBlock.input)
+          break
+        }
+        toolResultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: finishBlock.id,
+          content: JSON.stringify({
+            status: 'not_finished',
+            reason: 'Not applied - another action in this response was refused or failed. Address that before finishing.',
+          }),
+          is_error: false,
+        })
+      }
+
       messages.push({ role: 'user', content: toolResultBlocks })
 
       if (iteration === MAX_ITERATIONS) {
