@@ -129,6 +129,7 @@ export async function handleGetShot(input: unknown, ctx: AgentToolContext): Prom
       dialogue: dialogue.map((d) => ({ speaker_name: byId.get(d.element_id) ?? 'unknown', line: d.line })),
       bound_characters: boundCharacters.map((c) => c.name),
     },
+    shotKey: shot.shot_key,
   }
 }
 
@@ -573,21 +574,12 @@ export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolCo
     return { kind: 'errored', message: result.error, forModel: { error: result.error } }
   }
 
-  const { data: usageRow } = await ctx.supabase
-    .from('usage')
-    .select('estimated_cost')
-    .eq('project_id', ctx.projectId)
-    .eq('operation', 'generate_shots')
-    .eq('message_id', ctx.messageId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  const costSuffix = usageRow?.estimated_cost != null ? ` ($${Number(usageRow.estimated_cost).toFixed(2)})` : ''
-
+  // Cost is no longer embedded here: runAgentTurn's sumTurnCost sums ALL of this turn's
+  // usage rows (this generate_shots call plus the surrounding agent_turn iterations' own
+  // spend), not just this one operation's row - see docs/decisions.md.
   return {
     kind: 'applied',
-    label: `Regenerated all shots${costSuffix}`,
+    label: 'Regenerated all shots',
     forModel: { shot_count: result.data.shots.length },
   }
 }

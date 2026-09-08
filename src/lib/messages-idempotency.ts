@@ -1,6 +1,7 @@
 import type { createClient } from '@/lib/supabase/server'
 import type { Tables } from '@/lib/database.types'
 import { isUniqueViolation } from '@/lib/shot-key'
+import type { ToolName } from '@/lib/config/messages'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type MessageRow = Tables<'messages'>
@@ -58,4 +59,64 @@ export async function insertUserMessage(params: {
   }
 
   return { outcome: 'duplicate', message: existing }
+}
+
+/**
+ * Persists a turn's closing text reply - the only kind of row that carries `client_id`
+ * (the idempotency-lookup match key on a resend, per insertUserMessage's 'duplicate'
+ * path above). kind defaults to 'text' at the DB level; every caller of this helper is
+ * always writing plain conversational content, never activity - see insertToolActivity
+ * for that.
+ */
+export async function insertAssistantReply(
+  supabase: SupabaseServerClient,
+  projectId: string,
+  clientId: string,
+  content: string
+): Promise<MessageRow> {
+  const { data, error } = await supabase
+    .from('messages')
+    .insert({ project_id: projectId, role: 'assistant', content, client_id: clientId })
+    .select('*')
+    .single()
+  if (error || !data) {
+    throw new Error(`Failed to persist assistant reply: ${error?.message ?? 'no row returned'}`)
+  }
+  return data
+}
+
+/**
+ * Persists one tool_done/refusal row - what the agent did (or declined to do), not what
+ * it said. client_id is deliberately omitted: the duplicate-resend lookup in
+ * runAgentTurn does .eq('client_id', clientId).eq('role','assistant').maybeSingle(), and
+ * a tool_done/refusal row carrying the same client_id as its turn's closing reply would
+ * make that lookup match more than one row and throw. Turn-boundary reconstruction on
+ * reload never needs client_id either - it keys off role/kind/created_at ordering (see
+ * build-agent-messages.ts). See docs/decisions.md for why shot_key has no FK.
+ */
+export async function insertToolActivity(params: {
+  supabase: SupabaseServerClient
+  projectId: string
+  kind: 'tool_done' | 'refusal'
+  toolName: ToolName | null
+  shotKey: string | null
+  content: string
+}): Promise<MessageRow> {
+  const { supabase, projectId, kind, toolName, shotKey, content } = params
+  const { data, error } = await supabase
+    .from('messages')
+    .insert({
+      project_id: projectId,
+      role: 'assistant',
+      kind,
+      tool_name: toolName,
+      shot_key: shotKey,
+      content,
+    })
+    .select('*')
+    .single()
+  if (error || !data) {
+    throw new Error(`Failed to persist ${kind} activity: ${error?.message ?? 'no row returned'}`)
+  }
+  return data
 }

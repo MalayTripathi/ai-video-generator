@@ -4,7 +4,7 @@ import type { ClaudeGateway } from '@/lib/claude'
 import type { Tables } from '@/lib/database.types'
 import { modelsConfig } from '@/lib/config/models'
 import { stepIndex } from '@/lib/config/pipeline'
-import { insertUserMessage } from '@/lib/messages-idempotency'
+import { insertUserMessage, insertAssistantReply, insertToolActivity } from '@/lib/messages-idempotency'
 import { claimGeneration, settleGeneration } from '@/lib/generations/claim'
 import {
   estimateInputTokens,
@@ -12,9 +12,11 @@ import {
   assertWithinAllowance,
   reserveUsage,
   settleUsage,
+  sumTurnCost,
   AllowanceExceededError,
 } from '@/lib/usage'
 import { AGENT_SYSTEM_PROMPT_V6, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
+import type { ToolName } from '@/lib/config/messages'
 import { dispatchAgentTool, type AgentToolContext } from './tools'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
@@ -31,10 +33,15 @@ export type AgentStreamEvent =
   // (mutated, or refused acting on) one specific shot; absent when it concerns the whole
   // list (regenerate_all_shots) or the request as a whole (a lock refusal before any shot
   // was resolved). `label` stays free-text display copy only - never parse it for this.
-  | { type: 'tool_completed'; label: string; shotKey?: string }
+  // toolName is the dispatched tool's own name, needed to re-derive tool_done text
+  // live (never a stale baked-in shot number) - see agent-activity-display.ts.
+  | { type: 'tool_completed'; label: string; shotKey?: string; toolName: string }
   | { type: 'refusal'; label: string; shotKey?: string }
   | { type: 'error'; message: string }
-  | { type: 'settled'; content: string } // terminal - always fires exactly once
+  // terminal - always fires exactly once. cost is the turn's real, settled spend
+  // (sumTurnCost), computed after every usage row for this turn is already terminal -
+  // never sourced from the model's own prose. See docs/decisions.md.
+  | { type: 'settled'; content: string; cost: number }
 
 export type AgentTurnResult =
   | { ok: true; status: 200; message: MessageRow }
@@ -71,21 +78,25 @@ function extractFinishMessage(input: unknown): string {
 const READ_ONLY_LOCK_REPLY =
   "This project's workbench is locked because later steps have already started, so I can no longer change shots here."
 
-async function insertAssistantReply(
-  supabase: SupabaseServerClient,
-  projectId: string,
-  clientId: string,
+/**
+ * Wraps insertToolActivity so a failed activity-log write can never turn an
+ * already-applied shot mutation (or an already-reported refusal) into a reported turn
+ * failure - same "a broken pipe must never affect the turn" reasoning as `emit` above,
+ * applied to a broken persistence write instead of a broken SSE write.
+ */
+async function persistToolActivity(params: {
+  supabase: SupabaseServerClient
+  projectId: string
+  kind: 'tool_done' | 'refusal'
+  toolName: ToolName | null
+  shotKey: string | null
   content: string
-): Promise<MessageRow> {
-  const { data, error } = await supabase
-    .from('messages')
-    .insert({ project_id: projectId, role: 'assistant', content, client_id: clientId })
-    .select('*')
-    .single()
-  if (error || !data) {
-    throw new Error(`Failed to persist assistant reply: ${error?.message ?? 'no row returned'}`)
+}): Promise<void> {
+  try {
+    await insertToolActivity(params)
+  } catch (err) {
+    console.error('[agent] failed to persist tool activity', err)
   }
-  return data
 }
 
 /**
@@ -136,7 +147,8 @@ export async function runAgentTurn(params: {
       .eq('role', 'assistant')
       .maybeSingle()
     if (reply) {
-      emit({ type: 'settled', content: reply.content })
+      const cost = await sumTurnCost(supabase, userMsgResult.message.id)
+      emit({ type: 'settled', content: reply.content, cost })
       return { ok: true, status: 200, message: reply }
     }
     // The original attempt hasn't reached its own SETTLE yet - a concurrent resend, not
@@ -157,7 +169,8 @@ export async function runAgentTurn(params: {
   // Claude - no cost, no mutex row, for a request that can't do anything anyway.
   if (furthestStepIndex >= stepIndex('storyboard')) {
     const assistantRow = await insertAssistantReply(supabase, projectId, clientId, READ_ONLY_LOCK_REPLY)
-    emit({ type: 'settled', content: READ_ONLY_LOCK_REPLY })
+    // No reserveUsage call has happened yet at this short-circuit - sumTurnCost is 0.
+    emit({ type: 'settled', content: READ_ONLY_LOCK_REPLY, cost: 0 })
     return { ok: true, status: 200, message: assistantRow }
   }
 
@@ -265,6 +278,10 @@ export async function runAgentTurn(params: {
       .from('messages')
       .select('role, content')
       .eq('project_id', projectId)
+      // Excludes tool_done/refusal rows - both are role: 'assistant' too, and feeding
+      // "Updated Shot 3" into Claude's own context as if it had said that in prose would
+      // burn HISTORY_LIMIT slots and confuse the model. See docs/decisions.md.
+      .eq('kind', 'text')
       .neq('id', userMessage.id)
       .order('created_at', { ascending: false })
       .limit(HISTORY_LIMIT)
@@ -340,8 +357,28 @@ export async function runAgentTurn(params: {
       let allMutationsApplied = true
       for (const block of mutationBlocks) {
         const result = await dispatchAgentTool(block.name, block.input, toolCtx)
-        if (result.kind === 'applied') emit({ type: 'tool_completed', label: result.label, shotKey: result.shotKey })
-        if (result.kind === 'refused') emit({ type: 'refusal', label: result.label, shotKey: result.shotKey })
+        if (result.kind === 'applied') {
+          await persistToolActivity({
+            supabase,
+            projectId,
+            kind: 'tool_done',
+            toolName: block.name as ToolName,
+            shotKey: result.shotKey ?? null,
+            content: result.label,
+          })
+          emit({ type: 'tool_completed', label: result.label, shotKey: result.shotKey, toolName: block.name })
+        }
+        if (result.kind === 'refused') {
+          await persistToolActivity({
+            supabase,
+            projectId,
+            kind: 'refusal',
+            toolName: null,
+            shotKey: result.shotKey ?? null,
+            content: result.label,
+          })
+          emit({ type: 'refusal', label: result.label, shotKey: result.shotKey })
+        }
         if (result.kind === 'errored') emit({ type: 'error', message: result.message })
         if (result.kind !== 'applied') allMutationsApplied = false
         toolResultBlocks.push({
@@ -420,7 +457,11 @@ export async function runAgentTurn(params: {
       })
     }
 
-    emit({ type: 'settled', content: assistantContent ?? 'Done.' })
+    // Runs after every usage row for this turn is already terminal (never 'pending') -
+    // the leftover-usageIds force-settle loop just above guarantees that, for both the
+    // happy path and the caught-exception path, since both funnel through this finally.
+    const cost = await sumTurnCost(supabase, userMessage.id)
+    emit({ type: 'settled', content: assistantContent ?? 'Done.', cost })
   }
 
   return outcome

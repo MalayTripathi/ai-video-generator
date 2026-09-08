@@ -136,24 +136,44 @@ test.describe('agent chat panel', () => {
     await expect(error.getByText('Retry')).toBeVisible()
   })
 
-  test('renders the cost line for a regenerate_all_shots completion, separate from its progress line', async ({
+  test('renders the cost line below the settled turn, sourced from the settled event - never parsed from a tool label', async ({
     page,
   }) => {
     const projectId = await seedProject()
     await seedShot(projectId)
     await mockAgentRoute(page, [
       { type: 'turn_started' },
-      { type: 'tool_completed', label: 'Regenerated all shots ($0.42)' },
-      { type: 'settled', content: 'Rebuilt the shot list from your brief.' },
+      { type: 'tool_completed', label: 'Regenerated all shots', toolName: 'regenerate_all_shots' },
+      { type: 'settled', content: 'Rebuilt the shot list from your brief.', cost: 0.42 },
     ])
 
     await page.goto(`/projects/${projectId}/workbench`)
     await sendMessage(page, 'start over')
 
-    await expect(page.locator('[data-message-kind="tool_done"]', { hasText: 'Regenerated all shots' })).toBeVisible()
+    const toolLine = page.locator('[data-message-kind="tool_done"]', { hasText: 'Regenerated all shots' })
+    await expect(toolLine).toBeVisible()
+    const settledBubble = page.getByText('Rebuilt the shot list from your brief.')
+    await expect(settledBubble).toBeVisible()
     const cost = page.locator('[data-message-kind="cost"]')
     await expect(cost).toBeVisible()
-    await expect(cost.getByText('$0.42')).toBeVisible()
+    await expect(cost.getByText('$0.420')).toBeVisible()
+    await expect(cost.getByText('Cost of this turn')).toBeVisible()
+  })
+
+  test('a zero-cost settle renders no cost line at all', async ({ page }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId)
+    await mockAgentRoute(page, [
+      { type: 'turn_started' },
+      { type: 'text_delta', text: 'Nothing needed changing.' },
+      { type: 'settled', content: 'Nothing needed changing.', cost: 0 },
+    ])
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await sendMessage(page, 'is shot 1 okay as-is?')
+
+    await expect(page.getByText('Nothing needed changing.')).toBeVisible()
+    await expect(page.locator('[data-message-kind="cost"]')).toHaveCount(0)
   })
 
   test('input disables while a turn runs and re-enables on settle', async ({ page }) => {
@@ -348,6 +368,114 @@ test.describe('agent chat panel', () => {
     await expect(page.locator('[data-message-kind="error"]')).toBeVisible()
     await expect(page.getByLabel('Ask for a change')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible()
+  })
+
+  test('reload reconstructs tool_done/refusal from persisted rows, with a shot number resolved fresh - surviving a later renumbering', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    const shotA = await seedShot(projectId, { voice_over: 'Shot A voiceover.' })
+    const shotB = await seedShot(projectId, { voice_over: 'Shot B voiceover.' })
+    // shotB is Shot 2 right now. Seed a persisted turn as if it happened while shotB was
+    // still Shot 2: a user message, a tool_done row naming shotB by shot_key (not "Shot
+    // 2"), a refusal row with no shot_key, and the turn's own closing reply.
+    const { data: userRow } = await admin
+      .from('messages')
+      .insert({ project_id: projectId, role: 'user', content: 'tighten shot 2 and delete shot 1' })
+      .select('id')
+      .single()
+    await admin.from('messages').insert({
+      project_id: projectId,
+      role: 'assistant',
+      kind: 'tool_done',
+      tool_name: 'update_shot',
+      shot_key: shotB.shotKey,
+      content: 'Updated Shot 2',
+    })
+    await admin.from('messages').insert({
+      project_id: projectId,
+      role: 'assistant',
+      kind: 'refusal',
+      tool_name: null,
+      shot_key: null,
+      content: "I can't delete shots - use the bin on the shot itself.",
+    })
+    await admin.from('messages').insert({
+      project_id: projectId,
+      role: 'assistant',
+      kind: 'text',
+      content: 'Tightened shot 2. I left shot 1 alone - use its own delete control.',
+    })
+
+    // Now renumber: insert a brand-new shot before shotA, pushing shotA to Shot 2 and
+    // shotB to Shot 3 - after the tool_done row above was written.
+    await admin.from('shots').update({ order_index: 1 }).eq('id', shotA.shotId)
+    await admin.from('shots').update({ order_index: 2 }).eq('id', shotB.shotId)
+    await admin.from('shots').insert({
+      project_id: projectId,
+      order_index: 0,
+      shot_key: 'acren',
+      voice_over: 'A shot inserted after the fact.',
+      visual_description: 'Inserted later.',
+    })
+
+    await page.goto(`/projects/${projectId}/workbench`)
+
+    // The tool_done row shows shotB's CURRENT number (3), not the 2 baked into its own
+    // stored `content` at write time - describeToolActivity re-derives it live from
+    // tool_name/shot_key, never trusting the stored label text for a shot-scoped row.
+    await expect(page.locator('[data-message-kind="tool_done"]', { hasText: 'Updated Shot 3' })).toBeVisible()
+    await expect(page.locator('[data-message-kind="tool_done"]', { hasText: 'Updated Shot 2' })).toHaveCount(0)
+    await expect(page.locator('[data-message-kind="refusal"]', { hasText: "I can't delete shots" })).toBeVisible()
+    await expect(page.getByText('Tightened shot 2.')).toBeVisible()
+    expect(userRow).toBeTruthy()
+  })
+
+  test('an abandoned turn (no closing reply ever persisted) renders as an error with no cost line, and Retry resends the original content', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId)
+    const clientId = crypto.randomUUID()
+    const { data: userRow } = await admin
+      .from('messages')
+      .insert({ project_id: projectId, role: 'user', content: 'rewrite everything', client_id: clientId })
+      .select('id')
+      .single()
+    // Stuck 'pending' forever - the process died before the finally block's force-settle
+    // ever ran. Its figure must never be shown, even though it's a real number.
+    await admin.from('usage').insert({
+      user_id: primary.user.id,
+      project_id: projectId,
+      message_id: userRow!.id,
+      step: 'workbench',
+      operation: 'agent_turn',
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5-20251001',
+      status: 'pending',
+      estimated_cost: 0.5,
+    })
+
+    const secondRequestBodies: { content: string; clientId: string }[] = []
+    await page.route('**/api/projects/*/agent', async (route) => {
+      secondRequestBodies.push(route.request().postDataJSON())
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body: sseBody([{ type: 'settled', content: 'Retried.', cost: 0 }]),
+      })
+    })
+
+    await page.goto(`/projects/${projectId}/workbench`)
+
+    const errorLine = page.locator('[data-message-kind="error"]', { hasText: 'never finished' })
+    await expect(errorLine).toBeVisible()
+    await expect(page.locator('[data-message-kind="cost"]')).toHaveCount(0)
+
+    await errorLine.getByRole('button', { name: 'Retry' }).click()
+    await expect.poll(() => secondRequestBodies.length).toBe(1)
+    expect(secondRequestBodies[0].clientId).toBe(clientId)
+    expect(secondRequestBodies[0].content).toBe('rewrite everything')
   })
 
   test('every input is disabled once furthest_step has reached storyboard', async ({ page }) => {

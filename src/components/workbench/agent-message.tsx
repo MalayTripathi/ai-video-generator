@@ -1,7 +1,10 @@
 // Seven message kinds (canvas: "11 Agent panel · taxonomy") - `streaming` is a state of
-// `agent`, not its own kind. Intermediate tool_completed/refusal/error lines are never
-// persisted server-side (only user/agent turn content is), so this taxonomy only ever
-// appears in full during a live turn - a reloaded page shows just the user/agent bubbles.
+// `agent`, not its own kind. tool_done/refusal persist to `messages` (kind/shot_key/
+// tool_name columns) and reconstruct on reload with a shot number resolved fresh at read
+// time, never a stale one baked in at write time - see build-agent-messages.ts. cost is
+// never a `messages` row - it's always re-derived from `usage` (live: the `settled` SSE
+// event; reload: summed per turn) and only ever rendered when > 0. Only `tool_running`
+// and `error` (as a live-turn notification) stay live-only.
 export type AgentMessageKind = 'user' | 'agent' | 'tool_done' | 'tool_running' | 'cost' | 'refusal' | 'error'
 
 export type AgentMessage = {
@@ -11,10 +14,15 @@ export type AgentMessage = {
   createdAt: string
   // agent only - a 6px accent caret pulses at the tail while true.
   streaming?: boolean
-  // cost only - already formatted ("$0.42"); the label above it is `content`.
+  // cost only - already formatted ("$0.42"); the label above it is `content`, when set.
   amount?: string
   onRetry?: () => void
   onStop?: () => void
+  // error only, server-seeded (reload) rows only: the abandoned-turn's original content/
+  // client_id, since a server component can't hand this component a working onRetry
+  // closure - agent-panel.tsx turns these into a real onRetry client-side on mount.
+  retryContent?: string
+  retryClientId?: string
 }
 
 function RuleRow({
@@ -99,9 +107,9 @@ export function AgentMessageItem({ message }: { message: AgentMessage }) {
     case 'cost':
       return (
         <div data-message-kind="cost" className="flex flex-col gap-[6px] border-l-2 border-accent-faint py-[2px] pl-[9px]">
-          <span className="text-small text-text-secondary">{message.content}</span>
+          {message.content && <span className="text-small text-text-secondary">{message.content}</span>}
           <span className="flex items-baseline justify-between gap-rc-sm rounded-badge bg-bg-inset px-[10px] py-[7px]">
-            <span className="text-meta text-text-tertiary">Cost of this rewrite</span>
+            <span className="text-meta text-text-tertiary">Cost of this turn</span>
             <span className="flex-none font-mono text-small font-medium text-text-primary">{message.amount}</span>
           </span>
         </div>

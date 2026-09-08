@@ -9,7 +9,7 @@ import type { AgentStreamEvent } from '@/app/api/projects/[id]/agent/logic'
 export type AgentTurnHandlers = {
   onTurnStarted?: () => void
   onTextDelta: (text: string) => void
-  onToolCompleted: (label: string, shotKey?: string) => void
+  onToolCompleted: (label: string, toolName: string, shotKey?: string) => void
   onRefusal: (label: string, shotKey?: string) => void
   onError: (message: string) => void
   // Always fires exactly once per send() call, whether the turn settled normally, the
@@ -17,8 +17,11 @@ export type AgentTurnHandlers = {
   // always re-enable the composer and release any card locks. `content` is the
   // server's own settled text when `dropped` is false; when `dropped` is true, the
   // stream ended (or threw) before a real `settled` event ever arrived and `content` is
-  // a synthesized explanation instead.
-  onSettled: (content: string, dropped: boolean) => void
+  // a synthesized explanation instead. `cost` is the turn's real settled spend from the
+  // server (never from prose) when `dropped` is false; null when `dropped` is true -
+  // there is no confirmed-spent figure for a connection that broke before a real
+  // `settled` event arrived (same reasoning as an abandoned historical turn on reload).
+  onSettled: (content: string, dropped: boolean, cost: number | null) => void
 }
 
 const DROPPED_STREAM_MESSAGE = "The connection dropped before this finished. Nothing further was changed - try again."
@@ -89,7 +92,7 @@ export function useAgentTurn(projectId: string) {
                 handlers.onTextDelta(event.text)
                 break
               case 'tool_completed':
-                handlers.onToolCompleted(event.label, event.shotKey)
+                handlers.onToolCompleted(event.label, event.toolName, event.shotKey)
                 break
               case 'refusal':
                 handlers.onRefusal(event.label, event.shotKey)
@@ -99,7 +102,7 @@ export function useAgentTurn(projectId: string) {
                 break
               case 'settled':
                 sawSettled = true
-                handlers.onSettled(event.content, false)
+                handlers.onSettled(event.content, false, event.cost)
                 break
             }
           }
@@ -108,7 +111,7 @@ export function useAgentTurn(projectId: string) {
         // A throw here (network failure, non-OK response, an aborted Stop) never carries
         // useful server content - the dropped-stream case below covers it uniformly.
       } finally {
-        if (!sawSettled) handlers.onSettled(DROPPED_STREAM_MESSAGE, true)
+        if (!sawSettled) handlers.onSettled(DROPPED_STREAM_MESSAGE, true, null)
         abortRef.current = null
         setIsRunning(false)
       }

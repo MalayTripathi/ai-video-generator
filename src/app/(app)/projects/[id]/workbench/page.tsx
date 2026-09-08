@@ -1,7 +1,6 @@
 import { notFound, redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { WorkbenchShell } from '@/components/workbench-shell'
-import type { AgentMessage } from '@/components/workbench/agent-message'
 import { ShotsProvider } from './_components/shots-context'
 import { WorkbenchHeader } from './_components/workbench-header'
 import { WorkbenchTabs, type WorkbenchTab } from './_components/workbench-tabs'
@@ -9,6 +8,7 @@ import { ShotsTab } from './_components/shots-tab'
 import { AssetsTab } from './_components/assets-tab'
 import { ScriptTab } from './_components/script-tab'
 import { WorkbenchFooter } from './_components/workbench-footer'
+import { buildAgentMessages } from './_components/build-agent-messages'
 import type { DisplayDialogueLine, DisplayShot } from './_components/types'
 import type { Tables } from '@/lib/database.types'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
@@ -80,6 +80,7 @@ export default async function WorkbenchPage({
     { data: dialogueRows },
     { data: messageRows },
     { data: generation },
+    { data: usageRows },
   ] = await Promise.all([
     supabase
       .from('shots')
@@ -105,6 +106,11 @@ export default async function WorkbenchPage({
       .eq('operation', 'generate_shots')
       .is('shot_id', null)
       .maybeSingle(),
+    // Real, settled per-turn spend (never from the model's own prose) - grouped by
+    // message_id below. Excludes 'pending' rows: a genuinely abandoned turn's
+    // reservations are never confirmed spent, and build-agent-messages.ts omits their
+    // cost line unconditionally regardless of what this map holds for that turn anyway.
+    supabase.from('usage').select('message_id, estimated_cost').eq('project_id', projectId).neq('status', 'pending'),
   ])
 
   const elementsById = new Map((elementsRows ?? []).map((el) => [el.id, el]))
@@ -139,17 +145,13 @@ export default async function WorkbenchPage({
     dialogue: dialogueByShot.get(row.id) ?? [],
   }))
 
-  // Only user/agent turn content is ever persisted - intermediate tool_completed/
-  // refusal/error/cost lines exist only for the live turn that produced them (see
-  // docs/decisions.md), so a reloaded page only ever shows these two kinds.
-  const agentMessages: AgentMessage[] = (messageRows ?? [])
-    .filter((message) => message.role === 'user' || message.role === 'assistant')
-    .map((message) => ({
-      id: message.id,
-      kind: message.role === 'user' ? 'user' : 'agent',
-      content: message.content,
-      createdAt: message.created_at,
-    }))
+  const shotNumberByKey = new Map(shots.map((s) => [s.shot_key, s.order_index + 1]))
+  const costByMessageId = new Map<string, number>()
+  for (const u of usageRows ?? []) {
+    if (!u.message_id) continue
+    costByMessageId.set(u.message_id, (costByMessageId.get(u.message_id) ?? 0) + (u.estimated_cost ?? 0))
+  }
+  const agentMessages = buildAgentMessages(messageRows ?? [], shotNumberByKey, costByMessageId)
 
   const hasPendingPayload = generation?.payload != null
   const estimatedCredits =

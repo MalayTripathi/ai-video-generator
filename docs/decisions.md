@@ -647,3 +647,42 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   git-versioned config, never env and never the DB; applied rates are stamped
   per row so historical accuracy never depends on the config file.
   `RATE_VERSION` is bumped on change and nothing is ever backfilled.
+- **C4 persisted tool activity and per-turn cost — settled.** `messages`
+  gains `kind` (`text`/`tool_done`/`refusal`, default `'text'`, `role` stays
+  untouched), `shot_key` (no FK — a tool_done/refusal row must still name a
+  shot after it's later deleted, which an FK can't survive), and `tool_name`
+  (`tool_done` only, the four dispatchable tool names — `finish` never
+  reaches `dispatchAgentTool`). A tool_done row's display text is never
+  stored rendered: only `tool_name`/`shot_key` are, and the current shot
+  number is resolved live at render time from the shots list, for both a
+  live turn and a reload, so a later renumbering can never leave a stale
+  number on screen (`src/lib/agent-activity-display.ts`, shared by
+  `agent-panel.tsx` and `build-agent-messages.ts`). Refusals persist the
+  same way — the same reload-fidelity reasoning applies; they're something
+  the agent did, not something it said.
+
+  Cost is never a `messages` row and never sourced from the model's own
+  prose (the old `regenerate_all_shots` cost-in-label regex is gone). It's
+  `SUM(usage.estimated_cost)` grouped by the turn's own user-message id
+  (`sumTurnCost`, `src/lib/usage/turn-cost.ts`), excluding `pending` rows,
+  computed live right before `runAgentTurn`'s terminal `settled` SSE event —
+  after the turn's own usage rows are already forced to a terminal state —
+  so cost and turn-completion always arrive atomically; the canvas has no
+  frame for a separate pending-cost state because none is needed. Shown
+  only when the sum is greater than zero. This also fixes a real
+  under-count: the old figure only reflected the `generate_shots` operation,
+  silently missing the surrounding `agent_turn` iterations' own spend for
+  the same turn.
+
+  A turn whose process died mid-flight (no closing text reply ever
+  persisted, so `build-agent-messages.ts`'s turn-boundary scan finds no
+  `client_id`-matched closing row) renders using the existing `error`
+  kind — "This turn never finished, so nothing was changed." plus Retry,
+  wired to resend the original content/client_id — with **no cost line at
+  all**, regardless of what its stuck-`pending` reservations would sum to;
+  a pending figure was never confirmed spent. The turn-boundary scan
+  matches a closing reply by `client_id`, not "first `role:'assistant',
+  kind:'text'` row seen" — `regenerate_all_shots`'s nested
+  `runShotGeneration` call can itself insert an unrelated `client_id`-less
+  text row earlier in the same turn, and a naive first-row rule would
+  mistake that for the turn's end and drop the real closing reply.

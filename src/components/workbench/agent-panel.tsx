@@ -5,15 +5,10 @@ import { useState } from 'react'
 import { AgentMessageItem, type AgentMessage } from './agent-message'
 import { useShots } from '@/app/(app)/projects/[id]/workbench/_components/shots-context'
 import { useAgentTurn } from '@/app/(app)/projects/[id]/workbench/_components/use-agent-turn'
+import { describeToolActivity } from '@/lib/agent-activity-display'
+import { formatCost } from '@/lib/format-cost'
 
 const EXAMPLE_PROMPTS = ['Make shot 3 shorter', 'Add a shot about the artisans', 'Rewrite everything, colder tone']
-
-// Server-generated cost is embedded in this one tool's label only
-// ("Regenerated all shots ($0.42)") since Claude is never told the figure itself (see
-// docs/decisions.md). Display-only pattern match, never used for shot identity/locking -
-// that's `shotKey`'s job exclusively. Kept isolated here so it doesn't become a precedent
-// for parsing `label` for anything else.
-const REGENERATE_COST_RE = /^Regenerated all shots(?: \(\$([\d.]+)\))?$/
 
 function LockIcon() {
   return (
@@ -36,30 +31,21 @@ function nowIso() {
   return new Date().toISOString()
 }
 
-function toToolMessages(label: string, shotKey: string | undefined): AgentMessage[] {
-  if (!shotKey) {
-    const match = REGENERATE_COST_RE.exec(label)
-    if (match && match[1]) {
-      return [
-        { id: crypto.randomUUID(), kind: 'tool_done', content: 'Regenerated all shots', createdAt: nowIso() },
-        {
-          id: crypto.randomUUID(),
-          kind: 'cost',
-          content: 'Regenerated all shots',
-          amount: `$${match[1]}`,
-          createdAt: nowIso(),
-        },
-      ]
-    }
-  }
-  return [{ id: crypto.randomUUID(), kind: 'tool_done', content: label, createdAt: nowIso() }]
-}
-
 export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[] }) {
   const router = useRouter()
-  const { projectId, readOnly, lockShot, unlockAllShots, markShotsTouched } = useShots()
+  const { projectId, readOnly, shots, lockShot, unlockAllShots, markShotsTouched } = useShots()
   const { isRunning, send, stop } = useAgentTurn(projectId)
-  const [messages, setMessages] = useState<AgentMessage[]>(initialMessages)
+  // Seeded rows carrying retryContent/retryClientId (an abandoned historical turn) need a
+  // real onRetry closure, which a server component can't hand them - wire it up once here.
+  // Safe to reference `runTurn` before its own textual definition below: it's a hoisted
+  // function declaration, same pattern the live error/dropped-stream retries already use.
+  const [messages, setMessages] = useState<AgentMessage[]>(() =>
+    initialMessages.map((m) =>
+      m.kind === 'error' && m.retryContent && m.retryClientId
+        ? { ...m, onRetry: () => runTurn(m.retryContent!, m.retryClientId!) }
+        : m
+    )
+  )
   const [input, setInput] = useState('')
 
   function appendMessages(next: AgentMessage[]) {
@@ -103,13 +89,25 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
           return [...prev, { id: streamingId, kind: 'agent', content: text, createdAt: nowIso(), streaming: true }]
         })
       },
-      onToolCompleted: (label, shotKey) => {
+      onToolCompleted: (label, toolName, shotKey) => {
         clearPlaceholder()
         if (shotKey) {
           lockShot(shotKey)
           touchedKeys.push(shotKey)
         }
-        appendMessages(toToolMessages(label, shotKey))
+        // Never the raw label as-is for a shot-scoped tool: it may already be stale if
+        // an earlier tool call THIS SAME turn renumbered shots (e.g. an insert_shot
+        // before this one) - re-derive from the current shots list, same as reload does.
+        const shotNumber = shotKey ? (shots.find((s) => s.shot_key === shotKey)?.order_index ?? null) : null
+        const displayNumber = shotNumber === null ? null : shotNumber + 1
+        appendMessages([
+          {
+            id: crypto.randomUUID(),
+            kind: 'tool_done',
+            content: describeToolActivity(toolName, displayNumber, label),
+            createdAt: nowIso(),
+          },
+        ])
       },
       onRefusal: (label) => {
         clearPlaceholder()
@@ -129,7 +127,7 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
           },
         ])
       },
-      onSettled: (finalContent, dropped) => {
+      onSettled: (finalContent, dropped, cost) => {
         clearPlaceholder()
         setMessages((prev) => {
           // The streaming bubble is found by id, not by list position: tool_completed/
@@ -155,6 +153,13 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
           }
           return [...prev, { id: crypto.randomUUID(), kind: 'agent', content: finalContent, createdAt: nowIso() }]
         })
+        // The turn's real, settled spend - never sourced from the model's own prose.
+        // Shown once, below this turn's last line, only when there was any (a dropped
+        // connection has no confirmed-spent figure, and a zero-spend turn has nothing
+        // worth reporting).
+        if (cost !== null && cost > 0) {
+          appendMessages([{ id: crypto.randomUUID(), kind: 'cost', content: '', amount: formatCost(cost), createdAt: nowIso() }])
+        }
         unlockAllShots()
         if (touchedKeys.length > 0) markShotsTouched(touchedKeys)
         router.refresh()

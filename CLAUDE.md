@@ -163,10 +163,10 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   steps: `user` (inset bubble), `agent` (accent-wash bubble; a `streaming`
   flag adds a caret, not a separate kind), `tool_done` (green dot),
   `tool_running` (pulsing dot + Stop), `cost` (accent rule + ledger row,
-  `regenerate_all_shots` only), `refusal` (bubble, no Retry — distinct from
-  `error` so it never reads as a failure), `error` (failed-hue rule +
-  Retry) — see `src/components/workbench/agent-message.tsx`. Wired live to
-  `POST /api/projects/[id]/agent`'s SSE stream; only `user`/`agent` persist.
+  once per turn, shown only when nonzero), `refusal` (bubble, no Retry —
+  distinct from `error` so it never reads as a failure), `error`
+  (failed-hue rule + Retry) — see `src/components/workbench/agent-message.tsx`.
+  `tool_done`/`refusal` now persist too; `cost` never does.
 - **Per-field save model.** The Step 2 shot card has no Save button and no
   dirty state, anywhere. Every field saves independently the moment the
   person leaves it: text on blur, selects on change, the duration stepper

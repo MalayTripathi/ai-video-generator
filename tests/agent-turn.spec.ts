@@ -296,6 +296,17 @@ test.describe('handleGetShot', () => {
     const outcome = await handleGetShot({ shot_number: 99 }, buildContext({ projectId }))
     expect(outcome.kind).toBe('errored')
   })
+
+  test('applied outcome carries the shot_key of the shot it read, not a display number', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId)
+    const shot = await readShot(shotId)
+
+    const outcome = await handleGetShot({ shot_number: shot.order_index + 1 }, buildContext({ projectId }))
+
+    expect(outcome.kind).toBe('applied')
+    expect(outcome.kind === 'applied' && outcome.shotKey).toBe(shot.shot_key)
+  })
 })
 
 test.describe('handleUpdateShot', () => {
@@ -1269,6 +1280,141 @@ test.describe('runAgentTurn', () => {
     expect(messages.find((m) => m.role === 'user')?.content).toBe('say hi')
     expect(messages.find((m) => m.role === 'assistant')?.content).toBe('All done.')
     expect(messages.every((m) => m.client_id === clientId)).toBe(true)
+  })
+
+  test('an applied mutation persists a tool_done row (kind/tool_name/shot_key), in order, before the closing reply', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId)
+    const shot = await readShot(shotId)
+
+    await runAgentTurn({
+      gateway: scriptedGateway([
+        successMessage({ shot_number: shot.order_index + 1, voice_over: 'Changed by the agent.' }, 'update_shot'),
+        textMessage('Updated the narration.'),
+      ]),
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'change the narration',
+      clientId: crypto.randomUUID(),
+    })
+
+    const messages = await readMessages(projectId)
+    const userIndex = messages.findIndex((m) => m.role === 'user')
+    const toolIndex = messages.findIndex((m) => m.kind === 'tool_done')
+    const closingIndex = messages.findIndex((m) => m.kind === 'text' && m.role === 'assistant' && m.id !== messages[userIndex].id)
+    expect(toolIndex).toBeGreaterThan(userIndex)
+    expect(toolIndex).toBeLessThan(closingIndex)
+    expect(messages[toolIndex].tool_name).toBe('update_shot')
+    expect(messages[toolIndex].shot_key).toBe(shot.shot_key)
+    expect(messages[toolIndex].client_id).toBeNull()
+  })
+
+  test('a refused mutation persists a refusal row with shot_key but no tool_name', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId, { visual_description: 'Original description.' })
+    const shot = await readShot(shotId)
+
+    await runAgentTurn({
+      gateway: scriptedGateway([
+        successMessage({ shot_number: shot.order_index + 1, visual_description: '' }, 'update_shot'),
+        textMessage('That description cannot be empty, so I left it as is.'),
+      ]),
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'clear the visual description',
+      clientId: crypto.randomUUID(),
+    })
+
+    const messages = await readMessages(projectId)
+    const refusal = messages.find((m) => m.kind === 'refusal')
+    expect(refusal).toBeDefined()
+    expect(refusal!.shot_key).toBe(shot.shot_key)
+    expect(refusal!.tool_name).toBeNull()
+  })
+
+  test("the settled event's cost equals the sum of this turn's own usage.estimated_cost rows", async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId)
+    const shotNumber = (await readShot(shotId)).order_index + 1
+    const events: AgentStreamEvent[] = []
+
+    await runAgentTurn({
+      gateway: scriptedGateway([
+        successMessage({ shot_number: shotNumber, voice_over: 'Changed by the agent.' }, 'update_shot'),
+        textMessage('Updated the narration.'),
+      ]),
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'change the narration',
+      clientId: crypto.randomUUID(),
+      onEvent: (e) => events.push(e),
+    })
+
+    const { data: usageRows } = await admin.from('usage').select('estimated_cost').eq('project_id', projectId)
+    const expectedCost = (usageRows ?? []).reduce((sum, r) => sum + (r.estimated_cost ?? 0), 0)
+    const settled = events.find((e) => e.type === 'settled')
+    expect(settled?.type === 'settled' && settled.cost).toBeCloseTo(expectedCost, 10)
+    expect(expectedCost).toBeGreaterThan(0)
+  })
+
+  test('the read-only-lock short-circuit settles with cost 0 - no reserveUsage call has happened yet', async () => {
+    const projectId = await seedToolProject({ furthest_step: stepIndex('storyboard') })
+    const events: AgentStreamEvent[] = []
+
+    await runAgentTurn({
+      gateway: scriptedGateway([]),
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'change something',
+      clientId: crypto.randomUUID(),
+      onEvent: (e) => events.push(e),
+    })
+
+    const settled = events.find((e) => e.type === 'settled')
+    expect(settled?.type === 'settled' && settled.cost).toBe(0)
+  })
+
+  test("history sent to Claude on a later turn excludes an earlier turn's tool_done/refusal rows", async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId)
+    const shotNumber = (await readShot(shotId)).order_index + 1
+
+    await runAgentTurn({
+      gateway: scriptedGateway([
+        successMessage({ shot_number: shotNumber, voice_over: 'Changed by the agent.' }, 'update_shot'),
+        textMessage('Updated the narration.'),
+      ]),
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'change the narration',
+      clientId: crypto.randomUUID(),
+    })
+
+    const capturedParams: { messages: { role: string; content: unknown }[] }[] = []
+    const capturingGateway: ClaudeGateway = {
+      async createMessage(params) {
+        capturedParams.push(params as unknown as { messages: { role: string; content: unknown }[] })
+        return textMessage('Second turn reply.')
+      },
+    }
+
+    await runAgentTurn({
+      gateway: capturingGateway,
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'a second turn',
+      clientId: crypto.randomUUID(),
+    })
+
+    const sentContent = JSON.stringify(capturedParams[0].messages)
+    expect(sentContent).not.toContain('Updated Shot')
+    expect(sentContent).toContain('Updated the narration.')
   })
 })
 

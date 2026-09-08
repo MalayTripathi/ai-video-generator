@@ -121,24 +121,33 @@ export type Database = {
           content: string
           created_at: string
           id: string
+          kind: string
           project_id: string
           role: string
+          shot_key: string | null
+          tool_name: string | null
         }
         Insert: {
           client_id?: string | null
           content: string
           created_at?: string
           id?: string
+          kind?: string
           project_id: string
           role: string
+          shot_key?: string | null
+          tool_name?: string | null
         }
         Update: {
           client_id?: string | null
           content?: string
           created_at?: string
           id?: string
+          kind?: string
           project_id?: string
           role?: string
+          shot_key?: string | null
+          tool_name?: string | null
         }
         Relationships: [
           {

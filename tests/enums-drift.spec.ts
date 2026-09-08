@@ -11,6 +11,7 @@ import {
   ELEMENT_TYPES,
 } from '../src/lib/config/enums'
 import { STEPS } from '../src/lib/config/pipeline'
+import { MESSAGE_KINDS, TOOL_NAMES } from '../src/lib/config/messages'
 
 // Turns TS-vs-CHECK-constraint drift into a test failure instead of a runtime surprise:
 // for every enum in src/lib/config/enums.ts that has a DB CHECK constraint, insert a row
@@ -193,6 +194,61 @@ test.describe('enum drift - shots columns', () => {
       shot_key: bad.shotKey,
       voice_over: 'x',
       shot_size_origin: 'not_a_real_origin',
+    })
+    expect(badError).not.toBeNull()
+  })
+})
+
+test.describe('enum drift - messages columns', () => {
+  test('accepts every MESSAGE_KINDS member and rejects a bogus value', async () => {
+    const projectId = await insertProject()
+    for (const value of MESSAGE_KINDS) {
+      const { error } = await admin.from('messages').insert({
+        project_id: projectId,
+        role: 'assistant',
+        content: 'x',
+        kind: value,
+      })
+      expect(error).toBeNull()
+    }
+
+    const { error: badError } = await admin.from('messages').insert({
+      project_id: projectId,
+      role: 'assistant',
+      content: 'x',
+      kind: 'not_a_real_kind',
+    })
+    expect(badError).not.toBeNull()
+  })
+
+  test('accepts every TOOL_NAMES member (plus null) as tool_name and rejects a bogus value', async () => {
+    const projectId = await insertProject()
+    for (const value of TOOL_NAMES) {
+      const { error } = await admin.from('messages').insert({
+        project_id: projectId,
+        role: 'assistant',
+        content: 'x',
+        kind: 'tool_done',
+        tool_name: value,
+      })
+      expect(error).toBeNull()
+    }
+
+    const { error: nullError } = await admin.from('messages').insert({
+      project_id: projectId,
+      role: 'assistant',
+      content: 'x',
+      kind: 'refusal',
+      tool_name: null,
+    })
+    expect(nullError).toBeNull()
+
+    const { error: badError } = await admin.from('messages').insert({
+      project_id: projectId,
+      role: 'assistant',
+      content: 'x',
+      kind: 'tool_done',
+      tool_name: 'not_a_real_tool',
     })
     expect(badError).not.toBeNull()
   })
