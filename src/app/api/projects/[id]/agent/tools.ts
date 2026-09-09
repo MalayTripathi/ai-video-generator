@@ -589,9 +589,7 @@ export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolCo
  * something, so it always succeeds as a call and never needs ctx. Routed through the
  * same dispatch path as every other tool so its own message reaches the client and
  * `messages` through the existing 'refused' handling (logic.ts) - no special-casing
- * needed there beyond excluding it from the "did every mutation apply" check that
- * gates a bundled finish call, since unlike a real tool unexpectedly failing, the model
- * already knows this outcome when it calls it.
+ * needed there at all.
  */
 export async function handleDecline(input: unknown): Promise<AgentToolOutcome> {
   const raw = (input ?? {}) as Record<string, unknown>

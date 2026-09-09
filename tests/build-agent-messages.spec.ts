@@ -70,6 +70,19 @@ test.describe('buildAgentMessages', () => {
     expect(out[2].content).toBe("I can't delete shots directly.")
   })
 
+  test('a closing reply matching the turn\'s client_id always renders as completed, never abandoned, regardless of what tool/decline activity preceded it - completion detection is client_id-based, not tied to any particular tool having been called', () => {
+    const userRow = row({ role: 'user', content: 'delete shot 3 and rewrite shot 2', client_id: 'c1' })
+    const declineRow = row({ role: 'assistant', kind: 'refusal', content: "There's no delete tool." })
+    const toolRow = row({ role: 'assistant', kind: 'tool_done', tool_name: 'update_shot', shot_key: 'sk1', content: 'Updated Shot 2' })
+    const closingRow = row({ role: 'assistant', kind: 'text', content: 'Declined the delete, rewrote shot 2.', client_id: 'c1' })
+
+    const out = buildAgentMessages([userRow, declineRow, toolRow, closingRow], new Map([['sk1', 2]]), new Map())
+
+    expect(out.some((m) => m.kind === 'error')).toBe(false)
+    expect(out.map((m) => m.kind)).toEqual(['user', 'refusal', 'tool_done', 'agent'])
+    expect(out[3].content).toBe('Declined the delete, rewrote shot 2.')
+  })
+
   test('a mid-list abandoned turn (no closing reply before the next user row) renders as error with no cost, and the next turn still parses correctly', () => {
     const abandonedUser = row({ role: 'user', content: 'first turn', client_id: 'c1' })
     // No assistant row at all for this turn - straight to the next user row.

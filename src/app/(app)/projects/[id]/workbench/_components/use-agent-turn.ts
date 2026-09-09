@@ -21,11 +21,8 @@ export type AgentTurnHandlers = {
   // server (never from prose) when `dropped` is false; null when `dropped` is true -
   // there is no confirmed-spent figure for a connection that broke before a real
   // `settled` event arrived (same reasoning as an abandoned historical turn on reload).
-  // `viaFinish` is straight from the server - true only when `content` came from
-  // finish's own structured message, never the same text as anything that already
-  // streamed live, so the caller must render it as a fresh message rather than reusing
-  // whatever bubble was showing live narration. See logic.ts's AgentStreamEvent.
-  onSettled: (content: string, dropped: boolean, cost: number | null, viaFinish: boolean) => void
+  // See logic.ts's AgentStreamEvent.
+  onSettled: (content: string, dropped: boolean, cost: number | null) => void
 }
 
 const DROPPED_STREAM_MESSAGE = "The connection dropped before this finished. Nothing further was changed - try again."
@@ -106,7 +103,7 @@ export function useAgentTurn(projectId: string) {
                 break
               case 'settled':
                 sawSettled = true
-                handlers.onSettled(event.content, false, event.cost, event.viaFinish)
+                handlers.onSettled(event.content, false, event.cost)
                 break
             }
           }
@@ -115,7 +112,7 @@ export function useAgentTurn(projectId: string) {
         // A throw here (network failure, non-OK response, an aborted Stop) never carries
         // useful server content - the dropped-stream case below covers it uniformly.
       } finally {
-        if (!sawSettled) handlers.onSettled(DROPPED_STREAM_MESSAGE, true, null, false)
+        if (!sawSettled) handlers.onSettled(DROPPED_STREAM_MESSAGE, true, null)
         abortRef.current = null
         setIsRunning(false)
       }

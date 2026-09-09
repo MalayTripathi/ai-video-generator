@@ -136,7 +136,7 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
           },
         ])
       },
-      onSettled: (finalContent, dropped, cost, viaFinish) => {
+      onSettled: (finalContent, dropped, cost) => {
         clearPlaceholder()
         setMessages((prev) => {
           if (dropped) {
@@ -153,29 +153,18 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
           }
           // The streaming bubble is found by id, not by list position: tool_completed/
           // refusal/error events routinely land after it and before settle, so it is
-          // usually no longer the last message by the time settle fires.
+          // usually no longer the last message by the time settle fires. `finalContent`
+          // is always exactly what streamed into it (no separate structured closing
+          // field exists anymore, now that finish is gone) - finalize in place rather
+          // than duplicate. When nothing streamed live at all (a lock/duplicate reply,
+          // or the stream already finalized elsewhere), append it as a fresh message.
           const streamingIndex = streamingId ? prev.findIndex((m) => m.id === streamingId) : -1
           if (streamingIndex < 0) {
-            // Nothing streamed live (or it already finalized elsewhere) - the closing
-            // reply is simply the next message.
             return [...prev, { id: crypto.randomUUID(), kind: 'agent', content: finalContent, createdAt: nowIso() }]
           }
-          if (!viaFinish) {
-            // A bare reply / the iteration-cap fallback: finalContent IS exactly what
-            // just streamed into this same bubble - finalize it in place, don't duplicate.
-            const next = [...prev]
-            next[streamingIndex] = { ...next[streamingIndex], content: finalContent, streaming: false }
-            return next
-          }
-          // finish's own message is never the same text that streamed (its input is
-          // never a text_delta source) - leave the streaming bubble as its own finished
-          // narration message, and append the real closing reply fresh, after it and
-          // after any tool/decline activity that arrived alongside it. This is what
-          // keeps live order matching reload order instead of the closing text landing
-          // wherever the narration bubble happened to be.
           const next = [...prev]
-          next[streamingIndex] = { ...next[streamingIndex], streaming: false }
-          return [...next, { id: crypto.randomUUID(), kind: 'agent', content: finalContent, createdAt: nowIso() }]
+          next[streamingIndex] = { ...next[streamingIndex], content: finalContent, streaming: false }
+          return next
         })
         // The turn's real, settled spend - never sourced from the model's own prose.
         // Shown once, below this turn's last line, only when there was any (a dropped

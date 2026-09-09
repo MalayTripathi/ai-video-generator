@@ -820,3 +820,98 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   `build-agent-messages.ts` already draws on reload — it just needed the
   server to say out loud which case applied, since the client cannot infer
   it from message content alone.
+- **`finish` removed — two live tests after the entry above shipped showed it
+  never actually bundled, and it produced a genuine duplicate closing
+  message when it partially did.** The tool existed to save a round trip:
+  the model declares a turn done in the same response as its last mutating
+  call, instead of a separate reply-only call afterward. In practice the
+  model consistently waited for a tool result and called `finish` alone in
+  its own extra response every time — the identical finding `v6` made about
+  `v5`'s wording, now confirmed again after `v7`/`v8` reworked what
+  `finish` carried rather than whether it bundled. Worse: when the model
+  DID narrate inside a response that also carried a bundled `finish` call,
+  that narration persisted as its own interstitial row and `finish`'s own
+  `message` field persisted separately as the closing reply — two assistant
+  messages for one model turn, both reading as some form of "done." The
+  entry above's `viaFinish` fix made this visible (append-after) instead of
+  hidden (silent bubble overwrite); it did not cause it. Removed the tool,
+  its schema, and all handling built around it
+  (`finishBlock`/`mutationBlocks`/`extractFinishMessage`/the "did every
+  mutation apply" trust check) — a turn now ends the way it did before
+  `finish` ever existed, a plain reply with no tool call. This also makes
+  `viaFinish` itself dead weight: with no separate structured closing field
+  left to ever diverge from the text that streamed, the closing content is
+  now always exactly what streamed live, so the client always finalizes
+  the streaming bubble in place — the `settled` SSE event's `viaFinish`
+  field and the branch it drove in `agent-panel.tsx` are both removed. A
+  later session should not reintroduce a same-response-bundling tool on the
+  same bet without new evidence: two independent live tests, across two
+  different `finish` designs, both show it doesn't materialize with this
+  model/prompt combination.
+- **A declined request can still reach the user as ordinary prose instead of
+  the refusal treatment — confirmed to be a prompt-compliance gap, not a
+  routing defect, before anything was changed.** `decline`'s dispatch →
+  persistence → render chain (`dispatchAgentTool`, `insertToolActivity`
+  writing `kind: 'refusal'`, `build-agent-messages.ts`'s render mapping,
+  `agent-message.tsx`'s dedicated refusal treatment) was traced end to end
+  and found correct, already covered by tests written before this session.
+  The break is upstream of all of it: the model can end a turn with zero
+  tool_use blocks at all — a bare prose reply — and the loop has always
+  accepted that unconditionally, the same fallback that lets an ordinary
+  bare-prose completion end a turn. Nothing detects "this response looks
+  like a refusal that should have called decline," and nothing should:
+  narrowing that check without keyword-sniffing isn't possible, and this
+  repo already rejects that class of heuristic (see `targetShots` in
+  CLAUDE.md). **This broadens, not replaces, the accepted residual gap
+  recorded above**: that gap was scoped to a model skipping `finish`
+  specifically; with `finish` gone, the same underlying gap is simply "a
+  model can always end a turn with a bare prose reply instead of calling
+  the tool that names what it's doing" — true for `decline` exactly as it
+  was true for `finish`, not a new gap introduced by this session's
+  changes. The only lever pulled: `AGENT_SYSTEM_PROMPT_V9` promotes "always
+  call decline, never answer a refusal in prose" to its own hard rule with
+  a wrong/right contrastive example, rather than leaving it folded into the
+  general no-delete-tool wording. This mitigates by prompt strength only
+  and cannot be made airtight — a test in `tests/agent-turn.spec.ts`
+  ("a bare-prose refusal with no decline call...") asserts this as real,
+  current, accepted behavior instead of leaving it unverified. A later
+  session should not mistake a bare-prose decline for a new regression.
+- **History sent to Claude on a later turn now also excludes prior-turn
+  interstitial narration (`kind: 'text'`, no `client_id`), on top of the
+  existing `tool_done` exclusion.** Investigated before changing anything:
+  every turn's mid-turn narration ("Let me check that shot first") was
+  being persisted (needed for reload) and then re-sent as history on every
+  subsequent turn forever, accumulating without bound and competing with
+  real turn reach-back for `HISTORY_LIMIT`'s fixed 20-row window - unlike
+  `tool_done` rows, which were already excluded with no reported issue.
+  Fixed with a second, independent query clause
+  (`.or('kind.neq.text,client_id.not.is.null')`) rather than folding it
+  into the existing `tool_done` exclusion, specifically so the two
+  exclusions can be read and reasoned about separately. **A refusal row
+  (`kind: 'refusal'`) is also client_id-less but is deliberately NOT
+  covered by this clause** - it is a real answer to part of what the user
+  asked, and dropping it is the exact regression a previous session
+  already fixed and this repo has now been burned by twice. This is
+  asserted directly in `tests/agent-turn.spec.ts` (the interstitial-vs-
+  refusal-vs-closing-reply history test) so a third accidental coupling of
+  "no client_id" with "drop from history" fails a test instead of shipping
+  quietly. The in-flight turn's own working context is unaffected - it is
+  built once from an in-memory array (`messages.push(...)` inside the
+  loop), never re-queried from `messages` mid-turn, so this filter can only
+  ever change what seeds a *future* turn's history fetch.
+
+  **Not changed in this pass, reported and deferred**: `HISTORY_LIMIT = 20`
+  is a row count, not a token budget, and rows vary from a few words (a
+  short refusal) to a full paragraph (a closing reply), so the same row
+  count can mean wildly different actual cost depending on conversation
+  shape. Every turn unconditionally adds exactly 2 rows that always survive
+  every current exclusion (the user row and the closing reply), so the
+  20-row cap is roughly 7-8 turns of real memory even with narration now
+  excluded - past that, the oldest content silently falls out of what's
+  sent, with nothing in the prompt telling the model the conversation
+  extends further back than what it's given. A token-budget-based cutoff
+  (walk backward from the most recent row, summing content length, stop
+  before crossing a token ceiling) would bound actual cost directly instead
+  of using row count as a proxy for it, but this needs its own pass -
+  changing `HISTORY_LIMIT`'s semantics is a bigger change than narrowing
+  what it counts, and wasn't part of what was approved here.

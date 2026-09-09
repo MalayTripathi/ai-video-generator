@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
-import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V8 } from '../src/lib/prompts/agent'
+import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V9 } from '../src/lib/prompts/agent'
 import {
   handleGetShot,
   handleUpdateShot,
@@ -199,27 +199,14 @@ test.describe('buildShotIndexBlock', () => {
 })
 
 test.describe('AGENT_TOOLS', () => {
-  test('is exactly get_shot, update_shot, insert_shot, regenerate_all_shots, decline, finish - no delete tool, ever', () => {
+  test('is exactly get_shot, update_shot, insert_shot, regenerate_all_shots, decline - no delete tool, no finish', () => {
     expect(AGENT_TOOLS.map((t) => t.name)).toEqual([
       'get_shot',
       'update_shot',
       'insert_shot',
       'regenerate_all_shots',
       'decline',
-      'finish',
     ])
-  })
-
-  test('finish takes only a required message string - no turn-level outcome judgement', () => {
-    const finish = AGENT_TOOLS.find((t) => t.name === 'finish')!
-    const schema = finish.input_schema as unknown as {
-      properties: Record<string, unknown>
-      required: string[]
-      additionalProperties: boolean
-    }
-    expect(Object.keys(schema.properties)).toEqual(['message'])
-    expect(schema.required).toEqual(['message'])
-    expect(schema.additionalProperties).toBe(false)
   })
 
   test('decline takes only a required message string', () => {
@@ -263,62 +250,48 @@ test.describe('AGENT_TOOLS', () => {
   })
 })
 
-test.describe('AGENT_SYSTEM_PROMPT_V8', () => {
+test.describe('AGENT_SYSTEM_PROMPT_V9', () => {
   test('explicitly instructs the model never to delete a shot', () => {
-    expect(AGENT_SYSTEM_PROMPT_V8.toLowerCase()).toContain('delete')
+    expect(AGENT_SYSTEM_PROMPT_V9.toLowerCase()).toContain('delete')
   })
 
   test('defaults to acting on a content request rather than asking a clarifying question', () => {
-    expect(AGENT_SYSTEM_PROMPT_V8.toLowerCase()).toContain('default to acting')
+    expect(AGENT_SYSTEM_PROMPT_V9.toLowerCase()).toContain('default to acting')
   })
 
   test('directs the model to use other shots as a style reference instead of asking the user to specify one', () => {
-    expect(AGENT_SYSTEM_PROMPT_V8.toLowerCase()).toContain('style reference')
+    expect(AGENT_SYSTEM_PROMPT_V9.toLowerCase()).toContain('style reference')
   })
 
   test('reserves clarifying questions for which-shot/which-field ambiguity or a destructive guess', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V9.toLowerCase()
     expect(prompt).toContain('which shot or which field')
     expect(prompt).toContain('destructive')
   })
 
-  test('states bundling finish with the final tool call as the default, not merely an option', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
-    expect(prompt).toContain('finish')
-    expect(prompt).toContain('same response as your final tool call')
-    expect(prompt).toContain('default to calling finish')
+  test('finish no longer exists anywhere in the prompt - a turn ends via a plain reply, no tool call', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V9.toLowerCase()
+    expect(prompt).not.toContain('finish')
+    expect(prompt).toContain('no tool call')
   })
 
-  test('warns finish must only accompany the LAST action, not the first of several', () => {
-    expect(AGENT_SYSTEM_PROMPT_V8.toLowerCase()).toContain('not finished after the first one')
-  })
-
-  test('requires every turn to end via finish, even a partial or total decline - never a bare prose reply', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
-    expect(prompt).toContain('never end with only a prose reply')
-    expect(prompt).toContain('declined some or all of it')
-  })
-
-  test('finish no longer carries any outcome/refused wording of its own - decline owns that now', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
-    expect(prompt).not.toContain('call finish with outcome')
-    expect(prompt).not.toContain('"outcome"')
-  })
-
-  test('the no-delete-tool rule tells the model to call decline, not finish', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
+  test('the no-delete-tool rule tells the model to call decline', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V9.toLowerCase()
     expect(prompt).toContain('call decline and tell them to use that shot')
   })
 
   test('tells the model a request can mix completed actions with separate declines, not all-or-nothing', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V9.toLowerCase()
     expect(prompt).toContain("don't have to answer all-or-nothing")
     expect(prompt).toContain('call decline separately for whatever you won')
   })
 
-  test('states decline always succeeds and never blocks bundling finish in the same response', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
-    expect(prompt).toContain('decline always succeeds')
+  test('states declining anything is a hard rule requiring the decline tool, never a bare prose refusal, with a contrastive example', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V9.toLowerCase()
+    expect(prompt).toContain('you must call decline for that part')
+    expect(prompt).toContain('never write the refusal as plain reply text')
+    expect(prompt).toContain('wrong:')
+    expect(prompt).toContain('right:')
   })
 })
 
@@ -994,44 +967,54 @@ test.describe('runAgentTurn', () => {
     expect(messageIds.size).toBe(1)
   })
 
-  test('finish bundled with a successful mutation ends the turn in one call and persists its message', async () => {
+  test('a turn produces exactly one closing message, even when the model narrates before its mutation', async () => {
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId)
     const shotNumber = (await readShot(shotId)).order_index + 1
-    const gateway = scriptedGateway([
-      multiToolMessage([
-        { name: 'update_shot', input: { shot_number: shotNumber, voice_over: 'Changed by the agent.' } },
-        { name: 'finish', input: { message: 'Added the change you asked for.' } },
-      ]),
-    ])
+    const clientId = crypto.randomUUID()
 
+    // This is the exact shape that used to duplicate under the old `finish` tool: prose
+    // in the same response as a tool call. Without finish, that prose is only ever an
+    // interstitial row - the turn's actual close comes from a later, separate response.
     const result = await runAgentTurn({
-      gateway,
+      gateway: scriptedGateway([
+        mixedMessage('Let me update that for you.', [
+          { name: 'update_shot', input: { shot_number: shotNumber, voice_over: 'Changed by the agent.' } },
+        ]),
+        textMessage('Updated the narration.'),
+      ]),
       supabase: admin,
       projectId,
       userId: primary.user.id,
       content: 'change the narration',
-      clientId: crypto.randomUUID(),
+      clientId,
     })
 
     expect(result.ok).toBe(true)
-    if (result.ok) expect(result.message.content).toBe('Added the change you asked for.')
-    expect(gateway.getCallCount()).toBe(1)
+    if (result.ok) expect(result.message.content).toBe('Updated the narration.')
     expect((await readShot(shotId)).voice_over).toBe('Changed by the agent.')
+
+    const messages = await readMessages(projectId)
+    const closingRows = messages.filter((m) => m.role === 'assistant' && m.client_id === clientId)
+    expect(closingRows.length).toBe(1)
+    expect(closingRows[0].content).toBe('Updated the narration.')
+    expect(messages.map((m) => `${m.role}:${m.kind}`)).toEqual([
+      'user:text',
+      'assistant:text',
+      'assistant:tool_done',
+      'assistant:text',
+    ])
   })
 
-  test('finish bundled with a refused mutation is discarded and the loop continues', async () => {
+  test('a refused mutation is fed back to the model, and its next reply is what persists as the close', async () => {
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId)
     const shot = await readShot(shotId)
     const shotNumber = shot.order_index + 1
     const gateway = scriptedGateway([
-      multiToolMessage([
-        // visual_description: '' with no voice_over fallback text is refused by
-        // handleUpdateShot's empty-visual-description check.
-        { name: 'update_shot', input: { shot_number: shotNumber, visual_description: '' } },
-        { name: 'finish', input: { message: 'Cleared the visual description.' } },
-      ]),
+      // visual_description: '' with no voice_over fallback text is refused by
+      // handleUpdateShot's empty-visual-description check.
+      successMessage({ shot_number: shotNumber, visual_description: '' }, 'update_shot'),
       textMessage('That description cannot be empty, so I left it as is.'),
     ])
 
@@ -1045,8 +1028,6 @@ test.describe('runAgentTurn', () => {
     })
 
     expect(result.ok).toBe(true)
-    // The bundled finish message must never surface - the mutation it assumed would
-    // succeed was refused, so the model's second, informed reply is what persists.
     if (result.ok) expect(result.message.content).toBe('That description cannot be empty, so I left it as is.')
     expect(gateway.getCallCount()).toBe(2)
     expect((await readShot(shotId)).visual_description).toBe(shot.visual_description)
@@ -1056,13 +1037,12 @@ test.describe('runAgentTurn', () => {
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId)
     const shotNumber = (await readShot(shotId)).order_index + 1
-    const events: AgentStreamEvent[] = []
     const gateway = scriptedGateway([
       multiToolMessage([
         { name: 'decline', input: { message: "There's no delete tool - use the shot's own delete button." } },
         { name: 'update_shot', input: { shot_number: shotNumber, voice_over: 'Rewritten with more panic.' } },
-        { name: 'finish', input: { message: "Rewrote that shot's narration." } },
       ]),
+      textMessage("Rewrote that shot's narration."),
     ])
 
     const result = await runAgentTurn({
@@ -1072,13 +1052,10 @@ test.describe('runAgentTurn', () => {
       userId: primary.user.id,
       content: 'delete shot 3 and rewrite this one to be more panicked',
       clientId: crypto.randomUUID(),
-      onEvent: (e) => events.push(e),
     })
 
     expect(result.ok).toBe(true)
     expect(result.ok && result.message.content).toBe("Rewrote that shot's narration.")
-    // Bundled in one call: decline never invalidates finish the way a failed real tool would.
-    expect(gateway.getCallCount()).toBe(1)
 
     const messages = await readMessages(projectId)
     // user -> decline (its own refusal-kind message) -> tool_done -> ordinary closing text
@@ -1092,9 +1069,6 @@ test.describe('runAgentTurn', () => {
     expect(messages[1].client_id).toBeNull()
     expect(messages[3].content).toBe("Rewrote that shot's narration.")
     expect((await readShot(shotId)).voice_over).toBe('Rewritten with more panic.')
-
-    const settled = events.find((e) => e.type === 'settled')
-    expect(settled?.type === 'settled' && settled.viaFinish).toBe(true)
   })
 
   test('a wholly declined turn still renders its decline in the refusal treatment, even though the closing row is ordinary text', async () => {
@@ -1102,10 +1076,8 @@ test.describe('runAgentTurn', () => {
 
     const result = await runAgentTurn({
       gateway: scriptedGateway([
-        multiToolMessage([
-          { name: 'decline', input: { message: "There's no delete tool - use the shot's own delete button." } },
-          { name: 'finish', input: { message: "I can't delete shots directly." } },
-        ]),
+        successMessage({ message: "There's no delete tool - use the shot's own delete button." }, 'decline'),
+        textMessage("I can't delete shots directly."),
       ]),
       supabase: admin,
       projectId,
@@ -1120,10 +1092,15 @@ test.describe('runAgentTurn', () => {
     expect(messages[1].content).toBe("There's no delete tool - use the shot's own delete button.")
   })
 
-  test('a bare prose reply with no finish call never claims to have come from finish (viaFinish false)', async () => {
+  test('a bare-prose refusal with no decline call persists as ordinary text, not the refusal treatment - a known, accepted prompt-compliance gap, not a routing defect', async () => {
     const projectId = await seedToolProject()
-    const events: AgentStreamEvent[] = []
 
+    // Nothing detects "this response looks like a refusal that should have called
+    // decline" - the model can always just answer in prose instead, with zero tool
+    // calls. This is deliberately NOT coerced into kind: 'refusal' server-side (that
+    // would be the keyword-sniffing this repo already rejects elsewhere - see
+    // targetShots in CLAUDE.md); it is documented here as real, current behavior rather
+    // than left unverified. See docs/decisions.md.
     const result = await runAgentTurn({
       gateway: scriptedGateway([textMessage("There's no delete tool - use the shot's own delete button in the UI.")]),
       supabase: admin,
@@ -1131,36 +1108,29 @@ test.describe('runAgentTurn', () => {
       userId: primary.user.id,
       content: 'delete shot 3',
       clientId: crypto.randomUUID(),
-      onEvent: (e) => events.push(e),
     })
 
     expect(result.ok).toBe(true)
     const messages = await readMessages(projectId)
     expect(messages[messages.length - 1].kind).toBe('text')
-    const settled = events.find((e) => e.type === 'settled')
-    expect(settled?.type === 'settled' && settled.viaFinish).toBe(false)
   })
 
-  test('interstitial prose alongside a tool call persists in its real position, before that iteration\'s tool_done row, and the settled event reports viaFinish', async () => {
+  test('interstitial prose alongside a tool call persists in its real position, before that iteration\'s tool_done row', async () => {
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId)
     const shotNumber = (await readShot(shotId)).order_index + 1
-    const events: AgentStreamEvent[] = []
 
     const result = await runAgentTurn({
       gateway: scriptedGateway([
         mixedMessage('Let me check that shot first.', [{ name: 'get_shot', input: { shot_number: shotNumber } }]),
-        multiToolMessage([
-          { name: 'update_shot', input: { shot_number: shotNumber, voice_over: 'Changed after looking.' } },
-          { name: 'finish', input: { message: 'Updated it.' } },
-        ]),
+        successMessage({ shot_number: shotNumber, voice_over: 'Changed after looking.' }, 'update_shot'),
+        textMessage('Updated it.'),
       ]),
       supabase: admin,
       projectId,
       userId: primary.user.id,
       content: 'change the narration if it needs it',
       clientId: crypto.randomUUID(),
-      onEvent: (e) => events.push(e),
     })
 
     expect(result.ok).toBe(true)
@@ -1177,9 +1147,6 @@ test.describe('runAgentTurn', () => {
     expect(interstitial.content).toBe('Let me check that shot first.')
     expect(interstitial.client_id).toBeNull()
     expect(messages[4].content).toBe('Updated it.')
-
-    const settled = events.find((e) => e.type === 'settled')
-    expect(settled?.type === 'settled' && settled.viaFinish).toBe(true)
   })
 
   test('a previous turn\'s decline stays in conversation history, so a later turn does not re-answer an already-declined request', async () => {
@@ -1187,10 +1154,8 @@ test.describe('runAgentTurn', () => {
 
     await runAgentTurn({
       gateway: scriptedGateway([
-        multiToolMessage([
-          { name: 'decline', input: { message: "There's no delete tool - use the shot's own delete button." } },
-          { name: 'finish', input: { message: "I can't delete shots directly." } },
-        ]),
+        successMessage({ message: "There's no delete tool - use the shot's own delete button." }, 'decline'),
+        textMessage("I can't delete shots directly."),
       ]),
       supabase: admin,
       projectId,
@@ -1218,7 +1183,7 @@ test.describe('runAgentTurn', () => {
     // This scripts the fake model to look then write, so it only proves the turn loop
     // supports that shape end-to-end (persists the write, doesn't stop at the get_shot
     // reply). Whether the real model chooses this shape for a given prompt needs a live
-    // Claude call, which this repo's tests never make - see the AGENT_SYSTEM_PROMPT_V6
+    // Claude call, which this repo's tests never make - see the AGENT_SYSTEM_PROMPT_V9
     // content assertions above for the prompt-shape half of this check.
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId)
@@ -1666,6 +1631,52 @@ test.describe('runAgentTurn', () => {
     const sentContent = JSON.stringify(capturedParams[0].messages)
     expect(sentContent).not.toContain('Updated Shot')
     expect(sentContent).toContain('Updated the narration.')
+  })
+
+  test('history sent to a later turn also excludes prior-turn interstitial narration, but still includes user rows, closing replies, and refusal rows - and the in-flight turn still sees its own narration via in-memory context, never the DB', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId)
+    const shotNumber = (await readShot(shotId)).order_index + 1
+
+    const turn1Gateway = scriptedGateway([
+      mixedMessage('Let me check that shot first.', [{ name: 'get_shot', input: { shot_number: shotNumber } }]),
+      successMessage({ message: "There's no delete tool - use the shot's own delete button." }, 'decline'),
+      textMessage('Declined the delete - nothing else changed.'),
+    ])
+
+    await runAgentTurn({
+      gateway: turn1Gateway,
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'delete shot 3',
+      clientId: crypto.randomUUID(),
+    })
+
+    // In-flight isolation: this turn's own later calls still see the first call's
+    // narration in their own working context - it was never re-queried from the DB
+    // mid-turn, so excluding it from a FUTURE turn's history fetch (below) can't affect
+    // this turn's own loop.
+    const turn1Calls = turn1Gateway.getCalls()
+    expect(JSON.stringify(turn1Calls[1].messages)).toContain('Let me check that shot first.')
+    expect(JSON.stringify(turn1Calls[2].messages)).toContain('Let me check that shot first.')
+
+    const turn2Gateway = scriptedGateway([textMessage('Sure, on it.')])
+    await runAgentTurn({
+      gateway: turn2Gateway,
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'rewrite shot 1',
+      clientId: crypto.randomUUID(),
+    })
+
+    const historyText = JSON.stringify(turn2Gateway.getCalls()[0].messages)
+    expect(historyText).toContain('delete shot 3') // the user row
+    expect(historyText).toContain('Declined the delete - nothing else changed.') // the closing reply
+    expect(historyText).toContain("There's no delete tool - use the shot's own delete button.") // the refusal
+    expect(historyText).not.toContain('Let me check that shot first.') // interstitial narration
+    expect(historyText).not.toContain(`Looked at Shot ${shotNumber}`) // tool_done
   })
 })
 

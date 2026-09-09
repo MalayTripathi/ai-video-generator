@@ -46,7 +46,7 @@ export function textMessage(text: string): FakeResult {
 }
 
 /** A single response carrying multiple tool_use blocks - the shape a model uses to
- * bundle several actions (e.g. a mutation plus `finish`) into one reply instead of
+ * bundle several actions (e.g. a decline plus a mutation) into one reply instead of
  * waiting for a result before calling the next one. */
 export function multiToolMessage(calls: { name: string; input: unknown }[]): FakeResult {
   return {

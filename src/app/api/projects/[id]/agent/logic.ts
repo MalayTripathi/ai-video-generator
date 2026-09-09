@@ -15,7 +15,7 @@ import {
   sumTurnCost,
   AllowanceExceededError,
 } from '@/lib/usage'
-import { AGENT_SYSTEM_PROMPT_V8, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
+import { AGENT_SYSTEM_PROMPT_V9, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
 import type { ToolName } from '@/lib/config/messages'
 import { dispatchAgentTool, type AgentToolContext } from './tools'
 
@@ -40,17 +40,14 @@ export type AgentStreamEvent =
   | { type: 'error'; message: string }
   // terminal - always fires exactly once. cost is the turn's real, settled spend
   // (sumTurnCost), computed after every usage row for this turn is already terminal -
-  // never sourced from the model's own prose. viaFinish is true only when `content` came
-  // from finish's own structured `message` field - never the same text as anything that
-  // streamed live (finish's input is never a text_delta source), so the client must
-  // always render it as a fresh message rather than reusing whatever bubble was showing
-  // live narration. False for a bare-prose reply or the iteration-cap fallback, where
-  // `content` IS exactly the text that already streamed; also false for max_tokens (a
-  // deliberate replacement of broken, truncated partial text, not a continuation of it)
-  // and for a lock/claim/duplicate short-circuit, where nothing ever streamed live at
-  // all - reusing the existing bubble in place (if any) is correct in every false case.
-  // See docs/decisions.md.
-  | { type: 'settled'; content: string; cost: number; viaFinish: boolean }
+  // never sourced from the model's own prose. `content` is always exactly the text a
+  // turn actually ends with: whatever streamed live for a bare-prose close or the
+  // iteration-cap fallback, or a static message for a path with no live stream at all
+  // (max_tokens, a lock/claim/duplicate short-circuit) - there is no longer a separate
+  // structured field (finish's old `message`) it could ever diverge from, so the client
+  // can always finalize a streaming bubble in place instead of needing a signal for
+  // whether to append a fresh one. See docs/decisions.md.
+  | { type: 'settled'; content: string; cost: number }
 
 export type AgentTurnResult =
   | { ok: true; status: 200; message: MessageRow }
@@ -77,11 +74,6 @@ async function loadProjectForTurn(
     .eq('user_id', userId)
     .single()
   return data
-}
-
-function extractFinishMessage(input: unknown): string {
-  const message = (input as { message?: unknown } | null)?.message
-  return typeof message === 'string' && message.trim().length > 0 ? message : 'Done.'
 }
 
 const READ_ONLY_LOCK_REPLY =
@@ -159,9 +151,8 @@ export async function runAgentTurn(params: {
       const cost = await sumTurnCost(supabase, userMsgResult.message.id)
       // Replaying a resend's own previously-persisted reply - nothing streams live for
       // a replay (this returns before ever calling Claude), so there is no existing
-      // bubble for the client to reuse or avoid reusing; viaFinish is inert here either
-      // way.
-      emit({ type: 'settled', content: reply.content, cost, viaFinish: true })
+      // bubble for the client to reconcile against.
+      emit({ type: 'settled', content: reply.content, cost })
       return { ok: true, status: 200, message: reply }
     }
     // The original attempt hasn't reached its own SETTLE yet - a concurrent resend, not
@@ -183,8 +174,8 @@ export async function runAgentTurn(params: {
   if (furthestStepIndex >= stepIndex('storyboard')) {
     const assistantRow = await insertAssistantReply(supabase, projectId, clientId, READ_ONLY_LOCK_REPLY)
     // No reserveUsage call has happened yet at this short-circuit - sumTurnCost is 0.
-    // Claude was never called, so nothing streamed live and viaFinish is false.
-    emit({ type: 'settled', content: READ_ONLY_LOCK_REPLY, cost: 0, viaFinish: false })
+    // Claude was never called, so nothing streamed live.
+    emit({ type: 'settled', content: READ_ONLY_LOCK_REPLY, cost: 0 })
     return { ok: true, status: 200, message: assistantRow }
   }
 
@@ -233,11 +224,6 @@ export async function runAgentTurn(params: {
   emit({ type: 'turn_started' })
 
   let assistantContent: string | null = null
-  // True only when assistantContent ends up sourced from finish's own `message` field -
-  // set only in the finishBlock success branch below; every other termination path
-  // leaves it false. Declared here, not inside the try block, so the finally block
-  // (which persists and emits it) can still see it.
-  let viaFinish = false
   let outcome: AgentTurnResult = { ok: false, status: 500, error: 'Agent turn did not complete' }
   const usageIds: string[] = []
   const settledUsageIds = new Set<string>()
@@ -297,14 +283,22 @@ export async function runAgentTurn(params: {
       .from('messages')
       .select('role, content')
       .eq('project_id', projectId)
-      // Excludes only tool_done rows - pure activity-log entries ("Updated Shot 3") that
-      // would burn HISTORY_LIMIT slots and confuse the model without adding any
-      // conversational content. A refusal (a tool declining mid-turn, or the model's own
-      // `decline` call) IS real conversational content answering part of what the user
-      // asked, and must stay in history: excluding it left an earlier declined request
-      // looking unanswered to a later turn, which then re-answered it unprompted. This
-      // must never narrow back to .eq('kind', 'text') - see docs/decisions.md.
+      // Two independent exclusions - kept as two separate clauses on purpose, not folded
+      // into one, because they have already been accidentally coupled twice (see
+      // docs/decisions.md):
+      // 1. tool_done rows - pure activity-log entries ("Updated Shot 3") that would burn
+      //    HISTORY_LIMIT slots and confuse the model without adding conversational content.
+      // 2. Interstitial narration (kind: 'text' with no client_id) - the model's own
+      //    mid-turn commentary ("Let me check that shot first"), not a turn's answer to the
+      //    user. It accumulates every turn without bound and was crowding out real
+      //    turn reach-back within the fixed HISTORY_LIMIT window.
+      // A refusal row (kind: 'refusal', also client_id-less) is DELIBERATELY NOT covered
+      // by either clause - it IS a real answer to part of what the user asked, and
+      // dropping it is the exact regression a previous session already fixed (an earlier
+      // declined request got re-answered, unprompted, because history made it look
+      // unanswered). This must never narrow back to .eq('kind', 'text').
       .neq('kind', 'tool_done')
+      .or('kind.neq.text,client_id.not.is.null')
       .neq('id', userMessage.id)
       .order('created_at', { ascending: false })
       .limit(HISTORY_LIMIT)
@@ -330,7 +324,7 @@ export async function runAgentTurn(params: {
 
     for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       const estimatedInputTokens = estimateInputTokens({
-        texts: [AGENT_SYSTEM_PROMPT_V8, shotIndexBlock, ...history.map((m) => m.content), content],
+        texts: [AGENT_SYSTEM_PROMPT_V9, shotIndexBlock, ...history.map((m) => m.content), content],
         tools: AGENT_TOOLS,
       })
       const { markSettled } = await reserveAndSettle(estimatedInputTokens)
@@ -340,7 +334,7 @@ export async function runAgentTurn(params: {
           model: modelsConfig.agent.model,
           max_tokens: modelsConfig.agent.maxTokens,
           system: [
-            { type: 'text', text: AGENT_SYSTEM_PROMPT_V8, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: AGENT_SYSTEM_PROMPT_V9, cache_control: { type: 'ephemeral' } },
             { type: 'text', text: shotIndexBlock, cache_control: { type: 'ephemeral' } },
           ],
           tools: AGENT_TOOLS,
@@ -385,14 +379,8 @@ export async function runAgentTurn(params: {
         }
       }
 
-      // finish never reaches dispatchAgentTool - it mutates nothing, so it's pulled out
-      // before dispatch rather than routed through the same switch as a real tool.
-      const finishBlock = toolUseBlocks.find((block) => block.name === 'finish')
-      const mutationBlocks = toolUseBlocks.filter((block) => block.name !== 'finish')
-
       const toolResultBlocks: Anthropic.ToolResultBlockParam[] = []
-      let allMutationsApplied = true
-      for (const block of mutationBlocks) {
+      for (const block of toolUseBlocks) {
         const result = await dispatchAgentTool(block.name, block.input, toolCtx)
         if (result.kind === 'applied') {
           await persistToolActivity({
@@ -417,38 +405,11 @@ export async function runAgentTurn(params: {
           emit({ type: 'refusal', label: result.label, shotKey: result.shotKey })
         }
         if (result.kind === 'errored') emit({ type: 'error', message: result.message })
-        // `decline` always reports 'refused' by design - it's a declaration, not a
-        // mutation attempt, so it never invalidates a bundled finish call the way a REAL
-        // tool unexpectedly failing would (the model already knew this outcome when it
-        // called decline). See docs/decisions.md.
-        if (result.kind !== 'applied' && block.name !== 'decline') allMutationsApplied = false
         toolResultBlocks.push({
           type: 'tool_result',
           tool_use_id: block.id,
           content: JSON.stringify(result.forModel),
           is_error: result.kind !== 'applied',
-        })
-      }
-
-      if (finishBlock) {
-        // A check on what already happened, not a prediction: only trust the model's
-        // closing message when every mutation bundled alongside it actually applied.
-        // A refusal or error means the model predicted success it didn't get, so its
-        // message is discarded and the turn falls through to the same round trip a
-        // refusal already requires today - see docs/decisions.md.
-        if (allMutationsApplied) {
-          finalText = extractFinishMessage(finishBlock.input)
-          viaFinish = true
-          break
-        }
-        toolResultBlocks.push({
-          type: 'tool_result',
-          tool_use_id: finishBlock.id,
-          content: JSON.stringify({
-            status: 'not_finished',
-            reason: 'Not applied - another action in this response was refused or failed. Address that before finishing.',
-          }),
-          is_error: false,
         })
       }
 
@@ -503,7 +464,7 @@ export async function runAgentTurn(params: {
     // the leftover-usageIds force-settle loop just above guarantees that, for both the
     // happy path and the caught-exception path, since both funnel through this finally.
     const cost = await sumTurnCost(supabase, userMessage.id)
-    emit({ type: 'settled', content: assistantContent ?? 'Done.', cost, viaFinish })
+    emit({ type: 'settled', content: assistantContent ?? 'Done.', cost })
   }
 
   return outcome
