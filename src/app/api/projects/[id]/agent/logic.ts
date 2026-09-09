@@ -15,7 +15,7 @@ import {
   sumTurnCost,
   AllowanceExceededError,
 } from '@/lib/usage'
-import { AGENT_SYSTEM_PROMPT_V10, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
+import { AGENT_SYSTEM_PROMPT_V11, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
 import type { ToolName } from '@/lib/config/messages'
 import { dispatchAgentTool, type AgentToolContext } from './tools'
 
@@ -328,7 +328,7 @@ export async function runAgentTurn(params: {
 
     for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       const estimatedInputTokens = estimateInputTokens({
-        texts: [AGENT_SYSTEM_PROMPT_V10, shotIndexBlock, ...history.map((m) => m.content), content],
+        texts: [AGENT_SYSTEM_PROMPT_V11, shotIndexBlock, ...history.map((m) => m.content), content],
         tools: AGENT_TOOLS,
       })
       const { markSettled } = await reserveAndSettle(estimatedInputTokens)
@@ -338,7 +338,7 @@ export async function runAgentTurn(params: {
           model: modelsConfig.agent.model,
           max_tokens: modelsConfig.agent.maxTokens,
           system: [
-            { type: 'text', text: AGENT_SYSTEM_PROMPT_V10, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: AGENT_SYSTEM_PROMPT_V11, cache_control: { type: 'ephemeral' } },
             { type: 'text', text: shotIndexBlock, cache_control: { type: 'ephemeral' } },
           ],
           tools: AGENT_TOOLS,

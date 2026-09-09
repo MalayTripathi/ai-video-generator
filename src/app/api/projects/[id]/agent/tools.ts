@@ -418,9 +418,13 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
     }
   }
 
-  const insertAfter = raw.insert_after_shot_number
-  if (typeof insertAfter !== 'number' || !Number.isInteger(insertAfter) || insertAfter < 0) {
-    return { kind: 'errored', message: 'insert_after_shot_number must be a non-negative integer', forModel: { error: 'invalid_input' } }
+  const position = raw.position
+  if (position !== 'start' && position !== 'end' && position !== 'after') {
+    return {
+      kind: 'errored',
+      message: "position must be 'start', 'end', or 'after'",
+      forModel: { error: 'invalid_input' },
+    }
   }
   if (typeof raw.voice_over !== 'string' || raw.voice_over.trim().length === 0) {
     return { kind: 'errored', message: 'voice_over is required', forModel: { error: 'invalid_input' } }
@@ -443,16 +447,24 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
   const shots = existingShots ?? []
 
   let newOrderIndex = 0
-  if (insertAfter > 0) {
-    const anchor = shots.find((s) => s.order_index === insertAfter - 1)
-    if (!anchor) {
+  let afterShotNumber: number | null = null
+  if (position === 'end') {
+    newOrderIndex = shots.length
+  } else if (position === 'after') {
+    const rawAfter = raw.after_shot_number
+    const validRange = shots.length > 0 ? `between 1 and ${shots.length}` : 'none - there are no shots yet'
+    if (typeof rawAfter !== 'number' || !Number.isInteger(rawAfter) || rawAfter < 1 || rawAfter > shots.length) {
       return {
         kind: 'errored',
-        message: `Shot ${insertAfter} not found`,
-        forModel: { error: 'not_found' },
+        message: `after_shot_number must be ${validRange} - or use position: "start"/"end"`,
+        forModel: { error: `after_shot_number must be ${validRange} - or use position: "start"/"end"` },
       }
     }
-    newOrderIndex = anchor.order_index + 1
+    // order_index is kept contiguous 0..shots.length-1 by both insert and delete (see
+    // deleteShotForUser in workbench actions.ts), so a rawAfter within the range just
+    // validated always resolves - no separate not-found branch needed here.
+    afterShotNumber = rawAfter
+    newOrderIndex = rawAfter
   }
 
   // Shift every shot at or after the insertion point up by one, highest order_index
@@ -535,9 +547,11 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
   return {
     kind: 'applied',
     label:
-      insertAfter === 0
+      position === 'start'
         ? 'Inserted a new shot at the start'
-        : `Inserted a new shot after Shot ${insertAfter}`,
+        : position === 'end'
+          ? 'Inserted a new shot at the end'
+          : `Inserted a new shot after Shot ${afterShotNumber}`,
     forModel: { shot_index: shotIndex },
     shotKey: insertedShotKey ?? undefined,
   }

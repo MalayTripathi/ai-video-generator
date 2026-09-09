@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
-import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V10 } from '../src/lib/prompts/agent'
+import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V11 } from '../src/lib/prompts/agent'
 import {
   handleGetShot,
   handleUpdateShot,
@@ -253,7 +253,7 @@ test.describe('AGENT_TOOLS', () => {
     const schema = insertShot.input_schema as unknown as { required: string[] }
     expect(schema.required).toEqual(
       expect.arrayContaining([
-        'insert_after_shot_number',
+        'position',
         'voice_over',
         'section_label',
         'shot_size',
@@ -264,6 +264,15 @@ test.describe('AGENT_TOOLS', () => {
         'camera_movement_origin',
       ])
     )
+  })
+
+  test('insert_shot expresses position as start/end/after, not a raw anchor number - after_shot_number exists but is not required', () => {
+    const insertShot = AGENT_TOOLS.find((t) => t.name === 'insert_shot')!
+    const schema = insertShot.input_schema as unknown as { required: string[]; properties: Record<string, unknown> }
+    expect(schema.required).not.toContain('insert_after_shot_number')
+    expect(schema.required).not.toContain('after_shot_number')
+    expect(schema.properties.after_shot_number).toBeDefined()
+    expect(schema.properties.position).toBeDefined()
   })
 
   test('insert_shot requires visual_description - the handler refuses an empty one, and an optional-but-enforced field is a paid retry loop waiting to happen', () => {
@@ -286,44 +295,44 @@ test.describe('AGENT_TOOLS', () => {
   })
 })
 
-test.describe('AGENT_SYSTEM_PROMPT_V10', () => {
+test.describe('AGENT_SYSTEM_PROMPT_V11', () => {
   test('explicitly instructs the model never to delete a shot', () => {
-    expect(AGENT_SYSTEM_PROMPT_V10.toLowerCase()).toContain('delete')
+    expect(AGENT_SYSTEM_PROMPT_V11.toLowerCase()).toContain('delete')
   })
 
   test('defaults to acting on a content request rather than asking a clarifying question', () => {
-    expect(AGENT_SYSTEM_PROMPT_V10.toLowerCase()).toContain('default to acting')
+    expect(AGENT_SYSTEM_PROMPT_V11.toLowerCase()).toContain('default to acting')
   })
 
   test('directs the model to use other shots as a style reference instead of asking the user to specify one', () => {
-    expect(AGENT_SYSTEM_PROMPT_V10.toLowerCase()).toContain('style reference')
+    expect(AGENT_SYSTEM_PROMPT_V11.toLowerCase()).toContain('style reference')
   })
 
   test('reserves clarifying questions for which-shot/which-field ambiguity or a destructive guess', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
     expect(prompt).toContain('which shot or which field')
     expect(prompt).toContain('destructive')
   })
 
   test('finish no longer exists anywhere in the prompt - a turn ends via a plain reply, no tool call', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
     expect(prompt).not.toContain('finish')
     expect(prompt).toContain('no tool call')
   })
 
   test('the no-delete-tool rule tells the model to call decline', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
     expect(prompt).toContain('call decline and tell them to use that shot')
   })
 
   test('tells the model a request can mix completed actions with separate declines, not all-or-nothing', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
     expect(prompt).toContain("don't have to answer all-or-nothing")
     expect(prompt).toContain('call decline separately for whatever you won')
   })
 
   test('states declining anything is a hard rule requiring the decline tool, never a bare prose refusal, with a contrastive example', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
     expect(prompt).toContain('you must call decline for that part')
     expect(prompt).toContain('never write the refusal as plain reply text')
     expect(prompt).toContain('wrong:')
@@ -331,12 +340,12 @@ test.describe('AGENT_SYSTEM_PROMPT_V10', () => {
   })
 
   test('tells the model an inserted shot inherits its section from the surrounding shots by default', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
     expect(prompt).toContain('a shot placed between two shots of the same section belongs to that section')
   })
 
   test('tells the model insert_shot\'s three camera fields must be reported together, never partially', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
     expect(prompt).toContain('never report some of the three and leave the rest out')
   })
 })
@@ -729,7 +738,7 @@ test.describe('handleInsertShot', () => {
     const shotC = await seedToolShot(projectId, { order_index: 2 })
 
     const outcome = await handleInsertShot(
-      { insert_after_shot_number: 2, voice_over: 'A brand new shot.', visual_description: 'A brand new visual.' },
+      { position: 'after', after_shot_number: 2, voice_over: 'A brand new shot.', visual_description: 'A brand new visual.' },
       buildContext({ projectId })
     )
 
@@ -747,7 +756,7 @@ test.describe('handleInsertShot', () => {
     await seedToolShot(projectId, { order_index: 0 })
 
     const outcome = await handleInsertShot(
-      { insert_after_shot_number: 1, voice_over: 'Should not be inserted.' },
+      { position: 'after', after_shot_number: 1, voice_over: 'Should not be inserted.' },
       buildContext({ projectId, furthestStepIndex: stepIndex('storyboard') })
     )
 
@@ -760,7 +769,7 @@ test.describe('handleInsertShot', () => {
     await seedToolShot(projectId, { order_index: 0 })
 
     const outcome = await handleInsertShot(
-      { insert_after_shot_number: 1, voice_over: 'A brand new shot.', visual_description: 'A brand new visual.' },
+      { position: 'after', after_shot_number: 1, voice_over: 'A brand new shot.', visual_description: 'A brand new visual.' },
       buildContext({ projectId })
     )
 
@@ -774,7 +783,7 @@ test.describe('handleInsertShot', () => {
     await seedToolShot(projectId, { order_index: 0 })
 
     const outcome = await handleInsertShot(
-      { insert_after_shot_number: 1, voice_over: 'Should not be inserted.' },
+      { position: 'after', after_shot_number: 1, voice_over: 'Should not be inserted.' },
       buildContext({ projectId, furthestStepIndex: stepIndex('storyboard') })
     )
 
@@ -786,7 +795,7 @@ test.describe('handleInsertShot', () => {
     const projectId = await seedToolProject()
 
     const outcome = await handleInsertShot(
-      { insert_after_shot_number: 0, voice_over: 'A brand new shot.', visual_description: '' },
+      { position: 'start', voice_over: 'A brand new shot.', visual_description: '' },
       buildContext({ projectId })
     )
 
@@ -798,7 +807,7 @@ test.describe('handleInsertShot', () => {
     const projectId = await seedToolProject()
 
     const outcome = await handleInsertShot(
-      { insert_after_shot_number: 0, voice_over: 'A brand new shot.', visual_description: '   ' },
+      { position: 'start', voice_over: 'A brand new shot.', visual_description: '   ' },
       buildContext({ projectId })
     )
 
@@ -812,7 +821,7 @@ test.describe('handleInsertShot', () => {
 
     const outcome = await handleInsertShot(
       {
-        insert_after_shot_number: 1,
+        position: 'after', after_shot_number: 1,
         voice_over: 'A brand new shot.',
         visual_description: 'A brand new visual.',
         section_label: 'Introduction',
@@ -830,7 +839,7 @@ test.describe('handleInsertShot', () => {
 
     const outcome = await handleInsertShot(
       {
-        insert_after_shot_number: 0,
+        position: 'start',
         voice_over: 'A brand new shot.',
         visual_description: 'A brand new visual.',
         shot_size: 'wide',
@@ -858,7 +867,7 @@ test.describe('handleInsertShot', () => {
 
     const outcome = await handleInsertShot(
       {
-        insert_after_shot_number: 0,
+        position: 'start',
         voice_over: 'A brand new shot.',
         visual_description: 'A brand new visual.',
         shot_size: 'wide',
@@ -885,7 +894,7 @@ test.describe('handleInsertShot', () => {
 
     const outcome = await handleInsertShot(
       {
-        insert_after_shot_number: 0,
+        position: 'start',
         voice_over: 'A brand new shot.',
         visual_description: 'A brand new visual.',
         shot_size: 'wide',
@@ -903,6 +912,70 @@ test.describe('handleInsertShot', () => {
     expect(inserted.shot_size).toBeNull()
     expect(inserted.camera_angle).toBeNull()
     expect(inserted.camera_movement).toBeNull()
+  })
+
+  test('position: "end" appends after the last shot with no anchor named, and reports it as such', async () => {
+    const projectId = await seedToolProject()
+    await seedToolShot(projectId, { order_index: 0 })
+    await seedToolShot(projectId, { order_index: 1 })
+
+    const outcome = await handleInsertShot(
+      { position: 'end', voice_over: 'A brand new shot.', visual_description: 'A brand new visual.' },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('applied')
+    expect(outcome.kind === 'applied' && outcome.label).toBe('Inserted a new shot at the end')
+    const shots = await readShots(projectId)
+    expect(shots.map((s) => s.order_index)).toEqual([0, 1, 2])
+    expect(shots[2].voice_over).toBe('A brand new shot.')
+  })
+
+  test('position: "start" needs no anchor either, and reports it as such', async () => {
+    const projectId = await seedToolProject()
+    await seedToolShot(projectId, { order_index: 0 })
+
+    const outcome = await handleInsertShot(
+      { position: 'start', voice_over: 'A brand new shot.', visual_description: 'A brand new visual.' },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('applied')
+    expect(outcome.kind === 'applied' && outcome.label).toBe('Inserted a new shot at the start')
+    const shots = await readShots(projectId)
+    expect(shots[0].voice_over).toBe('A brand new shot.')
+  })
+
+  test('an out-of-range after_shot_number is refused with the valid range stated, not a bare not-found', async () => {
+    const projectId = await seedToolProject()
+    await seedToolShot(projectId, { order_index: 0 })
+    await seedToolShot(projectId, { order_index: 1 })
+    await seedToolShot(projectId, { order_index: 2 })
+    await seedToolShot(projectId, { order_index: 3 })
+    await seedToolShot(projectId, { order_index: 4 })
+
+    const outcome = await handleInsertShot(
+      { position: 'after', after_shot_number: 6, voice_over: 'Should not be inserted.', visual_description: 'x' },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('errored')
+    expect(outcome.kind === 'errored' && outcome.message).toContain('between 1 and 5')
+    expect(outcome.kind === 'errored' && outcome.message).toContain('"start"/"end"')
+    expect(await readShots(projectId)).toHaveLength(5)
+  })
+
+  test('position: "after" with no shots yet is refused naming that there are none, not a numeric range', async () => {
+    const projectId = await seedToolProject()
+
+    const outcome = await handleInsertShot(
+      { position: 'after', after_shot_number: 1, voice_over: 'Should not be inserted.', visual_description: 'x' },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('errored')
+    expect(outcome.kind === 'errored' && outcome.message).toContain('no shots yet')
+    expect(await readShots(projectId)).toHaveLength(0)
   })
 })
 
@@ -1328,7 +1401,7 @@ test.describe('runAgentTurn', () => {
     // This scripts the fake model to look then write, so it only proves the turn loop
     // supports that shape end-to-end (persists the write, doesn't stop at the get_shot
     // reply). Whether the real model chooses this shape for a given prompt needs a live
-    // Claude call, which this repo's tests never make - see the AGENT_SYSTEM_PROMPT_V10
+    // Claude call, which this repo's tests never make - see the AGENT_SYSTEM_PROMPT_V11
     // content assertions above for the prompt-shape half of this check.
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId)
@@ -1383,7 +1456,7 @@ test.describe('runAgentTurn', () => {
     const shotA = await seedToolShot(projectId, { order_index: 0 })
     const numA = (await readShot(shotA)).order_index + 1
     const gateway = scriptedGateway([
-      successMessage({ insert_after_shot_number: numA, voice_over: 'A new shot.' }, 'insert_shot'),
+      successMessage({ position: 'after', after_shot_number: numA, voice_over: 'A new shot.' }, 'insert_shot'),
       successMessage({ shot_number: numA, voice_over: 'Edited.' }, 'update_shot'),
       textMessage('Done.'),
     ])

@@ -1023,3 +1023,33 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   before anything is created, and `reserveAndSettle`/`createMessage` are
   only reachable after a successful claim. See `tests/agent-turn.spec.ts`'s
   extended `already_generating` test.
+
+- **`insert_shot` collapsed "the anchor" and "the new shot's own resulting
+  number" into one parameter, and manual testing hit it.** A 5-shot
+  project, "place it at the end": the model passed
+  `insert_after_shot_number: 6` - the new shot's own resulting position
+  (5 existing shots + 1), not an existing anchor - got a bare "Shot 6 not
+  found," and only succeeded on a second, separately-billed retry with `5`.
+  Root cause wasn't model error: the schema had no way to say "at the end"
+  without computing an index, and `insert_after_shot_number`'s description
+  never distinguished "an existing shot to anchor after" from "the
+  resulting number" - both read as the same integer for "the end." The
+  anchor was also validated only inside `handleInsertShot`, after the
+  model's (already paid-for) tool call had already returned, and the
+  not-found message never stated the valid range - nothing to correct
+  from except guessing. Fixed by replacing the single integer with
+  `position: 'start' | 'end' | 'after'` (required) plus
+  `after_shot_number` (a plain schema property, deliberately *not* in
+  `required` - it's only meaningful for `'after'`, and flat JSON-Schema
+  `required` can't express a conditional requirement, same reason
+  `update_shot`'s effective-value checks live in the handler rather than
+  the schema). `'start'`/`'end'` need no anchor at all;
+  `handleInsertShot` now validates `after_shot_number` against the actual
+  shot count *before* computing a position, and a refusal states the real
+  range (`"between 1 and 5"`, or `"there are no shots yet"`) instead of a
+  bare not-found. Bumped `AGENT_SYSTEM_PROMPT_V10` → `V11`: the
+  `insert_shot` bullet now spells out that `after_shot_number` always
+  names an *existing* shot, with a worked example, since the ambiguity
+  lived as much in the prompt's wording as the schema's. See
+  `tests/agent-turn.spec.ts`'s `handleInsertShot` describe block (the new
+  `position: 'end'`/`'start'`-with-no-anchor and out-of-range tests).

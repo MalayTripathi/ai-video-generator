@@ -1,6 +1,18 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, MODEL_REPORTABLE_CAMERA_ORIGINS } from '@/lib/config/enums'
 
+// v11: insert_shot's insert_after_shot_number collapses two different numbers into one
+// parameter - "the existing shot to anchor after" and "the new shot's own resulting
+// number" both read as the same integer when a user says "at the end," and the tool gave
+// the model no way to express "end"/"start" without computing an index itself. Manual
+// testing reproduced this exactly: a 5-shot project, "place it at the end," the model
+// passed insert_after_shot_number: 6 (the new shot's own resulting number, not an
+// existing anchor) and got a bare "Shot 6 not found" - a wasted paid call with no range
+// info to correct from. Replaced with `position: 'start' | 'end' | 'after'` plus a
+// conditionally-required `after_shot_number` (used, and only used, with 'after') - the
+// two common positions need no anchor at all, and 'after' can no longer be confused with
+// a resulting index. handleInsertShot also now states the valid anchor range in its
+// refusal instead of a bare not-found. See docs/decisions.md.
 // v10: insert_shot's section_label and camera fields (shot_size, camera_angle,
 // camera_movement, plus their origins) move into `required`, and the shot index now
 // carries each shot's section_label. Manual testing found two gaps: an inserted shot's
@@ -11,7 +23,7 @@ import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, MODEL_REPORTABLE_CAMERA_OR
 // three (e.g. shot_size and camera_movement but not camera_angle) silently left the
 // third null/'auto' instead of leaving all three unset. Both now match the
 // required-together pattern write_shots and derive_camera already use. See
-// docs/decisions.md.
+// docs/decisions.md. Superseded by v11 above.
 // v9: removes finish entirely. Two live tests (see docs/decisions.md) showed it never
 // actually bundled with a mutating call the way it was designed to - the model always
 // waited for a tool result first and called finish alone afterward, so the round trip it
@@ -59,12 +71,12 @@ import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, MODEL_REPORTABLE_CAMERA_OR
 // - v2 briefly let the agent auto-create/bind a character, reverted: C5's subject and
 // unbuilt.) Bump the suffix (and this comment) on any content change, matching
 // shot-generation.ts's SHOT_GENERATION_SYSTEM_PROMPT_V4 convention.
-export const AGENT_SYSTEM_PROMPT_V10 = `You are an assistant embedded in a video project's shot-list workbench. The user will describe a change in plain language; you read the project's shots and make the change yourself by calling tools - you never ask the user to make the edit themselves.
+export const AGENT_SYSTEM_PROMPT_V11 = `You are an assistant embedded in a video project's shot-list workbench. The user will describe a change in plain language; you read the project's shots and make the change yourself by calling tools - you never ask the user to make the edit themselves.
 
 You have five tools:
 - get_shot: read full detail for one shot, including which characters are already bound to it (its valid dialogue speakers).
 - update_shot: overwrite one or more of an existing shot's own fields, including its dialogue.
-- insert_shot: add a new shot at a position. Give it the section_label shown for the shot(s) around the insertion point in the index below - a shot placed between two shots of the same section belongs to that section; only start a new section at a genuine boundary, and prefer an existing project section over inventing one. You must also report shot_size, camera_angle, and camera_movement (with their origins) for the new shot as your own fresh judgment call, the same way write_shots would - never report some of the three and leave the rest out.
+- insert_shot: add a new shot. Use position: 'start'/'end' for the very first/last shot - no anchor needed. Use position: 'after' with after_shot_number to place it immediately following an existing shot; after_shot_number always names an EXISTING shot from the index below, never the new shot's own resulting number - if the index has 5 shots and you want the new one to become shot 6, that means after_shot_number: 5 (the last existing shot), not 6. Give it the section_label shown for the shot(s) around the insertion point in the index below - a shot placed between two shots of the same section belongs to that section; only start a new section at a genuine boundary, and prefer an existing project section over inventing one. You must also report shot_size, camera_angle, and camera_movement (with their origins) for the new shot as your own fresh judgment call, the same way write_shots would - never report some of the three and leave the rest out.
 - regenerate_all_shots: throw away every shot and generate a fresh list from the original brief. This is destructive and expensive - only use it when the user clearly wants to start over, not for editing individual shots.
 - decline: call this once for each part of a request you will not do - something none of your tools can do, a hard rule blocking it, or a guess you won't make because it's destructive or too ambiguous. Explain why in plain language. It does not end the turn: if other parts of the request can still be done, keep going and do them.
 
@@ -216,14 +228,21 @@ const UPDATE_SHOT_TOOL: Anthropic.Tool = {
 const INSERT_SHOT_TOOL: Anthropic.Tool = {
   name: 'insert_shot',
   description:
-    'Insert a new shot into the list. Position is relative to an existing shot number, never a raw index - the server places it and renumbers everything after it.',
+    "Insert a new shot into the list. The server places it and renumbers everything after it - never compute a resulting shot number yourself.",
   input_schema: {
     type: 'object',
     properties: {
+      position: {
+        type: 'string',
+        enum: ['start', 'end', 'after'],
+        description:
+          "Where to place the new shot. 'start' for the very first shot, 'end' for the very last - neither needs after_shot_number. 'after' inserts immediately following an existing shot, named by number in after_shot_number.",
+      },
       // No `minimum` - see get_shot's comment above; enforced in handleInsertShot instead.
-      insert_after_shot_number: {
+      after_shot_number: {
         type: 'integer',
-        description: '0 to insert as the new first shot; otherwise the shot number this new shot follows.',
+        description:
+          "Only used, and only required, when position is 'after': the existing shot number (from the index below) this new shot immediately follows. This is the shot being anchored to, never the new shot's own resulting number. Omit for 'start'/'end'.",
       },
       voice_over: { type: 'string' },
       visual_description: { type: 'string' },
@@ -236,7 +255,7 @@ const INSERT_SHOT_TOOL: Anthropic.Tool = {
       ...CAMERA_FIELD_PROPERTIES,
     },
     required: [
-      'insert_after_shot_number',
+      'position',
       'voice_over',
       'visual_description',
       'section_label',
