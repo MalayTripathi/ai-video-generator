@@ -62,11 +62,12 @@ export async function insertUserMessage(params: {
 }
 
 /**
- * Persists a turn's closing text reply - the only kind of row that carries `client_id`
- * (the idempotency-lookup match key on a resend, per insertUserMessage's 'duplicate'
- * path above). kind defaults to 'text' at the DB level; every caller of this helper is
- * always writing plain conversational content, never activity - see insertToolActivity
- * for that.
+ * Persists a turn's closing reply - the only kind of row that carries `client_id` (the
+ * idempotency-lookup match key on a resend, per insertUserMessage's 'duplicate' path
+ * above). Always `kind: 'text'` (the DB default) - the closing reply carries no
+ * turn-level judgement about what happened; a declined part of a request gets its own
+ * message via insertToolActivity's `kind: 'refusal'` instead (see decline in
+ * src/lib/prompts/agent.ts and its dispatch in tools.ts), independent of this row.
  */
 export async function insertAssistantReply(
   supabase: SupabaseServerClient,
@@ -81,6 +82,33 @@ export async function insertAssistantReply(
     .single()
   if (error || !data) {
     throw new Error(`Failed to persist assistant reply: ${error?.message ?? 'no row returned'}`)
+  }
+  return data
+}
+
+/**
+ * Persists one iteration's interstitial prose - text the model said in the SAME response
+ * as a tool call, before the turn's closing reply. Without this, only the tool_done/
+ * refusal rows for that iteration would survive to reload, and the turn's real narration
+ * ("Let me check that shot first...") would be silently lost. Deliberately carries no
+ * `client_id` (this is activity within a turn, not its closing reply - same reasoning as
+ * insertToolActivity) and defaults `kind` to 'text', identical in shape to
+ * regenerate_all_shots' own nested assistant-message insert (shots/logic.ts) - that
+ * precedent is why build-agent-messages.ts already matches a turn's closing reply by
+ * `client_id` rather than "first text row wins".
+ */
+export async function insertInterstitialReply(
+  supabase: SupabaseServerClient,
+  projectId: string,
+  content: string
+): Promise<MessageRow> {
+  const { data, error } = await supabase
+    .from('messages')
+    .insert({ project_id: projectId, role: 'assistant', content })
+    .select('*')
+    .single()
+  if (error || !data) {
+    throw new Error(`Failed to persist interstitial reply: ${error?.message ?? 'no row returned'}`)
   }
   return data
 }

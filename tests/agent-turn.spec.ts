@@ -1,17 +1,18 @@
 import { test, expect } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
-import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V6 } from '../src/lib/prompts/agent'
+import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V8 } from '../src/lib/prompts/agent'
 import {
   handleGetShot,
   handleUpdateShot,
   handleInsertShot,
   handleRegenerateAllShots,
+  handleDecline,
   dispatchAgentTool,
   type AgentToolContext,
 } from '../src/app/api/projects/[id]/agent/tools'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { successMessage, throwingGateway, textMessage, scriptedGateway, multiToolMessage } from './helpers/claude-fakes'
+import { successMessage, throwingGateway, textMessage, scriptedGateway, multiToolMessage, mixedMessage } from './helpers/claude-fakes'
 import type { ClaudeGateway } from '../src/lib/claude'
 import { runAgentTurn, type AgentStreamEvent } from '../src/app/api/projects/[id]/agent/logic'
 import { STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
@@ -198,17 +199,18 @@ test.describe('buildShotIndexBlock', () => {
 })
 
 test.describe('AGENT_TOOLS', () => {
-  test('is exactly get_shot, update_shot, insert_shot, regenerate_all_shots, finish - no delete tool, ever', () => {
+  test('is exactly get_shot, update_shot, insert_shot, regenerate_all_shots, decline, finish - no delete tool, ever', () => {
     expect(AGENT_TOOLS.map((t) => t.name)).toEqual([
       'get_shot',
       'update_shot',
       'insert_shot',
       'regenerate_all_shots',
+      'decline',
       'finish',
     ])
   })
 
-  test('finish takes only a required message string, no other properties', () => {
+  test('finish takes only a required message string - no turn-level outcome judgement', () => {
     const finish = AGENT_TOOLS.find((t) => t.name === 'finish')!
     const schema = finish.input_schema as unknown as {
       properties: Record<string, unknown>
@@ -218,6 +220,33 @@ test.describe('AGENT_TOOLS', () => {
     expect(Object.keys(schema.properties)).toEqual(['message'])
     expect(schema.required).toEqual(['message'])
     expect(schema.additionalProperties).toBe(false)
+  })
+
+  test('decline takes only a required message string', () => {
+    const decline = AGENT_TOOLS.find((t) => t.name === 'decline')!
+    const schema = decline.input_schema as unknown as {
+      properties: Record<string, unknown>
+      required: string[]
+      additionalProperties: boolean
+    }
+    expect(Object.keys(schema.properties)).toEqual(['message'])
+    expect(schema.required).toEqual(['message'])
+    expect(schema.additionalProperties).toBe(false)
+  })
+
+  test('update_shot has no camera _origin properties - naming a camera field is itself the origin signal', () => {
+    const updateShot = AGENT_TOOLS.find((t) => t.name === 'update_shot')!
+    const props = (updateShot.input_schema as unknown as { properties: Record<string, unknown> }).properties
+    expect(props.shot_size).toBeDefined()
+    expect(props.shot_size_origin).toBeUndefined()
+    expect(props.camera_angle_origin).toBeUndefined()
+    expect(props.camera_movement_origin).toBeUndefined()
+  })
+
+  test('insert_shot still has camera _origin properties - a new shot is the model freely choosing, not overriding', () => {
+    const insertShot = AGENT_TOOLS.find((t) => t.name === 'insert_shot')!
+    const props = (insertShot.input_schema as unknown as { properties: Record<string, unknown> }).properties
+    expect(props.shot_size_origin).toBeDefined()
   })
 
   test('update_shot and insert_shot reject unknown properties', () => {
@@ -234,34 +263,62 @@ test.describe('AGENT_TOOLS', () => {
   })
 })
 
-test.describe('AGENT_SYSTEM_PROMPT_V6', () => {
+test.describe('AGENT_SYSTEM_PROMPT_V8', () => {
   test('explicitly instructs the model never to delete a shot', () => {
-    expect(AGENT_SYSTEM_PROMPT_V6.toLowerCase()).toContain('delete')
+    expect(AGENT_SYSTEM_PROMPT_V8.toLowerCase()).toContain('delete')
   })
 
   test('defaults to acting on a content request rather than asking a clarifying question', () => {
-    expect(AGENT_SYSTEM_PROMPT_V6.toLowerCase()).toContain('default to acting')
+    expect(AGENT_SYSTEM_PROMPT_V8.toLowerCase()).toContain('default to acting')
   })
 
   test('directs the model to use other shots as a style reference instead of asking the user to specify one', () => {
-    expect(AGENT_SYSTEM_PROMPT_V6.toLowerCase()).toContain('style reference')
+    expect(AGENT_SYSTEM_PROMPT_V8.toLowerCase()).toContain('style reference')
   })
 
   test('reserves clarifying questions for which-shot/which-field ambiguity or a destructive guess', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V6.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
     expect(prompt).toContain('which shot or which field')
     expect(prompt).toContain('destructive')
   })
 
   test('states bundling finish with the final tool call as the default, not merely an option', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V6.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
     expect(prompt).toContain('finish')
     expect(prompt).toContain('same response as your final tool call')
     expect(prompt).toContain('default to calling finish')
   })
 
   test('warns finish must only accompany the LAST action, not the first of several', () => {
-    expect(AGENT_SYSTEM_PROMPT_V6.toLowerCase()).toContain('not finished after the first one')
+    expect(AGENT_SYSTEM_PROMPT_V8.toLowerCase()).toContain('not finished after the first one')
+  })
+
+  test('requires every turn to end via finish, even a partial or total decline - never a bare prose reply', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
+    expect(prompt).toContain('never end with only a prose reply')
+    expect(prompt).toContain('declined some or all of it')
+  })
+
+  test('finish no longer carries any outcome/refused wording of its own - decline owns that now', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
+    expect(prompt).not.toContain('call finish with outcome')
+    expect(prompt).not.toContain('"outcome"')
+  })
+
+  test('the no-delete-tool rule tells the model to call decline, not finish', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
+    expect(prompt).toContain('call decline and tell them to use that shot')
+  })
+
+  test('tells the model a request can mix completed actions with separate declines, not all-or-nothing', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
+    expect(prompt).toContain("don't have to answer all-or-nothing")
+    expect(prompt).toContain('call decline separately for whatever you won')
+  })
+
+  test('states decline always succeeds and never blocks bundling finish in the same response', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V8.toLowerCase()
+    expect(prompt).toContain('decline always succeeds')
   })
 })
 
@@ -310,7 +367,7 @@ test.describe('handleGetShot', () => {
 })
 
 test.describe('handleUpdateShot', () => {
-  test('writes only the fields explicitly named in the call - a sibling camera field is untouched', async () => {
+  test('writes only the fields explicitly named in the call - a sibling camera field (value and origin) is untouched', async () => {
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId, {
       camera_angle: 'eye_level',
@@ -320,35 +377,52 @@ test.describe('handleUpdateShot', () => {
     })
     const shotNumber = (await readShot(shotId)).order_index + 1
 
-    const outcome = await handleUpdateShot(
-      { shot_number: shotNumber, shot_size: 'wide', shot_size_origin: 'derived' },
-      buildContext({ projectId })
-    )
+    const outcome = await handleUpdateShot({ shot_number: shotNumber, shot_size: 'wide' }, buildContext({ projectId }))
 
     expect(outcome.kind).toBe('applied')
     const after = await readShot(shotId)
     expect(after.shot_size).toBe('wide')
     expect(after.camera_angle).toBe('eye_level')
+    expect(after.camera_angle_origin).toBe('auto')
     expect(after.camera_movement).toBe('static')
+    expect(after.camera_movement_origin).toBe('auto')
   })
 
-  test('a stored override is protected: the model supplying auto does not overwrite it, but derived does', async () => {
+  test('naming a camera field always sets its origin to override, regardless of the field\'s prior origin - fixes the bug where an agent write left origin stuck at auto', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId, { shot_size: 'wide', shot_size_origin: 'auto' })
+    const shotNumber = (await readShot(shotId)).order_index + 1
+
+    const outcome = await handleUpdateShot({ shot_number: shotNumber, shot_size: 'close_up' }, buildContext({ projectId }))
+
+    expect(outcome.kind).toBe('applied')
+    const after = await readShot(shotId)
+    expect(after.shot_size).toBe('close_up')
+    expect(after.shot_size_origin).toBe('override')
+  })
+
+  test('naming a camera field already at override with a new value still writes it, origin stays override', async () => {
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId, { shot_size: 'wide', shot_size_origin: 'override' })
     const shotNumber = (await readShot(shotId)).order_index + 1
-    const ctx = buildContext({ projectId })
 
-    const refused = await handleUpdateShot(
-      { shot_number: shotNumber, shot_size: 'medium', shot_size_origin: 'auto' },
-      ctx
-    )
-    expect((await readShot(shotId)).shot_size).toBe('wide')
-    expect((await readShot(shotId)).shot_size_origin).toBe('override')
-    void refused
+    const outcome = await handleUpdateShot({ shot_number: shotNumber, shot_size: 'medium' }, buildContext({ projectId }))
 
-    await handleUpdateShot({ shot_number: shotNumber, shot_size: 'medium', shot_size_origin: 'derived' }, ctx)
-    expect((await readShot(shotId)).shot_size).toBe('medium')
-    expect((await readShot(shotId)).shot_size_origin).toBe('derived')
+    expect(outcome.kind).toBe('applied')
+    const after = await readShot(shotId)
+    expect(after.shot_size).toBe('medium')
+    expect(after.shot_size_origin).toBe('override')
+  })
+
+  test('naming a camera field with the same value it already has, already override, is a no-op', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId, { shot_size: 'wide', shot_size_origin: 'override' })
+    const shotNumber = (await readShot(shotId)).order_index + 1
+
+    const outcome = await handleUpdateShot({ shot_number: shotNumber, shot_size: 'wide' }, buildContext({ projectId }))
+
+    expect(outcome.kind).toBe('applied')
+    expect(outcome.kind === 'applied' && outcome.label).toContain('No changes needed')
   })
 
   test('staleness parity: a voice_over write sets the same flags a manual edit would', async () => {
@@ -803,6 +877,21 @@ test.describe('handleRegenerateAllShots', () => {
   })
 })
 
+test.describe('handleDecline', () => {
+  test('always reports refused, carrying the message verbatim - never a mutation attempt', async () => {
+    const outcome = await handleDecline({ message: "There's no delete tool - use the shot's own delete button." })
+    expect(outcome.kind).toBe('refused')
+    expect(outcome.kind === 'refused' && outcome.label).toBe("There's no delete tool - use the shot's own delete button.")
+    expect(outcome.kind === 'refused' && outcome.shotKey).toBeUndefined()
+  })
+
+  test('falls back to a generic message rather than throwing on malformed input', async () => {
+    const outcome = await handleDecline({})
+    expect(outcome.kind).toBe('refused')
+    expect(outcome.kind === 'refused' && outcome.label.length > 0).toBe(true)
+  })
+})
+
 async function readMessages(projectId: string) {
   const { data } = await admin.from('messages').select('*').eq('project_id', projectId).order('created_at')
   return data!
@@ -961,6 +1050,168 @@ test.describe('runAgentTurn', () => {
     if (result.ok) expect(result.message.content).toBe('That description cannot be empty, so I left it as is.')
     expect(gateway.getCallCount()).toBe(2)
     expect((await readShot(shotId)).visual_description).toBe(shot.visual_description)
+  })
+
+  test('a turn that declines part of a request and completes another renders the decline as its own message, closing text stays ordinary', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId)
+    const shotNumber = (await readShot(shotId)).order_index + 1
+    const events: AgentStreamEvent[] = []
+    const gateway = scriptedGateway([
+      multiToolMessage([
+        { name: 'decline', input: { message: "There's no delete tool - use the shot's own delete button." } },
+        { name: 'update_shot', input: { shot_number: shotNumber, voice_over: 'Rewritten with more panic.' } },
+        { name: 'finish', input: { message: "Rewrote that shot's narration." } },
+      ]),
+    ])
+
+    const result = await runAgentTurn({
+      gateway,
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'delete shot 3 and rewrite this one to be more panicked',
+      clientId: crypto.randomUUID(),
+      onEvent: (e) => events.push(e),
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.ok && result.message.content).toBe("Rewrote that shot's narration.")
+    // Bundled in one call: decline never invalidates finish the way a failed real tool would.
+    expect(gateway.getCallCount()).toBe(1)
+
+    const messages = await readMessages(projectId)
+    // user -> decline (its own refusal-kind message) -> tool_done -> ordinary closing text
+    expect(messages.map((m) => `${m.role}:${m.kind}`)).toEqual([
+      'user:text',
+      'assistant:refusal',
+      'assistant:tool_done',
+      'assistant:text',
+    ])
+    expect(messages[1].content).toBe("There's no delete tool - use the shot's own delete button.")
+    expect(messages[1].client_id).toBeNull()
+    expect(messages[3].content).toBe("Rewrote that shot's narration.")
+    expect((await readShot(shotId)).voice_over).toBe('Rewritten with more panic.')
+
+    const settled = events.find((e) => e.type === 'settled')
+    expect(settled?.type === 'settled' && settled.viaFinish).toBe(true)
+  })
+
+  test('a wholly declined turn still renders its decline in the refusal treatment, even though the closing row is ordinary text', async () => {
+    const projectId = await seedToolProject()
+
+    const result = await runAgentTurn({
+      gateway: scriptedGateway([
+        multiToolMessage([
+          { name: 'decline', input: { message: "There's no delete tool - use the shot's own delete button." } },
+          { name: 'finish', input: { message: "I can't delete shots directly." } },
+        ]),
+      ]),
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'delete shot 3',
+      clientId: crypto.randomUUID(),
+    })
+
+    expect(result.ok).toBe(true)
+    const messages = await readMessages(projectId)
+    expect(messages.map((m) => `${m.role}:${m.kind}`)).toEqual(['user:text', 'assistant:refusal', 'assistant:text'])
+    expect(messages[1].content).toBe("There's no delete tool - use the shot's own delete button.")
+  })
+
+  test('a bare prose reply with no finish call never claims to have come from finish (viaFinish false)', async () => {
+    const projectId = await seedToolProject()
+    const events: AgentStreamEvent[] = []
+
+    const result = await runAgentTurn({
+      gateway: scriptedGateway([textMessage("There's no delete tool - use the shot's own delete button in the UI.")]),
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'delete shot 3',
+      clientId: crypto.randomUUID(),
+      onEvent: (e) => events.push(e),
+    })
+
+    expect(result.ok).toBe(true)
+    const messages = await readMessages(projectId)
+    expect(messages[messages.length - 1].kind).toBe('text')
+    const settled = events.find((e) => e.type === 'settled')
+    expect(settled?.type === 'settled' && settled.viaFinish).toBe(false)
+  })
+
+  test('interstitial prose alongside a tool call persists in its real position, before that iteration\'s tool_done row, and the settled event reports viaFinish', async () => {
+    const projectId = await seedToolProject()
+    const shotId = await seedToolShot(projectId)
+    const shotNumber = (await readShot(shotId)).order_index + 1
+    const events: AgentStreamEvent[] = []
+
+    const result = await runAgentTurn({
+      gateway: scriptedGateway([
+        mixedMessage('Let me check that shot first.', [{ name: 'get_shot', input: { shot_number: shotNumber } }]),
+        multiToolMessage([
+          { name: 'update_shot', input: { shot_number: shotNumber, voice_over: 'Changed after looking.' } },
+          { name: 'finish', input: { message: 'Updated it.' } },
+        ]),
+      ]),
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'change the narration if it needs it',
+      clientId: crypto.randomUUID(),
+      onEvent: (e) => events.push(e),
+    })
+
+    expect(result.ok).toBe(true)
+    const messages = await readMessages(projectId)
+    // user -> interstitial prose -> tool_done (get_shot) -> tool_done (update_shot) -> closing reply
+    expect(messages.map((m) => `${m.role}:${m.kind}`)).toEqual([
+      'user:text',
+      'assistant:text',
+      'assistant:tool_done',
+      'assistant:tool_done',
+      'assistant:text',
+    ])
+    const interstitial = messages[1]
+    expect(interstitial.content).toBe('Let me check that shot first.')
+    expect(interstitial.client_id).toBeNull()
+    expect(messages[4].content).toBe('Updated it.')
+
+    const settled = events.find((e) => e.type === 'settled')
+    expect(settled?.type === 'settled' && settled.viaFinish).toBe(true)
+  })
+
+  test('a previous turn\'s decline stays in conversation history, so a later turn does not re-answer an already-declined request', async () => {
+    const projectId = await seedToolProject()
+
+    await runAgentTurn({
+      gateway: scriptedGateway([
+        multiToolMessage([
+          { name: 'decline', input: { message: "There's no delete tool - use the shot's own delete button." } },
+          { name: 'finish', input: { message: "I can't delete shots directly." } },
+        ]),
+      ]),
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'delete shot 3',
+      clientId: crypto.randomUUID(),
+    })
+
+    const turn2Gateway = scriptedGateway([textMessage('Sure, on it.')])
+    await runAgentTurn({
+      gateway: turn2Gateway,
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'rewrite the narration for shot 1',
+      clientId: crypto.randomUUID(),
+    })
+
+    const [call] = turn2Gateway.getCalls()
+    const historyText = JSON.stringify(call.messages)
+    expect(historyText).toContain("There's no delete tool - use the shot's own delete button.")
   })
 
   test('a "write me X" content request can loop from get_shot into update_shot rather than stopping at a text-only reply', async () => {
@@ -1378,7 +1629,7 @@ test.describe('runAgentTurn', () => {
     expect(settled?.type === 'settled' && settled.cost).toBe(0)
   })
 
-  test("history sent to Claude on a later turn excludes an earlier turn's tool_done/refusal rows", async () => {
+  test("history sent to Claude on a later turn excludes an earlier turn's tool_done rows (but not a refusal - see the handleDecline-focused test above)", async () => {
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId)
     const shotNumber = (await readShot(shotId)).order_index + 1

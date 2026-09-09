@@ -54,6 +54,22 @@ test.describe('buildAgentMessages', () => {
     expect(out[1].content).toBe("I can't delete shots.")
   })
 
+  test('a turn that declines via a mid-turn refusal (no client_id) still gets its ordinary closing reply and cost line, not folded into the refusal', () => {
+    const userRow = row({ role: 'user', content: 'delete shot 1', client_id: 'c1' })
+    const declineRow = row({
+      role: 'assistant',
+      kind: 'refusal',
+      content: "There's no delete tool - use the shot's own delete button.",
+    })
+    const closingRow = row({ role: 'assistant', kind: 'text', content: "I can't delete shots directly.", client_id: 'c1' })
+
+    const out = buildAgentMessages([userRow, declineRow, closingRow], new Map(), new Map([[userRow.id, 0.05]]))
+
+    expect(out.map((m) => m.kind)).toEqual(['user', 'refusal', 'agent', 'cost'])
+    expect(out[1].content).toBe("There's no delete tool - use the shot's own delete button.")
+    expect(out[2].content).toBe("I can't delete shots directly.")
+  })
+
   test('a mid-list abandoned turn (no closing reply before the next user row) renders as error with no cost, and the next turn still parses correctly', () => {
     const abandonedUser = row({ role: 'user', content: 'first turn', client_id: 'c1' })
     // No assistant row at all for this turn - straight to the next user row.

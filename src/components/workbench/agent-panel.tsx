@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AgentMessageItem, type AgentMessage } from './agent-message'
 import { useShots } from '@/app/(app)/projects/[id]/workbench/_components/shots-context'
 import { useAgentTurn } from '@/app/(app)/projects/[id]/workbench/_components/use-agent-turn'
@@ -47,6 +47,15 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
     )
   )
   const [input, setInput] = useState('')
+  const listRef = useRef<HTMLDivElement>(null)
+
+  // Opens (and stays) scrolled to the most recent message, as a chat panel normally does -
+  // both on initial mount after `initialMessages` loads from persistence, and while a live
+  // turn streams new ones in.
+  useEffect(() => {
+    const el = listRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages])
 
   function appendMessages(next: AgentMessage[]) {
     setMessages((prev) => [...prev, ...next])
@@ -127,18 +136,9 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
           },
         ])
       },
-      onSettled: (finalContent, dropped, cost) => {
+      onSettled: (finalContent, dropped, cost, viaFinish) => {
         clearPlaceholder()
         setMessages((prev) => {
-          // The streaming bubble is found by id, not by list position: tool_completed/
-          // refusal/error events routinely land after it and before settle, so it is
-          // usually no longer the last message by the time settle fires.
-          const streamingIndex = !dropped && streamingId ? prev.findIndex((m) => m.id === streamingId) : -1
-          if (streamingIndex >= 0) {
-            const next = [...prev]
-            next[streamingIndex] = { ...next[streamingIndex], content: finalContent, streaming: false }
-            return next
-          }
           if (dropped) {
             return [
               ...prev,
@@ -151,7 +151,31 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
               },
             ]
           }
-          return [...prev, { id: crypto.randomUUID(), kind: 'agent', content: finalContent, createdAt: nowIso() }]
+          // The streaming bubble is found by id, not by list position: tool_completed/
+          // refusal/error events routinely land after it and before settle, so it is
+          // usually no longer the last message by the time settle fires.
+          const streamingIndex = streamingId ? prev.findIndex((m) => m.id === streamingId) : -1
+          if (streamingIndex < 0) {
+            // Nothing streamed live (or it already finalized elsewhere) - the closing
+            // reply is simply the next message.
+            return [...prev, { id: crypto.randomUUID(), kind: 'agent', content: finalContent, createdAt: nowIso() }]
+          }
+          if (!viaFinish) {
+            // A bare reply / the iteration-cap fallback: finalContent IS exactly what
+            // just streamed into this same bubble - finalize it in place, don't duplicate.
+            const next = [...prev]
+            next[streamingIndex] = { ...next[streamingIndex], content: finalContent, streaming: false }
+            return next
+          }
+          // finish's own message is never the same text that streamed (its input is
+          // never a text_delta source) - leave the streaming bubble as its own finished
+          // narration message, and append the real closing reply fresh, after it and
+          // after any tool/decline activity that arrived alongside it. This is what
+          // keeps live order matching reload order instead of the closing text landing
+          // wherever the narration bubble happened to be.
+          const next = [...prev]
+          next[streamingIndex] = { ...next[streamingIndex], streaming: false }
+          return [...next, { id: crypto.randomUUID(), kind: 'agent', content: finalContent, createdAt: nowIso() }]
         })
         // The turn's real, settled spend - never sourced from the model's own prose.
         // Shown once, below this turn's last line, only when there was any (a dropped
@@ -201,7 +225,7 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
           )}
         </div>
       ) : (
-        <div className="flex flex-1 flex-col gap-rc-xs overflow-y-auto px-rc-md py-rc-sm">
+        <div ref={listRef} className="flex flex-1 flex-col gap-rc-xs overflow-y-auto px-rc-md py-rc-sm">
           {messages.map((message) => (
             <AgentMessageItem key={message.id} message={message} />
           ))}

@@ -493,4 +493,44 @@ test.describe('agent chat panel', () => {
     await expect(page.getByRole('combobox')).toHaveCount(0)
     await expect(page.getByText('Delete shot')).toHaveCount(0)
   })
+
+  test('opens scrolled to the most recent message, not the top of a long conversation', async ({ page }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId)
+
+    // Enough turns to overflow the panel's height so there's somewhere to scroll from.
+    for (let i = 0; i < 20; i++) {
+      await admin.from('messages').insert({ project_id: projectId, role: 'user', content: `Turn ${i}: change something.` })
+      await admin.from('messages').insert({ project_id: projectId, role: 'assistant', kind: 'text', content: `Turn ${i}: done.` })
+    }
+    // The LAST turn's own content, to assert it's the one actually in view.
+    await admin.from('messages').insert({ project_id: projectId, role: 'user', content: 'The very last message.' })
+    await admin.from('messages').insert({
+      project_id: projectId,
+      role: 'assistant',
+      kind: 'text',
+      content: 'The very last reply.',
+    })
+
+    await page.goto(`/projects/${projectId}/workbench`)
+
+    // The last message is already present in the server-rendered HTML (SSR), so it can
+    // become visible before client-side hydration - and with it, the scroll-to-bottom
+    // effect - has actually run. Poll the scroll position rather than reading it once
+    // immediately, so the assertion is on the effect actually having run, not on timing.
+    await expect(page.getByText('The very last reply.')).toBeVisible()
+    const list = page.locator('[data-message-kind="user"]').first().locator('..')
+
+    const metrics = () =>
+      list.evaluate((el) => ({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }))
+    const initial = await metrics()
+    expect(initial.scrollHeight).toBeGreaterThan(initial.clientHeight) // sanity: seeded messages actually overflow
+
+    await expect
+      .poll(async () => {
+        const { scrollTop, scrollHeight, clientHeight } = await metrics()
+        return scrollTop + clientHeight >= scrollHeight - 5
+      })
+      .toBe(true)
+  })
 })

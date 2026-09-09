@@ -44,7 +44,15 @@ export function buildAgentMessages(
     let closingReply: MessageRow | null = null
     while (i < rows.length && rows[i].role === 'assistant') {
       const r = rows[i]
-      const isClosingReply = r.kind === 'text' && (turnClientId ? r.client_id === turnClientId : closingReply === null)
+      // A turn's closing reply is always `kind: 'text'` - it carries no turn-level
+      // judgement about what happened (see insertAssistantReply's docblock). A mid-turn
+      // refusal (a tool declining, or the model's own `decline` call, both via
+      // insertToolActivity) is always `kind: 'refusal'` and never carries client_id, by
+      // design - it renders in its own position via the activity loop below, never
+      // mistaken for the turn's end.
+      const isClosingReply = turnClientId
+        ? r.kind === 'text' && r.client_id === turnClientId
+        : r.kind === 'text' && closingReply === null
       if (isClosingReply) {
         closingReply = r
         i++
@@ -68,7 +76,12 @@ export function buildAgentMessages(
     }
 
     if (closingReply) {
-      out.push({ id: closingReply.id, kind: 'agent', content: closingReply.content, createdAt: closingReply.created_at })
+      out.push({
+        id: closingReply.id,
+        kind: 'agent',
+        content: closingReply.content,
+        createdAt: closingReply.created_at,
+      })
       const cost = costByMessageId.get(row.id) ?? 0
       if (cost > 0) {
         out.push({ id: `${row.id}-cost`, kind: 'cost', content: '', amount: formatCost(cost), createdAt: closingReply.created_at })

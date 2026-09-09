@@ -686,3 +686,137 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   `runShotGeneration` call can itself insert an unrelated `client_id`-less
   text row earlier in the same turn, and a naive first-row rule would
   mistake that for the turn's end and drop the real closing reply.
+- **C4 manual-testing fixes — why `update_shot` infers `override`, and why a
+  refusal still costs a full call.** Two bugs found in manual testing after
+  the above landed.
+
+  `handleUpdateShot`'s camera loop used to read a model-reported
+  `${field}_origin` off the tool call (mirroring `write_shots`/
+  `runCameraDerivation`'s "the model proposes, code decides" pattern), which
+  meant a real "make shot 3 a close-up" edit could write the new value while
+  leaving origin at `'auto'` — nothing had told the model to populate that
+  property for a manual edit, so it silently defaulted there. The fix drops
+  the property from `update_shot`'s schema entirely
+  (`CAMERA_VALUE_PROPERTIES` vs. `CAMERA_FIELD_PROPERTIES`,
+  `src/lib/prompts/agent.ts`) and has the server write `'override'`
+  unconditionally whenever a camera field is named in the call, mirroring
+  `updateCameraField`'s dropdown path exactly. The reasoning: `update_shot`
+  is not the model freely choosing or deriving a framing from text the way
+  `write_shots` and `runCameraDerivation` are — the system prompt only ever
+  tells it to name a camera field when the user explicitly asked to change
+  it, so naming the field there is the same deliberate act as clicking the
+  dropdown, just relayed through chat. The scope invariant (a field outside
+  `update_shot`'s call is never a write target) already decided *whether*
+  the field is touched; once touched this way, the origin isn't a judgment
+  call left over for the model — there's nothing left for it to report, so
+  the schema no longer offers it anywhere to put one. `insert_shot` keeps
+  `CAMERA_FIELD_PROPERTIES` (with origin) untouched — a brand-new shot's
+  camera fields are the model authoring new content, the `write_shots` kind
+  of judgment call, never a manual override. `runCameraDerivation`'s own
+  override-protection (`shouldApply`) needed no change: it only inspects a
+  shot's *current* origin, indifferent to how it got there, so an agent-set
+  override is already protected from re-derivation the same way a
+  dropdown-set one always was.
+
+  Separately, "delete shot 3" rendered as an ordinary reply instead of a
+  refusal: there's no delete tool, so the model just declined in prose, and
+  the only thing that could ever produce the `refusal` message kind was a
+  dispatched tool's own structured outcome — free text was invisible to the
+  UI. The fix adds a required `outcome: 'completed' | 'refused'` argument to
+  `finish` and strengthens the prompt so every turn ends by calling it, even
+  to decline. This still costs a full paid call for a refusal, and
+  deliberately so: the model has already read and reasoned about the
+  request by the time it decides to refuse it — there is no earlier point at
+  which "refused" is knowable — and a pre-call keyword scan for something
+  like "delete" was considered and rejected, the same way `targetShots`'
+  regex-based over-count check is deliberately advisory rather than a hard
+  gate (see that entry above): it would false-positive on "delete the
+  reference to the hospital in shot 2" and miss a refusal phrased any other
+  way, refusing a request the agent could have handled just to save a call
+  it was always going to make anyway. **Accepted residual gap**: a model
+  that ignores the strengthened prompt and ends a turn with bare prose
+  instead of calling `finish` still renders as an ordinary reply — nothing
+  server-side can currently tell that case apart from a normal completed
+  reply, and nothing should try to via message-content sniffing. Tool-level
+  refusals (a dispatched tool's own `{ kind: 'refused' }`, e.g. the
+  read-only lock or an unbound dialogue speaker) are a separate, unchanged
+  mechanism — both now render identically in the UI, but a turn-level
+  `finish` refusal is the closing reply itself (carries `client_id`), while
+  a tool-level refusal is a mid-turn activity row (never does), matching
+  `insertToolActivity`'s existing reasoning.
+
+  A third, related gap fixed in the same pass: a turn's intermediate prose
+  (the model narrating between tool calls, e.g. "Let me check that shot
+  first") was computed but never persisted — only the turn's very last
+  message and its tool_done/refusal rows survived reload, so the model's
+  own narration vanished and the surviving badges appeared to have jumped
+  ahead of it. Fixed by persisting each iteration's non-empty text
+  immediately, before that iteration's tool calls dispatch, so `created_at`
+  ordering matches when it actually happened — using the same
+  `client_id`-less interstitial-row shape `regenerate_all_shots`' nested
+  `runShotGeneration` call already established, guarded to skip the turn's
+  final iteration (where any trailing text becomes the closing reply
+  instead, via the existing `MAX_ITERATIONS` fallback, and would otherwise
+  be persisted twice).
+- **Four more manual-testing faults, all in the live-rendering/history path —
+  supersedes the `finish` `outcome` design in the entry directly above.**
+  `outcome` shipped, got exercised by hand, and turned out wrong in a way
+  unit tests couldn't see because they never modeled a *mixed* turn: a
+  single label describing a whole turn cannot represent "declined the
+  delete, completed the rewrite" — the prompt's own wording ("refused" when
+  you did not do all of it) meant any partially-declined turn rendered
+  *entirely* as a refusal, regardless of how much else it got right. Fixed
+  by removing `outcome` from `finish` entirely and adding a `decline` tool
+  instead: the model calls it once per part of a request it won't do, and
+  it's dispatched exactly like a real tool's own refusal (`dispatchAgentTool`,
+  same `{ kind: 'refused' }` shape, same `insertToolActivity`/`refusal`
+  message kind, same UI treatment) — so each decline is its own message,
+  independent of whatever else the turn completes, and `finish` goes back
+  to meaning only "I am done." `decline` is explicitly excluded from the
+  "did every mutation apply" check that gates trusting a bundled `finish`
+  message: unlike a real tool unexpectedly failing, the model already knows
+  a decline's outcome when it calls it, so it must never force the
+  same-response bundling optimisation to fall back to an extra round trip.
+
+  Second: the conversation history sent to Claude excluded every
+  `kind: 'refusal'` row, not just `tool_done` activity — a comment at the
+  query justified this as bundling two *activity-log* kinds together, but a
+  refusal (mid-turn, or now `decline`'s own message) is real conversational
+  content answering part of what the user asked, not an activity log. An
+  earlier turn's declined request would vanish from what the model sees on
+  a later turn, so the model — looking at what appeared to be an unanswered
+  request — answered it again, unprompted, sometimes hours later. Fixed by
+  narrowing the exclusion to exactly `tool_done` (`.neq('kind', 'tool_done')`
+  instead of `.eq('kind', 'text')`): the dividing line is "did the model say
+  this to the user," not "did this row carry a `client_id`" — client_id
+  only ever marked idempotency/turn-boundary bookkeeping, and both `decline`
+  and the old tool-level refusals were always `client_id`-less by design, so
+  keying the history filter off `client_id` instead would have reproduced
+  the identical bug for `decline`.
+
+  Third and fourth, the same live-rendering bug seen from two ends: the
+  closing message could paint *before* the last action's own badge while a
+  turn was running, and separately, a piece of the model's own narration
+  could stream onto the screen and then never be seen again, though both
+  persisted correctly and reload always showed the right order. Root cause:
+  the panel finds "the streaming bubble" by id and reuses it as the home
+  for the closing reply once the turn settles — correct when the model's
+  entire reply is one uninterrupted stretch of prose (a bare reply, or the
+  `MAX_ITERATIONS` fallback, where the closing text literally *is* what
+  just streamed), wrong whenever `finish` is bundled into the same response
+  as a tool call: `finish`'s own `message` field is never a text_delta
+  source, so it is always different text from whatever narration happened
+  to be streaming at that moment, yet the panel overwrote that narration
+  bubble with it anyway — landing the closing text in the narration's
+  earlier position (before the badge) and silently discarding the
+  narration itself. Fixed by having the server tell the client which case
+  it is (`viaFinish` on the `settled` SSE event, true only when the closing
+  text came from `finish`'s structured field): when true, the panel leaves
+  any streaming bubble as its own finished message and always appends the
+  closing reply fresh, after it and after any tool/decline activity that
+  arrived alongside it; when false, it finalizes the existing bubble in
+  place exactly as before, since there is nothing else to append. This is
+  the client mirroring, live, the same `client_id`-based distinction
+  `build-agent-messages.ts` already draws on reload — it just needed the
+  server to say out loud which case applied, since the client cannot infer
+  it from message content alone.

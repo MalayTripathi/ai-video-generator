@@ -59,19 +59,41 @@ export function multiToolMessage(calls: { name: string; input: unknown }[]): Fak
   }
 }
 
+/** A single response carrying a text block AND one or more tool_use blocks - the shape a
+ * model uses when it narrates before acting (e.g. "Let me check that shot first" before a
+ * get_shot call), as opposed to multiToolMessage's tool-use-only bundling. */
+export function mixedMessage(text: string, calls: { name: string; input: unknown }[]): FakeResult {
+  return {
+    message: {
+      content: [
+        { type: 'text', text, citations: null },
+        ...calls.map((call, i) => ({ type: 'tool_use', id: `tu_test_${i}`, name: call.name, input: call.input })),
+      ],
+      usage: { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    } as unknown as Anthropic.Message,
+    stopReason: 'tool_use',
+    requestId: 'req_test',
+  }
+}
+
 /** A gateway that pops one scripted result per call, in order, and optionally fires
  * onTextDelta for each string in that result's `deltas` before resolving - the seam a
  * multi-iteration agent-turn test needs, since every other fake here answers only once.
- * Throws loudly if called more times than scripted (a test bug, not a real failure). */
+ * Throws loudly if called more times than scripted (a test bug, not a real failure).
+ * Records each call's own params (getCalls) so a test can assert on exactly what
+ * conversation history/messages were actually sent, not just how many times. */
 export function scriptedGateway(results: (FakeResult & { deltas?: string[] })[]): ClaudeGateway & {
   getCallCount: () => number
+  getCalls: () => Anthropic.MessageCreateParams[]
 } {
   let callIndex = 0
+  const calls: Anthropic.MessageCreateParams[] = []
   return {
-    async createMessage(_params, hooks) {
+    async createMessage(params, hooks) {
       if (callIndex >= results.length) {
         throw new Error(`scriptedGateway called ${callIndex + 1} times but only ${results.length} were scripted`)
       }
+      calls.push(params)
       const { deltas, ...result } = results[callIndex]
       callIndex++
       for (const delta of deltas ?? []) {
@@ -80,5 +102,6 @@ export function scriptedGateway(results: (FakeResult & { deltas?: string[] })[])
       return result
     },
     getCallCount: () => callIndex,
+    getCalls: () => calls,
   }
 }

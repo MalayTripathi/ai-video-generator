@@ -1,6 +1,25 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, MODEL_REPORTABLE_CAMERA_ORIGINS } from '@/lib/config/enums'
 
+// v8: reverts v7's `outcome` argument on finish - a single label describing the WHOLE
+// turn can't represent a turn that declines one part of a request and completes another
+// (a real manual-testing case: "delete shot 3" declined, shot 2's dialogue rewritten,
+// the whole reply rendered as a refusal because the model picked outcome per its own
+// literal instructions - "refused" covered "did not do all of it"). Replaced with a new
+// `decline` tool: the model calls it once per part of a request it won't do, as its own
+// message with its own refusal treatment - the same existing mechanism a dispatched
+// tool's own refusal already uses - and keeps going for whatever else it can do. finish
+// goes back to meaning only "I am done," carrying no judgement about what happened; the
+// panel no longer styles the closing message based on a turn-level outcome. See
+// docs/decisions.md.
+// v7: two content changes, bundled in one bump (see CLAUDE.md's "amend in place" note on
+// prompt versioning). (1) update_shot's camera fields lost their _origin properties (see
+// CAMERA_VALUE_PROPERTIES above) - naming a camera field now always means a deliberate
+// manual override, so there is nothing left for the model to report there. (2) finish
+// gained a required `outcome` argument and is now mandatory for EVERY turn ending,
+// including a refusal - previously a declined request (e.g. "there's no delete tool")
+// could end as a bare prose reply with no structured signal, which the UI couldn't tell
+// apart from an ordinary completed reply. Superseded by v8 above.
 // v6: a live trial of v5's finish wording never bundled it - the model waited for
 // every mutation's result, including the last one, before calling finish alone in its
 // own extra response, so the call this tool exists to save was still being paid every
@@ -16,14 +35,15 @@ import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, MODEL_REPORTABLE_CAMERA_OR
 // - v2 briefly let the agent auto-create/bind a character, reverted: C5's subject and
 // unbuilt.) Bump the suffix (and this comment) on any content change, matching
 // shot-generation.ts's SHOT_GENERATION_SYSTEM_PROMPT_V4 convention.
-export const AGENT_SYSTEM_PROMPT_V6 = `You are an assistant embedded in a video project's shot-list workbench. The user will describe a change in plain language; you read the project's shots and make the change yourself by calling tools - you never ask the user to make the edit themselves.
+export const AGENT_SYSTEM_PROMPT_V8 = `You are an assistant embedded in a video project's shot-list workbench. The user will describe a change in plain language; you read the project's shots and make the change yourself by calling tools - you never ask the user to make the edit themselves.
 
-You have five tools:
+You have six tools:
 - get_shot: read full detail for one shot, including which characters are already bound to it (its valid dialogue speakers).
 - update_shot: overwrite one or more of an existing shot's own fields, including its dialogue.
 - insert_shot: add a new shot at a position.
 - regenerate_all_shots: throw away every shot and generate a fresh list from the original brief. This is destructive and expensive - only use it when the user clearly wants to start over, not for editing individual shots.
-- finish: call this with your closing message once the user's entire request is complete. It writes nothing - it only ends the turn and delivers your message. See the note on it below.
+- decline: call this once for each part of a request you will not do - something none of your tools can do, a hard rule blocking it, or a guess you won't make because it's destructive or too ambiguous. Explain why in plain language. It does not end the turn: if other parts of the request can still be done, keep going and do them.
+- finish: call this to end the turn and deliver your closing message. It writes nothing itself, and never needs to describe anything you declined - decline already said that, in its own message. Every turn must end by calling it - see the note on it below.
 
 You are given a compact index of the current shot list below. Use get_shot when you need a shot's full text or its bound characters before editing it.
 
@@ -32,13 +52,15 @@ Default to acting, not asking. When the user asks for content to be written or c
 Only ask a clarifying question when the request is genuinely ambiguous about WHICH shot or WHICH field to change, or when your best guess at the action would be destructive or hard to undo. Never ask just because you'd have to make a creative judgment call about wording, tone, or detail - making that call is what you're for.
 
 Hard rules, never bend these regardless of how the user phrases a request:
-- There is no delete tool, and none of your tools can delete a shot. If the user asks you to delete or remove a shot, tell them to use that shot's own delete button in the UI - do not attempt to "empty out" or blank a shot's fields as a substitute for deleting it.
+- There is no delete tool, and none of your tools can delete a shot. If the user asks you to delete or remove a shot, call decline and tell them to use that shot's own delete button in the UI - do not attempt to "empty out" or blank a shot's fields as a substitute for deleting it.
 - update_shot only writes the fields you explicitly include in the call. Never include a field you don't intend to change.
-- A camera field (shot_size, camera_angle, camera_movement) already marked as a manual override in the shot index is protected - only include it in your call if the user is explicitly asking you to change that specific framing choice.
+- A camera field (shot_size, camera_angle, camera_movement) only has one value, no origin to set - only include it in your call if the user is explicitly asking you to change that specific framing choice; naming it here always records a deliberate manual choice.
 - update_shot's dialogue field replaces a shot's ENTIRE line list, not one line - always include every line you want to keep, not just the ones you're changing. Every speaker_name must already be a character bound to that shot (see get_shot) - you cannot introduce a new speaker or create a character; if the user wants a character who isn't bound to this shot to speak, say so rather than guessing.
 - If a tool refuses your request (a locked project, a regeneration you're not allowed to run, an unbound dialogue speaker), explain why in plain language in your reply - do not silently drop the request or pretend it succeeded.
 
-When the user's entire request is done, call finish with a short, plain-language summary of what you changed (or why you couldn't) instead of just replying with text. Default to calling finish in the SAME response as your final tool call, not a separate one afterward: if you're confident that action will succeed, you already know the outcome, so don't spend a whole extra call just to say so - only wait for the result first when you're genuinely not sure it will succeed. But it must only ever accompany the LAST action the request needs: a request naming several shots is not finished after the first one, and finish must never accompany a call whose outcome you still need to see before deciding what to do next. If more tool calls are still needed, don't call finish yet.`
+A request can ask for several things at once, and you don't have to answer all-or-nothing: do what you can, and call decline separately for whatever you won't do. Each decline is its own message, so the user can see exactly which part was declined and why, right alongside whatever else you did in the same turn.
+
+Always end your turn by calling finish - whether you did everything asked, declined some or all of it, or a mix of both - never end with only a prose reply. Default to calling finish in the SAME response as your final tool call, not a separate one afterward: if you're confident that action will succeed, you already know the outcome, so don't spend a whole extra call just to say so - only wait for the result first when you're genuinely not sure it will succeed. decline always succeeds - it's a declaration, not an attempted mutation - so calling it never stops you from finishing in that same response. But finish must only ever accompany the LAST action the request needs: a request naming several shots is not finished after the first one, and finish must never accompany a call whose outcome you still need to see before deciding what to do next. If more tool calls are still needed, don't call finish yet.`
 
 export type ShotIndexRow = {
   order_index: number
@@ -90,12 +112,26 @@ export function buildShotIndexBlock(shots: ShotIndexRow[]): string {
     .join('\n')
 }
 
-const CAMERA_FIELD_PROPERTIES = {
+// Value-only - no `_origin` properties. Used by update_shot: naming an existing shot's
+// camera field in that call IS the origin signal (a deliberate edit, same as picking it
+// from the dropdown) - the server infers 'override' from the field being named at all, so
+// there is no origin for the model to report and the schema offers it no property to do so
+// with (additionalProperties: false makes this structural, not just unenforced). See
+// docs/decisions.md.
+const CAMERA_VALUE_PROPERTIES = {
   shot_size: { type: 'string' as const, enum: [...SHOT_SIZES] },
-  shot_size_origin: { type: 'string' as const, enum: [...MODEL_REPORTABLE_CAMERA_ORIGINS] },
   camera_angle: { type: 'string' as const, enum: [...CAMERA_ANGLES] },
-  camera_angle_origin: { type: 'string' as const, enum: [...MODEL_REPORTABLE_CAMERA_ORIGINS] },
   camera_movement: { type: 'string' as const, enum: [...CAMERA_MOVEMENTS] },
+}
+
+// Value + origin. Used by insert_shot only: a brand-new shot's camera fields are the model
+// freely choosing or deriving from the new shot's own description, the same kind of
+// judgment call write_shots makes - never a manual override (MODEL_REPORTABLE_CAMERA_ORIGINS
+// excludes 'override' structurally, same as write_shots' schema).
+const CAMERA_FIELD_PROPERTIES = {
+  ...CAMERA_VALUE_PROPERTIES,
+  shot_size_origin: { type: 'string' as const, enum: [...MODEL_REPORTABLE_CAMERA_ORIGINS] },
+  camera_angle_origin: { type: 'string' as const, enum: [...MODEL_REPORTABLE_CAMERA_ORIGINS] },
   camera_movement_origin: { type: 'string' as const, enum: [...MODEL_REPORTABLE_CAMERA_ORIGINS] },
 }
 
@@ -130,7 +166,7 @@ const UPDATE_SHOT_TOOL: Anthropic.Tool = {
       visual_description: { type: 'string' },
       duration_sec: { type: 'number' },
       section_label: { type: 'string' },
-      ...CAMERA_FIELD_PROPERTIES,
+      ...CAMERA_VALUE_PROPERTIES,
       dialogue: {
         type: 'array',
         description: "Replaces this shot's entire dialogue list. Pass [] to clear all lines.",
@@ -187,21 +223,49 @@ const REGENERATE_ALL_SHOTS_TOOL: Anthropic.Tool = {
   strict: true,
 }
 
-// Ends the turn explicitly, optionally bundled with the model's final mutating call in
-// the same response - see logic.ts's iteration loop for how a bundled call is verified
-// (not trusted blindly) before its message is used, and docs/decisions.md for why the
-// savings this enables are a model-behaviour bet, not a guarantee. Never routed through
-// dispatchAgentTool - it has no handler and mutates nothing.
-const FINISH_TOOL: Anthropic.Tool = {
-  name: 'finish',
+// A declarative refusal for one part of a request - dispatched through the same
+// mechanism as a tool's own refusal (dispatchAgentTool, logic.ts), so it gets its own
+// message with the existing refusal treatment, independent of whatever finish says and
+// of whatever else the turn completes. Never affects whether a bundled finish call in
+// the same response is trusted - unlike a real tool unexpectedly failing, the model
+// already knows it's declining, so there's no predicted-success gap to protect against.
+// See docs/decisions.md.
+const DECLINE_TOOL: Anthropic.Tool = {
+  name: 'decline',
   description:
-    "Call this with a short closing message once the user's ENTIRE request is complete - never after only one step of a multi-part request. Writes nothing; it only ends the turn and delivers your message. Default to calling it in the SAME response as your final tool call, not a later one - if you're confident that action will succeed, you already know the outcome, and waiting for its result before finishing just spends a whole extra call to say what you already knew. Only wait when you're genuinely unsure the final action will succeed. But it must only ever accompany the LAST action the request needs: if a request names several shots, or otherwise still needs more tool calls, finish is not appropriate yet - keep going and only call it once nothing else is left to do.",
+    "Call this once for each part of the request you will not do - something none of your tools can do (like deleting a shot), a hard rule blocking it, or a guess you won't make because it's destructive or too ambiguous. Explain why in plain language. This does not end the turn - if other parts of the request can still be done, keep going and do them, then call finish as usual. A single turn can call this more than once, and can mix it with completed actions.",
   input_schema: {
     type: 'object',
     properties: {
       message: {
         type: 'string',
-        description: 'Short, plain-language summary of what you changed (or why you could not) - same content as your normal closing reply.',
+        description: 'Plain-language explanation of what you will not do and why.',
+      },
+    },
+    required: ['message'],
+    additionalProperties: false,
+  },
+  strict: true,
+}
+
+// Ends the turn explicitly, optionally bundled with the model's final mutating call in
+// the same response - see logic.ts's iteration loop for how a bundled call is verified
+// (not trusted blindly) before its message is used, and docs/decisions.md for why the
+// savings this enables are a model-behaviour bet, not a guarantee. Never routed through
+// dispatchAgentTool - it has no handler and mutates nothing. Carries no judgement about
+// what happened in the turn (see decline above for that) - it only ever means "I am
+// done," even when part of the turn was declined.
+const FINISH_TOOL: Anthropic.Tool = {
+  name: 'finish',
+  description:
+    "Call this to end the turn and deliver your closing message. Writes nothing itself, and never needs to describe anything you declined - see decline for that, called separately. Default to calling it in the SAME response as your final tool call, not a later one - if you're confident that action will succeed, you already know the outcome, and waiting for its result before finishing just spends a whole extra call to say what you already knew. Only wait when you're genuinely unsure the final action will succeed. But it must only ever accompany the LAST action the request needs: if a request names several shots, or otherwise still needs more tool calls, finish is not appropriate yet - keep going and only call it once nothing else is left to do.",
+  input_schema: {
+    type: 'object',
+    properties: {
+      message: {
+        type: 'string',
+        description:
+          'Short, plain-language summary of what you changed - same content as your normal closing reply. Never used to describe something you declined - see decline for that.',
       },
     },
     required: ['message'],
@@ -218,5 +282,6 @@ export const AGENT_TOOLS: Anthropic.Tool[] = [
   UPDATE_SHOT_TOOL,
   INSERT_SHOT_TOOL,
   REGENERATE_ALL_SHOTS_TOOL,
+  DECLINE_TOOL,
   FINISH_TOOL,
 ]

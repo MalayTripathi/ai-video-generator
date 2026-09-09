@@ -336,24 +336,20 @@ export async function handleUpdateShot(input: unknown, ctx: AgentToolContext): P
   for (const field of CAMERA_FIELDS) {
     if (!has(raw, field)) continue
     const value = raw[field]
-    const originValue = raw[`${field}_origin`]
     if (typeof value !== 'string' || !CAMERA_ENUM[field].includes(value)) continue
-    const suppliedOrigin =
-      typeof originValue === 'string' && (MODEL_REPORTABLE_CAMERA_ORIGINS as readonly string[]).includes(originValue)
-        ? originValue
-        : 'auto'
 
+    // Naming a camera field in an update_shot call IS the origin signal - the system
+    // prompt tells the model to only include a camera field when the user explicitly
+    // asked to change it, so this is exactly as deliberate as picking it from the
+    // dropdown. Always writes 'override', mirroring updateCameraField's (workbench
+    // actions.ts) unconditional write and its (value, origin)-pair diff check - never a
+    // model-reported origin, which update_shot's schema no longer even offers a
+    // property for. See docs/decisions.md.
     const originColumn = CAMERA_ORIGIN_COLUMN[field]
-    const currentOrigin = shot[originColumn]
-    // A field already marked 'override' is protected: only real new textual evidence
-    // ('derived') can move it. Mirrors runCameraDerivation's identical rule.
-    const shouldApply = currentOrigin !== 'override' || suppliedOrigin === 'derived'
-    if (!shouldApply) continue
-
-    if (shot[field] === value && currentOrigin === suppliedOrigin) continue
+    if (shot[field] === value && shot[originColumn] === 'override') continue
 
     updates[field] = value
-    updates[originColumn] = suppliedOrigin
+    updates[originColumn] = 'override'
     staleChanges.push('camera')
   }
 
@@ -585,6 +581,25 @@ export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolCo
 }
 
 // ---------------------------------------------------------------------------
+// decline
+// ---------------------------------------------------------------------------
+
+/**
+ * A declarative refusal for one part of a request - never a failed attempt at
+ * something, so it always succeeds as a call and never needs ctx. Routed through the
+ * same dispatch path as every other tool so its own message reaches the client and
+ * `messages` through the existing 'refused' handling (logic.ts) - no special-casing
+ * needed there beyond excluding it from the "did every mutation apply" check that
+ * gates a bundled finish call, since unlike a real tool unexpectedly failing, the model
+ * already knows this outcome when it calls it.
+ */
+export async function handleDecline(input: unknown): Promise<AgentToolOutcome> {
+  const raw = (input ?? {}) as Record<string, unknown>
+  const message = typeof raw.message === 'string' && raw.message.trim().length > 0 ? raw.message.trim() : "Can't do that."
+  return { kind: 'refused', label: message, forModel: { acknowledged: true } }
+}
+
+// ---------------------------------------------------------------------------
 // dispatch
 // ---------------------------------------------------------------------------
 
@@ -602,6 +617,8 @@ export async function dispatchAgentTool(
       return handleInsertShot(input, ctx)
     case 'regenerate_all_shots':
       return handleRegenerateAllShots(input, ctx)
+    case 'decline':
+      return handleDecline(input)
     default:
       return { kind: 'errored', message: `Unknown tool "${name}"`, forModel: { error: 'unknown_tool' } }
   }
