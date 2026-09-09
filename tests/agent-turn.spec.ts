@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
-import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V9 } from '../src/lib/prompts/agent'
+import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V10 } from '../src/lib/prompts/agent'
 import {
   handleGetShot,
   handleUpdateShot,
@@ -119,6 +119,7 @@ type IndexShot = {
   order_index: number
   visual_description: string | null
   voice_over: string
+  section_label: string | null
   shot_size_origin: string
   camera_angle_origin: string
   camera_movement_origin: string
@@ -128,6 +129,7 @@ function shot(overrides: Partial<IndexShot> & { order_index: number }): IndexSho
   return {
     visual_description: null,
     voice_over: '',
+    section_label: null,
     shot_size_origin: 'auto',
     camera_angle_origin: 'auto',
     camera_movement_origin: 'auto',
@@ -196,6 +198,16 @@ test.describe('buildShotIndexBlock', () => {
     ])
     expect(block).toContain('[override: shot_size, camera_movement]')
   })
+
+  test('carries each shot\'s section_label into its index line, and omits the suffix when there is none', () => {
+    const block = buildShotIndexBlock([
+      shot({ order_index: 0, visual_description: 'Shot A', section_label: 'Introduction' }),
+      shot({ order_index: 1, visual_description: 'Shot B', section_label: null }),
+    ])
+    const lines = block.split('\n')
+    expect(lines[0]).toContain('[section: Introduction]')
+    expect(lines[1]).not.toContain('[section:')
+  })
 })
 
 test.describe('AGENT_TOOLS', () => {
@@ -236,6 +248,30 @@ test.describe('AGENT_TOOLS', () => {
     expect(props.shot_size_origin).toBeDefined()
   })
 
+  test('insert_shot requires section_label and all six camera value+origin properties together - never a partial or silently-omitted set', () => {
+    const insertShot = AGENT_TOOLS.find((t) => t.name === 'insert_shot')!
+    const schema = insertShot.input_schema as unknown as { required: string[] }
+    expect(schema.required).toEqual(
+      expect.arrayContaining([
+        'insert_after_shot_number',
+        'voice_over',
+        'section_label',
+        'shot_size',
+        'shot_size_origin',
+        'camera_angle',
+        'camera_angle_origin',
+        'camera_movement',
+        'camera_movement_origin',
+      ])
+    )
+  })
+
+  test('insert_shot requires visual_description - the handler refuses an empty one, and an optional-but-enforced field is a paid retry loop waiting to happen', () => {
+    const insertShot = AGENT_TOOLS.find((t) => t.name === 'insert_shot')!
+    const schema = insertShot.input_schema as unknown as { required: string[] }
+    expect(schema.required).toContain('visual_description')
+  })
+
   test('update_shot and insert_shot reject unknown properties', () => {
     const updateShot = AGENT_TOOLS.find((t) => t.name === 'update_shot')!
     const insertShot = AGENT_TOOLS.find((t) => t.name === 'insert_shot')!
@@ -250,48 +286,58 @@ test.describe('AGENT_TOOLS', () => {
   })
 })
 
-test.describe('AGENT_SYSTEM_PROMPT_V9', () => {
+test.describe('AGENT_SYSTEM_PROMPT_V10', () => {
   test('explicitly instructs the model never to delete a shot', () => {
-    expect(AGENT_SYSTEM_PROMPT_V9.toLowerCase()).toContain('delete')
+    expect(AGENT_SYSTEM_PROMPT_V10.toLowerCase()).toContain('delete')
   })
 
   test('defaults to acting on a content request rather than asking a clarifying question', () => {
-    expect(AGENT_SYSTEM_PROMPT_V9.toLowerCase()).toContain('default to acting')
+    expect(AGENT_SYSTEM_PROMPT_V10.toLowerCase()).toContain('default to acting')
   })
 
   test('directs the model to use other shots as a style reference instead of asking the user to specify one', () => {
-    expect(AGENT_SYSTEM_PROMPT_V9.toLowerCase()).toContain('style reference')
+    expect(AGENT_SYSTEM_PROMPT_V10.toLowerCase()).toContain('style reference')
   })
 
   test('reserves clarifying questions for which-shot/which-field ambiguity or a destructive guess', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V9.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
     expect(prompt).toContain('which shot or which field')
     expect(prompt).toContain('destructive')
   })
 
   test('finish no longer exists anywhere in the prompt - a turn ends via a plain reply, no tool call', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V9.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
     expect(prompt).not.toContain('finish')
     expect(prompt).toContain('no tool call')
   })
 
   test('the no-delete-tool rule tells the model to call decline', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V9.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
     expect(prompt).toContain('call decline and tell them to use that shot')
   })
 
   test('tells the model a request can mix completed actions with separate declines, not all-or-nothing', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V9.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
     expect(prompt).toContain("don't have to answer all-or-nothing")
     expect(prompt).toContain('call decline separately for whatever you won')
   })
 
   test('states declining anything is a hard rule requiring the decline tool, never a bare prose refusal, with a contrastive example', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V9.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
     expect(prompt).toContain('you must call decline for that part')
     expect(prompt).toContain('never write the refusal as plain reply text')
     expect(prompt).toContain('wrong:')
     expect(prompt).toContain('right:')
+  })
+
+  test('tells the model an inserted shot inherits its section from the surrounding shots by default', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
+    expect(prompt).toContain('a shot placed between two shots of the same section belongs to that section')
+  })
+
+  test('tells the model insert_shot\'s three camera fields must be reported together, never partially', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V10.toLowerCase()
+    expect(prompt).toContain('never report some of the three and leave the rest out')
   })
 })
 
@@ -759,6 +805,105 @@ test.describe('handleInsertShot', () => {
     expect(outcome.kind).toBe('refused')
     expect(await readShots(projectId)).toHaveLength(0)
   })
+
+  test('an inserted shot carries a section label, persisted verbatim', async () => {
+    const projectId = await seedToolProject()
+    await seedToolShot(projectId, { order_index: 0, section_label: 'Introduction' })
+
+    const outcome = await handleInsertShot(
+      {
+        insert_after_shot_number: 1,
+        voice_over: 'A brand new shot.',
+        visual_description: 'A brand new visual.',
+        section_label: 'Introduction',
+      },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('applied')
+    const inserted = (await readShots(projectId)).find((s) => s.voice_over === 'A brand new shot.')!
+    expect(inserted.section_label).toBe('Introduction')
+  })
+
+  test('a call reporting all three camera fields and origins persists all three verbatim', async () => {
+    const projectId = await seedToolProject()
+
+    const outcome = await handleInsertShot(
+      {
+        insert_after_shot_number: 0,
+        voice_over: 'A brand new shot.',
+        visual_description: 'A brand new visual.',
+        shot_size: 'wide',
+        shot_size_origin: 'auto',
+        camera_angle: 'high',
+        camera_angle_origin: 'derived',
+        camera_movement: 'pan',
+        camera_movement_origin: 'auto',
+      },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('applied')
+    const inserted = (await readShots(projectId)).find((s) => s.voice_over === 'A brand new shot.')!
+    expect(inserted.shot_size).toBe('wide')
+    expect(inserted.shot_size_origin).toBe('auto')
+    expect(inserted.camera_angle).toBe('high')
+    expect(inserted.camera_angle_origin).toBe('derived')
+    expect(inserted.camera_movement).toBe('pan')
+    expect(inserted.camera_movement_origin).toBe('auto')
+  })
+
+  test("an inserted shot's camera fields are all populated or all empty, never partial - a call omitting one field nulls all three", async () => {
+    const projectId = await seedToolProject()
+
+    const outcome = await handleInsertShot(
+      {
+        insert_after_shot_number: 0,
+        voice_over: 'A brand new shot.',
+        visual_description: 'A brand new visual.',
+        shot_size: 'wide',
+        shot_size_origin: 'auto',
+        // camera_angle deliberately omitted
+        camera_movement: 'pan',
+        camera_movement_origin: 'auto',
+      },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('applied')
+    const inserted = (await readShots(projectId)).find((s) => s.voice_over === 'A brand new shot.')!
+    expect(inserted.shot_size).toBeNull()
+    expect(inserted.shot_size_origin).toBe('auto')
+    expect(inserted.camera_angle).toBeNull()
+    expect(inserted.camera_angle_origin).toBe('auto')
+    expect(inserted.camera_movement).toBeNull()
+    expect(inserted.camera_movement_origin).toBe('auto')
+  })
+
+  test('an invalid enum value on one camera field also nulls all three, not just the bad one', async () => {
+    const projectId = await seedToolProject()
+
+    const outcome = await handleInsertShot(
+      {
+        insert_after_shot_number: 0,
+        voice_over: 'A brand new shot.',
+        visual_description: 'A brand new visual.',
+        shot_size: 'wide',
+        shot_size_origin: 'auto',
+        camera_angle: 'not_a_real_angle',
+        camera_angle_origin: 'auto',
+        camera_movement: 'pan',
+        camera_movement_origin: 'auto',
+      },
+      buildContext({ projectId })
+    )
+
+    expect(outcome.kind).toBe('applied')
+    const inserted = (await readShots(projectId)).find((s) => s.voice_over === 'A brand new shot.')!
+    expect(inserted.shot_size).toBeNull()
+    expect(inserted.camera_angle).toBeNull()
+    expect(inserted.camera_movement).toBeNull()
+  })
 })
 
 test.describe('handleRegenerateAllShots', () => {
@@ -1183,7 +1328,7 @@ test.describe('runAgentTurn', () => {
     // This scripts the fake model to look then write, so it only proves the turn loop
     // supports that shape end-to-end (persists the write, doesn't stop at the get_shot
     // reply). Whether the real model chooses this shape for a given prompt needs a live
-    // Claude call, which this repo's tests never make - see the AGENT_SYSTEM_PROMPT_V9
+    // Claude call, which this repo's tests never make - see the AGENT_SYSTEM_PROMPT_V10
     // content assertions above for the prompt-shape half of this check.
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId)
@@ -1318,6 +1463,7 @@ test.describe('runAgentTurn', () => {
     })
     expect(error).toBeNull()
     const gateway = scriptedGateway([])
+    const events: AgentStreamEvent[] = []
 
     const result = await runAgentTurn({
       gateway,
@@ -1326,11 +1472,33 @@ test.describe('runAgentTurn', () => {
       userId: primary.user.id,
       content: 'do something',
       clientId: crypto.randomUUID(),
+      onEvent: (e) => events.push(e),
     })
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect('reason' in result && result.reason).toBe('already_generating')
     expect(gateway.getCallCount()).toBe(0)
+
+    // A refusal is a known outcome, not a dropped connection - it must reach the client
+    // as a normal settled event on the FIRST attempt, not only after a Retry resend.
+    expect(events).toContainEqual({
+      type: 'settled',
+      content:
+        'Another turn was already running for this project when this was sent, so nothing was changed. Please try again.',
+      cost: 0,
+    })
+
+    // Refused before any claim, spend, or model call - it must cost nothing and must
+    // not create a second generations row (the pre-seeded row is the only one).
+    expect(gateway.getCallCount()).toBe(0)
+    const { data: generationRows } = await admin
+      .from('generations')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('operation', 'agent_turn')
+    expect(generationRows).toHaveLength(1)
+    const { data: usageRows } = await admin.from('usage').select('id').eq('project_id', projectId)
+    expect(usageRows).toHaveLength(0)
   })
 
   test('claim blocked (already_generating): the user message still gets a persisted reply, so a resend does not loop the same 409 forever', async () => {

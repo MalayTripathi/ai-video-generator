@@ -88,7 +88,9 @@ async function loadDialogue(supabase: SupabaseServerClient, shotId: string) {
 async function rebuildShotIndex(supabase: SupabaseServerClient, projectId: string): Promise<string> {
   const { data } = await supabase
     .from('shots')
-    .select('order_index, visual_description, voice_over, shot_size_origin, camera_angle_origin, camera_movement_origin')
+    .select(
+      'order_index, visual_description, voice_over, section_label, shot_size_origin, camera_angle_origin, camera_movement_origin'
+    )
     .eq('project_id', projectId)
     .order('order_index', { ascending: true })
   return buildShotIndexBlock(data ?? [])
@@ -472,6 +474,7 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
     camera_movement: null,
     camera_movement_origin: 'auto',
   }
+  let allCameraFieldsValid = true
   for (const field of CAMERA_FIELDS) {
     const value = raw[field]
     if (typeof value === 'string' && CAMERA_ENUM[field].includes(value)) {
@@ -481,6 +484,19 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
         typeof originValue === 'string' && (MODEL_REPORTABLE_CAMERA_ORIGINS as readonly string[]).includes(originValue)
           ? originValue
           : 'auto'
+    } else {
+      allCameraFieldsValid = false
+    }
+  }
+  // All three camera fields must arrive together or not at all - a partial set (e.g.
+  // shot_size and camera_movement present, camera_angle missing or invalid) is neither
+  // "derived" nor "deliberately absent" and would reach later pipeline steps as a silent
+  // gap. Reset every field back to its null/'auto' default rather than keep a partial
+  // write. See docs/decisions.md.
+  if (!allCameraFieldsValid) {
+    for (const field of CAMERA_FIELDS) {
+      camera[field] = null
+      camera[CAMERA_ORIGIN_COLUMN[field]] = 'auto'
     }
   }
 

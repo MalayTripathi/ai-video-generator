@@ -136,6 +136,38 @@ test.describe('buildAgentMessages', () => {
     expect(out[1].content).toBe('Legacy reply.')
   })
 
+  test('two user messages with identical text and different client identifiers, whose replies arrive out of order, each render with their own reply and neither renders as abandoned', () => {
+    // Reproduces the reported interleaving: tab A sends first and is still mid-flight
+    // (slow, real tool activity) when tab B sends the identical text and gets an
+    // near-instant refusal - so B's whole exchange lands in storage before A's own
+    // activity and reply do, even though A was sent first.
+    const userA = row({ role: 'user', content: 'insert a shot here', client_id: 'a' })
+    const userB = row({ role: 'user', content: 'insert a shot here', client_id: 'b' })
+    const replyB = row({
+      role: 'assistant',
+      kind: 'text',
+      content: 'Another turn was already running for this project when this was sent, so nothing was changed.',
+      client_id: 'b',
+    })
+    const toolA = row({ role: 'assistant', kind: 'tool_done', tool_name: 'insert_shot', content: 'Inserted a new shot' })
+    const replyA = row({ role: 'assistant', kind: 'text', content: 'Inserted the shot.', client_id: 'a' })
+
+    const out = buildAgentMessages([userA, userB, replyB, toolA, replyA], new Map(), new Map())
+
+    expect(out.some((m) => m.kind === 'error')).toBe(false)
+
+    const userEntries = out.filter((m) => m.kind === 'user')
+    expect(userEntries.map((m) => m.id)).toEqual([userA.id, userB.id])
+
+    const replyForA = out.find((m) => m.kind === 'agent' && m.id === replyA.id)
+    const replyForB = out.find((m) => m.kind === 'agent' && m.id === replyB.id)
+    expect(replyForA?.content).toBe('Inserted the shot.')
+    expect(replyForB?.content).toBe(
+      'Another turn was already running for this project when this was sent, so nothing was changed.'
+    )
+    expect(out.some((m) => m.kind === 'tool_done' && m.id === toolA.id)).toBe(true)
+  })
+
   test('tool_done for a shot whose key no longer resolves renders the deleted-shot fallback', () => {
     const userRow = row({ role: 'user', content: 'do it', client_id: 'c1' })
     const toolRow = row({ role: 'assistant', kind: 'tool_done', tool_name: 'update_shot', shot_key: 'gone', content: 'Updated Shot 3' })

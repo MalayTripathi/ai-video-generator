@@ -915,3 +915,111 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   of using row count as a proxy for it, but this needs its own pass -
   changing `HISTORY_LIMIT`'s semantics is a bigger change than narrowing
   what it counts, and wasn't part of what was approved here.
+
+- **`insert_shot` gained a section label and camera-field atomicity guarantee
+  it never had.** Live testing surfaced two gaps, both traced to
+  `insert_shot`'s schema being looser than its siblings for fields those
+  siblings treat as mandatory or atomic. (1) `section_label` was a real
+  property on the tool's schema but was never in `required`, carried no
+  description, and the system prompt's `insert_shot` bullet never mentioned
+  sections at all - worse, the shot index the model reads every turn
+  (`buildShotIndexBlock`) didn't expose any shot's `section_label`, so even a
+  fully compliant model had no visibility into what sections already existed
+  without an extra `get_shot` call it was never told to make. This is not a
+  dropped-in-transit bug: `handleInsertShot` always persisted whatever
+  `section_label` it was given, correctly nulling it when absent - the field
+  was simply never solicited. Fixed by moving `section_label` into
+  `required` with a description stating the reuse-by-default rule, and by
+  adding `section_label` to `ShotIndexRow`/`buildShotIndexBlock` and both
+  places that build a shot index (`rebuildShotIndex` in `agent/tools.ts`,
+  and the initial per-turn index query in `agent/logic.ts`) so the model can
+  see and copy an existing section without an extra round trip. The choice
+  of *which* section still belongs to the model, per the request - there is
+  deliberately no server-side override that reassigns `section_label` from
+  neighboring rows. (2) `shot_size`/`camera_angle`/`camera_movement` (+
+  origins) were applied independently in `handleInsertShot` with no
+  cross-field check - a call reporting two of the three (e.g. `shot_size`
+  and `camera_movement` but not `camera_angle`) silently left the third
+  `null`/`'auto'` instead of leaving all three unset, unlike `write_shots`
+  and `derive_camera`, which both structurally guarantee all six
+  value+origin fields arrive together (`required` schema fields, and for
+  `derive_camera` a "reject the whole call if zero fields validated" guard).
+  Fixed two ways, deliberately layered rather than either alone: the schema
+  now requires all six camera properties (constrains a live Anthropic call),
+  and `handleInsertShot` also gained a standalone atomicity check - if any
+  of the three fields fails validation, all three reset to `null`/`'auto'`
+  - because this repo's own tests call handlers directly with hand-built
+  input a schema never validates, so the invariant has to hold in the
+  handler regardless of what produced the input. A second paid
+  `runCameraDerivation`-style call after the insert was considered and
+  rejected: `insert_shot`'s own tool call already asks the model to judge
+  these fields in the same turn at no extra cost, so a follow-up call would
+  only duplicate work already available in-line. See
+  `tests/agent-turn.spec.ts`'s `handleInsertShot` and `AGENT_TOOLS`
+  describe blocks. Prompt bumped `AGENT_SYSTEM_PROMPT_V9` → `V10`.
+- **Three more C4 defects, all traced and fixed without touching the prompt.**
+  (1) Schema-vs-enforcement audit: `insert_shot`'s `visual_description` was
+  enforced by `handleInsertShot` (refuses empty, `"visual description
+  can't be empty"`) but absent from the schema's `required` array, so a
+  compliant-looking model could omit it, get refused, and retry - each
+  attempt a separate paid `gateway.createMessage` call
+  (`MAX_ITERATIONS = 8`/turn), reproducing a reported three-refusal turn.
+  The inverse gap already existed and is fine: 7 of 9 fields the schema
+  marks `required` (`section_label` + all six camera fields) aren't
+  enforced at all - they silently default instead of refusing, which is
+  the atomicity guard from the entry above working as intended, not a
+  retry-loop source. Fixed by adding `visual_description` to
+  `insert_shot`'s `required` array only. `update_shot`'s analogous checks
+  (`visual_description`, and voice_over-or-dialogue, both against the
+  *effective* post-call value) were audited and deliberately left alone -
+  they can't be expressed as plain `required` fields without breaking its
+  partial-patch design (`"Only fields explicitly included in this call are
+  written"`), and the refusal there only fires on the rarer case of a call
+  whose net effect would empty the field, not on every call missing it.
+  (2) The agent panel's reload view (`buildAgentMessages`) mis-rendered a
+  completed turn as `"This turn never finished, so nothing was changed"`
+  when a second tab's near-instant refusal interleaved between the first
+  tab's user row and its own (slower, real) reply. The client_id matching
+  itself was already correct; the bug was the inner scan's stop condition
+  (`while (... rows[i].role === 'assistant')`), which aborted at the first
+  non-assistant row - including a foreign turn's `user` row - abandoning
+  the rest of the scan before it ever reached the first turn's real
+  activity/reply further down the list. Fixed by precomputing a
+  `client_id -> reply index` map up front and rewriting the scan as a
+  small recursive resolver: a `user` row hit while searching for a known
+  reply position is resolved as a nested turn on the spot (pushing its own
+  entries) rather than treated as a stop signal, then the outer scan
+  continues past it. This relies on the `agent_turn` mutex's guarantee
+  that only one turn's real tool activity is ever in flight at a time, so
+  anything interleaved inside another turn's still-open window is always
+  one of these near-instant, activity-free resolutions - never a second
+  genuinely-concurrent run - which keeps nested resolution unconditionally
+  safe rather than needing its own ordering guard. Turns still render in
+  the order their user messages were sent, not the order their replies
+  resolved. See `tests/build-agent-messages.spec.ts`'s new interleaved-
+  replies test. (3) The "another turn is already running" refusal
+  (`runAgentTurn`'s `claim.outcome === 'blocked'` branch, `agent/logic.ts`)
+  persisted the correct reply text but never called `emit(...)` before
+  returning - since the client's only signal of a turn's outcome is the
+  SSE stream (`route.ts` always responds 200 and never reads
+  `runAgentTurn`'s return value), an empty stream is indistinguishable
+  from a genuinely dropped connection, so it rendered the generic
+  `DROPPED_STREAM_MESSAGE` with Retry instead of the real refusal - correct
+  text only appeared after Retry, once the resend's `client_id` hit the
+  duplicate-message path that *does* emit. The identical defect was found
+  in the sibling `claim.outcome === 'error'` branch (a claim-insert
+  failure) - same missing `emit` before return, same fix. Both now emit
+  `{ type: 'settled', content: <the text already being persisted>,
+  cost: 0 }`, mirroring the read-only-lock short-circuit two branches
+  earlier in the same function, which already did this correctly. Left
+  alone: the concurrent-resend "original attempt hasn't settled yet" case
+  (`userMsgResult.outcome === 'duplicate'` with no reply found) persists
+  nothing for that attempt by design - the still-in-flight original will
+  emit the real reply itself - so there's no text to emit without
+  inventing one; a narrower, differently-shaped gap, not folded into this
+  fix. Confirmed via code trace (not a live call) that the blocked-branch
+  refusal creates no `generations` row, no `usage` row, and makes no model
+  call - the claim insert fails on the *existing* row's identity conflict
+  before anything is created, and `reserveAndSettle`/`createMessage` are
+  only reachable after a successful claim. See `tests/agent-turn.spec.ts`'s
+  extended `already_generating` test.

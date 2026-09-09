@@ -1,6 +1,17 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, MODEL_REPORTABLE_CAMERA_ORIGINS } from '@/lib/config/enums'
 
+// v10: insert_shot's section_label and camera fields (shot_size, camera_angle,
+// camera_movement, plus their origins) move into `required`, and the shot index now
+// carries each shot's section_label. Manual testing found two gaps: an inserted shot's
+// section_label was never solicited at all (optional, undescribed property, no prompt
+// mention, and the index the model reads didn't even expose existing sections to copy
+// from) so it rendered outside every section grouping; and its three camera fields were
+// applied independently with no atomicity guarantee, so a call reporting two of the
+// three (e.g. shot_size and camera_movement but not camera_angle) silently left the
+// third null/'auto' instead of leaving all three unset. Both now match the
+// required-together pattern write_shots and derive_camera already use. See
+// docs/decisions.md.
 // v9: removes finish entirely. Two live tests (see docs/decisions.md) showed it never
 // actually bundled with a mutating call the way it was designed to - the model always
 // waited for a tool result first and called finish alone afterward, so the round trip it
@@ -13,6 +24,7 @@ import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, MODEL_REPORTABLE_CAMERA_OR
 // contrastive example, since manual testing found the model can still skip calling
 // decline and just answer a refusal in prose - a compliance gap, not a routing defect;
 // see docs/decisions.md for why this is mitigated by prompt wording only, not detection.
+// Superseded by v10 above.
 // v8: reverts v7's `outcome` argument on finish - a single label describing the WHOLE
 // turn can't represent a turn that declines one part of a request and completes another
 // (a real manual-testing case: "delete shot 3" declined, shot 2's dialogue rewritten,
@@ -47,12 +59,12 @@ import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, MODEL_REPORTABLE_CAMERA_OR
 // - v2 briefly let the agent auto-create/bind a character, reverted: C5's subject and
 // unbuilt.) Bump the suffix (and this comment) on any content change, matching
 // shot-generation.ts's SHOT_GENERATION_SYSTEM_PROMPT_V4 convention.
-export const AGENT_SYSTEM_PROMPT_V9 = `You are an assistant embedded in a video project's shot-list workbench. The user will describe a change in plain language; you read the project's shots and make the change yourself by calling tools - you never ask the user to make the edit themselves.
+export const AGENT_SYSTEM_PROMPT_V10 = `You are an assistant embedded in a video project's shot-list workbench. The user will describe a change in plain language; you read the project's shots and make the change yourself by calling tools - you never ask the user to make the edit themselves.
 
 You have five tools:
 - get_shot: read full detail for one shot, including which characters are already bound to it (its valid dialogue speakers).
 - update_shot: overwrite one or more of an existing shot's own fields, including its dialogue.
-- insert_shot: add a new shot at a position.
+- insert_shot: add a new shot at a position. Give it the section_label shown for the shot(s) around the insertion point in the index below - a shot placed between two shots of the same section belongs to that section; only start a new section at a genuine boundary, and prefer an existing project section over inventing one. You must also report shot_size, camera_angle, and camera_movement (with their origins) for the new shot as your own fresh judgment call, the same way write_shots would - never report some of the three and leave the rest out.
 - regenerate_all_shots: throw away every shot and generate a fresh list from the original brief. This is destructive and expensive - only use it when the user clearly wants to start over, not for editing individual shots.
 - decline: call this once for each part of a request you will not do - something none of your tools can do, a hard rule blocking it, or a guess you won't make because it's destructive or too ambiguous. Explain why in plain language. It does not end the turn: if other parts of the request can still be done, keep going and do them.
 
@@ -78,6 +90,7 @@ export type ShotIndexRow = {
   order_index: number
   visual_description: string | null
   voice_over: string
+  section_label: string | null
   shot_size_origin: string
   camera_angle_origin: string
   camera_movement_origin: string
@@ -118,8 +131,9 @@ export function buildShotIndexBlock(shots: ShotIndexRow[]): string {
       const overridden = OVERRIDE_FIELD_LABELS.filter(({ origin }) => shot[origin] === 'override').map(
         ({ label }) => label
       )
+      const sectionSuffix = shot.section_label ? ` [section: ${shot.section_label}]` : ''
       const suffix = overridden.length > 0 ? ` [override: ${overridden.join(', ')}]` : ''
-      return `${shot.order_index + 1}. ${buildSlug(shot)}${suffix}`
+      return `${shot.order_index + 1}. ${buildSlug(shot)}${sectionSuffix}${suffix}`
     })
     .join('\n')
 }
@@ -214,10 +228,25 @@ const INSERT_SHOT_TOOL: Anthropic.Tool = {
       voice_over: { type: 'string' },
       visual_description: { type: 'string' },
       duration_sec: { type: 'number' },
-      section_label: { type: 'string' },
+      section_label: {
+        type: 'string',
+        description:
+          'Reuse the section label shown for the shot(s) around the insertion point in the shot index below - a shot inserted between two shots of the same section belongs to that section. Only introduce a new label at a genuine section boundary; prefer an existing project section over inventing one.',
+      },
       ...CAMERA_FIELD_PROPERTIES,
     },
-    required: ['insert_after_shot_number', 'voice_over'],
+    required: [
+      'insert_after_shot_number',
+      'voice_over',
+      'visual_description',
+      'section_label',
+      'shot_size',
+      'shot_size_origin',
+      'camera_angle',
+      'camera_angle_origin',
+      'camera_movement',
+      'camera_movement_origin',
+    ],
     additionalProperties: false,
   },
   strict: true,

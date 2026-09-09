@@ -15,7 +15,7 @@ import {
   sumTurnCost,
   AllowanceExceededError,
 } from '@/lib/usage'
-import { AGENT_SYSTEM_PROMPT_V9, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
+import { AGENT_SYSTEM_PROMPT_V10, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
 import type { ToolName } from '@/lib/config/messages'
 import { dispatchAgentTool, type AgentToolContext } from './tools'
 
@@ -194,24 +194,26 @@ export async function runAgentTurn(params: {
     // row forever (see messages-idempotency.ts's duplicate branch), stuck refusing the
     // identical request indefinitely instead of ever resolving. Persist a terminal
     // explanation for THIS attempt, same as the read-only-lock and thrown-error paths.
-    await insertAssistantReply(
-      supabase,
-      projectId,
-      clientId,
+    const errorReply =
       'Something went wrong starting that - nothing was changed. Please try again.'
-    )
+    await insertAssistantReply(supabase, projectId, clientId, errorReply)
+    // A refused/failed turn is a known outcome, not a dropped connection - it must
+    // reach the client the same way the read-only-lock short-circuit above does, or
+    // the stream closes with zero frames and the client's own "no settled event ever
+    // arrived" fallback renders it as a connection drop instead (see docs/decisions.md).
+    emit({ type: 'settled', content: errorReply, cost: 0 })
     return { ok: false, status: 500, error: claim.message }
   }
   if (claim.outcome === 'blocked') {
     // Only reachable reason for this policy: already_generating (fresh, not yet stale).
     // Same orphan risk as the 'error' branch above - persist a terminal reply for this
     // specific attempt so a resend of this client_id resolves instead of looping.
-    await insertAssistantReply(
-      supabase,
-      projectId,
-      clientId,
+    const blockedReply =
       'Another turn was already running for this project when this was sent, so nothing was changed. Please try again.'
-    )
+    await insertAssistantReply(supabase, projectId, clientId, blockedReply)
+    // Same reasoning as the 'error' branch above - emit so this known refusal renders
+    // correctly on the first attempt instead of as a dropped connection.
+    emit({ type: 'settled', content: blockedReply, cost: 0 })
     return {
       ok: false,
       status: 409,
@@ -274,7 +276,9 @@ export async function runAgentTurn(params: {
   try {
     const { data: shotRows } = await supabase
       .from('shots')
-      .select('order_index, visual_description, voice_over, shot_size_origin, camera_angle_origin, camera_movement_origin')
+      .select(
+        'order_index, visual_description, voice_over, section_label, shot_size_origin, camera_angle_origin, camera_movement_origin'
+      )
       .eq('project_id', projectId)
       .order('order_index', { ascending: true })
     const shotIndexBlock = buildShotIndexBlock(shotRows ?? [])
@@ -324,7 +328,7 @@ export async function runAgentTurn(params: {
 
     for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       const estimatedInputTokens = estimateInputTokens({
-        texts: [AGENT_SYSTEM_PROMPT_V9, shotIndexBlock, ...history.map((m) => m.content), content],
+        texts: [AGENT_SYSTEM_PROMPT_V10, shotIndexBlock, ...history.map((m) => m.content), content],
         tools: AGENT_TOOLS,
       })
       const { markSettled } = await reserveAndSettle(estimatedInputTokens)
@@ -334,7 +338,7 @@ export async function runAgentTurn(params: {
           model: modelsConfig.agent.model,
           max_tokens: modelsConfig.agent.maxTokens,
           system: [
-            { type: 'text', text: AGENT_SYSTEM_PROMPT_V9, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: AGENT_SYSTEM_PROMPT_V10, cache_control: { type: 'ephemeral' } },
             { type: 'text', text: shotIndexBlock, cache_control: { type: 'ephemeral' } },
           ],
           tools: AGENT_TOOLS,
