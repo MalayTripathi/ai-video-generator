@@ -4,6 +4,7 @@ import type { ClaudeGateway } from '@/lib/claude'
 import { modelsConfig } from '@/lib/config/models'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 import { MODEL_REPORTABLE_CAMERA_ORIGINS } from '@/lib/config/enums'
+import { stalenessFor } from '@/lib/shot-staleness'
 import {
   estimateInputTokens,
   quoteClaudeCall,
@@ -19,6 +20,7 @@ import {
   buildCameraDynamicBlock,
   type CameraFieldName,
 } from '@/lib/prompts/camera-derivation'
+import { visualDescriptionIsValid } from '@/lib/shot-visual-description'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -97,6 +99,15 @@ export async function runCameraDerivation(params: {
   const shot = await loadOwnedShot(supabase, shotId, userId)
   if (!shot || shot.project_id !== projectId) {
     return { ok: false, status: 404, error: 'Shot not found' }
+  }
+
+  // Visual description is the sole input to this call - an empty or whitespace-only one
+  // has no textual evidence to derive framing from. This must not rely on client-side
+  // validation: the client can no longer save an empty description, but a pre-existing
+  // row can still carry one, and this guard is what keeps that row from ever reaching the
+  // paid call - before quoteClaudeCall/reserveUsage, so no usage row is written either.
+  if (!visualDescriptionIsValid((shot.visual_description ?? '').trim())) {
+    return { ok: false, status: 422, error: 'Visual description is empty - nothing to derive camera framing from.' }
   }
 
   // No fallback, no widening: the caller's `fields` IS the scope. See CLAUDE.md's
@@ -212,8 +223,7 @@ export async function runCameraDerivation(params: {
 
     // Camera re-derivation counts as a camera-field edit for staleness purposes, same
     // as a manual dropdown change - see CLAUDE.md's staleness table.
-    updates.image_prompt_stale = true
-    updates.video_prompt_stale = true
+    Object.assign(updates, stalenessFor('camera').shot)
 
     const { error: updateError } = await supabase.from('shots').update(updates).eq('id', shotId)
     if (updateError) {

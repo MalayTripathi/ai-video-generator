@@ -2,6 +2,8 @@ import { test, expect, type Page } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { runCameraDerivation } from '../src/app/api/projects/[id]/shots/[shotId]/camera/logic'
+import { handleUpdateShot, type AgentToolContext } from '../src/app/api/projects/[id]/agent/tools'
+import { stepIndex } from '../src/lib/config/pipeline'
 import { successMessage, throwingGateway } from './helpers/claude-fakes'
 import { LiveCallsBlockedError, type ClaudeGateway } from '../src/lib/claude'
 import { CAMERA_FIELD_NAMES } from '../src/lib/prompts/camera-derivation'
@@ -377,6 +379,44 @@ test.describe('camera field editing and re-derivation', () => {
     expect(shotRow?.video_prompt_stale).toBe(true)
   })
 
+  test('never calls the model when visual_description is empty or whitespace-only - no gateway call, no usage row', async () => {
+    const user = primary.user
+    const projectId = await seedProject()
+
+    let gatewayCalled = false
+    const gateway: ClaudeGateway = {
+      async createMessage() {
+        gatewayCalled = true
+        return successMessage({}, 'derive_camera')
+      },
+    }
+
+    for (const visualDescription of ['', '   ']) {
+      const shotId = await seedShot(projectId, { visual_description: visualDescription })
+
+      const result = await runCameraDerivation({
+        gateway,
+        supabase: admin,
+        projectId,
+        shotId,
+        userId: user.id,
+        fields: [...CAMERA_FIELD_NAMES],
+      })
+
+      expect(result.ok).toBe(false)
+      expect(gatewayCalled).toBe(false)
+
+      const { data: usageRows, error: usageError } = await admin
+        .from('usage')
+        .select('id')
+        .eq('project_id', projectId)
+        .eq('shot_id', shotId)
+        .eq('operation', 'derive_camera')
+      expect(usageError).toBeNull()
+      expect(usageRows!.length).toBe(0)
+    }
+  })
+
   test('a pre-network blocked call settles as failed with zero cost and no stale pending row', async () => {
     const user = primary.user
     const projectId = await seedProject()
@@ -538,6 +578,67 @@ test.describe('camera field editing and re-derivation', () => {
     expect(after?.camera_angle_origin).toBe(before?.camera_angle_origin)
     expect(after?.camera_movement).toBe(before?.camera_movement)
     expect(after?.camera_movement_origin).toBe(before?.camera_movement_origin)
+  })
+
+  test('an agent-set override survives re-derivation unless the description gives new explicit evidence', async () => {
+    const user = primary.user
+    const projectId = await seedProject()
+    const shotId = await seedShot(projectId, {
+      visual_description: 'A shot of the throne room.',
+      shot_size: 'wide',
+      shot_size_origin: 'auto',
+    })
+    const shotNumber = (await readShot(shotId))!.order_index + 1
+
+    // Simulates the agent chat path (agent/tools.ts handleUpdateShot) setting an override
+    // via a real chat edit, rather than hand-seeding the row - this proves the two write
+    // paths actually compose, not just that each is correct in isolation.
+    const ctx: AgentToolContext = {
+      supabase: admin,
+      gateway: throwingGateway('regenerate_all_shots should not be invoked in this test'),
+      projectId,
+      userId: user.id,
+      furthestStepIndex: stepIndex('workbench'),
+      messageId: crypto.randomUUID(),
+    }
+    await handleUpdateShot({ shot_number: shotNumber, shot_size: 'close_up' }, ctx)
+    expect((await readShot(shotId))?.shot_size_origin).toBe('override')
+
+    // A re-derivation call answering 'auto' (no textual evidence) must not overwrite the
+    // agent-set override - runCameraDerivation's shouldApply only inspects the shot's
+    // current origin, indifferent to how it got there.
+    const autoGateway: ClaudeGateway = {
+      async createMessage() {
+        return successMessage({ shot_size: 'wide', shot_size_origin: 'auto' }, 'derive_camera')
+      },
+    }
+    await runCameraDerivation({
+      gateway: autoGateway,
+      supabase: admin,
+      projectId,
+      shotId,
+      userId: user.id,
+      fields: ['shot_size'],
+    })
+    expect((await readShot(shotId))?.shot_size).toBe('close_up')
+    expect((await readShot(shotId))?.shot_size_origin).toBe('override')
+
+    // Real new textual evidence ('derived') is still the one thing allowed to move it.
+    const derivedGateway: ClaudeGateway = {
+      async createMessage() {
+        return successMessage({ shot_size: 'medium', shot_size_origin: 'derived' }, 'derive_camera')
+      },
+    }
+    await runCameraDerivation({
+      gateway: derivedGateway,
+      supabase: admin,
+      projectId,
+      shotId,
+      userId: user.id,
+      fields: ['shot_size'],
+    })
+    expect((await readShot(shotId))?.shot_size).toBe('medium')
+    expect((await readShot(shotId))?.shot_size_origin).toBe('derived')
   })
 
   test.describe('fields scope contract (400s)', () => {

@@ -21,7 +21,7 @@ export function WorkbenchShell({
       <div className="flex-none border-b border-border-subtle px-rc-md py-rc-md">{header}</div>
       <WorkbenchStepIndicator projectId={project.id} currentStep={project.current_step} />
       <div className="flex min-h-0 flex-1">
-        <AgentPanel messages={agentMessages} />
+        <AgentPanel initialMessages={agentMessages} />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
       </div>
       {footer && (

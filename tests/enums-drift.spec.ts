@@ -10,6 +10,8 @@ import {
   CAMERA_ORIGINS,
   ELEMENT_TYPES,
 } from '../src/lib/config/enums'
+import { STEPS } from '../src/lib/config/pipeline'
+import { MESSAGE_KINDS, TOOL_NAMES } from '../src/lib/config/messages'
 
 // Turns TS-vs-CHECK-constraint drift into a test failure instead of a runtime surprise:
 // for every enum in src/lib/config/enums.ts that has a DB CHECK constraint, insert a row
@@ -74,6 +76,23 @@ test.describe('enum drift - projects columns', () => {
         current_step: 'workbench',
         aspect_ratio: 'not_a_real_ratio',
       })
+    expect(badError).not.toBeNull()
+  })
+
+  // current_step's vocabulary is STEPS exactly - intake is the pre-project screen and
+  // never a stored value. This is the check that would have caught the 'script'
+  // divergence, when the column had no CHECK constraint at all.
+  test('accepts every STEPS member as current_step and rejects a bogus value', async () => {
+    for (const value of STEPS) {
+      const { error } = await admin
+        .from('projects')
+        .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: value })
+      expect(error).toBeNull()
+    }
+
+    const { error: badError } = await admin
+      .from('projects')
+      .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: 'not_a_real_step' })
     expect(badError).not.toBeNull()
   })
 })
@@ -175,6 +194,61 @@ test.describe('enum drift - shots columns', () => {
       shot_key: bad.shotKey,
       voice_over: 'x',
       shot_size_origin: 'not_a_real_origin',
+    })
+    expect(badError).not.toBeNull()
+  })
+})
+
+test.describe('enum drift - messages columns', () => {
+  test('accepts every MESSAGE_KINDS member and rejects a bogus value', async () => {
+    const projectId = await insertProject()
+    for (const value of MESSAGE_KINDS) {
+      const { error } = await admin.from('messages').insert({
+        project_id: projectId,
+        role: 'assistant',
+        content: 'x',
+        kind: value,
+      })
+      expect(error).toBeNull()
+    }
+
+    const { error: badError } = await admin.from('messages').insert({
+      project_id: projectId,
+      role: 'assistant',
+      content: 'x',
+      kind: 'not_a_real_kind',
+    })
+    expect(badError).not.toBeNull()
+  })
+
+  test('accepts every TOOL_NAMES member (plus null) as tool_name and rejects a bogus value', async () => {
+    const projectId = await insertProject()
+    for (const value of TOOL_NAMES) {
+      const { error } = await admin.from('messages').insert({
+        project_id: projectId,
+        role: 'assistant',
+        content: 'x',
+        kind: 'tool_done',
+        tool_name: value,
+      })
+      expect(error).toBeNull()
+    }
+
+    const { error: nullError } = await admin.from('messages').insert({
+      project_id: projectId,
+      role: 'assistant',
+      content: 'x',
+      kind: 'refusal',
+      tool_name: null,
+    })
+    expect(nullError).toBeNull()
+
+    const { error: badError } = await admin.from('messages').insert({
+      project_id: projectId,
+      role: 'assistant',
+      content: 'x',
+      kind: 'tool_done',
+      tool_name: 'not_a_real_tool',
     })
     expect(badError).not.toBeNull()
   })

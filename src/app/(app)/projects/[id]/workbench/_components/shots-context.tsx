@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DisplayShot } from './types'
 import { derivePhase, type Phase } from './derive-phase'
+import { stepIndex } from '@/lib/config/pipeline'
 
 type ShotsContextValue = {
   projectId: string
@@ -18,6 +19,36 @@ type ShotsContextValue = {
   closeRetryConfirm: () => void
   confirmRetry: () => void
   updateShotLocal: (shotId: string, patch: Partial<DisplayShot>) => void
+  removeShotLocal: (shotId: string) => void
+  // Read-only workbench: true once furthest_step has reached storyboard. furthest_step
+  // never changes client-side (no advanceStep() caller exists yet), so this is computed
+  // once from the initial value rather than kept in its own resync effect.
+  readOnly: boolean
+  // Per-tool-call shot locking for an in-flight agent turn - see docs/decisions.md
+  // ("C4 streaming"). Keyed by shot_key (the server's stable identifier, present only
+  // on a tool_completed/refusal that names one specific shot - update_shot/insert_shot,
+  // never get_shot/regenerate_all_shots). Locking is deliberately scoped to exactly
+  // those events; there is nothing to lock for a tool with no shotKey.
+  lockedShotKeys: Set<string>
+  lockShot: (shotKey: string) => void
+  unlockAllShots: () => void
+  // Shots (by shot_key) an update_shot/insert_shot tool call touched this turn, to be
+  // resynced from the next server refresh even for an already-expanded card whose field
+  // components hold their own local draft state (a plain prop change never overwrites
+  // that - see visual-description-field.tsx and friends). regenerate_all_shots needs no
+  // equivalent: it deletes and reinserts every shot with brand-new ids, so the refresh
+  // remounts those cards outright (new React key) instead of updating them in place -
+  // there is no local draft to protect on a component that never existed before.
+  touchedShotKeys: Set<string>
+  refreshPending: boolean
+  markShotsTouched: (shotKeys: string[]) => void
+  consumeTouchedShot: (shotKey: string) => void
+  // Accordion: at most one shot card expanded at a time (canvas: "Only one card is
+  // expanded at a time"). Lives here rather than per-card local state so expanding one
+  // card can coordinate collapsing whichever other card was open.
+  expandedShotId: string | null
+  expandShot: (shotId: string) => void
+  collapseShot: () => void
 }
 
 const ShotsContext = createContext<ShotsContextValue | null>(null)
@@ -29,6 +60,7 @@ export function ShotsProvider({
   initialVideoModel,
   initialGenerationState,
   initialHasPendingPayload,
+  initialFurthestStep,
   estimatedCredits,
   children,
 }: {
@@ -38,6 +70,7 @@ export function ShotsProvider({
   initialVideoModel: string | null
   initialGenerationState: string | null
   initialHasPendingPayload: boolean
+  initialFurthestStep: number
   estimatedCredits: number
   children: ReactNode
 }) {
@@ -47,7 +80,18 @@ export function ShotsProvider({
   const [generationState, setGenerationState] = useState(initialGenerationState)
   const [hasPendingPayload, setHasPendingPayload] = useState(initialHasPendingPayload)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [lockedShotKeys, setLockedShotKeys] = useState<Set<string>>(new Set())
+  const [touchedShotKeys, setTouchedShotKeys] = useState<Set<string>>(new Set())
+  // True from the moment an agent turn names touched shots until the router.refresh()
+  // it triggers actually lands (the "sync from server" effect below runs). Without this,
+  // a field's external-resync effect fires as soon as touchedShotKeys flips true - before
+  // the refreshed value has arrived - applies the still-stale prop, and immediately
+  // consumes the touch, permanently missing the real value that lands moments later. See
+  // use-external-resync.ts.
+  const [refreshPending, setRefreshPending] = useState(false)
+  const [expandedShotId, setExpandedShotId] = useState<string | null>(null)
   const triggeredRef = useRef(false)
+  const readOnly = initialFurthestStep >= stepIndex('storyboard')
 
   // video_model isn't edited anywhere in this task - passed through statically rather
   // than kept in its own useState.
@@ -55,6 +99,47 @@ export function ShotsProvider({
 
   function updateShotLocal(shotId: string, patch: Partial<DisplayShot>) {
     setShots((prev) => prev.map((shot) => (shot.id === shotId ? { ...shot, ...patch } : shot)))
+  }
+
+  function removeShotLocal(shotId: string) {
+    setShots((prev) => prev.filter((shot) => shot.id !== shotId))
+  }
+
+  // Overwriting expandedShotId (rather than toggling) is what makes this an accordion -
+  // whichever card held it is implicitly collapsed the instant a different one expands.
+  function expandShot(shotId: string) {
+    setExpandedShotId(shotId)
+  }
+
+  function collapseShot() {
+    setExpandedShotId(null)
+  }
+
+  function lockShot(shotKey: string) {
+    setLockedShotKeys((prev) => new Set(prev).add(shotKey))
+  }
+
+  function unlockAllShots() {
+    setLockedShotKeys(new Set())
+  }
+
+  function markShotsTouched(shotKeys: string[]) {
+    if (shotKeys.length === 0) return
+    setTouchedShotKeys((prev) => {
+      const next = new Set(prev)
+      for (const key of shotKeys) next.add(key)
+      return next
+    })
+    setRefreshPending(true)
+  }
+
+  function consumeTouchedShot(shotKey: string) {
+    setTouchedShotKeys((prev) => {
+      if (!prev.has(shotKey)) return prev
+      const next = new Set(prev)
+      next.delete(shotKey)
+      return next
+    })
   }
 
   const phase = derivePhase({
@@ -120,6 +205,10 @@ export function ShotsProvider({
     setVideoType(initialVideoType)
     setGenerationState(initialGenerationState)
     setHasPendingPayload(initialHasPendingPayload)
+    // A real refresh cycle has now landed - safe for any field waiting on
+    // touchedShotKeys to apply the (now current) value it's holding. See
+    // refreshPending's own comment above.
+    setRefreshPending(false)
   }, [initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload])
 
   // Poll while generating so a tab that never fired its own POST (e.g. loaded mid-generation
@@ -146,6 +235,18 @@ export function ShotsProvider({
         closeRetryConfirm,
         confirmRetry,
         updateShotLocal,
+        removeShotLocal,
+        readOnly,
+        lockedShotKeys,
+        lockShot,
+        unlockAllShots,
+        touchedShotKeys,
+        refreshPending,
+        markShotsTouched,
+        consumeTouchedShot,
+        expandedShotId,
+        expandShot,
+        collapseShot,
       }}
     >
       {children}

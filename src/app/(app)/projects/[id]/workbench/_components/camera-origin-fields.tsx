@@ -32,6 +32,7 @@ function CameraField({
   pending,
   previousValue,
   justSettled,
+  readOnly,
   formatValue,
   save,
   onSaved,
@@ -45,6 +46,7 @@ function CameraField({
   pending: boolean
   previousValue?: string | null
   justSettled?: boolean
+  readOnly: boolean
   formatValue: (value: string | null) => string
   save: (value: string) => Promise<ShotFieldSaveResult>
   onSaved: (value: string) => void
@@ -58,7 +60,20 @@ function CameraField({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status])
 
+  // Unlike a text field, this component holds no local draft at all - value/origin are
+  // read straight from ShotsProvider's context on every render (via the shot-card.tsx ->
+  // CameraOriginFields prop chain), so a background router.refresh() already updates what
+  // renders here with no extra resync mechanism needed.
   const selectOptions: SelectOption[] = options.map((option) => ({ value: option, label: formatValue(option) }))
+
+  if (readOnly) {
+    return (
+      <div className="flex flex-col gap-[5px]">
+        <span className="text-label font-medium uppercase leading-4 tracking-label text-text-tertiary">{label}</span>
+        <span className="text-control text-text-primary">{formatValue(value)}</span>
+      </div>
+    )
+  }
 
   function handleCommit(next: string) {
     // A re-selected value is a real no-op once origin is already 'override', but the
@@ -166,6 +181,7 @@ export const CameraOriginFields = memo(function CameraOriginFields({
   pendingFields,
   previousValues,
   justSettled,
+  readOnly,
   onFieldSaved,
   onFieldStatusChange,
   onRevert,
@@ -180,6 +196,7 @@ export const CameraOriginFields = memo(function CameraOriginFields({
   pendingFields: Set<CameraFieldName>
   previousValues: Partial<Record<CameraFieldName, string | null>>
   justSettled: boolean
+  readOnly: boolean
   onFieldSaved: (field: CameraFieldName, value: string) => void
   onFieldStatusChange: (key: string, status: FieldSaveStatus, retry: () => void) => void
   onRevert: (field: CameraFieldName) => void
@@ -194,6 +211,7 @@ export const CameraOriginFields = memo(function CameraOriginFields({
         pending={pendingFields.has('shot_size')}
         previousValue={previousValues.shot_size}
         justSettled={justSettled}
+        readOnly={readOnly}
         formatValue={shotSizeLabel}
         save={(value) => updateShotSize(shotId, value)}
         onSaved={(value) => onFieldSaved('shot_size', value)}
@@ -208,6 +226,7 @@ export const CameraOriginFields = memo(function CameraOriginFields({
         pending={pendingFields.has('camera_angle')}
         previousValue={previousValues.camera_angle}
         justSettled={justSettled}
+        readOnly={readOnly}
         formatValue={cameraAngleLabel}
         save={(value) => updateShotCameraAngle(shotId, value)}
         onSaved={(value) => onFieldSaved('camera_angle', value)}
@@ -222,6 +241,7 @@ export const CameraOriginFields = memo(function CameraOriginFields({
         pending={pendingFields.has('camera_movement')}
         previousValue={previousValues.camera_movement}
         justSettled={justSettled}
+        readOnly={readOnly}
         formatValue={cameraMovementLabel}
         save={(value) => updateShotCameraMovement(shotId, value)}
         onSaved={(value) => onFieldSaved('camera_movement', value)}

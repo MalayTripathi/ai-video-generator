@@ -11,20 +11,26 @@ let draftKeySeq = 0
 
 export function DialogueSection({
   shotId,
+  shotKey,
   dialogue,
   boundCharacters,
+  readOnly,
   onFieldStatusChange,
   onFieldStatusClear,
 }: {
   shotId: string
+  shotKey: string
   dialogue: DisplayDialogueLine[]
   boundCharacters: DisplayElement[]
+  readOnly: boolean
   onFieldStatusChange: (fieldKey: string, status: FieldSaveStatus, retry: () => void) => void
   onFieldStatusClear: (fieldKey: string) => void
 }) {
-  const { updateShotLocal } = useShots()
+  const { updateShotLocal, touchedShotKeys, refreshPending, consumeTouchedShot } = useShots()
   const [rows, setRows] = useState<DisplayDialogueLine[]>(dialogue)
   const [drafts, setDrafts] = useState<{ key: string }[]>([])
+  const [resyncNonce, setResyncNonce] = useState(0)
+  const [focusedLineCount, setFocusedLineCount] = useState(0)
 
   // Sync this shot's dialogue back to the card-list-level ShotsProvider whenever it
   // changes locally, via an effect rather than inline inside a setRows updater -
@@ -40,6 +46,24 @@ export function DialogueSection({
     updateShotLocal(shotId, { dialogue: rows })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows])
+
+  const isTouched = touchedShotKeys.has(shotKey)
+
+  // Same "external resync unless focused" rule as every other field (see
+  // use-external-resync.ts), applied to the whole row list at once rather than per row -
+  // simpler, and dialogue rows don't carry independent enough state to make a per-row
+  // version worth the complexity. `resyncNonce` forces each DialogueRow to remount (via
+  // its key below) rather than trying to update an existing instance's own local
+  // speaker/line state in place, since DialogueRow (like every other field) never resyncs
+  // from a changed prop on its own.
+  useEffect(() => {
+    if (!isTouched || refreshPending || focusedLineCount > 0) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRows(dialogue)
+    setResyncNonce((n) => n + 1)
+    consumeTouchedShot(shotKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dialogue, isTouched, refreshPending, focusedLineCount])
 
   function handleAddLine() {
     setDrafts((prev) => [...prev, { key: `draft-${draftKeySeq++}` }])
@@ -114,17 +138,19 @@ export function DialogueSection({
     <div className="flex flex-col gap-rc-xs">
       <div className="flex items-center justify-between">
         <span className="text-label font-medium uppercase leading-4 tracking-label text-text-tertiary">Character dialogue</span>
-        <div className="flex items-center gap-rc-xs">
-          {!canAddLine && <span className="text-meta text-text-tertiary">Bind a character to this shot first</span>}
-          <button
-            type="button"
-            disabled={!canAddLine}
-            onClick={handleAddLine}
-            className="cursor-pointer rounded-badge bg-accent-wash px-rc-xs py-[3px] text-chip font-medium text-accent hover:bg-accent-wash-strong disabled:cursor-not-allowed disabled:opacity-[0.45] disabled:hover:bg-accent-wash"
-          >
-            + Add line
-          </button>
-        </div>
+        {!readOnly && (
+          <div className="flex items-center gap-rc-xs">
+            {!canAddLine && <span className="text-meta text-text-tertiary">Bind a character to this shot first</span>}
+            <button
+              type="button"
+              disabled={!canAddLine}
+              onClick={handleAddLine}
+              className="cursor-pointer rounded-badge bg-accent-wash px-rc-xs py-[3px] text-chip font-medium text-accent hover:bg-accent-wash-strong disabled:cursor-not-allowed disabled:opacity-[0.45] disabled:hover:bg-accent-wash"
+            >
+              + Add line
+            </button>
+          </div>
+        )}
       </div>
 
       {rows.length === 0 && drafts.length === 0 && (
@@ -133,29 +159,34 @@ export function DialogueSection({
 
       {rows.map((row) => (
         <DialogueRow
-          key={row.id}
+          key={`${row.id}-${resyncNonce}`}
           shotId={shotId}
           initial={
             { id: row.id, elementId: row.element_id, elementName: row.element_name, line: row.line } satisfies DialogueRowValue
           }
           boundCharacters={boundCharacters}
+          readOnly={readOnly}
           onSaved={(value) => handleRowSaved(row.id, value)}
           onRequestRemove={() => void handleRemoveSavedRow(row.id)}
           onStatusChange={(status, retry) => onFieldStatusChange(`dialogue:${row.id}`, status, retry)}
+          onFocusChange={(focused) => setFocusedLineCount((n) => Math.max(0, n + (focused ? 1 : -1)))}
         />
       ))}
 
-      {drafts.map((draft) => (
-        <DialogueRow
-          key={draft.key}
-          shotId={shotId}
-          initial={{ elementId: '', line: '' }}
-          boundCharacters={boundCharacters}
-          onSaved={(value) => handleDraftSaved(draft.key, value)}
-          onRequestRemove={() => handleRemoveDraft(draft.key)}
-          onStatusChange={(status, retry) => onFieldStatusChange(`dialogue:${draft.key}`, status, retry)}
-        />
-      ))}
+      {!readOnly &&
+        drafts.map((draft) => (
+          <DialogueRow
+            key={draft.key}
+            shotId={shotId}
+            initial={{ elementId: '', line: '' }}
+            boundCharacters={boundCharacters}
+            readOnly={false}
+            onSaved={(value) => handleDraftSaved(draft.key, value)}
+            onRequestRemove={() => handleRemoveDraft(draft.key)}
+            onStatusChange={(status, retry) => onFieldStatusChange(`dialogue:${draft.key}`, status, retry)}
+            onFocusChange={(focused) => setFocusedLineCount((n) => Math.max(0, n + (focused ? 1 : -1)))}
+          />
+        ))}
     </div>
   )
 }

@@ -20,3 +20,15 @@ export const durationConfig: Record<DurationTarget, DurationConfig> = {
   '3-5min': { label: '3–5 min', targetShots: 40, estimatedCredits: 240, targetSecondsMax: 300 },
   '8-10min': { label: '8–10 min', targetShots: 75, estimatedCredits: 450, targetSecondsMax: 600 },
 }
+
+// How many shots over `targetShots` the project currently has - 0 when at or under
+// target, or when the target can't be resolved (null). Takes the resolved number rather
+// than a DurationTarget so callers reuse their own tier lookup instead of a second one
+// here. The tool-use API can't structurally cap write_shots' shot count (see
+// buildWriteShotsTool), so an overshoot is an expected, accept-and-logged outcome rather
+// than a rare edge case; this is what ProjectHeader's amber indicator reads to surface it
+// to the person who can trim it.
+export function shotCountOverrun(shotCount: number, targetShots: number | null): number {
+  if (targetShots == null) return 0
+  return Math.max(0, shotCount - targetShots)
+}

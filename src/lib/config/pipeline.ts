@@ -4,14 +4,14 @@
 // can't import a TS module, so keep both in sync whenever this file
 // changes (see CLAUDE.md's `generations`/`usage` notes).
 //
-// Step 5 (storyboard) is intentionally absent from STEPS/STEP_OPERATIONS:
-// it arranges existing shot images/prompts and generates nothing of its
-// own, so it never claims a generation or logs usage.
+// Storyboard absorbed the former standalone voiceover step: it owns
+// generate_image, voiceover and background_music, so it both claims
+// generations and logs usage.
 
 export const STEPS = [
   'workbench',
-  'voiceover',
   'image_prompts',
+  'storyboard',
   'video_prompts',
   'generation',
   'assembly',
@@ -42,8 +42,8 @@ export type Provider = (typeof PROVIDERS)[number]
 
 export const STEP_OPERATIONS: Record<Step, readonly Operation[]> = {
   workbench: ['generate_shots', 'agent_turn', 'derive_camera'],
-  voiceover: ['voiceover', 'background_music'],
   image_prompts: ['write_prompts', 'generate_image'],
+  storyboard: ['generate_image', 'voiceover', 'background_music'],
   video_prompts: ['write_prompts'],
   generation: ['generate_clip'],
   assembly: ['merge'],
@@ -54,8 +54,8 @@ export const STEP_OPERATIONS: Record<Step, readonly Operation[]> = {
 // must have an entry here.
 const STEP_LABELS: Record<Step, string> = {
   workbench: 'Workbench',
-  voiceover: 'Voiceover',
   image_prompts: 'Image Prompts',
+  storyboard: 'Storyboard',
   video_prompts: 'Video Prompts',
   generation: 'Generation',
   assembly: 'Assembly',
@@ -63,8 +63,12 @@ const STEP_LABELS: Record<Step, string> = {
 
 const OPERATION_LABELS: Record<Step, Partial<Record<Operation, string>>> = {
   workbench: { generate_shots: 'New shots', agent_turn: 'Agent turn', derive_camera: 'Camera framing' },
-  voiceover: { voiceover: 'Generation', background_music: 'Background music' },
   image_prompts: { write_prompts: 'Prompt writing', generate_image: 'Image generation' },
+  storyboard: {
+    generate_image: 'Image generation',
+    voiceover: 'Voiceover',
+    background_music: 'Background music',
+  },
   video_prompts: { write_prompts: 'Prompt writing' },
   generation: { generate_clip: 'Clip generation' },
   assembly: { merge: 'Assembly' },
@@ -88,18 +92,8 @@ export function stepOperationLabel(step: Step, operation: Operation): string {
 // keeps stepIndex('workbench') === 2, matching both the furthest_step values
 // already backfilled by migration 20260826162156_step_progress.sql and the
 // literal `furthest_step: 2` written at project creation
-// (src/app/(app)/projects/new/actions.ts).
-//
-// KNOWN GAP: storyboard is a real current_step value (CLAUDE.md's 8-step
-// route list) but is not a member of Step - deliberately, since Step is the
-// operations-attribution vocabulary mirrored into the generations/usage
-// CHECK constraints, and storyboard claims no generation and logs no usage
-// (see the file header above). Nothing writes current_step past 'workbench'
-// today, so this has no live consequence yet. Whoever builds Step 5's slice
-// must extend the current_step vocabulary (and this function, and
-// advanceStep's parameter type) at that time - do not preemptively widen
-// STEPS to include it, which would incorrectly imply storyboard belongs in
-// the generations/usage CHECK constraints too.
+// (src/app/(app)/projects/new/actions.ts). STEPS covers every current_step
+// value, so this maps the whole 7-step scale: workbench=2 ... assembly=7.
 export function stepIndex(step: Step): number {
   return STEPS.indexOf(step) + 2
 }

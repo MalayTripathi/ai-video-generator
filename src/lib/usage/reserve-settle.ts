@@ -1,4 +1,5 @@
 import type { createClient } from '@/lib/supabase/server'
+import { APIError } from '@anthropic-ai/sdk'
 import type { Step, Operation, Provider } from '@/lib/config/pipeline'
 import { computeCost, type UsageBreakdown } from '@/lib/config/pricing'
 import { RATE_VERSION } from '@/lib/config/pricing'
@@ -38,6 +39,9 @@ export async function reserveUsage(params: {
   // application-layer typing change, no migration needed.
   generationId: string | null
   shotId: string | null
+  // Nullable and optional: only an agent-turn call groups its spend under a chat
+  // message. Every other call site keeps omitting it and gets null, unchanged.
+  messageId?: string | null
   step: Step
   operation: Operation
   provider: Provider
@@ -54,10 +58,7 @@ export async function reserveUsage(params: {
       project_id: params.projectId,
       generation_id: params.generationId,
       shot_id: params.shotId,
-      // No chat/agent-turn concept exists yet to attach a message to. Left in the
-      // signature so a future caller (C4) doesn't need every reserveUsage call site
-      // touched again just to start passing one.
-      message_id: null,
+      message_id: params.messageId ?? null,
       step: params.step,
       operation: params.operation,
       provider: params.provider,
@@ -128,6 +129,18 @@ export async function settleUsage(params: {
     // must keep retaining the quote in the branch below.
     update.estimated_cost = 0
     update.raw_usage = { blocked: true, billed: false, reason: params.error.message }
+  } else if (params.error instanceof APIError && typeof params.error.status === 'number' && params.error.status < 500) {
+    // SECOND, EQUALLY NARROW EXCEPTION: every 4xx (400/401/403/404/422/429) is
+    // Anthropic's own request-validation rejection, returned synchronously before the
+    // model ever runs - there is no partial-generation 4xx. This is as provably unbilled
+    // as LiveCallsBlockedError, just verified a different way (instanceof + status,
+    // never message text). A 5xx or a status-less network/timeout error CAN occur after
+    // generation has started, so those are not provably unbilled and fall through to the
+    // unverifiable branch below - do not widen this to `status !== undefined` or any
+    // status, and do not add a third branch for a throw that merely seems unlikely to
+    // have been billed.
+    update.estimated_cost = 0
+    update.raw_usage = { unmeasured: true, billed: false, error: params.error.message, status: params.error.status }
   } else {
     // No usage data available, and not a verified pre-network throw - could be a
     // network failure, stream error, or timeout after the request already left the

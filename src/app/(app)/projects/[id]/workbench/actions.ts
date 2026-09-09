@@ -2,6 +2,10 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS } from '@/lib/config/enums'
+import { stalenessFor } from '@/lib/shot-staleness'
+import { stepIndex } from '@/lib/config/pipeline'
+import { voiceOverIsValid, EMPTY_VOICEOVER_MESSAGE } from '@/lib/shot-voiceover'
+import { visualDescriptionIsValid, EMPTY_VISUAL_DESCRIPTION_MESSAGE } from '@/lib/shot-visual-description'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -15,13 +19,15 @@ export type ShotField =
 
 export type ShotFieldSaveResult =
   | { field: ShotField; success: true; unchanged?: true }
-  | { field: ShotField; success: false; error: string }
+  | { field: ShotField; success: false; error: string; reason?: 'invalid' }
 
 export type DialogueSaveResult =
   | { success: true; id: string; unchanged?: true }
   | { success: false; error: string }
 
 export type DialogueDeleteResult = { success: true } | { success: false; error: string }
+
+export type ShotDeleteResult = { success: true } | { success: false; error: string }
 
 // Loads a shot together with its persisted field values, scoped to the caller's own
 // project - RLS is the backstop, this is the app-level check (shots has no user_id
@@ -52,11 +58,29 @@ export async function updateShotVoiceOver(shotId: string, value: string): Promis
   if (!shot) return { field, success: false, error: 'Shot not found' }
 
   const trimmed = value.trim()
+
+  // Defense-in-depth: the client already refuses to call this action with an
+  // unacceptable value, but the agent path and any direct call must not be able to
+  // bypass it. Only queries shot_dialogue when the value is actually empty (the common
+  // case never pays for it), and checked unconditionally otherwise - not gated on "did
+  // it change" - for the same reason as the client check (see voiceover-field.tsx).
+  if (trimmed === '') {
+    const { count } = await supabase
+      .from('shot_dialogue')
+      .select('id', { count: 'exact', head: true })
+      .eq('shot_id', shotId)
+    if (!voiceOverIsValid(trimmed, (count ?? 0) > 0)) {
+      return { field, success: false, reason: 'invalid', error: EMPTY_VOICEOVER_MESSAGE }
+    }
+  }
+
   if (trimmed === shot.voice_over) return { field, success: true, unchanged: true }
+
+  const staleness = stalenessFor('voice_over')
 
   const { error } = await supabase
     .from('shots')
-    .update({ voice_over: trimmed, image_prompt_stale: true, video_prompt_stale: true })
+    .update({ voice_over: trimmed, ...staleness.shot })
     .eq('id', shotId)
   if (error) return { field, success: false, error: error.message }
 
@@ -66,7 +90,7 @@ export async function updateShotVoiceOver(shotId: string, value: string): Promis
   // failure the user has to retry - the text itself is safely persisted either way.
   const { error: projectError } = await supabase
     .from('projects')
-    .update({ voiceover_stale: true })
+    .update(staleness.project)
     .eq('id', shot.project_id)
   if (projectError) {
     console.error(
@@ -93,12 +117,22 @@ export async function updateShotVisualDescription(
   if (!shot) return { field, success: false, error: 'Shot not found' }
 
   const trimmed = value.trim()
+
+  // Defense-in-depth, same shape as updateShotVoiceOver's - the client already refuses to
+  // call this action with an empty value, but the agent path and any direct call must not
+  // be able to bypass it. Checked unconditionally, not gated on "did it change" - an
+  // already-persisted empty description must still be refused, not just the edit that
+  // created it.
+  if (!visualDescriptionIsValid(trimmed)) {
+    return { field, success: false, reason: 'invalid', error: EMPTY_VISUAL_DESCRIPTION_MESSAGE }
+  }
+
   const persisted = shot.visual_description ?? ''
   if (trimmed === persisted) return { field, success: true, unchanged: true }
 
   const { error } = await supabase
     .from('shots')
-    .update({ visual_description: trimmed, image_prompt_stale: true, video_prompt_stale: true })
+    .update({ visual_description: trimmed, ...stalenessFor('visual_description').shot })
     .eq('id', shotId)
   if (error) return { field, success: false, error: error.message }
 
@@ -168,7 +202,7 @@ async function updateCameraField(field: CameraField, shotId: string, value: stri
 
   const { error } = await supabase
     .from('shots')
-    .update({ [field]: value, [originColumn]: 'override', image_prompt_stale: true, video_prompt_stale: true })
+    .update({ [field]: value, [originColumn]: 'override', ...stalenessFor('camera').shot })
     .eq('id', shotId)
   if (error) return { field, success: false, error: error.message }
 
@@ -298,8 +332,96 @@ export async function deleteDialogueLine(id: string, shotId: string): Promise<Di
 }
 
 async function markVideoPromptStale(supabase: SupabaseServerClient, shotId: string) {
-  const { error } = await supabase.from('shots').update({ video_prompt_stale: true }).eq('id', shotId)
+  const { error } = await supabase.from('shots').update(stalenessFor('dialogue').shot).eq('id', shotId)
   if (error) {
     console.error(`[workbench] Failed to set video_prompt_stale for shot ${shotId}:`, error.message)
   }
+}
+
+// The user may always delete a shot, whatever has been spent on it - a creative
+// decision the app does not override (see docs/decisions.md). Refused only once the
+// workbench itself is read-only, the same threshold every other lock check in this
+// codebase uses - paid Step 3+ output must never be silently reshaped by a structural
+// change like this.
+//
+// This threshold (`furthest_step >= stepIndex('storyboard')`) is independently
+// duplicated in three places with no shared helper to import (see CLAUDE.md's
+// COUPLING WARNING pattern for why extracting one here would touch agent-chat files
+// this feature must not depend on): here, `isReadOnlyLocked` in
+// api/projects/[id]/agent/tools.ts, and the top-level short-circuit in
+// api/projects/[id]/agent/logic.ts's runAgentTurn. All three compute the boundary via
+// stepIndex('storyboard') rather than a literal, and each has its own test that
+// recomputes the same boundary the same way (tests/shot-deletion.spec.ts,
+// tests/agent-turn.spec.ts) - so a future STEPS reorder moves every site and every
+// test in lockstep. If you touch this line, check the other two stayed in sync.
+export async function deleteShotForUser(
+  supabase: SupabaseServerClient,
+  shotId: string,
+  userId: string
+): Promise<ShotDeleteResult> {
+  const { data: shot } = await supabase
+    .from('shots')
+    .select('id, project_id, projects!inner(user_id)')
+    .eq('id', shotId)
+    .eq('projects.user_id', userId)
+    .maybeSingle()
+  if (!shot) return { success: false, error: 'Shot not found' }
+
+  const { data: project } = await supabase
+    .from('projects')
+    .select('furthest_step')
+    .eq('id', shot.project_id)
+    .single()
+  if (project && project.furthest_step >= stepIndex('storyboard')) {
+    return {
+      success: false,
+      error: "This project's workbench is locked - later steps have already started, so shots can no longer be deleted here.",
+    }
+  }
+
+  const { error: deleteError } = await supabase.from('shots').delete().eq('id', shotId)
+  if (deleteError) return { success: false, error: deleteError.message }
+
+  // Keep order_index contiguous. Unlike shot_dialogue's order_index, shots has a real
+  // shots_project_id_order_index_key UNIQUE(project_id, order_index) constraint (see
+  // agent/tools.ts's handleInsertShot), so these updates run sequentially in ascending
+  // order rather than via Promise.all - each target index is only vacated by the row
+  // before it (or by the delete above), never before.
+  const { data: remaining } = await supabase
+    .from('shots')
+    .select('id, order_index')
+    .eq('project_id', shot.project_id)
+    .order('order_index', { ascending: true })
+
+  if (remaining) {
+    for (const [index, row] of remaining.entries()) {
+      if (row.order_index !== index) {
+        await supabase.from('shots').update({ order_index: index }).eq('id', row.id)
+      }
+    }
+  }
+
+  // One continuous narration file per project - removing a shot changes what's actually
+  // narrated, the same invalidation a voiceover text edit causes (see
+  // stalenessFor('voice_over')). Non-fatal on failure, same as every other
+  // project-level staleness write in this file: the delete itself already succeeded.
+  const { error: projectError } = await supabase
+    .from('projects')
+    .update({ voiceover_stale: true })
+    .eq('id', shot.project_id)
+  if (projectError) {
+    console.error(`[workbench] Failed to set voiceover_stale for project ${shot.project_id}:`, projectError.message)
+  }
+
+  return { success: true }
+}
+
+export async function deleteShot(shotId: string): Promise<ShotDeleteResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return deleteShotForUser(supabase, shotId, user.id)
 }

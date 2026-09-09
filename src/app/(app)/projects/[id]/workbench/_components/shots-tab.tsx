@@ -127,6 +127,28 @@ function ShotList({ shots }: { shots: DisplayShot[] }) {
   )
 }
 
+// "Reopen Step 2" is deliberately inert - making it work would need an advanceStep()
+// caller, which this task must not add (see CLAUDE.md's coupling warning on
+// workbench-step-indicator.tsx). Stated once here, not repeated per card - the cards
+// themselves carry the read-only meaning by shape (see shot-card.tsx).
+function ReadOnlyBanner() {
+  return (
+    <div className="flex items-center gap-rc-xs border-b border-border-subtle pb-rc-sm">
+      <span className="flex flex-none items-center gap-[5px] rounded-full bg-bg-inset px-[10px] py-[4px] text-chip text-text-secondary">
+        <svg width="8" height="10" viewBox="0 0 10 12" fill="none" aria-hidden="true">
+          <rect x="0.75" y="4.9" width="8.5" height="6.35" rx="1.2" stroke="currentColor" strokeWidth="1.2" />
+          <path d="M2.75 4.9V3.3a2.25 2.25 0 0 1 4.5 0v1.6" stroke="currentColor" strokeWidth="1.2" />
+        </svg>
+        View only
+      </span>
+      <span className="text-small leading-[1.5] text-text-secondary">
+        The storyboard is built from these shots.{' '}
+        <span className="cursor-not-allowed text-accent">Reopen Step 2</span> to change them.
+      </span>
+    </div>
+  )
+}
+
 export function ShotsTab() {
   const {
     shots,
@@ -137,6 +159,7 @@ export function ShotsTab() {
     openRetryConfirm,
     closeRetryConfirm,
     confirmRetry,
+    readOnly,
   } = useShots()
 
   const modal = (
@@ -174,5 +197,10 @@ export function ShotsTab() {
         <NoShotsEmptyState onRebuild={openRetryConfirm} />
       </>
     )
-  return <ShotList shots={shots} />
+  return (
+    <div className="flex flex-col gap-rc-sm">
+      {readOnly && <ReadOnlyBanner />}
+      <ShotList shots={shots} />
+    </div>
+  )
 }

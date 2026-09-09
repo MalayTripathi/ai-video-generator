@@ -85,11 +85,16 @@ export type ModelsConfig = {
     model: string
     maxTokens: number
   }
+  agent: {
+    provider: 'anthropic'
+    model: string
+    maxTokens: number
+  }
   video: {
     provider: 'fal'
     model: string
   }
-  // Future steps (voiceover, image) each get their own section here as
+  // Future steps (image, storyboard) each get their own section here as
   // they're implemented - keep this type and the object below in sync.
 }
 
@@ -122,6 +127,16 @@ export const modelsConfig: ModelsConfig = {
     // prompts' ~8192-scale ceiling here would reserve roughly 25x the real cost of a
     // 1-3 enum-field answer, on every description edit.
     maxTokens: Number(process.env.CLAUDE_CAMERA_MAX_TOKENS) || 128,
+  },
+  agent: {
+    provider: 'anthropic',
+    // Creative-judgement work (CLAUDE.md rule 16 names "the agent" explicitly), so this
+    // follows the prompts/shots isProduction ternary - unlike camera's permanent-Haiku
+    // carve-out, which is locked because that call is purely mechanical.
+    model:
+      process.env.CLAUDE_AGENT_MODEL ??
+      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
+    maxTokens: Number(process.env.CLAUDE_AGENT_MAX_TOKENS) || 8192,
   },
   video: {
     provider: 'fal',

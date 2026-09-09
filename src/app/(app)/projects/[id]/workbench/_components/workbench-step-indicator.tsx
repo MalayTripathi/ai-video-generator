@@ -3,17 +3,26 @@
 import { useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import Link from 'next/link'
+import { STEPS as PIPELINE_STEPS, type Step } from '@/lib/config/pipeline'
 
-const STEPS: { key: string; label: string }[] = [
-  { key: 'intake', label: 'Intake' },
-  { key: 'workbench', label: 'Workbench' },
-  { key: 'voiceover', label: 'Voiceover' },
-  { key: 'image_prompts', label: 'Image prompts' },
-  { key: 'storyboard', label: 'Storyboard' },
-  { key: 'video_prompts', label: 'Video prompts' },
-  { key: 'generation', label: 'Generation' },
-  { key: 'assembly', label: 'Assembly' },
-]
+// Order and membership come from pipeline.ts - the one place the step list
+// lives - with `intake` prepended, since it is the pre-project screen and so
+// is not a member of Step. Labels stay here because the indicator's sentence
+// case is its own display concern; the Record type makes a missing one a
+// compile error the next time STEPS changes.
+const STEP_LABELS: Record<'intake' | Step, string> = {
+  intake: 'Intake',
+  workbench: 'Workbench',
+  image_prompts: 'Image prompts',
+  storyboard: 'Storyboard',
+  video_prompts: 'Video prompts',
+  generation: 'Generation',
+  assembly: 'Assembly',
+}
+
+const STEPS: { key: string; label: string }[] = (['intake', ...PIPELINE_STEPS] as const).map(
+  (key) => ({ key, label: STEP_LABELS[key] })
+)
 
 function Badge({ className, children }: { className: string; children: React.ReactNode }) {
   return (

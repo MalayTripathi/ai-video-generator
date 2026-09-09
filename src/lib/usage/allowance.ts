@@ -1,4 +1,5 @@
 import type { createClient } from '@/lib/supabase/server'
+import { formatCost } from '@/lib/format-cost'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -18,8 +19,8 @@ export class AllowanceExceededError extends Error {
     public readonly ceilingUsd: number
   ) {
     super(
-      `Monthly usage allowance exceeded: $${usedUsd.toFixed(2)} used this period, ` +
-        `ceiling is $${ceilingUsd.toFixed(2)}.`
+      `Monthly usage allowance exceeded: ${formatCost(usedUsd)} used this period, ` +
+        `ceiling is ${formatCost(ceilingUsd)}.`
     )
     this.name = 'AllowanceExceededError'
   }

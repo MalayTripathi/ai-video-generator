@@ -1,6 +1,7 @@
 'use client'
 
-import { useMemo, useState, type KeyboardEvent } from 'react'
+import { useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import { useRouter } from 'next/navigation'
 import { VoiceoverField } from './voiceover-field'
 import { VisualDescriptionField } from './visual-description-field'
 import { CameraOriginFields } from './camera-origin-fields'
@@ -9,12 +10,33 @@ import { BoundElements } from './bound-elements'
 import { DialogueSection } from './dialogue-section'
 import { DurationStepper } from './duration-stepper'
 import { SaveStatusIndicator } from './save-status-indicator'
+import { DeleteShotConfirmModal } from './delete-shot-confirm-modal'
 import { useShots } from './shots-context'
 import { useCameraDerivation, type CameraFieldUpdate } from './use-camera-derivation'
 import type { FieldSaveStatus } from './use-field-save'
 import type { DisplayElement, DisplayShot } from './types'
 import { CAMERA_FIELD_NAMES, type CameraFieldName } from '@/lib/prompts/camera-derivation'
 import type { CameraOrigin } from '@/lib/config/enums'
+import { deleteShot } from '../actions'
+
+// canvas: "11 Delete affordance" - the exact bin glyph, shared by the collapsed
+// icon-only trigger and the expanded icon+label trigger so the two read as one control
+// changing size, not two controls.
+function TrashIcon() {
+  return (
+    <svg width="13" height="14" viewBox="0 0 14 15" fill="none" aria-hidden="true">
+      <path
+        d="M1.75 3.9h10.5M5.25 3.9V2.5c0-.36.29-.65.65-.65h2.2c.36 0 .65.29.65.65v1.4M3.2 3.9l.45 8.4c.02.4.35.7.75.7h5.2c.4 0 .73-.3.75-.7l.45-8.4"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+      <path d="M5.8 6.5v4M8.2 6.5v4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+type DeleteState = { status: 'idle' } | { status: 'confirming'; error?: string } | { status: 'deleting' }
 
 const CAMERA_FIELD_LABELS: Record<CameraFieldName, string> = {
   shot_size: 'shot size',
@@ -90,8 +112,20 @@ function rollupStatus(entries: Record<string, FieldStatusEntry>) {
 }
 
 export function ShotCard({ shot }: { shot: DisplayShot }) {
-  const { projectId, updateShotLocal } = useShots()
-  const [expanded, setExpanded] = useState(false)
+  const {
+    projectId,
+    updateShotLocal,
+    removeShotLocal,
+    readOnly,
+    lockedShotKeys,
+    expandedShotId,
+    expandShot,
+    collapseShot,
+  } = useShots()
+  const router = useRouter()
+  const isLocked = lockedShotKeys.has(shot.shot_key)
+  const expanded = expandedShotId === shot.id
+  const [deleteState, setDeleteState] = useState<DeleteState>({ status: 'idle' })
   const [fieldStatus, setFieldStatus] = useState<Record<string, FieldStatusEntry>>({})
   const [previousCameraValues, setPreviousCameraValues] = useState<Partial<Record<CameraFieldName, string | null>>>({})
   const { status: derivationStatus, pendingFields, trigger, retry: retryDerivation } = useCameraDerivation(
@@ -161,6 +195,32 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
     })
   }
 
+  function handleDeleteTriggerClick(event: MouseEvent) {
+    event.stopPropagation()
+    if (deleteState.status !== 'idle') return
+    setDeleteState({ status: 'confirming' })
+  }
+
+  function handleDeleteTriggerKeyDown(event: KeyboardEvent) {
+    event.stopPropagation()
+  }
+
+  function handleCancelDelete() {
+    setDeleteState({ status: 'idle' })
+  }
+
+  async function handleConfirmDelete() {
+    if (deleteState.status !== 'confirming') return
+    setDeleteState({ status: 'deleting' })
+    const result = await deleteShot(shot.id)
+    if (!result.success) {
+      setDeleteState({ status: 'confirming', error: result.error })
+      return
+    }
+    removeShotLocal(shot.id)
+    router.refresh()
+  }
+
   const pendingFieldLabels = CAMERA_FIELD_NAMES.filter((f) => pendingFields.has(f)).map((f) => CAMERA_FIELD_LABELS[f])
   const origins: Record<CameraFieldName, CameraOrigin> = {
     shot_size: shot.shot_size_origin,
@@ -173,7 +233,11 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
       : []
   const showResetAll = CAMERA_FIELD_NAMES.some((f) => origins[f] !== 'auto')
 
-  const cardBorderClassName = rollup.kind === 'failed' ? 'border-status-failed-line' : 'border-border-subtle'
+  // canvas: "08 Workbench" / "09A Card at rest" - the expanded card is border-accent,
+  // distinct from the resting border-subtle. Failed still wins over accent (a red border
+  // must stay findable even on the currently-open card).
+  const cardBorderClassName =
+    rollup.kind === 'failed' ? 'border-status-failed-line' : expanded ? 'border-accent' : 'border-border-subtle'
   const durationLabel = shot.duration_sec === null ? '—' : `${shot.duration_sec.toFixed(1)}s`
 
   // Collapsed: the whole card is the expand target (canvas shows no dedicated "Expand"
@@ -186,24 +250,40 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
         role: 'button' as const,
         tabIndex: 0,
         'aria-expanded': false,
-        onClick: () => setExpanded(true),
+        onClick: () => expandShot(shot.id),
         onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
-            setExpanded(true)
+            expandShot(shot.id)
           }
         },
       }
     : {}
 
   return (
+    <>
     <div
       data-testid="shot-card"
-      className={`flex flex-col gap-rc-2xs rounded-control border bg-bg-surface p-3 px-rc-md shadow-card ${cardBorderClassName} ${
-        !expanded ? 'cursor-pointer hover:border-border-strong' : ''
+      data-shot-key={shot.shot_key}
+      data-locked={isLocked}
+      className={`relative flex flex-col overflow-hidden rounded-control border bg-bg-surface shadow-card ${
+        isLocked ? 'border-accent-faint' : `${cardBorderClassName} ${!expanded ? 'cursor-pointer hover:border-border-strong' : ''}`
       }`}
-      {...collapsedInteractionProps}
+      {...(isLocked ? {} : collapsedInteractionProps)}
     >
+      {isLocked && (
+        <>
+          <span className="absolute inset-y-0 left-0 w-[2px] bg-accent" aria-hidden />
+          <div className="flex flex-none items-center gap-[7px] border-b border-border-subtle bg-accent-wash px-rc-md py-[7px]">
+            <span
+              className="h-[5px] w-[5px] flex-none rounded-full bg-accent"
+              style={{ animation: 'rc-pulse 1.3s ease-in-out infinite' }}
+            />
+            <span className="text-meta text-accent">Agent is rewriting this shot</span>
+          </div>
+        </>
+      )}
+      <div className={`flex flex-col gap-rc-2xs p-3 px-rc-md ${isLocked ? 'pointer-events-none cursor-not-allowed opacity-[0.55]' : ''}`}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-rc-xs">
           <span className="text-body font-medium tracking-micro text-text-primary">
@@ -225,7 +305,7 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
             {rollup.kind === 'saved' && <SaveStatusIndicator status="saved" label="" />}
             <button
               type="button"
-              onClick={() => setExpanded(false)}
+              onClick={() => collapseShot()}
               className="cursor-pointer text-small text-text-secondary hover:text-text-primary"
             >
               Collapse
@@ -257,17 +337,38 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
             <div className="text-small leading-[1.5] text-text-secondary">{shot.visual_description}</div>
           )}
 
-          {shot.elements.length > 0 && (
-            <div className="mt-0.5 flex flex-wrap gap-rc-2xs">
-              {shot.elements.map((el) => (
-                <span
-                  key={el.id}
-                  className="flex items-center gap-[5px] rounded-badge bg-bg-inset px-rc-xs py-[3px] text-chip text-text-secondary"
+          {(shot.elements.length > 0 || !readOnly) && (
+            <div className="mt-0.5 flex items-end justify-between gap-rc-sm">
+              <div className="flex flex-wrap gap-rc-2xs">
+                {shot.elements.map((el) => (
+                  <span
+                    key={el.id}
+                    className="flex items-center gap-[5px] rounded-badge bg-bg-inset px-rc-xs py-[3px] text-chip text-text-secondary"
+                  >
+                    <span className={`h-[5px] w-[5px] rounded-full ${elementDotClassName(el)}`} aria-hidden />
+                    {el.name}
+                  </span>
+                ))}
+              </div>
+              {/* canvas: "11 Delete affordance" (collapsed) - the bin sits in the same
+                  trailing row as the element chips, right-aligned, always visible (not
+                  hover-only: deleting is the only way to remove a shot). Read-only
+                  workbench has no delete affordance at all (canvas: "Locked · workbench
+                  read-only"). */}
+              {!readOnly && (
+                <button
+                  type="button"
+                  data-testid="delete-shot-trigger"
+                  aria-label="Delete shot"
+                  title="Delete shot"
+                  onClick={handleDeleteTriggerClick}
+                  onKeyDown={handleDeleteTriggerKeyDown}
+                  disabled={deleteState.status !== 'idle'}
+                  className="-mb-[6px] -mr-[6px] flex h-[26px] w-[26px] flex-none cursor-pointer items-center justify-center rounded-badge text-text-tertiary hover:bg-status-failed-bg hover:text-status-failed-fg disabled:cursor-not-allowed"
                 >
-                  <span className={`h-[5px] w-[5px] rounded-full ${elementDotClassName(el)}`} aria-hidden />
-                  {el.name}
-                </span>
-              ))}
+                  <TrashIcon />
+                </button>
+              )}
             </div>
           )}
         </>
@@ -277,22 +378,29 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
         <div className="flex flex-col gap-rc-md pt-rc-2xs">
           <VoiceoverField
             shotId={shot.id}
+            shotKey={shot.shot_key}
             voiceOver={shot.voice_over}
+            hasDialogue={shot.dialogue.length > 0}
+            readOnly={readOnly}
             onSaved={(patch) => updateShotLocal(shot.id, patch)}
             onStatusChange={(status, retry) => handleFieldStatusChange('voice_over', status, retry)}
           />
 
           <DialogueSection
             shotId={shot.id}
+            shotKey={shot.shot_key}
             dialogue={shot.dialogue}
             boundCharacters={boundCharacters}
+            readOnly={readOnly}
             onFieldStatusChange={handleFieldStatusChange}
             onFieldStatusClear={clearFieldStatus}
           />
 
           <VisualDescriptionField
             shotId={shot.id}
+            shotKey={shot.shot_key}
             visualDescription={shot.visual_description}
+            readOnly={readOnly}
             onSaved={handleVisualDescriptionSaved}
             onStatusChange={(status, retry) => handleFieldStatusChange('visual_description', status, retry)}
           />
@@ -309,18 +417,21 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
               pendingFields={pendingFields}
               previousValues={previousCameraValues}
               justSettled={derivationStatus === 'succeeded'}
+              readOnly={readOnly}
               onFieldSaved={handleCameraFieldSaved}
               onFieldStatusChange={handleFieldStatusChange}
               onRevert={handleRevert}
             />
-            <CameraDerivationStatus
-              status={derivationStatus}
-              pendingFieldLabels={pendingFieldLabels}
-              heldFieldLabels={heldFieldLabels}
-              onRetry={retryDerivation}
-              showResetAll={showResetAll}
-              onResetAll={handleResetAll}
-            />
+            {!readOnly && (
+              <CameraDerivationStatus
+                status={derivationStatus}
+                pendingFieldLabels={pendingFieldLabels}
+                heldFieldLabels={heldFieldLabels}
+                onRetry={retryDerivation}
+                showResetAll={showResetAll}
+                onResetAll={handleResetAll}
+              />
+            )}
           </div>
 
           <BoundElements elements={shot.elements} />
@@ -328,18 +439,44 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
           <div className="flex items-end justify-between gap-rc-md">
             <DurationStepper
               shotId={shot.id}
+              shotKey={shot.shot_key}
               durationSec={shot.duration_sec}
+              readOnly={readOnly}
               onStatusChange={(status, retry) => handleFieldStatusChange('duration_sec', status, retry)}
             />
-            {/* Deleting a shot is C4's job (alongside the agent's delete_shot tool) - rendered
-                exactly as the canvas shows it, with no handler, same as the other controls
-                whose real functionality belongs to a later slice. */}
-            <span className="cursor-default text-small text-text-tertiary underline decoration-border-strong">
-              Delete shot
-            </span>
+            {/* canvas: "11 Delete affordance" (expanded) - the same bin plus its label,
+                the one-control-two-sizes transition from the collapsed trigger. Read-only
+                workbench has no delete affordance at all (canvas: "Locked · workbench
+                read-only"). */}
+            {!readOnly && (
+              <button
+                type="button"
+                data-testid="delete-shot-trigger"
+                onClick={handleDeleteTriggerClick}
+                onKeyDown={handleDeleteTriggerKeyDown}
+                disabled={deleteState.status !== 'idle'}
+                className="-mb-[5px] -mr-2 flex h-[26px] flex-none cursor-pointer items-center gap-[6px] rounded-badge py-0 pl-[5px] pr-2 text-small text-text-tertiary hover:bg-status-failed-bg hover:text-status-failed-fg disabled:cursor-not-allowed"
+              >
+                <span className="flex w-4 justify-center">
+                  <TrashIcon />
+                </span>
+                Delete shot
+              </button>
+            )}
           </div>
         </div>
       )}
+      </div>
     </div>
+    <DeleteShotConfirmModal
+      open={deleteState.status === 'confirming' || deleteState.status === 'deleting'}
+      shotNumber={shot.order_index + 1}
+      elementsCount={shot.elements.length}
+      pending={deleteState.status === 'deleting'}
+      error={deleteState.status === 'confirming' ? deleteState.error : undefined}
+      onConfirm={handleConfirmDelete}
+      onCancel={handleCancelDelete}
+    />
+    </>
   )
 }

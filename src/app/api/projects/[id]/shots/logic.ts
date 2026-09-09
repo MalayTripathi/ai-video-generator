@@ -12,7 +12,7 @@ import {
   type BlockedReason,
 } from '@/lib/generations/claim'
 import {
-  SHOT_GENERATION_SYSTEM_PROMPT_V4,
+  SHOT_GENERATION_SYSTEM_PROMPT_V5,
   buildWriteShotsTool,
   buildShotsDynamicBlock,
 } from '@/lib/prompts/shot-generation'
@@ -233,9 +233,14 @@ async function runShotsPipeline(
     }
   }
 
-  // Defensive backstop: the write_shots schema's maxItems already constrains the model to
-  // targetShots, so this should be rare. Never truncate here - the call is already paid
-  // for, and dropping trailing shots would leave a story missing its ending.
+  // The tool-use API has no way to structurally cap an array's length (only `minItems`
+  // of 0 or 1 is supported, never a `maxItems`), so targetShots is enforced only by the
+  // system prompt's "hard maximum" wording and buildWriteShotsTool's own description -
+  // this over-count is the expected, deliberate backstop, not a rare defensive case.
+  // Accept-and-log, never truncate: the call is already paid for regardless of how many
+  // rows get persisted, and dropping trailing shots would leave a story missing its
+  // ending - the person can trim the extra shots themselves with judgment the server
+  // doesn't have (see the amber indicator in ProjectHeader).
   if (validatedShots.length > targetShots) {
     console.warn(
       `[shots] over_count project=${projectId} generation=${generationId} target=${targetShots} actual=${validatedShots.length}`
@@ -494,8 +499,12 @@ export async function runShotGeneration(params: {
   projectId: string
   userId: string
   retry: boolean
+  // Set only when called from an agent turn's regenerate_all_shots tool, so this call's
+  // usage row groups under that turn's chat message. /shots/route.ts omits it and gets
+  // null, unchanged.
+  messageId?: string | null
 }): Promise<ShotGenerationResult> {
-  const { gateway, supabase, projectId, userId, retry } = params
+  const { gateway, supabase, projectId, userId, retry, messageId } = params
 
   const project = await loadProjectForClaim(supabase, projectId, userId)
   if (!project) {
@@ -551,7 +560,7 @@ export async function runShotGeneration(params: {
     const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
       model: modelsConfig.shots.model,
       estimatedInputTokens: estimateInputTokens({
-        texts: [SHOT_GENERATION_SYSTEM_PROMPT_V4, buildShotsDynamicBlock(project, targetShots), userMessage],
+        texts: [SHOT_GENERATION_SYSTEM_PROMPT_V5, buildShotsDynamicBlock(project, targetShots), userMessage],
         tools: [writeShotsTool],
       }),
       maxTokens: modelsConfig.shots.maxTokens,
@@ -565,6 +574,7 @@ export async function runShotGeneration(params: {
       projectId,
       generationId: generation.id,
       shotId: null,
+      messageId,
       step: 'workbench',
       operation: 'generate_shots',
       provider: 'anthropic',
@@ -578,7 +588,7 @@ export async function runShotGeneration(params: {
       model: modelsConfig.shots.model,
       max_tokens: modelsConfig.shots.maxTokens,
       system: [
-        { type: 'text', text: SHOT_GENERATION_SYSTEM_PROMPT_V4, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: SHOT_GENERATION_SYSTEM_PROMPT_V5, cache_control: { type: 'ephemeral' } },
         { type: 'text', text: buildShotsDynamicBlock(project, targetShots) },
       ],
       tools: [writeShotsTool],

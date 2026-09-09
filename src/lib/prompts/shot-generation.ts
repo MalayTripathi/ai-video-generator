@@ -8,17 +8,19 @@ import {
   MODEL_REPORTABLE_CAMERA_ORIGINS,
 } from '@/lib/config/enums'
 
-// v4 - shot_size_origin/camera_angle_origin/camera_movement_origin added: the model now
-// reports whether each camera value was freely chosen (auto) or forced by the visual
-// description explicitly naming it (derived). Bump the suffix (and this comment) on any
-// content change so usage logs / evals can be attributed to a specific wording.
-export const SHOT_GENERATION_SYSTEM_PROMPT_V4 = `You are breaking a video brief into a structured shot list for a short narrated video.
+// v5 - visual_description's instruction now states explicitly that it must never be left
+// empty (an advisory nudge only - the tool schema's `required` already listed it and
+// didn't stop this either; runShotsPipeline still accepts and persists an empty one if
+// the model ignores this, since discarding an already-paid-for shot is worse than a
+// visible gap - see isUsableShot). Bump the suffix (and this comment) on any content
+// change so usage logs / evals can be attributed to a specific wording.
+export const SHOT_GENERATION_SYSTEM_PROMPT_V5 = `You are breaking a video brief into a structured shot list for a short narrated video.
 
 Write the shot list as structured data via the write_shots tool - never as free-text JSON in your reply. Call write_shots exactly once.
 
 For each shot, write:
 - voice_over: the narration line spoken over this shot (can be empty only if the shot carries character dialogue instead)
-- visual_description: what the camera sees, self-contained enough to brief an image generator
+- visual_description: what the camera sees, self-contained enough to brief an image generator — never leave this empty
 - shot_size, camera_angle, camera_movement: your best judgment for how this shot should be framed and moved
 - shot_size_origin, camera_angle_origin, camera_movement_origin: report 'derived' when and only when visual_description explicitly names that camera choice (e.g. "wide shot" names shot_size); otherwise report 'auto'
 - duration_sec: how long the shot needs to breathe given its voice_over/dialogue, in whole seconds
@@ -58,8 +60,12 @@ export function buildWriteShotsTool(targetShots: number): Anthropic.Tool {
         shots: {
           type: 'array',
           description: `Up to ${targetShots} shots - the hard maximum for this video's duration tier. Fewer shots are fine if the brief doesn't need that many; never exceed this count.`,
+          // No `maxItems` - the tool-use API only supports `minItems` of 0 or 1 and
+          // rejects any other array constraint (400 on 'array' + 'maxItems'), so an
+          // upper bound can't be enforced structurally. The description and system
+          // prompt's "hard maximum" wording are the enforcement; runShotGeneration's
+          // over-count log is the accept-and-log backstop if the model exceeds it anyway.
           minItems: 1,
-          maxItems: targetShots,
           items: {
             type: 'object',
             properties: {

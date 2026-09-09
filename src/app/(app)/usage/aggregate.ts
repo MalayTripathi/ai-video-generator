@@ -1,4 +1,4 @@
-import { STALE_AFTER_MS } from '@/lib/generations/claim'
+import { getOperationPolicy } from '@/lib/generations/operation-policy'
 import { stepOperationLabel, type Step, type Operation } from '@/lib/config/pipeline'
 import { displayTitle } from '@/lib/display-title'
 import { videoTypeLabel } from '@/lib/video-type-labels'
@@ -190,9 +190,13 @@ export function aggregateUsage(rows: UsageRow[], projects: ProjectMeta[], now: D
 
   // Anchored on created_at (when the reservation was written) - `usage` has no
   // started_at of its own the way `generations` does, and created_at is set once at
-  // reserveUsage's INSERT, so it plays the same role here.
-  const staleBefore = now.getTime() - STALE_AFTER_MS
-  const stalePendingRows = pendingRows.filter((row) => new Date(row.created_at).getTime() < staleBefore)
+  // reserveUsage's INSERT, so it plays the same role here. Per-operation, not a single
+  // global cutoff: a stuck agent_turn row must be flagged at its own 180s window, not
+  // wait out generate_shots' 15-minute one - see OPERATION_POLICY.
+  const stalePendingRows = pendingRows.filter((row) => {
+    const staleBefore = now.getTime() - getOperationPolicy(row.operation).staleAfterMs
+    return new Date(row.created_at).getTime() < staleBefore
+  })
 
   return {
     settledTotal,

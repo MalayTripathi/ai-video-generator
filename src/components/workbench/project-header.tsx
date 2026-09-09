@@ -1,4 +1,4 @@
-import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import { durationConfig, shotCountOverrun, type DurationTarget } from '@/lib/config/duration'
 import { VIDEO_MODELS, type VideoModelId } from '@/lib/config/models'
 import { videoTypeLabel } from '@/lib/video-type-labels'
 import { languageLabel } from '@/lib/language-labels'
@@ -70,6 +70,12 @@ export function ProjectHeader({
   // stepper amber, which would dilute the signal on a card list with several locks.
   const isOverTarget = tierConfig != null && totalSeconds > tierConfig.targetSecondsMax
 
+  // Independent of the duration overrun above - never conflated. A project can be over
+  // on shot count while under on seconds (short shots) or the reverse (long shots), so
+  // each gets its own condition and its own amber, not one merged check.
+  const overShotCount = shotCountOverrun(shots.length, tierConfig?.targetShots ?? null)
+  const isShotCountOverTarget = overShotCount > 0
+
   return (
     <div className="flex flex-col gap-rc-sm">
       <div className="flex items-baseline justify-between gap-rc-lg">
@@ -85,8 +91,12 @@ export function ProjectHeader({
             </>
           )}
           <span className="text-text-tertiary">Current</span>
+          <span className={`font-medium ${isShotCountOverTarget ? 'text-status-active-fg' : ''}`}>
+            {shots.length} shots
+          </span>
+          <span className="text-text-tertiary">·</span>
           <span className={`font-medium ${isOverTarget ? 'text-status-active-fg' : ''}`}>
-            {shots.length} shots · {formatDuration(totalSeconds)}
+            {formatDuration(totalSeconds)}
           </span>
           {lockedCount > 0 && (
             <>
@@ -99,6 +109,19 @@ export function ProjectHeader({
           )}
         </div>
       </div>
+      {/* Accept-and-log, not truncate (see runShotGeneration's over-count comment) - this
+          is what makes that policy actionable: the person can see there's something to
+          trim and why it's worth trimming, since the cost lands later, not now. Amber,
+          never the failed hue - an overshoot is a normal outcome, not an error, matching
+          the duration-overrun treatment above (same token, same non-blocking framing).
+          Names no step/operation/provider (CLAUDE.md's user-facing-copy rule) - "image"
+          and "video clip" are plain product nouns. */}
+      {isShotCountOverTarget && (
+        <div className="text-meta text-status-active-fg">
+          {overShotCount} over your {tierConfig?.targetShots}-shot target — each one costs
+          an image and a video clip to render later.
+        </div>
+      )}
       <div className="flex flex-wrap gap-rc-2xs">
         {videoTypeLabel(project.video_type) && <Chip>{videoTypeLabel(project.video_type)}</Chip>}
         {project.aspect_ratio && <Chip>{project.aspect_ratio} · Locked</Chip>}

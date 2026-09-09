@@ -10,9 +10,12 @@ function shotsSchema(tool: Anthropic.Tool): { maxItems?: number; minItems?: numb
 }
 
 test.describe('buildWriteShotsTool', () => {
-  test('emits maxItems equal to the passed targetShots', () => {
-    expect(shotsSchema(buildWriteShotsTool(8)).maxItems).toBe(8)
-    expect(shotsSchema(buildWriteShotsTool(75)).maxItems).toBe(75)
+  // The tool-use API supports no array-count upper bound (only minItems of 0 or 1) - see
+  // tests/tool-schema-keywords.spec.ts. A maxItems here would 400 on every real call, so
+  // targetShots is enforced by the description and system prompt wording instead.
+  test('never emits maxItems - the API has no array-count upper bound', () => {
+    expect(shotsSchema(buildWriteShotsTool(8)).maxItems).toBeUndefined()
+    expect(shotsSchema(buildWriteShotsTool(75)).maxItems).toBeUndefined()
   })
 
   test('states the maximum explicitly in the shots array description', () => {

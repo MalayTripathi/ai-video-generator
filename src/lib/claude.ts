@@ -1,18 +1,35 @@
 import Anthropic from '@anthropic-ai/sdk'
 
+export interface ClaudeGatewayHooks {
+  /** Forwarded token-by-token as the SDK streams the response, before finalMessage()
+   * resolves. Optional and additive - every existing caller passes no second argument. */
+  onTextDelta?: (text: string) => void
+}
+
 export interface ClaudeGateway {
-  createMessage(params: Anthropic.MessageCreateParams): Promise<{
+  createMessage(
+    params: Anthropic.MessageCreateParams,
+    hooks?: ClaudeGatewayHooks
+  ): Promise<{
     message: Anthropic.Message
     stopReason: string | null
     requestId: string | null
   }>
 }
 
-/** Best-effort label for the dev-log banner; not used for anything else. */
+/** Best-effort label for the dev-log banner; not used for anything else. A forced
+ * tool_choice (every route but the agent) names that tool exactly. With no forced
+ * choice, `tools[0]` is a guess about the REQUEST, not the model's eventual pick - the
+ * agent route sends its whole unconstrained tool list every iteration, so pinning to
+ * index 0 always read "get_shot" no matter which tool actually got called. List every
+ * offered tool instead of pretending to know which one wins. */
 function describeCall(params: Anthropic.MessageCreateParams): string {
   const toolChoice = params.tool_choice
   if (toolChoice && toolChoice.type === 'tool') return toolChoice.name
-  return params.tools?.[0]?.name ?? 'unspecified'
+  const tools = params.tools ?? []
+  if (tools.length === 0) return 'unspecified'
+  if (tools.length === 1) return tools[0].name
+  return `any of ${tools.length}: ${tools.map((t) => t.name).join(', ')}`
 }
 
 export class LiveCallsBlockedError extends Error {
@@ -34,7 +51,7 @@ export function assertLiveCallsAllowed(): void {
 
 export function createClaudeGateway(): ClaudeGateway {
   return {
-    async createMessage(params) {
+    async createMessage(params, hooks) {
       assertLiveCallsAllowed()
 
       if (process.env.NODE_ENV !== 'production') {
@@ -48,9 +65,14 @@ export function createClaudeGateway(): ClaudeGateway {
       // app is user-initiated and confirmed. Do not "fix" this later.
       const client = new Anthropic({ maxRetries: 0, timeout: 600_000 })
 
-      // Always streams, even though nothing reads the deltas: a long shot
-      // generation can exceed any sane non-streaming timeout.
+      // Always streams, even though most callers don't read the deltas: a long shot
+      // generation can exceed any sane non-streaming timeout. hooks.onTextDelta, when
+      // given, forwards the SDK's own token-by-token 'text' event - additive, every
+      // existing caller passes no hooks and is unaffected.
       const stream = client.messages.stream(params)
+      if (hooks?.onTextDelta) {
+        stream.on('text', (textDelta) => hooks.onTextDelta!(textDelta))
+      }
       const message = await stream.finalMessage()
 
       return {

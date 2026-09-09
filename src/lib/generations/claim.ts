@@ -2,16 +2,10 @@ import type { createClient } from '@/lib/supabase/server'
 import type { Json, Tables } from '@/lib/database.types'
 import type { Step, Operation } from '@/lib/config/pipeline'
 import { isUniqueViolation } from '@/lib/shot-key'
+import { getOperationPolicy } from '@/lib/generations/operation-policy'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type GenerationRow = Tables<'generations'>
-
-// Tied to the real gateway's 600s SDK timeout plus margin (src/lib/claude.ts) - long
-// enough to cover any real Claude call; short enough that a crashed or
-// platform-killed request (no `finally` runs) self-heals instead of wedging a claim
-// forever. This is the one locking mechanism in the codebase - both /shots and
-// /prompts claim through claimGeneration.
-export const STALE_AFTER_MS = 15 * 60 * 1000
 
 export type GenerationIdentity = {
   projectId: string
@@ -114,18 +108,29 @@ export async function claimGeneration(params: {
     return { outcome: 'error', message: selectError?.message ?? 'Generation row not found after unique violation' }
   }
 
+  const policy = getOperationPolicy(operation)
+
   // 'succeeded' is the one place the old ready -> succeeded rename is decided (the
-  // mirror write happens in settleGeneration's success branch below).
+  // mirror write happens in settleGeneration's success branch below). Most operations
+  // never reclaim from here ('never'); generate_shots allows it behind the same retry
+  // flag as 'failed' (regenerate-all); agent_turn allows it unconditionally (a mutex has
+  // no "job" to protect from re-attempt).
   if (existing.state === 'succeeded') {
-    return { outcome: 'blocked', reason: 'already_ready' }
+    if (policy.claimableFrom.succeeded === 'never') {
+      return { outcome: 'blocked', reason: 'already_ready' }
+    }
+    if (policy.claimableFrom.succeeded === 'retry' && !retry) {
+      return { outcome: 'blocked', reason: 'retry_required' }
+    }
+    return reclaim(supabase, existing, { expectedState: 'succeeded' })
   }
 
-  if (existing.state === 'failed' && !retry) {
+  if (existing.state === 'failed' && policy.claimableFrom.failed === 'retry' && !retry) {
     return { outcome: 'blocked', reason: 'retry_required' }
   }
 
   if (existing.state === 'generating') {
-    const staleBefore = new Date(Date.now() - STALE_AFTER_MS).toISOString()
+    const staleBefore = new Date(Date.now() - policy.staleAfterMs).toISOString()
     if (existing.started_at === null || existing.started_at >= staleBefore) {
       return { outcome: 'blocked', reason: 'already_generating' }
     }
@@ -133,7 +138,8 @@ export async function claimGeneration(params: {
   }
 
   if (existing.state === 'failed') {
-    // retry === true here (the !retry case returned above).
+    // Either retry === true, or policy.claimableFrom.failed === 'always' (the !retry
+    // case for a 'retry' policy already returned above).
     return reclaim(supabase, existing, { expectedState: 'failed' })
   }
 
