@@ -49,7 +49,7 @@ export function needsPrompts(shot: {
 }
 
 /**
- * Matches Claude's raw write_prompts tool input against the shot_keys that
+ * Matches Claude's raw write_image_prompts tool input against the shot_keys that
  * were actually requested. Entries that are malformed, too short, or for a
  * shot_key that wasn't requested are dropped rather than persisted.
  */
@@ -69,7 +69,7 @@ export function resolvePromptResults(
 
 const PROMPTS_SYSTEM_PROMPT = `You are writing per-shot image and video prompts for a short narrated video, based on its script.
 
-Write prompts as structured data via the write_prompts tool - never as free-text JSON in your reply. Call write_prompts exactly once with one entry per requested shot_key.
+Write prompts as structured data via the write_image_prompts tool - never as free-text JSON in your reply. Call write_image_prompts exactly once with one entry per requested shot_key.
 
 image_prompt is a detailed, self-contained description of that shot's image (~800-1200 characters) - it must make sense with no other context, since it goes straight to an image generation model.
 
@@ -78,7 +78,7 @@ video_prompt describes the motion within that shot's image (~400-700 characters)
 Use the full script below only for continuity (recurring characters, setting, visual style) between shots - do not write prompts for any shot_key not explicitly requested.`
 
 export const WRITE_PROMPTS_TOOL: Anthropic.Tool = {
-  name: 'write_prompts',
+  name: 'write_image_prompts',
   description: 'Write image_prompt and video_prompt for the requested shots only.',
   input_schema: {
     type: 'object',
@@ -166,7 +166,7 @@ export type PromptGenerationResult =
   | { ok: false; status: 500; error: string }
 
 /**
- * Runs the resolve -> update -> refetch pipeline against a write_prompts tool input.
+ * Runs the resolve -> update -> refetch pipeline against a write_image_prompts tool input.
  * Called from both the fresh-Claude-call path and the RECOVER path - rawInput is
  * either the live toolUseBlock.input or a stored generations.payload, identical shape
  * either way. targetShotKeys is recomputed fresh by the caller every time (not stored
@@ -260,7 +260,7 @@ export async function runPromptGeneration(params: {
 
   const claim = await claimGeneration({
     supabase,
-    identity: { projectId, step: 'image_prompts', operation: 'write_prompts', shotId: null },
+    identity: { projectId, step: 'image_prompts', operation: 'write_image_prompts', shotId: null },
     retry,
   })
 
@@ -338,7 +338,7 @@ export async function runPromptGeneration(params: {
       generationId: generation.id,
       shotId: null,
       step: 'image_prompts',
-      operation: 'write_prompts',
+      operation: 'write_image_prompts',
       provider: 'anthropic',
       model: modelsConfig.prompts.model,
       quotedCost: estimatedCost,
@@ -354,7 +354,7 @@ export async function runPromptGeneration(params: {
         { type: 'text', text: dynamicBlock },
       ],
       tools: [WRITE_PROMPTS_TOOL],
-      tool_choice: { type: 'tool', name: 'write_prompts' },
+      tool_choice: { type: 'tool', name: 'write_image_prompts' },
       messages: [{ role: 'user', content: userMessage }],
     })
 
@@ -363,7 +363,7 @@ export async function runPromptGeneration(params: {
 
     const toolUseBlock = message.content.find(
       (block): block is Anthropic.ToolUseBlock =>
-        block.type === 'tool_use' && block.name === 'write_prompts'
+        block.type === 'tool_use' && block.name === 'write_image_prompts'
     )
 
     if (!toolUseBlock) {

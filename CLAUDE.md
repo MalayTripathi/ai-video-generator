@@ -679,7 +679,7 @@ The uniqueness guard is `generations_identity_idx`, a unique index on
 `(project_id, step, operation, shot_id)` with **`NULLS NOT DISTINCT`**
 (Postgres 15+; this project runs 17.6) — load-bearing, because without it
 Postgres treats every null `shot_id` as distinct, and two concurrent
-project-level claims (e.g. two `write_prompts` calls with no `shot_id`)
+project-level claims (e.g. two `write_image_prompts` calls with no `shot_id`)
 for the same `(step, operation)` would both succeed instead of the second
 being rejected by the index.
 
@@ -701,7 +701,7 @@ Otherwise a failed row's payload survives for RECOVER.
 
 `generations` is used by both `/shots` (`step: 'workbench'`, `operation:
 'generate_shots'`, `shot_id: null`) and `/prompts` (`step:
-'image_prompts'`, `operation: 'write_prompts'`, `shot_id: null`).
+'image_prompts'`, `operation: 'write_image_prompts'`, `shot_id: null`).
 `claimGeneration`/`persistGenerationPayload`/`settleGeneration` are the
 only locking mechanism in the codebase.
 
@@ -818,7 +818,7 @@ symmetry.
 
 Both `/api/projects/[id]/shots` (`step: 'workbench'` / `operation:
 'generate_shots'`) and `/api/projects/[id]/prompts` (`step:
-'image_prompts'` / `operation: 'write_prompts'`) pass their claimed
+'image_prompts'` / `operation: 'write_image_prompts'`) pass their claimed
 `generations` row's `id` into `reserveUsage`, so both carry
 `generation_id`; `derive_camera` passes `null`. Neither route reserves or
 settles usage on the RECOVER path or (prompts only) the "nothing needs
@@ -875,7 +875,7 @@ generated) on replay instead of creating duplicates. This is what makes the
 confirmation modal's "existing shots will be replaced" copy true rather than aspirational.
 
 `/prompts` (`runPromptGeneration`, `step: 'image_prompts'`, `operation:
-'write_prompts'`, `shot_id: null`) runs the identical sequence, with two
+'write_image_prompts'`, `shot_id: null`) runs the identical sequence, with two
 differences. It claims unconditionally, even when nothing needs
 generating — so a call after `succeeded` needs `retry: true`, same as
 `/shots`. And it only `.update()`s the specific shots Claude was asked

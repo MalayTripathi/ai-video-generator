@@ -25,7 +25,7 @@ test.describe('aggregateUsage', () => {
     const rows: UsageRow[] = [
       row({ step: 'workbench', operation: 'generate_shots', status: 'succeeded', estimated_cost: 0.02 }),
       row({ step: 'workbench', operation: 'generate_shots', status: 'failed', estimated_cost: 0.01 }),
-      row({ step: 'image_prompts', operation: 'write_prompts', status: 'succeeded', estimated_cost: 0.03 }),
+      row({ step: 'image_prompts', operation: 'write_image_prompts', status: 'succeeded', estimated_cost: 0.03 }),
     ]
 
     const aggregation = aggregateUsage(rows, [])
@@ -38,7 +38,7 @@ test.describe('aggregateUsage', () => {
     expect(workbenchRow?.sharePct).toBeCloseTo(50, 6)
     expect(workbenchRow?.label).toBe('Workbench — New shots')
 
-    const promptsRow = aggregation.byStep.find((r) => r.step === 'image_prompts' && r.operation === 'write_prompts')
+    const promptsRow = aggregation.byStep.find((r) => r.step === 'image_prompts' && r.operation === 'write_image_prompts')
     expect(promptsRow?.cost).toBeCloseTo(0.03, 6)
     expect(promptsRow?.callCount).toBe(1)
     expect(promptsRow?.sharePct).toBeCloseTo(50, 6)
@@ -144,7 +144,7 @@ test.describe('aggregateUsage', () => {
   test('calibration averages the delta and ratio across settled rows that have a quoted_cost', () => {
     const rows: UsageRow[] = [
       row({ step: 'workbench', operation: 'generate_shots', status: 'succeeded', estimated_cost: 0.03, quoted_cost: 0.02 }),
-      row({ step: 'image_prompts', operation: 'write_prompts', status: 'failed', estimated_cost: 0.01, quoted_cost: 0.02 }),
+      row({ step: 'image_prompts', operation: 'write_image_prompts', status: 'failed', estimated_cost: 0.01, quoted_cost: 0.02 }),
       // Excluded: no quoted_cost (pre-migration row).
       row({ step: 'workbench', operation: 'generate_shots', status: 'succeeded', estimated_cost: 0.5, quoted_cost: null }),
       // Excluded: not settled.

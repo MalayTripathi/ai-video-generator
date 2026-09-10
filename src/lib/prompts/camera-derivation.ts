@@ -53,7 +53,7 @@ export function buildDeriveCameraTool(fields: CameraFieldName[]): Anthropic.Tool
       additionalProperties: false,
     },
     strict: true,
-    // No cache_control: unlike write_shots/write_prompts' large, stable, reused system
+    // No cache_control: unlike write_shots/write_image_prompts' large, stable, reused system
     // prompts, this schema is tiny and its field set varies per call (1 vs 3 fields) -
     // not worth an ephemeral cache write for a payload this small.
   }

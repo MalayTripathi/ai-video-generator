@@ -103,7 +103,7 @@ test.describe('tool input_schema keyword allowlist', () => {
     assertSchemaIsClean(buildDeriveCameraTool([...CAMERA_FIELD_NAMES]))
   })
 
-  test('write_prompts uses only API-supported JSON Schema keywords', () => {
+  test('write_image_prompts uses only API-supported JSON Schema keywords', () => {
     assertSchemaIsClean(WRITE_PROMPTS_TOOL)
   })
 })

@@ -10,12 +10,15 @@ import {
   CAMERA_ORIGINS,
   ELEMENT_TYPES,
 } from '../src/lib/config/enums'
-import { STEPS } from '../src/lib/config/pipeline'
+import { STEPS, OPERATIONS, PROVIDERS } from '../src/lib/config/pipeline'
 import { MESSAGE_KINDS, TOOL_NAMES } from '../src/lib/config/messages'
 
 // Turns TS-vs-CHECK-constraint drift into a test failure instead of a runtime surprise:
 // for every enum in src/lib/config/enums.ts that has a DB CHECK constraint, insert a row
 // using every member (assert the DB accepts it) and one bogus value (assert rejection).
+// The same principle covers src/lib/config/pipeline.ts's STEPS/OPERATIONS/PROVIDERS below,
+// mirrored by hand into generations/usage/projects CHECK constraints - see those
+// migrations' own comments.
 
 async function insertProject(overrides: Record<string, unknown> = {}) {
   const { data, error } = await admin
@@ -25,6 +28,26 @@ async function insertProject(overrides: Record<string, unknown> = {}) {
     .single()
   expect(error).toBeNull()
   return data!.id as string
+}
+
+/**
+ * Shared shape for every TS-array-vs-DB-CHECK-constraint pairing below: insert a row for
+ * every array member (must be accepted) and one row with a bogus value (must be rejected).
+ * Each pairing supplies its own insertValid/insertBogus closures rather than this helper
+ * knowing about any particular table's columns.
+ */
+async function assertEnumDrift<T extends string>(
+  array: readonly T[],
+  insertValid: (value: T) => Promise<{ error: { code?: string } | null }>,
+  insertBogus: () => Promise<{ error: { code?: string } | null }>
+) {
+  for (const value of array) {
+    const { error } = await insertValid(value)
+    expect(error, `expected ${value} to be accepted`).toBeNull()
+  }
+
+  const { error: badError } = await insertBogus()
+  expect(badError).not.toBeNull()
 }
 
 // Each call returns a fresh (order_index, shot_key) pair so repeated inserts into the
@@ -83,17 +106,152 @@ test.describe('enum drift - projects columns', () => {
   // never a stored value. This is the check that would have caught the 'script'
   // divergence, when the column had no CHECK constraint at all.
   test('accepts every STEPS member as current_step and rejects a bogus value', async () => {
-    for (const value of STEPS) {
-      const { error } = await admin
-        .from('projects')
-        .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: value })
-      expect(error).toBeNull()
-    }
+    await assertEnumDrift(
+      STEPS,
+      (value) =>
+        admin.from('projects').insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: value }),
+      () =>
+        admin
+          .from('projects')
+          .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: 'not_a_real_step' })
+    )
+  })
+})
 
-    const { error: badError } = await admin
-      .from('projects')
-      .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: 'not_a_real_step' })
-    expect(badError).not.toBeNull()
+// generations/usage CHECK constraints validate step and operation independently (the
+// (step, operation) pairing in STEP_OPERATIONS is app-enforced only - see those tables'
+// migrations), so a single valid constant for whichever column isn't under test works
+// regardless of which step or operation it names.
+const HELD_OPERATION = 'agent_turn' as const
+const HELD_STEP = 'workbench' as const
+
+test.describe('enum drift - generations columns', () => {
+  // Each test below claims its own fresh project via insertProject(), so no two tests
+  // ever share a project_id - the first of two layers preventing a collision against
+  // generations_identity_idx's (project_id, step, operation, shot_id) unique index
+  // (NULLS NOT DISTINCT). The second layer: within one test's loop, only the column
+  // under test varies while every other identity column stays fixed - STEPS/OPERATIONS
+  // have no duplicate members by construction, so every row (plus the final bogus-value
+  // row) has a distinct identity tuple even before accounting for the fresh project_id.
+  test('accepts every STEPS member as generations.step and rejects a bogus value', async () => {
+    const projectId = await insertProject()
+    await assertEnumDrift(
+      STEPS,
+      (value) =>
+        admin.from('generations').insert({ project_id: projectId, step: value, operation: HELD_OPERATION, shot_id: null }),
+      () =>
+        admin
+          .from('generations')
+          .insert({ project_id: projectId, step: 'not_a_real_step', operation: HELD_OPERATION, shot_id: null })
+    )
+  })
+
+  // derive_camera is deliberately excluded from generations_operation_check - no writer
+  // ever claims a generations row for it (the terminal 'succeeded' state would block
+  // every later description edit of the same shot - see CLAUDE.md), so widening the
+  // constraint to accept it would misleadingly imply a writer exists. OPERATIONS has 10
+  // members; this constraint only ever accepts 9 of them, by design. Accepting it here
+  // would itself be the bug, so it's excluded from the accept-loop and asserted rejected
+  // instead, turning that invariant into a regression test rather than silently
+  // narrowing coverage.
+  test('accepts every non-derive_camera OPERATIONS member as generations.operation, rejects derive_camera and a bogus value', async () => {
+    const projectId = await insertProject()
+    const claimableOperations = OPERATIONS.filter((op) => op !== 'derive_camera')
+
+    await assertEnumDrift(
+      claimableOperations,
+      (value) =>
+        admin.from('generations').insert({ project_id: projectId, step: HELD_STEP, operation: value, shot_id: null }),
+      () =>
+        admin
+          .from('generations')
+          .insert({ project_id: projectId, step: HELD_STEP, operation: 'not_a_real_operation', shot_id: null })
+    )
+
+    const { error: deriveCameraError } = await admin
+      .from('generations')
+      .insert({ project_id: projectId, step: HELD_STEP, operation: 'derive_camera', shot_id: null })
+    expect(deriveCameraError, 'derive_camera must never be insertable into generations').not.toBeNull()
+  })
+})
+
+test.describe('enum drift - usage columns', () => {
+  test('accepts every STEPS member as usage.step and rejects a bogus value', async () => {
+    const projectId = await insertProject()
+    await assertEnumDrift(
+      STEPS,
+      (value) =>
+        admin.from('usage').insert({
+          user_id: primary.user.id,
+          project_id: projectId,
+          step: value,
+          operation: HELD_OPERATION,
+          provider: 'anthropic',
+          model: 'test-model',
+        }),
+      () =>
+        admin.from('usage').insert({
+          user_id: primary.user.id,
+          project_id: projectId,
+          step: 'not_a_real_step',
+          operation: HELD_OPERATION,
+          provider: 'anthropic',
+          model: 'test-model',
+        })
+    )
+  })
+
+  // Unlike generations, usage_operation_check already includes derive_camera (it's the
+  // only paid call that writes a usage row with no matching generations claim), so this
+  // pairing is a clean 1:1 match against the full OPERATIONS array.
+  test('accepts every OPERATIONS member as usage.operation and rejects a bogus value', async () => {
+    const projectId = await insertProject()
+    await assertEnumDrift(
+      OPERATIONS,
+      (value) =>
+        admin.from('usage').insert({
+          user_id: primary.user.id,
+          project_id: projectId,
+          step: HELD_STEP,
+          operation: value,
+          provider: 'anthropic',
+          model: 'test-model',
+        }),
+      () =>
+        admin.from('usage').insert({
+          user_id: primary.user.id,
+          project_id: projectId,
+          step: HELD_STEP,
+          operation: 'not_a_real_operation',
+          provider: 'anthropic',
+          model: 'test-model',
+        })
+    )
+  })
+
+  test('accepts every PROVIDERS member as usage.provider and rejects a bogus value', async () => {
+    const projectId = await insertProject()
+    await assertEnumDrift(
+      PROVIDERS,
+      (value) =>
+        admin.from('usage').insert({
+          user_id: primary.user.id,
+          project_id: projectId,
+          step: HELD_STEP,
+          operation: HELD_OPERATION,
+          provider: value,
+          model: 'test-model',
+        }),
+      () =>
+        admin.from('usage').insert({
+          user_id: primary.user.id,
+          project_id: projectId,
+          step: HELD_STEP,
+          operation: HELD_OPERATION,
+          provider: 'not_a_real_provider',
+          model: 'test-model',
+        })
+    )
   })
 })
 
