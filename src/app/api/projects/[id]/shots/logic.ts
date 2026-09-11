@@ -503,8 +503,15 @@ export async function runShotGeneration(params: {
   // usage row groups under that turn's chat message. /shots/route.ts omits it and gets
   // null, unchanged.
   messageId?: string | null
+  // Set only when called from an agent turn's regenerate_all_shots tool, so the turn's
+  // own in-memory cost accumulator can fold this call's real settled cost into its
+  // single ledger charge, without querying `usage` back (see credit_ledger's
+  // independence from `usage`, CLAUDE.md). Fires once, only on the fresh-call path -
+  // never on RECOVER, since no money is spent there. /shots/route.ts omits it; the
+  // call site below no-ops when absent.
+  onSettled?: (usd: number) => void
 }): Promise<ShotGenerationResult> {
-  const { gateway, supabase, projectId, userId, retry, messageId } = params
+  const { gateway, supabase, projectId, userId, retry, messageId, onSettled } = params
 
   const project = await loadProjectForClaim(supabase, projectId, userId)
   if (!project) {
@@ -691,7 +698,7 @@ export async function runShotGeneration(params: {
     // false but was still billed successfully, while a max_tokens stop is billed but
     // must settle 'failed' regardless of how much of the pipeline it saved.
     if (usageId) {
-      await settleUsage({
+      const settledCostUsd = await settleUsage({
         supabase,
         usageId,
         provider: 'anthropic',
@@ -701,6 +708,7 @@ export async function runShotGeneration(params: {
         stopReason: stopReasonForSettle,
         error: outcome.ok ? null : caughtError,
       })
+      onSettled?.(settledCostUsd)
     }
   }
 }

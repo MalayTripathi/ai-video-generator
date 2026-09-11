@@ -371,9 +371,22 @@ test.describe('module hygiene', () => {
     expect(contents).not.toMatch(/\.delete\(/)
   })
 
-  test('no route or component imports this module yet', async () => {
+  test('exactly the agent-turn wiring imports this module - nothing else', async () => {
+    // Task 5 (wire agent_turn to the ledger) is this module's first legitimate
+    // caller: src/app/api/projects/[id]/agent/route.ts imports mintAttemptId and
+    // recordDynamicSpend for real (it runs inside Next's server bundle, so the
+    // service-role.ts -> 'server-only' chain this module pulls in is safe there), and
+    // .../agent/logic.ts carries a **type-only** `import type { recordDynamicSpend }`
+    // for its `recordTurnSpend` DI parameter's type - erased at compile time, so it
+    // adds no runtime dependency (confirmed: tests that import logic.ts directly, like
+    // tests/agent-turn.spec.ts, do so from plain Node with no "react-server" condition
+    // and do not throw). Any OTHER importer means a second, unreviewed call site.
     const srcDir = path.resolve(__dirname, '../src')
     const ownFile = path.resolve(__dirname, '../src/lib/credits/ledger.ts')
+    const expectedImporters = [
+      path.resolve(__dirname, '../src/app/api/projects/[id]/agent/logic.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/agent/route.ts'),
+    ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []
       for (const entry of readdirSync(dir)) {
@@ -388,6 +401,6 @@ test.describe('module hygiene', () => {
       }
       return hits
     }
-    expect(findImporters(srcDir)).toEqual([])
+    expect(findImporters(srcDir).sort()).toEqual(expectedImporters)
   })
 })
