@@ -61,13 +61,18 @@ test.describe('createServiceRoleClient', () => {
 })
 
 test.describe('service-role client isolation', () => {
-  test('no barrel file re-exports it, and nothing outside this spec imports it yet', async () => {
+  test('no barrel file re-exports it, and only the credit ledger module imports it', async () => {
     const supabaseDir = path.resolve(__dirname, '../src/lib/supabase')
     const noBarrel = readdirSync(supabaseDir).every((f) => !/^index\.tsx?$/.test(f))
     expect(noBarrel).toBe(true)
 
     const srcDir = path.resolve(__dirname, '../src')
     const ownFile = path.resolve(__dirname, '../src/lib/supabase/service-role.ts')
+    // src/lib/credits/ledger.ts (Task 4) is this client's first legitimate consumer -
+    // every credit_ledger write goes through it, since that table has no authenticated
+    // write policy by design. Any OTHER importer means a second RLS-bypassing call
+    // site nothing has reviewed for the user_id-scoping discipline this client demands.
+    const expectedImporter = path.resolve(__dirname, '../src/lib/credits/ledger.ts')
     function findImporters(dir: string): string[] {
       const hits: string[] = []
       for (const entry of readdirSync(dir)) {
@@ -82,6 +87,6 @@ test.describe('service-role client isolation', () => {
       }
       return hits
     }
-    expect(findImporters(srcDir)).toEqual([])
+    expect(findImporters(srcDir)).toEqual([expectedImporter])
   })
 })
