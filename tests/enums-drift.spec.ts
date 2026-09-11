@@ -255,6 +255,42 @@ test.describe('enum drift - usage columns', () => {
   })
 })
 
+test.describe('enum drift - credit_ledger columns', () => {
+  // Every row here is a valid 'spend' (credit_ledger_spend_fields_check requires
+  // step/operation/attempt_id/pricing_mode all non-null), with a fresh attempt_id
+  // per row so dedupe_key is unique per row against the (user_id, dedupe_key)
+  // index - no other collision handling is needed, valid or bogus rows alike.
+  function spendRow(overrides: { step: string; operation: string }) {
+    const attemptId = crypto.randomUUID()
+    return {
+      user_id: primary.user.id,
+      kind: 'spend',
+      delta: -1,
+      attempt_id: attemptId,
+      pricing_mode: 'fixed',
+      dedupe_key: `${overrides.operation}:${attemptId}`,
+      price_version: 'test',
+      ...overrides,
+    }
+  }
+
+  test('accepts every STEPS member as credit_ledger.step and rejects a bogus value', async () => {
+    await assertEnumDrift(
+      STEPS,
+      (value) => admin.from('credit_ledger').insert(spendRow({ step: value, operation: HELD_OPERATION })),
+      () => admin.from('credit_ledger').insert(spendRow({ step: 'not_a_real_step', operation: HELD_OPERATION }))
+    )
+  })
+
+  test('accepts every OPERATIONS member as credit_ledger.operation and rejects a bogus value', async () => {
+    await assertEnumDrift(
+      OPERATIONS,
+      (value) => admin.from('credit_ledger').insert(spendRow({ step: HELD_STEP, operation: value })),
+      () => admin.from('credit_ledger').insert(spendRow({ step: HELD_STEP, operation: 'not_a_real_operation' }))
+    )
+  })
+})
+
 test.describe('enum drift - shots columns', () => {
   test('accepts every SHOT_SIZES member and rejects a bogus value', async () => {
     const projectId = await insertProject()
