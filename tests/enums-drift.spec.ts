@@ -38,8 +38,8 @@ async function insertProject(overrides: Record<string, unknown> = {}) {
  */
 async function assertEnumDrift<T extends string>(
   array: readonly T[],
-  insertValid: (value: T) => Promise<{ error: { code?: string } | null }>,
-  insertBogus: () => Promise<{ error: { code?: string } | null }>
+  insertValid: (value: T) => PromiseLike<{ error: { code?: string } | null }>,
+  insertBogus: () => PromiseLike<{ error: { code?: string } | null }>
 ) {
   for (const value of array) {
     const { error } = await insertValid(value)
