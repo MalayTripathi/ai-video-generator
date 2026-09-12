@@ -18,6 +18,16 @@ import {
 import { AGENT_SYSTEM_PROMPT_V11, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
 import type { ToolName } from '@/lib/config/messages'
 import { dispatchAgentTool, type AgentToolContext } from './tools'
+// Type-only: credits/ledger.ts transitively imports the service-role Supabase client
+// module, which imports the `server-only` package - that throws unconditionally
+// unless resolved under Next's "react-server" bundler condition. A VALUE import here
+// would make every test that imports runAgentTurn directly (plain Node, no
+// react-server condition) crash at module load - see tests/agent-turn.spec.ts.
+// `import type` is fully erased at compile time, so it carries no such risk. The real
+// function is supplied by the caller instead (route.ts, which only ever runs inside
+// Next's server bundle) - see
+// `recordTurnSpend` below, the same caller-injection shape `gateway` already uses.
+import type { recordDynamicSpend } from '@/lib/credits/ledger'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type MessageRow = Tables<'messages'>
@@ -46,8 +56,11 @@ export type AgentStreamEvent =
   // (max_tokens, a lock/claim/duplicate short-circuit) - there is no longer a separate
   // structured field (finish's old `message`) it could ever diverge from, so the client
   // can always finalize a streaming bubble in place instead of needing a signal for
-  // whether to append a fresh one. See docs/decisions.md.
-  | { type: 'settled'; content: string; cost: number }
+  // whether to append a fresh one. See docs/decisions.md. `messageId` is the triggering
+  // user message's own row id - the same anchor `usage.message_id` and
+  // `credit_ledger.message_id` both use for this turn - so the client can look up the
+  // turn's real credit spend (Credits Task 8) without recomputing it from `cost`.
+  | { type: 'settled'; content: string; cost: number; messageId: string }
 
 export type AgentTurnResult =
   | { ok: true; status: 200; message: MessageRow }
@@ -118,8 +131,13 @@ export async function runAgentTurn(params: {
   // Best-effort; runAgentTurn never lets a throwing onEvent affect the turn's outcome -
   // a broken client pipe must never skip settlement.
   onEvent?: (event: AgentStreamEvent) => void
+  // Caller-supplied, same shape as `gateway` above and for the same reason (see the
+  // import-type comment above): route.ts passes the real mintAttemptId()/
+  // recordDynamicSpend from @/lib/credits/ledger; a test passes its own fakes.
+  attemptId: string
+  recordTurnSpend: typeof recordDynamicSpend
 }): Promise<AgentTurnResult> {
-  const { gateway, supabase, projectId, userId, content, clientId } = params
+  const { gateway, supabase, projectId, userId, content, clientId, attemptId, recordTurnSpend } = params
   const emit = (event: AgentStreamEvent) => {
     try {
       params.onEvent?.(event)
@@ -152,7 +170,7 @@ export async function runAgentTurn(params: {
       // Replaying a resend's own previously-persisted reply - nothing streams live for
       // a replay (this returns before ever calling Claude), so there is no existing
       // bubble for the client to reconcile against.
-      emit({ type: 'settled', content: reply.content, cost })
+      emit({ type: 'settled', content: reply.content, cost, messageId: userMsgResult.message.id })
       return { ok: true, status: 200, message: reply }
     }
     // The original attempt hasn't reached its own SETTLE yet - a concurrent resend, not
@@ -175,7 +193,7 @@ export async function runAgentTurn(params: {
     const assistantRow = await insertAssistantReply(supabase, projectId, clientId, READ_ONLY_LOCK_REPLY)
     // No reserveUsage call has happened yet at this short-circuit - sumTurnCost is 0.
     // Claude was never called, so nothing streamed live.
-    emit({ type: 'settled', content: READ_ONLY_LOCK_REPLY, cost: 0 })
+    emit({ type: 'settled', content: READ_ONLY_LOCK_REPLY, cost: 0, messageId: userMessage.id })
     return { ok: true, status: 200, message: assistantRow }
   }
 
@@ -201,7 +219,7 @@ export async function runAgentTurn(params: {
     // reach the client the same way the read-only-lock short-circuit above does, or
     // the stream closes with zero frames and the client's own "no settled event ever
     // arrived" fallback renders it as a connection drop instead (see docs/decisions.md).
-    emit({ type: 'settled', content: errorReply, cost: 0 })
+    emit({ type: 'settled', content: errorReply, cost: 0, messageId: userMessage.id })
     return { ok: false, status: 500, error: claim.message }
   }
   if (claim.outcome === 'blocked') {
@@ -213,7 +231,7 @@ export async function runAgentTurn(params: {
     await insertAssistantReply(supabase, projectId, clientId, blockedReply)
     // Same reasoning as the 'error' branch above - emit so this known refusal renders
     // correctly on the first attempt instead of as a dropped connection.
-    emit({ type: 'settled', content: blockedReply, cost: 0 })
+    emit({ type: 'settled', content: blockedReply, cost: 0, messageId: userMessage.id })
     return {
       ok: false,
       status: 409,
@@ -230,10 +248,16 @@ export async function runAgentTurn(params: {
   const usageIds: string[] = []
   const settledUsageIds = new Set<string>()
   let caughtError: unknown = null
+  // Real settled dollar cost of every paid call this turn made, summed in memory as
+  // each call settles - never re-derived from a `usage` query (see credit_ledger's
+  // independence from `usage`, CLAUDE.md). Includes this turn's own agent_turn
+  // iterations (via markSettled below) and, when regenerate_all_shots actually spends,
+  // its separately-claimed generate_shots call (via dispatchAgentTool's result below).
+  let turnCostUsd = 0
 
   async function reserveAndSettle(
     estimatedInputTokens: number
-  ): Promise<{ usageId: string; markSettled: (breakdown: Anthropic.Usage | null, stopReason: string | null) => Promise<void> }> {
+  ): Promise<{ usageId: string; markSettled: (breakdown: Anthropic.Usage | null, stopReason: string | null) => Promise<number> }> {
     const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
       model: modelsConfig.agent.model,
       estimatedInputTokens,
@@ -258,7 +282,7 @@ export async function runAgentTurn(params: {
     return {
       usageId: reserved.usageId,
       markSettled: async (breakdown, stopReason) => {
-        await settleUsage({
+        const settledCostUsd = await settleUsage({
           supabase,
           usageId: reserved.usageId,
           provider: 'anthropic',
@@ -269,6 +293,7 @@ export async function runAgentTurn(params: {
           error: null,
         })
         settledUsageIds.add(reserved.usageId)
+        return settledCostUsd
       },
     }
   }
@@ -347,7 +372,7 @@ export async function runAgentTurn(params: {
         { onTextDelta: (text) => emit({ type: 'text_delta', text }) }
       )
 
-      await markSettled(message.usage, stopReason)
+      turnCostUsd += await markSettled(message.usage, stopReason)
 
       if (stopReason === 'max_tokens') {
         finalText = "I ran out of room finishing that - here's what I have so far."
@@ -386,6 +411,11 @@ export async function runAgentTurn(params: {
       const toolResultBlocks: Anthropic.ToolResultBlockParam[] = []
       for (const block of toolUseBlocks) {
         const result = await dispatchAgentTool(block.name, block.input, toolCtx)
+        if (result.kind === 'applied' && result.costUsd) {
+          // Only regenerate_all_shots ever sets this - its own, separately-claimed
+          // generate_shots call, folded into this turn's single ledger charge.
+          turnCostUsd += result.costUsd
+        }
         if (result.kind === 'applied') {
           await persistToolActivity({
             supabase,
@@ -464,11 +494,45 @@ export async function runAgentTurn(params: {
       })
     }
 
+    // Ledger write. Only on a successful turn - the code has no way to distinguish "hit
+    // an error immediately" from "hit an error after several successful, billable
+    // calls" (both funnel through the single catch block above and produce
+    // outcome.ok === false), so a failed turn writes no credit_ledger row at all, even
+    // though real Anthropic cost may already have been incurred and recorded in
+    // `usage`. Provisional policy pending a decision on refunds.
+    //
+    // Priced dynamically from turnCostUsd (summed in memory above) rather than
+    // generate_shots' fixed rate, even for a turn that included a regenerate_all_shots
+    // call: measured data shows the same operation costing noticeably more through the
+    // agent than through the workbench button, because the agent path carries chat
+    // history into the call. A fixed price would misreport whichever trigger it wasn't
+    // calibrated against - the whole call is billed as one agent_turn charge instead.
+    if (outcome.ok) {
+      try {
+        await recordTurnSpend({
+          userId,
+          usd: turnCostUsd,
+          step: 'workbench',
+          operation: 'agent_turn',
+          attemptId,
+          projectId,
+          messageId: userMessage.id,
+        })
+      } catch (err) {
+        // Same reasoning as the settleGeneration/settleUsage errors above: the money is
+        // already spent, so failing the request now would lose the user's work on top
+        // of it. recordDynamicSpend already swallows its own duplicate 23505 - this
+        // catch is for everything else (network failure, constraint violation,
+        // misconfiguration).
+        console.error('[agent] ledger write failed', err)
+      }
+    }
+
     // Runs after every usage row for this turn is already terminal (never 'pending') -
     // the leftover-usageIds force-settle loop just above guarantees that, for both the
     // happy path and the caught-exception path, since both funnel through this finally.
     const cost = await sumTurnCost(supabase, userMessage.id)
-    emit({ type: 'settled', content: assistantContent ?? 'Done.', cost })
+    emit({ type: 'settled', content: assistantContent ?? 'Done.', cost, messageId: userMessage.id })
   }
 
   return outcome

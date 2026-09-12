@@ -4,6 +4,13 @@ import { modelsConfig } from '@/lib/config/models'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 import { estimateInputTokens, quoteClaudeCall, assertWithinAllowance, reserveUsage, settleUsage, AllowanceExceededError } from '@/lib/usage'
+// Type-only: credits/ledger.ts transitively imports the service-role Supabase client
+// module, which imports 'server-only' - a VALUE import here would crash any test that
+// imports this module directly (tests/shot-generation.spec.ts,
+// tests/shots-generation-state-machine.spec.ts), exactly as Task 5 found for
+// agent/logic.ts. The real value lives only in route.ts, which is safe (runs inside
+// Next's server bundle).
+import type { recordFixedSpend } from '@/lib/credits/ledger'
 import { generateUniqueShotKeys, isUniqueViolation, MAX_SHOT_KEY_INSERT_ATTEMPTS } from '@/lib/shot-key'
 import {
   claimGeneration,
@@ -493,6 +500,15 @@ async function runShotsPipeline(
   }
 }
 
+// Passed as `recordFixedSpend` by the one caller that must NOT write a fixed-price
+// generate_shots row: the agent's regenerate_all_shots tool (agent/tools.ts). That
+// call's real dollar cost is already folded into the agent turn's own dynamic
+// agent_turn charge (see agent/logic.ts's accumulator, Task 5) - charging both here
+// and there would double-bill one Claude call. attemptId/recordFixedSpend are
+// required (not optional) so a caller can never simply forget to wire billing and
+// have it silently no-op; passing this sentinel is an explicit, greppable opt-out.
+export const BILLED_BY_TURN = Symbol('generate_shots:billed_by_turn')
+
 export async function runShotGeneration(params: {
   gateway: ClaudeGateway
   supabase: SupabaseServerClient
@@ -503,8 +519,21 @@ export async function runShotGeneration(params: {
   // usage row groups under that turn's chat message. /shots/route.ts omits it and gets
   // null, unchanged.
   messageId?: string | null
+  // Set only when called from an agent turn's regenerate_all_shots tool, so the turn's
+  // own in-memory cost accumulator can fold this call's real settled cost into its
+  // single ledger charge, without querying `usage` back (see credit_ledger's
+  // independence from `usage`, CLAUDE.md). Fires once, only on the fresh-call path -
+  // never on RECOVER, since no money is spent there. /shots/route.ts omits it; the
+  // call site below no-ops when absent.
+  onSettled?: (usd: number) => void
+  // Minted alongside the claim above, by the caller - see the import-type comment
+  // above for why this can't be minted in here. Every real caller must pass one, even
+  // the agent path (see BILLED_BY_TURN): there is no legitimate "forgot to wire
+  // billing" state.
+  attemptId: string
+  recordFixedSpend: typeof recordFixedSpend | typeof BILLED_BY_TURN
 }): Promise<ShotGenerationResult> {
-  const { gateway, supabase, projectId, userId, retry, messageId } = params
+  const { gateway, supabase, projectId, userId, retry, messageId, onSettled, attemptId, recordFixedSpend } = params
 
   const project = await loadProjectForClaim(supabase, projectId, userId)
   if (!project) {
@@ -691,7 +720,7 @@ export async function runShotGeneration(params: {
     // false but was still billed successfully, while a max_tokens stop is billed but
     // must settle 'failed' regardless of how much of the pipeline it saved.
     if (usageId) {
-      await settleUsage({
+      const settledCostUsd = await settleUsage({
         supabase,
         usageId,
         provider: 'anthropic',
@@ -701,6 +730,33 @@ export async function runShotGeneration(params: {
         stopReason: stopReasonForSettle,
         error: outcome.ok ? null : caughtError,
       })
+      onSettled?.(settledCostUsd)
+
+      // ledger. Placed after settle, never interleaved. Gated on usageId (this branch)
+      // so RECOVER - which returns before usageId is ever assigned, see the early
+      // `if (pendingPayload !== null) { ...; return outcome }` above - can never reach
+      // here: no money was spent, so nothing is charged. Also gated on outcome.ok: a
+      // failed fresh call (persist error, pipeline error, max_tokens truncation) writes
+      // no row either, matching agent_turn's absorb-on-failure policy (Task 5) -
+      // provisional pending a refund decision, since real provider cost may already
+      // have been incurred. recordFixedSpend never throws to the caller (wrapped
+      // below); a forced failure here must not fail the request.
+      if (outcome.ok && recordFixedSpend !== BILLED_BY_TURN) {
+        try {
+          await recordFixedSpend({
+            userId,
+            step: 'workbench',
+            operation: 'generate_shots',
+            quantity: outcome.data.shots.length,
+            attemptId,
+            projectId,
+            messageId: null,
+            shotKey: null,
+          })
+        } catch (err) {
+          console.error('[shots] ledger write failed', err)
+        }
+      }
     }
   }
 }

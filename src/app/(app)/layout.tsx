@@ -3,6 +3,8 @@ import { createClient } from '@/lib/supabase/server'
 import { Rail } from './dashboard/rail'
 import { getUsageRows } from './usage/data'
 import { aggregateUsage } from './usage/aggregate'
+import { getLedgerRows } from './credits/data'
+import { aggregateCreditsPeriod } from './credits/aggregate'
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const supabase = await createClient()
@@ -17,9 +19,14 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const rows = user ? await getUsageRows(user.id, 'this_month') : []
   const spendThisMonth = aggregateUsage(rows, []).settledTotal
 
+  // Same pattern, against credit_ledger instead of usage - request-memoized via
+  // getLedgerRows, so a visit to /credits this same request reuses it too.
+  const creditsRows = user ? await getLedgerRows(user.id, 'this_month') : []
+  const creditsSpentThisMonth = aggregateCreditsPeriod(creditsRows, []).spentThisPeriod
+
   return (
     <div className="flex h-screen">
-      <Rail user={user ?? undefined} spendThisMonth={spendThisMonth} />
+      <Rail user={user ?? undefined} spendThisMonth={spendThisMonth} creditsSpentThisMonth={creditsSpentThisMonth} />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
     </div>
   )

@@ -15,6 +15,11 @@
  * is deleted explicitly and first for exactly that reason. projects cascade cleanly to
  * shots/generations/elements/shot_elements (all ON DELETE CASCADE).
  *
+ * credit_ledger is deleted the same way, for the same reason: its project_id is also
+ * ON DELETE SET NULL, and unlike a throwaway createTestSession() user (whose auth row
+ * deletion cascades credit_ledger away), the fixed users' auth rows are never deleted -
+ * nothing else would ever clean these rows up.
+ *
  * A cleanup failure must not turn a green suite red - every failure here is logged
  * loudly and swallowed, never rethrown.
  */
@@ -32,6 +37,16 @@ export default async function globalTeardown() {
       console.error('[global-teardown] usage delete failed:', usageError.message)
     } else {
       console.log(`[global-teardown] deleted ${usageCount ?? 0} usage row(s) for the fixed test users`)
+    }
+
+    const { error: creditLedgerError, count: creditLedgerCount } = await admin
+      .from('credit_ledger')
+      .delete({ count: 'exact' })
+      .in('user_id', fixedUserIds)
+    if (creditLedgerError) {
+      console.error('[global-teardown] credit_ledger delete failed:', creditLedgerError.message)
+    } else {
+      console.log(`[global-teardown] deleted ${creditLedgerCount ?? 0} credit_ledger row(s) for the fixed test users`)
     }
 
     const { error: projectsError, count: projectsCount } = await admin

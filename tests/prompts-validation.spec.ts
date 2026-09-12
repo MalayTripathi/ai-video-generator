@@ -6,7 +6,7 @@ const GOOD_IMAGE_PROMPT =
 const GOOD_VIDEO_PROMPT =
   'A slow, deliberate camera movement across the shot, describing exactly how motion unfolds within the frame.'
 
-test.describe('write_prompts validation', () => {
+test.describe('write_image_prompts validation', () => {
   test('rejects an empty prompt string as unusable', () => {
     expect(hasUsablePrompt('')).toBe(false)
     expect(hasUsablePrompt('   ')).toBe(false)
@@ -22,8 +22,8 @@ test.describe('write_prompts validation', () => {
     )
   })
 
-  test('a shot stubbed with an empty write_prompts entry is excluded from persistence and reported missing', () => {
-    // Simulates Claude's raw write_prompts tool input for a 3-shot request
+  test('a shot stubbed with an empty write_image_prompts entry is excluded from persistence and reported missing', () => {
+    // Simulates Claude's raw write_image_prompts tool input for a 3-shot request
     // where the response for s001 is empty (the exact failure mode observed
     // in production).
     const rawPrompts = [

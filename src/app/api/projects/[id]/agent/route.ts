@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClaudeGateway } from '@/lib/claude'
+import { mintAttemptId, recordDynamicSpend } from '@/lib/credits/ledger'
 import { runAgentTurn, type AgentStreamEvent } from './logic'
 
 // Covers the 180s agent_turn stale-claim window with margin; the whole request is held
@@ -71,6 +72,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           content,
           clientId,
           onEvent: safeEnqueue,
+          attemptId: mintAttemptId(),
+          recordTurnSpend: recordDynamicSpend,
         })
       } finally {
         try {

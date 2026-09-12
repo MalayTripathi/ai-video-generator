@@ -27,18 +27,35 @@ test.describe('buildAgentMessages', () => {
     const toolRow = row({ role: 'assistant', kind: 'tool_done', tool_name: 'update_shot', shot_key: 'sk1', content: 'Updated Shot 1' })
     const replyRow = row({ role: 'assistant', kind: 'text', content: 'Done.', client_id: 'c1' })
 
-    const out = buildAgentMessages([userRow, toolRow, replyRow], new Map([['sk1', 1]]), new Map([[userRow.id, 0.1]]))
+    const out = buildAgentMessages(
+      [userRow, toolRow, replyRow],
+      new Map([['sk1', 1]]),
+      new Map([[userRow.id, 0.1]]),
+      new Map([[userRow.id, 17]])
+    )
 
     expect(out.map((m) => m.kind)).toEqual(['user', 'tool_done', 'agent', 'cost'])
     expect(out[1].content).toBe('Updated Shot 1')
     expect(out[3].amount).toBe('$0.100')
+    expect(out[3].creditAmount).toBe('17 cr')
+  })
+
+  test('a cost line with no matching credit_ledger row renders the dollar figure alone - never "0 cr"', () => {
+    const userRow = row({ role: 'user', content: 'do it', client_id: 'c1' })
+    const replyRow = row({ role: 'assistant', kind: 'text', content: 'Done.', client_id: 'c1' })
+
+    const out = buildAgentMessages([userRow, replyRow], new Map(), new Map([[userRow.id, 0.1]]), new Map())
+
+    expect(out.map((m) => m.kind)).toEqual(['user', 'agent', 'cost'])
+    expect(out[2].amount).toBe('$0.100')
+    expect(out[2].creditAmount).toBeUndefined()
   })
 
   test('no cost line when the turn summed to zero', () => {
     const userRow = row({ role: 'user', content: 'do it', client_id: 'c1' })
     const replyRow = row({ role: 'assistant', kind: 'text', content: 'Done.', client_id: 'c1' })
 
-    const out = buildAgentMessages([userRow, replyRow], new Map(), new Map())
+    const out = buildAgentMessages([userRow, replyRow], new Map(), new Map(), new Map())
 
     expect(out.map((m) => m.kind)).toEqual(['user', 'agent'])
   })
@@ -48,7 +65,7 @@ test.describe('buildAgentMessages', () => {
     const refusalRow = row({ role: 'assistant', kind: 'refusal', content: "I can't delete shots." })
     const replyRow = row({ role: 'assistant', kind: 'text', content: 'Explained why not.', client_id: 'c1' })
 
-    const out = buildAgentMessages([userRow, refusalRow, replyRow], new Map(), new Map())
+    const out = buildAgentMessages([userRow, refusalRow, replyRow], new Map(), new Map(), new Map())
 
     expect(out.map((m) => m.kind)).toEqual(['user', 'refusal', 'agent'])
     expect(out[1].content).toBe("I can't delete shots.")
@@ -63,7 +80,7 @@ test.describe('buildAgentMessages', () => {
     })
     const closingRow = row({ role: 'assistant', kind: 'text', content: "I can't delete shots directly.", client_id: 'c1' })
 
-    const out = buildAgentMessages([userRow, declineRow, closingRow], new Map(), new Map([[userRow.id, 0.05]]))
+    const out = buildAgentMessages([userRow, declineRow, closingRow], new Map(), new Map([[userRow.id, 0.05]]), new Map())
 
     expect(out.map((m) => m.kind)).toEqual(['user', 'refusal', 'agent', 'cost'])
     expect(out[1].content).toBe("There's no delete tool - use the shot's own delete button.")
@@ -76,7 +93,7 @@ test.describe('buildAgentMessages', () => {
     const toolRow = row({ role: 'assistant', kind: 'tool_done', tool_name: 'update_shot', shot_key: 'sk1', content: 'Updated Shot 2' })
     const closingRow = row({ role: 'assistant', kind: 'text', content: 'Declined the delete, rewrote shot 2.', client_id: 'c1' })
 
-    const out = buildAgentMessages([userRow, declineRow, toolRow, closingRow], new Map([['sk1', 2]]), new Map())
+    const out = buildAgentMessages([userRow, declineRow, toolRow, closingRow], new Map([['sk1', 2]]), new Map(), new Map())
 
     expect(out.some((m) => m.kind === 'error')).toBe(false)
     expect(out.map((m) => m.kind)).toEqual(['user', 'refusal', 'tool_done', 'agent'])
@@ -92,7 +109,8 @@ test.describe('buildAgentMessages', () => {
     const out = buildAgentMessages(
       [abandonedUser, secondUser, secondReply],
       new Map(),
-      new Map([[abandonedUser.id, 0.75]]) // even if present, must never be shown for the abandoned turn
+      new Map([[abandonedUser.id, 0.75]]), // even if present, must never be shown for the abandoned turn
+      new Map()
     )
 
     expect(out.map((m) => m.kind)).toEqual(['user', 'error', 'user', 'agent'])
@@ -105,7 +123,7 @@ test.describe('buildAgentMessages', () => {
   test('a trailing abandoned turn (last row, no closing reply, end of list) renders as error', () => {
     const userRow = row({ role: 'user', content: 'never finished', client_id: 'c9' })
 
-    const out = buildAgentMessages([userRow], new Map(), new Map())
+    const out = buildAgentMessages([userRow], new Map(), new Map(), new Map())
 
     expect(out.map((m) => m.kind)).toEqual(['user', 'error'])
     expect(out[1].retryClientId).toBe('c9')
@@ -117,7 +135,7 @@ test.describe('buildAgentMessages', () => {
     const toolRow = row({ role: 'assistant', kind: 'tool_done', tool_name: 'regenerate_all_shots', content: 'Regenerated all shots' })
     const closingRow = row({ role: 'assistant', kind: 'text', content: 'All set.', client_id: 'turn-client-id' })
 
-    const out = buildAgentMessages([userRow, nestedRow, toolRow, closingRow], new Map(), new Map())
+    const out = buildAgentMessages([userRow, nestedRow, toolRow, closingRow], new Map(), new Map(), new Map())
 
     // The nested message renders as an ordinary interstitial bubble, in position - it is
     // NOT treated as the turn's end, and the real closing reply still renders afterward.
@@ -130,7 +148,7 @@ test.describe('buildAgentMessages', () => {
     const userRow = row({ role: 'user', content: 'legacy turn', client_id: null })
     const replyRow = row({ role: 'assistant', kind: 'text', content: 'Legacy reply.', client_id: null })
 
-    const out = buildAgentMessages([userRow, replyRow], new Map(), new Map())
+    const out = buildAgentMessages([userRow, replyRow], new Map(), new Map(), new Map())
 
     expect(out.map((m) => m.kind)).toEqual(['user', 'agent'])
     expect(out[1].content).toBe('Legacy reply.')
@@ -152,7 +170,7 @@ test.describe('buildAgentMessages', () => {
     const toolA = row({ role: 'assistant', kind: 'tool_done', tool_name: 'insert_shot', content: 'Inserted a new shot' })
     const replyA = row({ role: 'assistant', kind: 'text', content: 'Inserted the shot.', client_id: 'a' })
 
-    const out = buildAgentMessages([userA, userB, replyB, toolA, replyA], new Map(), new Map())
+    const out = buildAgentMessages([userA, userB, replyB, toolA, replyA], new Map(), new Map(), new Map())
 
     expect(out.some((m) => m.kind === 'error')).toBe(false)
 
@@ -173,7 +191,7 @@ test.describe('buildAgentMessages', () => {
     const toolRow = row({ role: 'assistant', kind: 'tool_done', tool_name: 'update_shot', shot_key: 'gone', content: 'Updated Shot 3' })
     const replyRow = row({ role: 'assistant', kind: 'text', content: 'Done.', client_id: 'c1' })
 
-    const out = buildAgentMessages([userRow, toolRow, replyRow], new Map(), new Map())
+    const out = buildAgentMessages([userRow, toolRow, replyRow], new Map(), new Map(), new Map())
 
     expect(out[1].content).toBe("Updated a shot that's since been deleted")
   })

@@ -82,6 +82,14 @@ of finished work. Each is stated in full further down; these are the pointers.
     - **Report the delta.** A session that touched this file states the line count
       before and after and names what it removed or superseded. A net increase
       with nothing superseded requires a stated reason.
+18. `credit_ledger` is independent of `usage`: never join them, in either direction,
+    and never read `usage` to produce a credit figure — dynamic prices come from
+    provider costs accumulated in memory during the action, never from a read-back.
+    Granularity is one row per user action, not per provider call. Rows are
+    immutable — a refund or correction is always a new row, never an UPDATE or
+    DELETE; balance is `SUM(delta)`, computed fresh, never a stored running total.
+    All writes go through `src/lib/credits/ledger.ts`'s service-role functions —
+    never add an `authenticated` INSERT/UPDATE/DELETE policy to the table.
 
 Read `src/lib/database.types.ts` for columns — never rely on this file for them.
 
@@ -290,6 +298,17 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   deliberately client-importable (rates aren't secrets) and holds only
   Anthropic's real rates today — `openai`/`elevenlabs`/`fal` are stub
   shapes with no values yet, filled in as each provider is wired up.
+- Credit prices live in `src/lib/config/credits.ts` (`PRICE_TABLE`, keyed on
+  `(step, operation)` — never operation alone, since the same operation can price
+  differently at different steps — plus `usdToCredits` for the one
+  dynamically-priced operation, `agent_turn`). No credit literal belongs anywhere
+  else. A new priced call site mints its own attempt id via `credits/ledger.ts`'s
+  `mintAttemptId()` — never `generations.id`, which names a reusable lock slot, not
+  one attempt — and takes the real `recordFixedSpend`/`recordDynamicSpend` writer as
+  an explicit, required parameter injected by its route (mirroring how
+  `ClaudeGateway` is injected). A call whose cost is already billed by an enclosing
+  action passes the `BILLED_BY_TURN` sentinel instead of omitting the parameter, so
+  a forgotten wiring fails to compile rather than silently billing nothing.
 - **Provider calls.** See `## Provider calls` below for the gateway seam,
   the live-call guard, and the Playwright guard. Never set, export, or add
   `ALLOW_REAL_CLAUDE` anywhere in the repo — that decision belongs to the
@@ -679,7 +698,7 @@ The uniqueness guard is `generations_identity_idx`, a unique index on
 `(project_id, step, operation, shot_id)` with **`NULLS NOT DISTINCT`**
 (Postgres 15+; this project runs 17.6) — load-bearing, because without it
 Postgres treats every null `shot_id` as distinct, and two concurrent
-project-level claims (e.g. two `write_prompts` calls with no `shot_id`)
+project-level claims (e.g. two `write_image_prompts` calls with no `shot_id`)
 for the same `(step, operation)` would both succeed instead of the second
 being rejected by the index.
 
@@ -701,7 +720,7 @@ Otherwise a failed row's payload survives for RECOVER.
 
 `generations` is used by both `/shots` (`step: 'workbench'`, `operation:
 'generate_shots'`, `shot_id: null`) and `/prompts` (`step:
-'image_prompts'`, `operation: 'write_prompts'`, `shot_id: null`).
+'image_prompts'`, `operation: 'write_image_prompts'`, `shot_id: null`).
 `claimGeneration`/`persistGenerationPayload`/`settleGeneration` are the
 only locking mechanism in the codebase.
 
@@ -818,7 +837,7 @@ symmetry.
 
 Both `/api/projects/[id]/shots` (`step: 'workbench'` / `operation:
 'generate_shots'`) and `/api/projects/[id]/prompts` (`step:
-'image_prompts'` / `operation: 'write_prompts'`) pass their claimed
+'image_prompts'` / `operation: 'write_image_prompts'`) pass their claimed
 `generations` row's `id` into `reserveUsage`, so both carry
 `generation_id`; `derive_camera` passes `null`. Neither route reserves or
 settles usage on the RECOVER path or (prompts only) the "nothing needs
@@ -875,7 +894,7 @@ generated) on replay instead of creating duplicates. This is what makes the
 confirmation modal's "existing shots will be replaced" copy true rather than aspirational.
 
 `/prompts` (`runPromptGeneration`, `step: 'image_prompts'`, `operation:
-'write_prompts'`, `shot_id: null`) runs the identical sequence, with two
+'write_image_prompts'`, `shot_id: null`) runs the identical sequence, with two
 differences. It claims unconditionally, even when nothing needs
 generating — so a call after `succeeded` needs `retry: true`, same as
 `/shots`. And it only `.update()`s the specific shots Claude was asked

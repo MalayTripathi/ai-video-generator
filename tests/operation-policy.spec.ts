@@ -5,7 +5,8 @@ import { OPERATION_POLICY, getOperationPolicy, STALE_AFTER_MS } from '../src/lib
 const DEFAULT_POLICY_OPS: Operation[] = [
   'voiceover',
   'background_music',
-  'write_prompts',
+  'write_image_prompts',
+  'write_video_prompts',
   'generate_image',
   'generate_clip',
   'merge',

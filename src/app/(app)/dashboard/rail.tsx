@@ -4,9 +4,18 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import type { User } from '@supabase/supabase-js'
 import { formatCost } from '@/lib/format-cost'
+import { formatCredits } from '@/lib/format-credits'
 import { UserMenu } from './user-menu'
 
-export function Rail({ user, spendThisMonth }: { user?: User; spendThisMonth: number }) {
+export function Rail({
+  user,
+  spendThisMonth,
+  creditsSpentThisMonth,
+}: {
+  user?: User
+  spendThisMonth: number
+  creditsSpentThisMonth: number
+}) {
   const pathname = usePathname()
   const active = pathname === '/dashboard'
   const usageActive = pathname === '/usage'
@@ -66,7 +75,7 @@ export function Rail({ user, spendThisMonth }: { user?: User; spendThisMonth: nu
           Queue
         </div>
         <Link
-          href="/usage"
+          href="/credits"
           className={
             usageActive
               ? 'relative flex h-[34px] items-center gap-[10px] rounded-control bg-rail-item-active-bg px-rc-xs text-ui font-medium text-rail-fg'
@@ -101,12 +110,22 @@ export function Rail({ user, spendThisMonth }: { user?: User; spendThisMonth: nu
         }}
       />
 
-      <Link href="/usage" className="flex flex-col gap-rc-3xs px-rc-xs pb-rc-2xs">
+      {/* Only the two figures are click targets, each to its own page - the label and
+          "this month" caption open neither. Both figures are spend for the current
+          month (never balance), so they read as one pair. */}
+      <div className="flex flex-col gap-rc-3xs px-rc-xs pb-rc-2xs">
         <span className="text-label uppercase tracking-label text-rail-fg-muted">Usage spending</span>
         <span className="text-body font-medium text-rail-fg">
-          {formatCost(spendThisMonth)} <span className="text-meta font-normal text-rail-fg-muted">this month</span>
+          <Link href="/usage" data-testid="rail-dollar-spend" className="hover:underline">
+            {formatCost(spendThisMonth)}
+          </Link>
+          {' / '}
+          <Link href="/credits" data-testid="rail-credits-spend" className="hover:underline">
+            {formatCredits(creditsSpentThisMonth)} credits
+          </Link>
         </span>
-      </Link>
+        <span className="text-meta font-normal text-rail-fg-muted">this month</span>
+      </div>
 
       {user && (
         <>

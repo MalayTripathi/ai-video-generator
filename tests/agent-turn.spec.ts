@@ -17,6 +17,13 @@ import type { ClaudeGateway } from '../src/lib/claude'
 import { runAgentTurn, type AgentStreamEvent } from '../src/app/api/projects/[id]/agent/logic'
 import { STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
 
+// Shared by every runAgentTurn call in this file that isn't itself testing the ledger
+// write (those live in agent-turn-ledger.spec.ts) - a fresh id and a no-op recorder, so
+// this file's existing tests are unaffected by Task 5's ledger wiring.
+function noopLedgerParams() {
+  return { attemptId: crypto.randomUUID(), recordTurnSpend: async () => {} }
+}
+
 let toolSeq = 0
 function nextShotIdentity() {
   toolSeq++
@@ -1108,6 +1115,7 @@ test.describe('runAgentTurn', () => {
     const events: AgentStreamEvent[] = []
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shotNumber, voice_over: 'Changed by the agent.' }, 'update_shot'),
         textMessage('Updated the narration.'),
@@ -1137,6 +1145,7 @@ test.describe('runAgentTurn', () => {
     const events: AgentStreamEvent[] = []
 
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shot.order_index + 1, voice_over: 'Changed by the agent.' }, 'update_shot'),
         textMessage('Updated the narration.'),
@@ -1166,6 +1175,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway,
       supabase: admin,
       projectId,
@@ -1195,6 +1205,7 @@ test.describe('runAgentTurn', () => {
     // in the same response as a tool call. Without finish, that prose is only ever an
     // interstitial row - the turn's actual close comes from a later, separate response.
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([
         mixedMessage('Let me update that for you.', [
           { name: 'update_shot', input: { shot_number: shotNumber, voice_over: 'Changed by the agent.' } },
@@ -1237,6 +1248,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway,
       supabase: admin,
       projectId,
@@ -1264,6 +1276,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway,
       supabase: admin,
       projectId,
@@ -1293,6 +1306,7 @@ test.describe('runAgentTurn', () => {
     const projectId = await seedToolProject()
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ message: "There's no delete tool - use the shot's own delete button." }, 'decline'),
         textMessage("I can't delete shots directly."),
@@ -1320,6 +1334,7 @@ test.describe('runAgentTurn', () => {
     // targetShots in CLAUDE.md); it is documented here as real, current behavior rather
     // than left unverified. See docs/decisions.md.
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([textMessage("There's no delete tool - use the shot's own delete button in the UI.")]),
       supabase: admin,
       projectId,
@@ -1339,6 +1354,7 @@ test.describe('runAgentTurn', () => {
     const shotNumber = (await readShot(shotId)).order_index + 1
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([
         mixedMessage('Let me check that shot first.', [{ name: 'get_shot', input: { shot_number: shotNumber } }]),
         successMessage({ shot_number: shotNumber, voice_over: 'Changed after looking.' }, 'update_shot'),
@@ -1371,6 +1387,7 @@ test.describe('runAgentTurn', () => {
     const projectId = await seedToolProject()
 
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ message: "There's no delete tool - use the shot's own delete button." }, 'decline'),
         textMessage("I can't delete shots directly."),
@@ -1384,6 +1401,7 @@ test.describe('runAgentTurn', () => {
 
     const turn2Gateway = scriptedGateway([textMessage('Sure, on it.')])
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: turn2Gateway,
       supabase: admin,
       projectId,
@@ -1413,6 +1431,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway,
       supabase: admin,
       projectId,
@@ -1437,6 +1456,7 @@ test.describe('runAgentTurn', () => {
     )
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway,
       supabase: admin,
       projectId,
@@ -1463,6 +1483,7 @@ test.describe('runAgentTurn', () => {
 
     const before = (await readShots(projectId)).length
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway,
       supabase: admin,
       projectId,
@@ -1480,6 +1501,7 @@ test.describe('runAgentTurn', () => {
     const gateway = scriptedGateway([successMessage({}, 'update_shot')])
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway,
       supabase: admin,
       projectId,
@@ -1500,6 +1522,7 @@ test.describe('runAgentTurn', () => {
     const gateway = scriptedGateway([textMessage('First reply.')])
 
     const first = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway,
       supabase: admin,
       projectId,
@@ -1511,6 +1534,7 @@ test.describe('runAgentTurn', () => {
 
     const secondGateway = scriptedGateway([])
     const second = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: secondGateway,
       supabase: admin,
       projectId,
@@ -1539,6 +1563,7 @@ test.describe('runAgentTurn', () => {
     const events: AgentStreamEvent[] = []
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway,
       supabase: admin,
       projectId,
@@ -1554,12 +1579,17 @@ test.describe('runAgentTurn', () => {
 
     // A refusal is a known outcome, not a dropped connection - it must reach the client
     // as a normal settled event on the FIRST attempt, not only after a Retry resend.
-    expect(events).toContainEqual({
-      type: 'settled',
-      content:
-        'Another turn was already running for this project when this was sent, so nothing was changed. Please try again.',
-      cost: 0,
-    })
+    // objectContaining, not an exact match: `messageId` (Credits Task 8) is a real,
+    // freshly-generated uuid this test has no independent way to predict - the point
+    // here is content/cost, not that id.
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'settled',
+        content:
+          'Another turn was already running for this project when this was sent, so nothing was changed. Please try again.',
+        cost: 0,
+      })
+    )
 
     // Refused before any claim, spend, or model call - it must cost nothing and must
     // not create a second generations row (the pre-seeded row is the only one).
@@ -1588,6 +1618,7 @@ test.describe('runAgentTurn', () => {
     const clientId = crypto.randomUUID()
 
     const first = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([]),
       supabase: admin,
       projectId,
@@ -1607,6 +1638,7 @@ test.describe('runAgentTurn', () => {
     // looping the identical "still processing" 409 forever.
     const secondGateway = scriptedGateway([])
     const second = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: secondGateway,
       supabase: admin,
       projectId,
@@ -1633,6 +1665,7 @@ test.describe('runAgentTurn', () => {
     const gateway = scriptedGateway([textMessage('Reclaimed.')])
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway,
       supabase: admin,
       projectId,
@@ -1655,6 +1688,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     const result = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway,
       supabase: admin,
       projectId,
@@ -1685,6 +1719,7 @@ test.describe('runAgentTurn', () => {
     const clientId = crypto.randomUUID()
 
     const first = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shotNumber, voice_over: 'Changed once.' }, 'update_shot'),
         textMessage('Updated the shot.'),
@@ -1703,6 +1738,7 @@ test.describe('runAgentTurn', () => {
 
     const resendGateway = scriptedGateway([])
     const resend = await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: resendGateway,
       supabase: admin,
       projectId,
@@ -1725,6 +1761,7 @@ test.describe('runAgentTurn', () => {
     const clientId = crypto.randomUUID()
 
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([textMessage('All done.')]),
       supabase: admin,
       projectId,
@@ -1745,6 +1782,7 @@ test.describe('runAgentTurn', () => {
     const shot = await readShot(shotId)
 
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shot.order_index + 1, voice_over: 'Changed by the agent.' }, 'update_shot'),
         textMessage('Updated the narration.'),
@@ -1773,6 +1811,7 @@ test.describe('runAgentTurn', () => {
     const shot = await readShot(shotId)
 
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shot.order_index + 1, visual_description: '' }, 'update_shot'),
         textMessage('That description cannot be empty, so I left it as is.'),
@@ -1798,6 +1837,7 @@ test.describe('runAgentTurn', () => {
     const events: AgentStreamEvent[] = []
 
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shotNumber, voice_over: 'Changed by the agent.' }, 'update_shot'),
         textMessage('Updated the narration.'),
@@ -1822,6 +1862,7 @@ test.describe('runAgentTurn', () => {
     const events: AgentStreamEvent[] = []
 
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([]),
       supabase: admin,
       projectId,
@@ -1841,6 +1882,7 @@ test.describe('runAgentTurn', () => {
     const shotNumber = (await readShot(shotId)).order_index + 1
 
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shotNumber, voice_over: 'Changed by the agent.' }, 'update_shot'),
         textMessage('Updated the narration.'),
@@ -1861,6 +1903,7 @@ test.describe('runAgentTurn', () => {
     }
 
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: capturingGateway,
       supabase: admin,
       projectId,
@@ -1886,6 +1929,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: turn1Gateway,
       supabase: admin,
       projectId,
@@ -1904,6 +1948,7 @@ test.describe('runAgentTurn', () => {
 
     const turn2Gateway = scriptedGateway([textMessage('Sure, on it.')])
     await runAgentTurn({
+      ...noopLedgerParams(),
       gateway: turn2Gateway,
       supabase: admin,
       projectId,

@@ -10,7 +10,7 @@ const GOOD_IMAGE_PROMPT =
 const GOOD_VIDEO_PROMPT =
   'A slow, deliberate camera movement across the shot, describing exactly how motion unfolds within the frame.'
 
-/** A deterministic fake write_prompts gateway: returns a complete entry for every key
+/** A deterministic fake write_image_prompts gateway: returns a complete entry for every key
  * in shotKeys except any listed in opts.omitKeys, and counts how many times it's called. */
 function fakeGateway(shotKeys: string[], opts?: { truncated?: boolean; omitKeys?: string[] }) {
   let calls = 0
@@ -26,8 +26,8 @@ function fakeGateway(shotKeys: string[], opts?: { truncated?: boolean; omitKeys?
     async createMessage() {
       calls++
       return opts?.truncated
-        ? truncatedMessage(input, 'write_prompts')
-        : successMessage(input, 'write_prompts')
+        ? truncatedMessage(input, 'write_image_prompts')
+        : successMessage(input, 'write_image_prompts')
     },
   }
   return { gateway, getCalls: () => calls }
@@ -65,7 +65,7 @@ async function readGeneration(projectId: string) {
     .select('state, payload, error')
     .eq('project_id', projectId)
     .eq('step', 'image_prompts')
-    .eq('operation', 'write_prompts')
+    .eq('operation', 'write_image_prompts')
     .is('shot_id', null)
     .single()
   expect(error).toBeNull()
@@ -121,7 +121,7 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       expect(usageRows!.length).toBe(1)
       expect(usageRows![0].generation_id).not.toBeNull()
       expect(usageRows![0].step).toBe('image_prompts')
-      expect(usageRows![0].operation).toBe('write_prompts')
+      expect(usageRows![0].operation).toBe('write_image_prompts')
       expect(usageRows![0].status).toBe('succeeded')
       expect(usageRows![0].estimated_cost).not.toBeNull()
     }
@@ -206,7 +206,7 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       const { error: generationError } = await admin.from('generations').insert({
         project_id: projectId,
         step: 'image_prompts',
-        operation: 'write_prompts',
+        operation: 'write_image_prompts',
         shot_id: null,
         state: 'failed',
         payload: payload as never,
@@ -345,7 +345,7 @@ test.describe('Step 4 (provisional) - image/video prompt generation', () => {
       expect(usageRows![0].status).toBe('failed')
       expect(usageRows![0].estimated_cost).not.toBeNull()
       expect(usageRows![0].step).toBe('image_prompts')
-      expect(usageRows![0].operation).toBe('write_prompts')
+      expect(usageRows![0].operation).toBe('write_image_prompts')
     }
   })
 

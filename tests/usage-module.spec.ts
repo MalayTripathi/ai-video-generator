@@ -82,6 +82,10 @@ test.describe('reserveUsage / settleUsage', () => {
       const { data: before } = await admin.from('usage').select('status').eq('id', usageId).single()
       expect(before!.status).toBe('pending')
 
+      // settleUsage now hands back the cost it computed (see Task 5, credit_ledger's
+      // in-memory turn-cost accumulator) regardless of whether the DB write itself
+      // succeeded - the assertion below is really about the promise resolving rather
+      // than rejecting; the resolved value is incidental to this test.
       await expect(
         settleUsage({
           supabase: admin,
@@ -93,7 +97,7 @@ test.describe('reserveUsage / settleUsage', () => {
           status: 'not_a_real_status' as never,
           breakdown: { input_tokens: 10, output_tokens: 10 },
         })
-      ).resolves.toBeUndefined()
+      ).resolves.toEqual(expect.any(Number))
 
       const { data: after } = await admin.from('usage').select('status').eq('id', usageId).single()
       expect(after!.status).toBe('pending')

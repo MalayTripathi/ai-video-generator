@@ -24,7 +24,8 @@ export const OPERATIONS = [
   'agent_turn',
   'voiceover',
   'background_music',
-  'write_prompts',
+  'write_image_prompts',
+  'write_video_prompts',
   'generate_image',
   'generate_clip',
   'merge',
@@ -42,9 +43,9 @@ export type Provider = (typeof PROVIDERS)[number]
 
 export const STEP_OPERATIONS: Record<Step, readonly Operation[]> = {
   workbench: ['generate_shots', 'agent_turn', 'derive_camera'],
-  image_prompts: ['write_prompts', 'generate_image'],
+  image_prompts: ['write_image_prompts', 'generate_image'],
   storyboard: ['generate_image', 'voiceover', 'background_music'],
-  video_prompts: ['write_prompts'],
+  video_prompts: ['write_video_prompts'],
   generation: ['generate_clip'],
   assembly: ['merge'],
 }
@@ -63,13 +64,13 @@ const STEP_LABELS: Record<Step, string> = {
 
 const OPERATION_LABELS: Record<Step, Partial<Record<Operation, string>>> = {
   workbench: { generate_shots: 'New shots', agent_turn: 'Agent turn', derive_camera: 'Camera framing' },
-  image_prompts: { write_prompts: 'Prompt writing', generate_image: 'Image generation' },
+  image_prompts: { write_image_prompts: 'Prompt writing', generate_image: 'Image generation' },
   storyboard: {
     generate_image: 'Image generation',
     voiceover: 'Voiceover',
     background_music: 'Background music',
   },
-  video_prompts: { write_prompts: 'Prompt writing' },
+  video_prompts: { write_video_prompts: 'Prompt writing' },
   generation: { generate_clip: 'Clip generation' },
   assembly: { merge: 'Assembly' },
 }
@@ -84,6 +85,12 @@ export function stepOperationLabel(step: Step, operation: Operation): string {
   const stepLabel = STEP_LABELS[step] ?? step
   const operationLabel = OPERATION_LABELS[step]?.[operation] ?? operation
   return `${stepLabel} — ${operationLabel}`
+}
+
+// The step half of stepOperationLabel, standalone - for a grouped-by-step view (the
+// credits page) that needs a step-level heading separate from each operation row.
+export function stepLabel(step: Step): string {
+  return STEP_LABELS[step] ?? step
 }
 
 // Position of `step` in the project's overall progress scale, where intake

@@ -2,6 +2,7 @@ import type { AgentMessage } from '@/components/workbench/agent-message'
 import type { Tables } from '@/lib/database.types'
 import { describeToolActivity } from '@/lib/agent-activity-display'
 import { formatCost } from '@/lib/format-cost'
+import { formatCredits } from '@/lib/format-credits'
 
 type MessageRow = Tables<'messages'>
 
@@ -35,7 +36,8 @@ type MessageRow = Tables<'messages'>
 export function buildAgentMessages(
   rows: MessageRow[], // already ordered by created_at ascending
   shotNumberByKey: Map<string, number>,
-  costByMessageId: Map<string, number>
+  costByMessageId: Map<string, number>,
+  creditsByMessageId: Map<string, number>
 ): AgentMessage[] {
   const out: AgentMessage[] = []
 
@@ -119,7 +121,15 @@ export function buildAgentMessages(
       })
       const cost = costByMessageId.get(row.id) ?? 0
       if (cost > 0) {
-        out.push({ id: `${row.id}-cost`, kind: 'cost', content: '', amount: formatCost(cost), createdAt: closingReply.created_at })
+        const credits = creditsByMessageId.get(row.id)
+        out.push({
+          id: `${row.id}-cost`,
+          kind: 'cost',
+          content: '',
+          amount: formatCost(cost),
+          creditAmount: credits !== undefined ? `${formatCredits(credits)} cr` : undefined,
+          createdAt: closingReply.created_at,
+        })
       }
     } else {
       // Abandoned: no closing reply ever landed (the process died mid-flight). Cost is

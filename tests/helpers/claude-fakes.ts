@@ -3,13 +3,29 @@ import type { ClaudeGateway } from '../../src/lib/claude'
 
 type FakeResult = { message: Anthropic.Message; stopReason: string | null; requestId: string | null }
 
+type FakeUsage = {
+  input_tokens: number
+  output_tokens: number
+  cache_creation_input_tokens?: number
+  cache_read_input_tokens?: number
+}
+
+const DEFAULT_USAGE: FakeUsage = {
+  input_tokens: 10,
+  output_tokens: 10,
+  cache_creation_input_tokens: 0,
+  cache_read_input_tokens: 0,
+}
+
 /** A complete tool_use turn - the real gateway's success stop_reason. Defaults to
- * write_shots; pass toolName for a different tool (e.g. write_prompts). */
-export function successMessage(input: unknown, toolName = 'write_shots'): FakeResult {
+ * write_shots; pass toolName for a different tool (e.g. write_image_prompts). Every
+ * builder here defaults to a fixed 10/10 usage shape; pass `usage` to control the
+ * settled dollar cost precisely (e.g. a credit-ledger test pinning an exact charge). */
+export function successMessage(input: unknown, toolName = 'write_shots', usage: FakeUsage = DEFAULT_USAGE): FakeResult {
   return {
     message: {
       content: [{ type: 'tool_use', id: 'tu_test', name: toolName, input }],
-      usage: { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      usage,
     } as unknown as Anthropic.Message,
     stopReason: 'tool_use',
     requestId: 'req_test',
@@ -34,11 +50,11 @@ export function throwingGateway(error: Error | string = 'simulated Claude failur
 
 /** A text-only end_turn reply - no tool_use block. Every existing fake builds a
  * tool_use turn; this is what a loop's final, non-tool-calling response looks like. */
-export function textMessage(text: string): FakeResult {
+export function textMessage(text: string, usage: FakeUsage = DEFAULT_USAGE): FakeResult {
   return {
     message: {
       content: [{ type: 'text', text, citations: null }],
-      usage: { input_tokens: 10, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      usage,
     } as unknown as Anthropic.Message,
     stopReason: 'end_turn',
     requestId: 'req_test',

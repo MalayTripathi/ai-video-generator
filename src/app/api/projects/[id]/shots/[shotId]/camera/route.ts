@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClaudeGateway } from '@/lib/claude'
+import { mintAttemptId, recordFixedSpend } from '@/lib/credits/ledger'
 import { CAMERA_FIELD_NAMES, type CameraFieldName } from '@/lib/prompts/camera-derivation'
 import { runCameraDerivation } from './logic'
 
@@ -68,6 +69,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     fields,
     revertField,
     resetAll,
+    attemptId: mintAttemptId(),
+    recordFixedSpend,
   })
 
   if (result.ok) {

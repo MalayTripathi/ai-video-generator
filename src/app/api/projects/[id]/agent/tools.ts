@@ -6,7 +6,7 @@ import { stalenessFor, type ShotFieldChange } from '@/lib/shot-staleness'
 import { stepIndex } from '@/lib/config/pipeline'
 import { generateUniqueShotKeys, MAX_SHOT_KEY_INSERT_ATTEMPTS, isUniqueViolation } from '@/lib/shot-key'
 import { buildShotIndexBlock } from '@/lib/prompts/agent'
-import { runShotGeneration } from '@/app/api/projects/[id]/shots/logic'
+import { runShotGeneration, BILLED_BY_TURN } from '@/app/api/projects/[id]/shots/logic'
 import { voiceOverIsValid, EMPTY_VOICEOVER_MESSAGE } from '@/lib/shot-voiceover'
 import { visualDescriptionIsValid, EMPTY_VISUAL_DESCRIPTION_MESSAGE } from '@/lib/shot-visual-description'
 
@@ -29,7 +29,11 @@ export type AgentToolOutcome =
   // lock that card or refetch it - stable across order_index renumbering, unlike a
   // display number. Omitted when the tool/refusal concerns the whole list, not one shot
   // (regenerate_all_shots; a lock refusal before any shot was resolved).
-  | { kind: 'applied'; label: string; forModel: unknown; shotKey?: string }
+  // costUsd is set only by regenerate_all_shots, when its nested runShotGeneration
+  // call actually spent money (fresh call, not RECOVER) - the agent turn's own
+  // accumulator adds this into the turn's total ledger charge. No other tool ever
+  // sets it.
+  | { kind: 'applied'; label: string; forModel: unknown; shotKey?: string; costUsd?: number }
   | { kind: 'refused'; label: string; forModel: unknown; shotKey?: string }
   | { kind: 'errored'; message: string; forModel: unknown }
 
@@ -584,6 +588,10 @@ export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolCo
     }
   }
 
+  // Captured only when this call actually spends (a fresh Claude call, not RECOVER) -
+  // onSettled is never invoked on the RECOVER path, so this stays undefined there and
+  // contributes nothing below.
+  let costUsd: number | undefined
   const result = await runShotGeneration({
     gateway: ctx.gateway,
     supabase: ctx.supabase,
@@ -591,6 +599,17 @@ export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolCo
     userId: ctx.userId,
     retry: true,
     messageId: ctx.messageId,
+    onSettled: (usd) => {
+      costUsd = usd
+    },
+    // This call's cost is already folded into the agent turn's own dynamic agent_turn
+    // charge (see this tool's costUsd return, and agent/logic.ts's accumulator) -
+    // BILLED_BY_TURN tells runShotGeneration to skip its own fixed-price
+    // generate_shots row, so the same Claude call is never billed twice. attemptId is
+    // required but inert here - it's never read once BILLED_BY_TURN short-circuits
+    // the write.
+    attemptId: crypto.randomUUID(),
+    recordFixedSpend: BILLED_BY_TURN,
   })
 
   if (!result.ok) {
@@ -600,13 +619,15 @@ export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolCo
     return { kind: 'errored', message: result.error, forModel: { error: result.error } }
   }
 
-  // Cost is no longer embedded here: runAgentTurn's sumTurnCost sums ALL of this turn's
-  // usage rows (this generate_shots call plus the surrounding agent_turn iterations' own
-  // spend), not just this one operation's row - see docs/decisions.md.
+  // Cost is no longer embedded in forModel (the model never sees a dollar figure):
+  // runAgentTurn's own accumulator picks up costUsd above and folds it into the
+  // turn's single ledger charge, alongside the surrounding agent_turn iterations'
+  // own spend - see docs/decisions.md.
   return {
     kind: 'applied',
     label: 'Regenerated all shots',
     forModel: { shot_count: result.data.shots.length },
+    costUsd,
   }
 }
 

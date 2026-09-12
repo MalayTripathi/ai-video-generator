@@ -97,7 +97,7 @@ export async function settleUsage(params: {
   stopReason?: string | null
   /** The raw caught error (not a pre-stringified message) - identified by instanceof below, never by message text. */
   error?: unknown
-}): Promise<void> {
+}): Promise<number> {
   // quoted_cost is deliberately never assigned anywhere in this function, in any
   // branch below - it is the immutable snapshot reserveUsage wrote, and the whole
   // point of the calibration delta (estimated_cost - quoted_cost) on /usage is that
@@ -160,4 +160,11 @@ export async function settleUsage(params: {
     // deliberate signal for a call that died mid-flight.
     console.error(`[usage] SETTLE update failed for usage id=${params.usageId}`, error.message)
   }
+
+  // Hands back the cost this call just computed (or wrote to the DB) so a caller that
+  // needs the real settled dollar amount - e.g. an in-memory turn-cost accumulator -
+  // doesn't have to re-query `usage` to get it (see credit_ledger's independence from
+  // `usage`, CLAUDE.md). 0 in the unverifiable-throw branch, where no estimated_cost
+  // was ever computed here.
+  return typeof update.estimated_cost === 'number' ? update.estimated_cost : 0
 }

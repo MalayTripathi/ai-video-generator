@@ -14,6 +14,82 @@ export type Database = {
   }
   public: {
     Tables: {
+      credit_ledger: {
+        Row: {
+          attempt_id: string | null
+          created_at: string
+          dedupe_key: string
+          delta: number
+          id: string
+          kind: string
+          message_id: string | null
+          operation: string | null
+          price_version: string
+          pricing_mode: string | null
+          project_id: string | null
+          refunds_ledger_id: string | null
+          shot_key: string | null
+          step: string | null
+          user_id: string
+        }
+        Insert: {
+          attempt_id?: string | null
+          created_at?: string
+          dedupe_key: string
+          delta: number
+          id?: string
+          kind: string
+          message_id?: string | null
+          operation?: string | null
+          price_version: string
+          pricing_mode?: string | null
+          project_id?: string | null
+          refunds_ledger_id?: string | null
+          shot_key?: string | null
+          step?: string | null
+          user_id: string
+        }
+        Update: {
+          attempt_id?: string | null
+          created_at?: string
+          dedupe_key?: string
+          delta?: number
+          id?: string
+          kind?: string
+          message_id?: string | null
+          operation?: string | null
+          price_version?: string
+          pricing_mode?: string | null
+          project_id?: string | null
+          refunds_ledger_id?: string | null
+          shot_key?: string | null
+          step?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "credit_ledger_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_ledger_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "credit_ledger_refunds_ledger_id_fkey"
+            columns: ["refunds_ledger_id"]
+            isOneToOne: false
+            referencedRelation: "credit_ledger"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       elements: {
         Row: {
           created_at: string

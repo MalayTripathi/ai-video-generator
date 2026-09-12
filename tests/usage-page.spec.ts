@@ -25,7 +25,7 @@ test.describe('aggregateUsage', () => {
     const rows: UsageRow[] = [
       row({ step: 'workbench', operation: 'generate_shots', status: 'succeeded', estimated_cost: 0.02 }),
       row({ step: 'workbench', operation: 'generate_shots', status: 'failed', estimated_cost: 0.01 }),
-      row({ step: 'image_prompts', operation: 'write_prompts', status: 'succeeded', estimated_cost: 0.03 }),
+      row({ step: 'image_prompts', operation: 'write_image_prompts', status: 'succeeded', estimated_cost: 0.03 }),
     ]
 
     const aggregation = aggregateUsage(rows, [])
@@ -38,7 +38,7 @@ test.describe('aggregateUsage', () => {
     expect(workbenchRow?.sharePct).toBeCloseTo(50, 6)
     expect(workbenchRow?.label).toBe('Workbench — New shots')
 
-    const promptsRow = aggregation.byStep.find((r) => r.step === 'image_prompts' && r.operation === 'write_prompts')
+    const promptsRow = aggregation.byStep.find((r) => r.step === 'image_prompts' && r.operation === 'write_image_prompts')
     expect(promptsRow?.cost).toBeCloseTo(0.03, 6)
     expect(promptsRow?.callCount).toBe(1)
     expect(promptsRow?.sharePct).toBeCloseTo(50, 6)
@@ -144,7 +144,7 @@ test.describe('aggregateUsage', () => {
   test('calibration averages the delta and ratio across settled rows that have a quoted_cost', () => {
     const rows: UsageRow[] = [
       row({ step: 'workbench', operation: 'generate_shots', status: 'succeeded', estimated_cost: 0.03, quoted_cost: 0.02 }),
-      row({ step: 'image_prompts', operation: 'write_prompts', status: 'failed', estimated_cost: 0.01, quoted_cost: 0.02 }),
+      row({ step: 'image_prompts', operation: 'write_image_prompts', status: 'failed', estimated_cost: 0.01, quoted_cost: 0.02 }),
       // Excluded: no quoted_cost (pre-migration row).
       row({ step: 'workbench', operation: 'generate_shots', status: 'succeeded', estimated_cost: 0.5, quoted_cost: null }),
       // Excluded: not settled.
@@ -371,7 +371,40 @@ test.describe('rail usage spending', () => {
       await context.addCookies([cookie])
       await page.goto('/dashboard')
 
-      await expect(page.getByRole('link', { name: 'Usage spending' })).toContainText('$0.05')
+      // Split footer (Credits Task 8): the "Usage spending" label is no longer inside
+      // any link - only the two figures are their own click targets.
+      await expect(page.getByTestId('rail-dollar-spend')).toContainText('$0.05')
+    } finally {
+      await deleteTestUser(user.id)
+    }
+  })
+
+  // Credits Task 8, gates 6/7: the footer's dollar and credits figures each navigate
+  // to their own page; the label/caption text between them navigates nowhere; the
+  // rail's separate "Usage" nav item is untouched.
+  test('the footer\'s dollar figure opens /usage, the credits figure opens /credits, and the label opens neither', async ({
+    page,
+    context,
+  }) => {
+    const { user, cookie } = await createTestSession()
+    try {
+      await context.addCookies([cookie])
+      await page.goto('/dashboard')
+
+      await page.getByTestId('rail-credits-spend').click()
+      await expect(page).toHaveURL(/\/credits$/)
+
+      await page.goto('/dashboard')
+      await page.getByTestId('rail-dollar-spend').click()
+      await expect(page).toHaveURL(/\/usage$/)
+
+      await page.goto('/dashboard')
+      await page.getByText('Usage spending').click()
+      await expect(page).toHaveURL(/\/dashboard$/)
+
+      // The rail's separate nav item still opens the dollar page, unchanged.
+      await page.getByRole('link', { name: 'Usage' }).click()
+      await expect(page).toHaveURL(/\/usage$/)
     } finally {
       await deleteTestUser(user.id)
     }

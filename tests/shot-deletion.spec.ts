@@ -127,7 +127,7 @@ test.describe('shot deletion', () => {
       project_id: projectId,
       shot_id: shotId,
       step: 'image_prompts',
-      operation: 'write_prompts',
+      operation: 'write_image_prompts',
       estimated_cost: 0.42,
     })
 
