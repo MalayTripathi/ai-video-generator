@@ -35,6 +35,12 @@ are not lost.
   `visual-description-field.tsx`/`voiceover-field.tsx` now initialize their `touched`
   state from the persisted value's own validity, so a shot arriving from generation with
   an empty required field shows its error on load, with no click required first.
+- **`usage.shot_id` stores the shot's id, not `shot_key`, and goes `null` when the
+  shot is deleted** (e.g. a shot-list regeneration deletes and reinserts every shot
+  for the project). A `derive_camera` `usage` row therefore loses any link to which
+  shot it was for once that shot is gone - discovered backfilling the credit ledger,
+  where one such row's `shot_id` was already null with no way to recover which shot
+  it belonged to. Not fixed here.
 - **Shot generation's `runShotGeneration` (`shots/logic.ts`) has no guard on
   `project.source_text` being non-empty before the paid Claude call** - found while
   auditing every `gateway.createMessage` call site for the camera-derivation empty-input
