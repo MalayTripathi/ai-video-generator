@@ -286,6 +286,10 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
     // The exact under-charge a dropped generate_shots contribution would produce -
     // this is the assertion that would catch it going silently wrong.
     expect(ledgerRows[0].delta).not.toBe(-8)
+    // Task 6: the nested runShotGeneration call here passes BILLED_BY_TURN, not the
+    // real recordFixedSpend - this is what that wiring actually produces (no second,
+    // fixed-price row) rather than just what the row count implies.
+    expect(ledgerRows.some((r) => r.operation === 'generate_shots')).toBe(false)
   })
 
   test('a turn that fails on its very first call writes no ledger row', async () => {

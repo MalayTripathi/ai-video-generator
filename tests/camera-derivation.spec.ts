@@ -361,6 +361,8 @@ test.describe('camera field editing and re-derivation', () => {
       shotId,
       userId: user.id,
       fields: [...CAMERA_FIELD_NAMES],
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: async () => {},
     })
     expect(result.ok).toBe(true)
 
@@ -401,7 +403,9 @@ test.describe('camera field editing and re-derivation', () => {
         shotId,
         userId: user.id,
         fields: [...CAMERA_FIELD_NAMES],
-      })
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: async () => {},
+    })
 
       expect(result.ok).toBe(false)
       expect(gatewayCalled).toBe(false)
@@ -430,6 +434,8 @@ test.describe('camera field editing and re-derivation', () => {
       shotId,
       userId: user.id,
       fields: [...CAMERA_FIELD_NAMES],
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: async () => {},
     })
     expect(result.ok).toBe(false)
 
@@ -472,6 +478,8 @@ test.describe('camera field editing and re-derivation', () => {
       shotId,
       userId: user.id,
       fields: [...CAMERA_FIELD_NAMES],
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: async () => {},
     })
     expect(result.ok).toBe(false)
 
@@ -515,6 +523,8 @@ test.describe('camera field editing and re-derivation', () => {
       userId: user.id,
       fields: ['shot_size'],
       revertField: 'shot_size',
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: async () => {},
     })
     expect(result.ok).toBe(true)
 
@@ -568,6 +578,8 @@ test.describe('camera field editing and re-derivation', () => {
       shotId,
       userId: user.id,
       fields: ['shot_size'],
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: async () => {},
     })
     expect(result.ok).toBe(true)
 
@@ -619,6 +631,8 @@ test.describe('camera field editing and re-derivation', () => {
       shotId,
       userId: user.id,
       fields: ['shot_size'],
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: async () => {},
     })
     expect((await readShot(shotId))?.shot_size).toBe('close_up')
     expect((await readShot(shotId))?.shot_size_origin).toBe('override')
@@ -636,6 +650,8 @@ test.describe('camera field editing and re-derivation', () => {
       shotId,
       userId: user.id,
       fields: ['shot_size'],
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: async () => {},
     })
     expect((await readShot(shotId))?.shot_size).toBe('medium')
     expect((await readShot(shotId))?.shot_size_origin).toBe('derived')

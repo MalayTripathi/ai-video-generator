@@ -6,7 +6,7 @@ import { stalenessFor, type ShotFieldChange } from '@/lib/shot-staleness'
 import { stepIndex } from '@/lib/config/pipeline'
 import { generateUniqueShotKeys, MAX_SHOT_KEY_INSERT_ATTEMPTS, isUniqueViolation } from '@/lib/shot-key'
 import { buildShotIndexBlock } from '@/lib/prompts/agent'
-import { runShotGeneration } from '@/app/api/projects/[id]/shots/logic'
+import { runShotGeneration, BILLED_BY_TURN } from '@/app/api/projects/[id]/shots/logic'
 import { voiceOverIsValid, EMPTY_VOICEOVER_MESSAGE } from '@/lib/shot-voiceover'
 import { visualDescriptionIsValid, EMPTY_VISUAL_DESCRIPTION_MESSAGE } from '@/lib/shot-visual-description'
 
@@ -602,6 +602,14 @@ export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolCo
     onSettled: (usd) => {
       costUsd = usd
     },
+    // This call's cost is already folded into the agent turn's own dynamic agent_turn
+    // charge (see this tool's costUsd return, and agent/logic.ts's accumulator) -
+    // BILLED_BY_TURN tells runShotGeneration to skip its own fixed-price
+    // generate_shots row, so the same Claude call is never billed twice. attemptId is
+    // required but inert here - it's never read once BILLED_BY_TURN short-circuits
+    // the write.
+    attemptId: crypto.randomUUID(),
+    recordFixedSpend: BILLED_BY_TURN,
   })
 
   if (!result.ok) {

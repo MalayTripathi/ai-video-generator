@@ -13,6 +13,10 @@ import {
   settleUsage,
   AllowanceExceededError,
 } from '@/lib/usage'
+// Type-only, same reason as shots/logic.ts's identical import: a VALUE import here
+// would pull in credits/ledger.ts's transitive 'server-only' dependency and crash
+// tests/camera-derivation.spec.ts, which imports this module directly.
+import type { recordFixedSpend } from '@/lib/credits/ledger'
 import {
   CAMERA_FIELD_ENUM,
   CAMERA_DERIVATION_SYSTEM_PROMPT,
@@ -33,6 +37,7 @@ export type CameraDerivationResult =
 type ShotForCamera = {
   id: string
   project_id: string
+  shot_key: string
   visual_description: string | null
   shot_size: string | null
   shot_size_origin: string
@@ -53,7 +58,7 @@ async function loadOwnedShot(
   const { data } = await supabase
     .from('shots')
     .select(
-      'id, project_id, visual_description, shot_size, shot_size_origin, camera_angle, camera_angle_origin, camera_movement, camera_movement_origin, projects!inner(user_id)'
+      'id, project_id, shot_key, visual_description, shot_size, shot_size_origin, camera_angle, camera_angle_origin, camera_movement, camera_movement_origin, projects!inner(user_id)'
     )
     .eq('id', shotId)
     .eq('projects.user_id', userId)
@@ -93,8 +98,17 @@ export async function runCameraDerivation(params: {
   fields: CameraFieldName[]
   revertField?: CameraFieldName
   resetAll?: boolean
+  // No `generations` claim exists for this operation (see the docblock above), so
+  // there's no claim moment to mint alongside - minted by the caller (route.ts, the
+  // only place that can safely value-import credits/ledger.ts) at the start of the
+  // call instead. Required, not optional: this function has exactly one real caller
+  // and no legitimate reason to skip billing, so there's no "must not bill" case to
+  // support with an opt-out sentinel the way generate_shots needs one.
+  attemptId: string
+  recordFixedSpend: typeof recordFixedSpend
 }): Promise<CameraDerivationResult> {
-  const { gateway, supabase, projectId, shotId, userId, fields, revertField, resetAll } = params
+  const { gateway, supabase, projectId, shotId, userId, fields, revertField, resetAll, attemptId, recordFixedSpend } =
+    params
 
   const shot = await loadOwnedShot(supabase, shotId, userId)
   if (!shot || shot.project_id !== projectId) {
@@ -257,6 +271,30 @@ export async function runCameraDerivation(params: {
         stopReason: stopReasonForSettle,
         error: outcome.ok ? null : caughtError,
       })
+    }
+
+    // ledger. Settle then ledger - there's no claim/recover for this operation (see
+    // the docblock above), so this is the whole placement. Flat 3 credits regardless
+    // of how many of the three fields `applied` covers - quantity is a literal 1, not
+    // scaled by field count, per the fixed price for this operation. Gated on
+    // outcome.ok alone: a failed call (no usable value, truncation, or a thrown error)
+    // writes no row, matching generate_shots'/agent_turn's absorb-on-failure policy.
+    // Never thrown to the caller - a forced failure here must not fail the request.
+    if (outcome.ok) {
+      try {
+        await recordFixedSpend({
+          userId,
+          step: 'workbench',
+          operation: 'derive_camera',
+          quantity: 1,
+          attemptId,
+          projectId,
+          messageId: null,
+          shotKey: shot.shot_key,
+        })
+      } catch (err) {
+        console.error('[camera] ledger write failed', err)
+      }
     }
   }
 }

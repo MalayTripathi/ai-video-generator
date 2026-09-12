@@ -113,7 +113,7 @@ test.describe('Step 2 workbench - shot generation', () => {
       const projectId = await insertProject(user.id)
       const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
       expect(result.ok).toBe(true)
 
       const { data: shots, error: shotsError } = await admin
@@ -157,7 +157,7 @@ test.describe('Step 2 workbench - shot generation', () => {
       const projectId = await insertProject(user.id)
       const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
       expect(result.ok).toBe(true)
 
       const { data: elements, error: elementsError } = await admin
@@ -224,7 +224,7 @@ test.describe('Step 2 workbench - shot generation', () => {
       }
       const gateway: ClaudeGateway = { async createMessage() { return successMessage(input) } }
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
       expect(result.ok).toBe(true)
 
       const { data: shots, error: shotsError } = await admin
@@ -245,7 +245,7 @@ test.describe('Step 2 workbench - shot generation', () => {
       const projectId = await insertProject(user.id)
       const gateway = throwingGateway('simulated network failure')
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
       expect(result.ok).toBe(false)
 
       const { data: usageRows, error: usageError } = await admin
@@ -267,7 +267,7 @@ test.describe('Step 2 workbench - shot generation', () => {
       const projectId = await insertProject(user.id)
       const gateway = throwingGateway(new LiveCallsBlockedError())
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
       expect(result.ok).toBe(false)
 
       const { data: usageRows, error: usageError } = await admin
@@ -294,7 +294,7 @@ test.describe('Step 2 workbench - shot generation', () => {
       const projectId = await insertProject(user.id)
       const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
       expect(result.ok).toBe(true)
 
       const { data: usageRows, error: usageError } = await admin
@@ -321,7 +321,7 @@ test.describe('Step 2 workbench - shot generation', () => {
       const projectId = await insertProject(user.id)
       const gateway: ClaudeGateway = { async createMessage() { return truncatedMessage(RICH_INPUT) } }
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
       expect(result.ok).toBe(false)
       expect(result.status).toBe(422)
 
@@ -360,7 +360,7 @@ test.describe('Step 2 workbench - shot generation', () => {
 
       let result
       try {
-        result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+        result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
       } finally {
         console.warn = originalWarn
       }

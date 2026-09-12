@@ -98,7 +98,7 @@ test.describe('shot generation state machine', () => {
       await seedGeneration(projectId, { state: 'succeeded' })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
 
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -116,7 +116,7 @@ test.describe('shot generation state machine', () => {
       await seedGeneration(projectId, { state: 'generating', started_at: new Date().toISOString() })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
 
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -135,7 +135,7 @@ test.describe('shot generation state machine', () => {
       await seedGeneration(projectId, { state: 'generating', started_at: notYetStale })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
 
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -154,7 +154,7 @@ test.describe('shot generation state machine', () => {
       await seedGeneration(projectId, { state: 'generating', started_at: staleTimestamp })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
 
       expect(result.ok).toBe(true)
       expect(getCallCount()).toBe(1)
@@ -182,6 +182,8 @@ test.describe('shot generation state machine', () => {
         userId: user.id,
         retry: false,
         messageId: messageRow!.id,
+        attemptId: crypto.randomUUID(),
+        recordFixedSpend: async () => {},
       })
 
       expect(result.ok).toBe(true)
@@ -202,7 +204,7 @@ test.describe('shot generation state machine', () => {
       await seedGeneration(projectId, { state: 'failed' })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
 
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -220,7 +222,7 @@ test.describe('shot generation state machine', () => {
       await seedGeneration(projectId, { state: 'failed', payload: null })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: true })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: true, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
 
       expect(result.ok).toBe(true)
       expect(getCallCount()).toBe(1)
@@ -245,7 +247,7 @@ test.describe('shot generation state machine', () => {
 
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: true })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: true, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
 
       expect(result.ok).toBe(true)
       // The critical assertion: RECOVER never touches the gateway, since Claude already
@@ -270,7 +272,7 @@ test.describe('shot generation state machine', () => {
       const projectId = await insertProject(user.id)
       const { gateway } = countingGateway(truncatedMessage(VALID_WRITE_SHOTS_INPUT))
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
 
       expect(result.ok).toBe(false)
       if (!result.ok) expect(result.status).toBe(422)
@@ -293,7 +295,7 @@ test.describe('shot generation state machine', () => {
       const projectId = await insertProject(user.id)
       const { gateway } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
 
       expect(result.ok).toBe(true)
       if (result.ok) {
@@ -313,7 +315,7 @@ test.describe('shot generation state machine', () => {
       const projectId = await insertProject(user.id)
       const gateway = throwingGateway()
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false })
+      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
 
       expect(result.ok).toBe(false)
       if (!result.ok) expect(result.status).toBe(500)
@@ -330,8 +332,8 @@ test.describe('shot generation state machine', () => {
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
       const [first, second] = await Promise.all([
-        runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false }),
-        runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false }),
+        runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} }),
+        runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} }),
       ])
 
       const results = [first, second]
