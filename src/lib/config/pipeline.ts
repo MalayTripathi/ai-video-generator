@@ -87,6 +87,12 @@ export function stepOperationLabel(step: Step, operation: Operation): string {
   return `${stepLabel} — ${operationLabel}`
 }
 
+// The step half of stepOperationLabel, standalone - for a grouped-by-step view (the
+// credits page) that needs a step-level heading separate from each operation row.
+export function stepLabel(step: Step): string {
+  return STEP_LABELS[step] ?? step
+}
+
 // Position of `step` in the project's overall progress scale, where intake
 // occupies the conceptual first slot (1) without being a member of Step -
 // see CLAUDE.md: intake is a pre-project screen, never a tracked step. This

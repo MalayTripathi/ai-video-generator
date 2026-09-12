@@ -56,8 +56,11 @@ export type AgentStreamEvent =
   // (max_tokens, a lock/claim/duplicate short-circuit) - there is no longer a separate
   // structured field (finish's old `message`) it could ever diverge from, so the client
   // can always finalize a streaming bubble in place instead of needing a signal for
-  // whether to append a fresh one. See docs/decisions.md.
-  | { type: 'settled'; content: string; cost: number }
+  // whether to append a fresh one. See docs/decisions.md. `messageId` is the triggering
+  // user message's own row id - the same anchor `usage.message_id` and
+  // `credit_ledger.message_id` both use for this turn - so the client can look up the
+  // turn's real credit spend (Credits Task 8) without recomputing it from `cost`.
+  | { type: 'settled'; content: string; cost: number; messageId: string }
 
 export type AgentTurnResult =
   | { ok: true; status: 200; message: MessageRow }
@@ -167,7 +170,7 @@ export async function runAgentTurn(params: {
       // Replaying a resend's own previously-persisted reply - nothing streams live for
       // a replay (this returns before ever calling Claude), so there is no existing
       // bubble for the client to reconcile against.
-      emit({ type: 'settled', content: reply.content, cost })
+      emit({ type: 'settled', content: reply.content, cost, messageId: userMsgResult.message.id })
       return { ok: true, status: 200, message: reply }
     }
     // The original attempt hasn't reached its own SETTLE yet - a concurrent resend, not
@@ -190,7 +193,7 @@ export async function runAgentTurn(params: {
     const assistantRow = await insertAssistantReply(supabase, projectId, clientId, READ_ONLY_LOCK_REPLY)
     // No reserveUsage call has happened yet at this short-circuit - sumTurnCost is 0.
     // Claude was never called, so nothing streamed live.
-    emit({ type: 'settled', content: READ_ONLY_LOCK_REPLY, cost: 0 })
+    emit({ type: 'settled', content: READ_ONLY_LOCK_REPLY, cost: 0, messageId: userMessage.id })
     return { ok: true, status: 200, message: assistantRow }
   }
 
@@ -216,7 +219,7 @@ export async function runAgentTurn(params: {
     // reach the client the same way the read-only-lock short-circuit above does, or
     // the stream closes with zero frames and the client's own "no settled event ever
     // arrived" fallback renders it as a connection drop instead (see docs/decisions.md).
-    emit({ type: 'settled', content: errorReply, cost: 0 })
+    emit({ type: 'settled', content: errorReply, cost: 0, messageId: userMessage.id })
     return { ok: false, status: 500, error: claim.message }
   }
   if (claim.outcome === 'blocked') {
@@ -228,7 +231,7 @@ export async function runAgentTurn(params: {
     await insertAssistantReply(supabase, projectId, clientId, blockedReply)
     // Same reasoning as the 'error' branch above - emit so this known refusal renders
     // correctly on the first attempt instead of as a dropped connection.
-    emit({ type: 'settled', content: blockedReply, cost: 0 })
+    emit({ type: 'settled', content: blockedReply, cost: 0, messageId: userMessage.id })
     return {
       ok: false,
       status: 409,
@@ -529,7 +532,7 @@ export async function runAgentTurn(params: {
     // the leftover-usageIds force-settle loop just above guarantees that, for both the
     // happy path and the caught-exception path, since both funnel through this finally.
     const cost = await sumTurnCost(supabase, userMessage.id)
-    emit({ type: 'settled', content: assistantContent ?? 'Done.', cost })
+    emit({ type: 'settled', content: assistantContent ?? 'Done.', cost, messageId: userMessage.id })
   }
 
   return outcome

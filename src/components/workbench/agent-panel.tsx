@@ -7,6 +7,7 @@ import { useShots } from '@/app/(app)/projects/[id]/workbench/_components/shots-
 import { useAgentTurn } from '@/app/(app)/projects/[id]/workbench/_components/use-agent-turn'
 import { describeToolActivity } from '@/lib/agent-activity-display'
 import { formatCost } from '@/lib/format-cost'
+import { formatCredits } from '@/lib/format-credits'
 
 const EXAMPLE_PROMPTS = ['Make shot 3 shorter', 'Add a shot about the artisans', 'Rewrite everything, colder tone']
 
@@ -136,7 +137,7 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
           },
         ])
       },
-      onSettled: (finalContent, dropped, cost) => {
+      onSettled: async (finalContent, dropped, cost, messageId) => {
         clearPlaceholder()
         setMessages((prev) => {
           if (dropped) {
@@ -169,9 +170,26 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
         // The turn's real, settled spend - never sourced from the model's own prose.
         // Shown once, below this turn's last line, only when there was any (a dropped
         // connection has no confirmed-spent figure, and a zero-spend turn has nothing
-        // worth reporting).
+        // worth reporting). The credit half is looked up (never recomputed from `cost`)
+        // and resolved BEFORE the message is appended, so both figures land together
+        // rather than the credit figure filling in a beat later.
         if (cost !== null && cost > 0) {
-          appendMessages([{ id: crypto.randomUUID(), kind: 'cost', content: '', amount: formatCost(cost), createdAt: nowIso() }])
+          let creditAmount: string | undefined
+          if (messageId) {
+            try {
+              const res = await fetch(`/api/projects/${projectId}/agent/turn-credits?messageId=${messageId}`)
+              if (res.ok) {
+                const { credits } = (await res.json()) as { credits: number | null }
+                if (credits !== null) creditAmount = `${formatCredits(credits)} cr`
+              }
+            } catch {
+              // A failed lookup must never block the turn's own settle handling - the
+              // cost line just renders dollar-only, same as a turn with no ledger row.
+            }
+          }
+          appendMessages([
+            { id: crypto.randomUUID(), kind: 'cost', content: '', amount: formatCost(cost), creditAmount, createdAt: nowIso() },
+          ])
         }
         unlockAllShots()
         if (touchedKeys.length > 0) markShotsTouched(touchedKeys)

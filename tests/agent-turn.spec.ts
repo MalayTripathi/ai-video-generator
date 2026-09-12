@@ -1579,12 +1579,17 @@ test.describe('runAgentTurn', () => {
 
     // A refusal is a known outcome, not a dropped connection - it must reach the client
     // as a normal settled event on the FIRST attempt, not only after a Retry resend.
-    expect(events).toContainEqual({
-      type: 'settled',
-      content:
-        'Another turn was already running for this project when this was sent, so nothing was changed. Please try again.',
-      cost: 0,
-    })
+    // objectContaining, not an exact match: `messageId` (Credits Task 8) is a real,
+    // freshly-generated uuid this test has no independent way to predict - the point
+    // here is content/cost, not that id.
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'settled',
+        content:
+          'Another turn was already running for this project when this was sent, so nothing was changed. Please try again.',
+        cost: 0,
+      })
+    )
 
     // Refused before any claim, spend, or model call - it must cost nothing and must
     // not create a second generations row (the pre-seeded row is the only one).

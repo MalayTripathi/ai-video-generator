@@ -3,8 +3,10 @@
 // tool_name columns) and reconstruct on reload with a shot number resolved fresh at read
 // time, never a stale one baked in at write time - see build-agent-messages.ts. cost is
 // never a `messages` row - it's always re-derived from `usage` (live: the `settled` SSE
-// event; reload: summed per turn) and only ever rendered when > 0. Only `tool_running`
-// and `error` (as a live-turn notification) stay live-only.
+// event; reload: summed per turn) and only ever rendered when > 0. Its credit half
+// (`creditAmount`) is likewise always re-derived from `credit_ledger`, never computed
+// from the dollar figure - see Credits Task 8. Only `tool_running` and `error` (as a
+// live-turn notification) stay live-only.
 export type AgentMessageKind = 'user' | 'agent' | 'tool_done' | 'tool_running' | 'cost' | 'refusal' | 'error'
 
 export type AgentMessage = {
@@ -16,6 +18,9 @@ export type AgentMessage = {
   streaming?: boolean
   // cost only - already formatted ("$0.42"); the label above it is `content`, when set.
   amount?: string
+  // cost only - already formatted ("17 cr"); omitted (not "0 cr") when the turn has no
+  // matching credit_ledger row (a failed or zero-cost turn) - see Credits Task 8.
+  creditAmount?: string
   onRetry?: () => void
   onStop?: () => void
   // error only, server-seeded (reload) rows only: the abandoned-turn's original content/
@@ -110,7 +115,10 @@ export function AgentMessageItem({ message }: { message: AgentMessage }) {
           {message.content && <span className="text-small text-text-secondary">{message.content}</span>}
           <span className="flex items-baseline justify-between gap-rc-sm rounded-badge bg-bg-inset px-[10px] py-[7px]">
             <span className="text-meta text-text-tertiary">Cost of this turn</span>
-            <span className="flex-none font-mono text-small font-medium text-text-primary">{message.amount}</span>
+            <span className="flex-none font-mono text-small font-medium text-text-primary">
+              {message.amount}
+              {message.creditAmount ? ` / ${message.creditAmount}` : ''}
+            </span>
           </span>
         </div>
       )

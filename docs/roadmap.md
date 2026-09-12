@@ -41,6 +41,12 @@ are not lost.
   shot it was for once that shot is gone - discovered backfilling the credit ledger,
   where one such row's `shot_id` was already null with no way to recover which shot
   it belonged to. Not fixed here.
+- **Suite flakiness under parallel execution.** `agent-chat-panel.spec.ts` and
+  `shot-editing.spec.ts` both fail intermittently when the full suite runs
+  `fullyParallel`, and pass reliably run in isolation. Pre-existing, unrelated to
+  the credit ledger. Worth recording because it means "the suite is green" is
+  currently a judgement call for whoever reports it — a failure in either file
+  needs a solo re-run before it's counted as a real regression.
 - **Shot generation's `runShotGeneration` (`shots/logic.ts`) has no guard on
   `project.source_text` being non-empty before the paid Claude call** - found while
   auditing every `gateway.createMessage` call site for the camera-derivation empty-input
@@ -82,6 +88,18 @@ are not lost.
   mechanism is wired.
 - `updateProjectTitle` (`src/app/(app)/projects/[id]/actions.ts`) is unused, pending a
   workbench title editor.
+- **Credit gating is not implemented.** No balance check refuses any operation today —
+  every priced call fires regardless of the caller's balance, and `getBalance()` has no
+  caller outside `/credits`. Deferred by explicit instruction; lands with Step 4.
+  **Per-iteration balance re-checking** for a multi-iteration action (an agent turn can
+  make up to 8 Claude calls per user action) is part of the same deferred work — Step 4
+  is the first *action* built on this pipeline whose single user action fires many paid
+  calls in sequence, so it's the first place a gate checked once at the start of the
+  action, rather than before every call inside it, would actually leave a real gap.
+- **The dollar Usage page has no admin gate yet.** Dollars are development
+  instrumentation; the page will eventually move behind an admin-only check. The credits
+  page was deliberately built as a separate route (`/credits` vs `/usage`) specifically
+  so that move touches nothing on the credits side.
 
 ## Deferred decisions
 
@@ -94,6 +112,19 @@ are not lost.
   itself, and per-model cost config.
 - **Project-lifecycle `status` design.** `projects.status` is unconstrained text and
   `/prompts` no longer writes `'in_progress'`; no substitute vocabulary has been chosen.
+- **Failed-call credit charge policy is undecided.** Today a failed call writes no
+  `credit_ledger` row even when real provider cost was already incurred (see
+  docs/decisions.md). Whether that stays the permanent policy, or failed calls should be
+  charged (in full, partial, or at a flat penalty), has not been decided.
+- **Every credit price except `generate_shots` and `derive_camera` is a placeholder.**
+  `PRICE_TABLE` (`src/lib/config/credits.ts`) marks each one `// placeholder` in a
+  comment: `generate_image` at both `workbench` and `storyboard`, `write_image_prompts`,
+  `voiceover`, `background_music`, `write_video_prompts`, and `merge`. Recalibration
+  needs real measured dollar cost from Steps 3–7, the same way `generate_shots`/
+  `derive_camera` were calibrated from measured Step 2 data. `generate_clip` has no
+  entry at all, deliberately — the most expensive action in the product, left absent so
+  a call site fails loudly (`MissingCreditPriceError`) rather than shipping a
+  placeholder number that risks anchoring the real price badly.
 - **Whether to inline camera enum values into the agent's shot index.** Today the index
   (`buildShotIndexBlock`) only flags whether a camera field is overridden, never its actual
   `shot_size`/`camera_angle`/`camera_movement` value — a camera-only agent request still

@@ -83,6 +83,15 @@ async function sendMessage(page: Page, content: string) {
   await page.getByRole('button', { name: 'Send' }).click()
 }
 
+// Mocks Credits Task 8's turn-credits lookup route, returning a fixed credits figure
+// (or null, for "no matching ledger row") regardless of which messageId is requested -
+// these tests only ever have one turn in flight at a time.
+async function mockTurnCreditsRoute(page: Page, credits: number | null) {
+  await page.route('**/api/projects/*/agent/turn-credits*', async (route: Route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ credits }) })
+  })
+}
+
 test.describe('agent chat panel', () => {
   test('mints a client_id once and reuses it on retry', async ({ page }) => {
     const projectId = await seedProject()
@@ -158,6 +167,43 @@ test.describe('agent chat panel', () => {
     await expect(cost).toBeVisible()
     await expect(cost.getByText('$0.420')).toBeVisible()
     await expect(cost.getByText('Cost of this turn')).toBeVisible()
+  })
+
+  test('the cost line appends the credit figure looked up from the turn\'s credit_ledger row, matched on message_id', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId)
+    await mockTurnCreditsRoute(page, 17)
+    await mockAgentRoute(page, [
+      { type: 'turn_started' },
+      { type: 'settled', content: 'Done.', cost: 0.42, messageId: 'msg-1' },
+    ])
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await sendMessage(page, 'tighten shot 1')
+
+    const cost = page.locator('[data-message-kind="cost"]')
+    await expect(cost).toBeVisible()
+    await expect(cost.getByText('$0.420 / 17 cr')).toBeVisible()
+  })
+
+  test('a turn with no matching credit_ledger row renders the dollar figure alone, never "0 cr"', async ({ page }) => {
+    const projectId = await seedProject()
+    await seedShot(projectId)
+    await mockTurnCreditsRoute(page, null)
+    await mockAgentRoute(page, [
+      { type: 'turn_started' },
+      { type: 'settled', content: 'Done.', cost: 0.42, messageId: 'msg-1' },
+    ])
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await sendMessage(page, 'tighten shot 1')
+
+    const cost = page.locator('[data-message-kind="cost"]')
+    await expect(cost).toBeVisible()
+    await expect(cost.getByText('$0.420', { exact: true })).toBeVisible()
+    await expect(cost.getByText('cr')).toHaveCount(0)
   })
 
   test('a zero-cost settle renders no cost line at all', async ({ page }) => {

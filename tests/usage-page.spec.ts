@@ -371,7 +371,40 @@ test.describe('rail usage spending', () => {
       await context.addCookies([cookie])
       await page.goto('/dashboard')
 
-      await expect(page.getByRole('link', { name: 'Usage spending' })).toContainText('$0.05')
+      // Split footer (Credits Task 8): the "Usage spending" label is no longer inside
+      // any link - only the two figures are their own click targets.
+      await expect(page.getByTestId('rail-dollar-spend')).toContainText('$0.05')
+    } finally {
+      await deleteTestUser(user.id)
+    }
+  })
+
+  // Credits Task 8, gates 6/7: the footer's dollar and credits figures each navigate
+  // to their own page; the label/caption text between them navigates nowhere; the
+  // rail's separate "Usage" nav item is untouched.
+  test('the footer\'s dollar figure opens /usage, the credits figure opens /credits, and the label opens neither', async ({
+    page,
+    context,
+  }) => {
+    const { user, cookie } = await createTestSession()
+    try {
+      await context.addCookies([cookie])
+      await page.goto('/dashboard')
+
+      await page.getByTestId('rail-credits-spend').click()
+      await expect(page).toHaveURL(/\/credits$/)
+
+      await page.goto('/dashboard')
+      await page.getByTestId('rail-dollar-spend').click()
+      await expect(page).toHaveURL(/\/usage$/)
+
+      await page.goto('/dashboard')
+      await page.getByText('Usage spending').click()
+      await expect(page).toHaveURL(/\/dashboard$/)
+
+      // The rail's separate nav item still opens the dollar page, unchanged.
+      await page.getByRole('link', { name: 'Usage' }).click()
+      await expect(page).toHaveURL(/\/usage$/)
     } finally {
       await deleteTestUser(user.id)
     }

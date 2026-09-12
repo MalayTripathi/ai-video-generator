@@ -1053,3 +1053,116 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   lived as much in the prompt's wording as the schema's. See
   `tests/agent-turn.spec.ts`'s `handleInsertShot` describe block (the new
   `position: 'end'`/`'start'`-with-no-anchor and out-of-range tests).
+
+## Credit ledger
+
+- **No reservation, no hold — the gate (once built) will be quote-then-check, not
+  claim-then-release.** `usage`'s reserve/settle pattern exists because a `pending`
+  row must count toward `assertWithinAllowance`'s sum while a call is in flight. A
+  credit balance gate doesn't need that: it will compare the same kind of worst-case
+  quote against the current balance immediately before firing a call, and write
+  nothing if the call is refused. A hold (insert a negative row up front, reverse it
+  if the call never settles) was considered and rejected — the leak path is exactly
+  the one `usage`'s own stuck-`pending` rows already demonstrate happens in
+  practice: settle not running (a crash, an unhandled throw before the ledger
+  write). A hold that isn't released on that path locks part of a balance forever,
+  which is worse than the overspend it exists to prevent. This describes the shape
+  gating will take, not something operative today — see docs/roadmap.md, gating
+  itself is unbuilt.
+- **Concurrent overdraw is accepted, bounded by one worst-case quote.** Two actions
+  can both pass a balance gate and jointly overdraw before either settles — the same
+  race `assertWithinAllowance` already accepts for dollar spend. A queue in front of
+  every priced call was rejected: it would stall every single paid operation in the
+  product to close a race that is rare and bounded. A clamp (silently capping the
+  charge to whatever balance remains) was rejected too: it would make a row's
+  `delta` no longer equal the operation's real price, breaking the guarantee that a
+  row's charge is reconstructable from `(step, operation, quantity, price_version)`
+  alone — the same reconstructability `price_version` exists to protect.
+- **No `balance_after` or `seq` column.** Balance is `SUM(delta)` over a user's
+  rows, recomputed on every read, never a stored running total or a per-row sequence
+  number (`getBalance`, `src/lib/credits/ledger.ts`). A stored total is a second
+  source of truth that drifts the moment two spends race: unlike `generations`,
+  `credit_ledger` has no claim/lock serializing writes, so two concurrent inserts
+  computing `balance_after` from the same stale read would both write a wrong one.
+  `SUM(delta)` has no such race — it's correct regardless of insert order or
+  concurrency, at the cost of a full per-user table scan the same docblock already
+  flags as needing a real aggregate or materialized total once row counts grow.
+- **Failed calls write no ledger row — provisional, not a considered final answer.**
+  `agent/logic.ts`, `shots/logic.ts`, and `camera/logic.ts` each gate their ledger
+  write on `outcome.ok`. A failed call may already have incurred real, `usage`-
+  recorded provider cost, but is never charged in credits — the code has no way to
+  distinguish "failed before any billable call" from "failed after several," and
+  errs toward not charging rather than over-charging. Each site's own comment flags
+  this as provisional pending a real refund/failed-charge policy; see docs/roadmap.md.
+- **`generate_shots` prices fixed on the button path, dynamic on the agent path —
+  same operation, two prices, deliberately.** A real captured turn that included a
+  `regenerate_all_shots` call measured three `usage` rows sharing one `message_id`:
+  agent_turn $0.003969 (969in+600out), generate_shots $0.008467 (467in+1600out),
+  agent_turn $0.003967 (967in+600out) — Haiku dev rates, $1/M input, $5/M output —
+  summing to $0.016403, rounded up to 17 credits (`tests/agent-turn-ledger.spec.ts`'s
+  "regenerates the whole shot list mid-turn" test). The identical `write_shots` call
+  made from the workbench button prices at a flat 2 credits/shot instead
+  (`PRICE_TABLE`) — the agent path measurably costs more per call because it carries
+  the full conversation into the request, on top of the shot-generation prompt
+  itself. Charging the agent-triggered call at the button's fixed per-shot rate
+  would misreport whichever trigger the rate wasn't calibrated against, so the whole
+  turn is billed once, dynamically, as a single `agent_turn` charge, and the nested
+  `runShotGeneration` call is wired with the `BILLED_BY_TURN` sentinel instead of a
+  second, fixed-price row.
+- **`BILLED_BY_TURN` instead of an optional parameter.** `recordFixedSpend` is a
+  required parameter on `runShotGeneration`, not an optional one that defaults to
+  "skip billing" — an optional parameter can't distinguish a caller that
+  deliberately opted out from one that simply forgot to wire billing; both would be
+  `undefined` and look identical. `BILLED_BY_TURN` (`shots/logic.ts`) is a distinct
+  exported sentinel the one legitimate opt-out caller (`agent/tools.ts`'s
+  `regenerate_all_shots`, billed instead via the turn's own `agent_turn` charge
+  above) must pass explicitly. `tests/wiring-identity.spec.ts` asserts the sentinel,
+  not the real function, sits in that one call's `recordFixedSpend` position, and
+  asserts the real function everywhere else — a source-level check, not a runtime
+  one, for the reason below.
+- **Wiring identity is checked at the source level, not at runtime.** A route that
+  keeps `attemptId`/`recordFixedSpend`/`recordDynamicSpend` as required parameters
+  but wires a type-compatible wrong function (a same-shape stub or no-op) would pass
+  `tsc` and stay green while silently billing nothing in production —
+  `tests/wiring-identity.spec.ts` exists to close exactly that gap. A runtime
+  identity check (import the route module in a child process, compare function
+  references directly) was built and verified working this session, but only after
+  adding Node's `--experimental-transform-types` flag (default type-stripping can't
+  handle transitively-imported constructor-parameter-property syntax) plus two new
+  resolver rules in the shared `tests/helpers/ts-alias-loader.mjs` that every spec
+  depends on. Rejected per explicit direction: an experimental flag and extra rules
+  in a shared loader is more risk than this one gate is worth. The chosen approach
+  instead greps the stripped source for the real identifier in the actual call-site
+  argument position — it cannot catch a same-named local shadow of an imported
+  binding, but redeclaring a top-level const over an import binding is a
+  `SyntaxError` in this codebase's module style, not a realistic mutation. Do not
+  "improve" this back to the runtime version without re-reading why it was dropped.
+- **`derive_camera` has no `generations` claim, so its billing idempotency is the
+  ledger's own dedupe key, not a claim state.** The reason there is no claim row at
+  all is a `generations` concern, not a billing one — see "Why `derive_camera` has
+  no claim row" above. The billing consequence: every other priced operation gets
+  its "only one attempt can be in flight at a time" property for free from
+  `claimGeneration`'s unique-index lock; `derive_camera` gets none of that, so
+  `recordFixedSpend`'s `dedupe_key` (`operation:attempt_id`, minted fresh per call by
+  `camera/route.ts`) is the entire duplicate-prevention mechanism for this
+  operation's ledger row.
+- **`shot_key`, not `shot_id`, on `credit_ledger`.** Same precedent as
+  `messages.shot_key` (`20260908110402_add_messages_kind_shot_key_tool_name.sql`):
+  a shot can be deleted (individually, or wholesale by a shot-list regeneration)
+  long after credits were spent deriving its camera fields, and a ledger row must
+  outlive the row it paid for. `usage.shot_id` stores the id instead and goes
+  `null` the moment the shot is gone — a real gap, discovered backfilling this
+  ledger (see docs/roadmap.md's `usage.shot_id` bug entry) — `credit_ledger` was
+  built to not repeat it.
+- **The backfill's dedupe keys were deterministic, derived from the source `usage`
+  row, not freshly minted.** `mintAttemptId()` returns a fresh random uuid on every
+  call — correct for a live write, where each call is a genuinely new attempt, but
+  wrong for a one-off backfill script: a random key means re-running the script
+  after a partial failure re-inserts every row the first pass already wrote,
+  double-crediting (or double-debiting) every migrated user. A key derived from the
+  source `usage` row's own id instead makes every insert attempt for that row
+  collide on `credit_ledger`'s `(user_id, dedupe_key)` unique index on a re-run,
+  so a retry is a no-op rather than a double charge. (The backfill itself was a
+  one-off script, run once and not committed to this repository — this describes
+  the mechanism its dedupe keys had to satisfy given the schema, not a read of the
+  script's own source.)

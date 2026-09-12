@@ -21,8 +21,10 @@ export type AgentTurnHandlers = {
   // server (never from prose) when `dropped` is false; null when `dropped` is true -
   // there is no confirmed-spent figure for a connection that broke before a real
   // `settled` event arrived (same reasoning as an abandoned historical turn on reload).
-  // See logic.ts's AgentStreamEvent.
-  onSettled: (content: string, dropped: boolean, cost: number | null) => void
+  // `messageId` is the triggering user message's id (Credits Task 8: used to look up
+  // this turn's real credit_ledger row) - null exactly when `dropped` is true, for the
+  // same reason `cost` is null then. See logic.ts's AgentStreamEvent.
+  onSettled: (content: string, dropped: boolean, cost: number | null, messageId: string | null) => void
 }
 
 const DROPPED_STREAM_MESSAGE = "The connection dropped before this finished. Nothing further was changed - try again."
@@ -103,7 +105,7 @@ export function useAgentTurn(projectId: string) {
                 break
               case 'settled':
                 sawSettled = true
-                handlers.onSettled(event.content, false, event.cost)
+                handlers.onSettled(event.content, false, event.cost, event.messageId)
                 break
             }
           }
@@ -112,7 +114,7 @@ export function useAgentTurn(projectId: string) {
         // A throw here (network failure, non-OK response, an aborted Stop) never carries
         // useful server content - the dropped-stream case below covers it uniformly.
       } finally {
-        if (!sawSettled) handlers.onSettled(DROPPED_STREAM_MESSAGE, true, null)
+        if (!sawSettled) handlers.onSettled(DROPPED_STREAM_MESSAGE, true, null, null)
         abortRef.current = null
         setIsRunning(false)
       }

@@ -81,6 +81,7 @@ export default async function WorkbenchPage({
     { data: messageRows },
     { data: generation },
     { data: usageRows },
+    { data: creditLedgerRows },
   ] = await Promise.all([
     supabase
       .from('shots')
@@ -111,6 +112,15 @@ export default async function WorkbenchPage({
     // reservations are never confirmed spent, and build-agent-messages.ts omits their
     // cost line unconditionally regardless of what this map holds for that turn anyway.
     supabase.from('usage').select('message_id, estimated_cost').eq('project_id', projectId).neq('status', 'pending'),
+    // The turn's real, settled credit spend - never usage, never recomputed from the
+    // dollar figure (Credits Task 8). Scoped to agent_turn spend rows only; this cost
+    // line has never shown anything but the agent turn's own charge.
+    supabase
+      .from('credit_ledger')
+      .select('message_id, delta')
+      .eq('project_id', projectId)
+      .eq('kind', 'spend')
+      .eq('operation', 'agent_turn'),
   ])
 
   const elementsById = new Map((elementsRows ?? []).map((el) => [el.id, el]))
@@ -151,7 +161,12 @@ export default async function WorkbenchPage({
     if (!u.message_id) continue
     costByMessageId.set(u.message_id, (costByMessageId.get(u.message_id) ?? 0) + (u.estimated_cost ?? 0))
   }
-  const agentMessages = buildAgentMessages(messageRows ?? [], shotNumberByKey, costByMessageId)
+  const creditsByMessageId = new Map<string, number>()
+  for (const r of creditLedgerRows ?? []) {
+    if (!r.message_id) continue
+    creditsByMessageId.set(r.message_id, (creditsByMessageId.get(r.message_id) ?? 0) + -r.delta)
+  }
+  const agentMessages = buildAgentMessages(messageRows ?? [], shotNumberByKey, costByMessageId, creditsByMessageId)
 
   const hasPendingPayload = generation?.payload != null
   const estimatedCredits =
