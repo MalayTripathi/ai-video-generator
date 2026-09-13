@@ -12,6 +12,17 @@ import {
   type GetProjectElementsResult,
   type ResignElementImageResult,
 } from '@/lib/elements/read'
+import {
+  createElementForUser,
+  updateElementNameForUser,
+  updateElementDescriptionForUser,
+  deleteElementForUser,
+  type ElementCreateResult,
+  type ElementNameSaveResult,
+  type ElementDescriptionSaveResult,
+  type ElementDeleteResult,
+} from '@/lib/elements/write'
+import type { ElementType } from '@/lib/config/enums'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -457,4 +468,52 @@ export async function resignElementReferenceImage(
   if (!user) return { success: false, error: 'Not authenticated' }
 
   return resignElementReferenceImageForUser(supabase, projectId, path, user.id)
+}
+
+export async function createElement(
+  projectId: string,
+  name: string,
+  description: string | null,
+  type: ElementType
+): Promise<ElementCreateResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return createElementForUser(supabase, projectId, name, description, type, user.id)
+}
+
+export async function updateElementName(elementId: string, name: string): Promise<ElementNameSaveResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return updateElementNameForUser(supabase, elementId, name, user.id)
+}
+
+export async function updateElementDescription(
+  elementId: string,
+  description: string | null
+): Promise<ElementDescriptionSaveResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return updateElementDescriptionForUser(supabase, elementId, description, user.id)
+}
+
+export async function deleteElement(elementId: string): Promise<ElementDeleteResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return deleteElementForUser(supabase, elementId, user.id)
 }
