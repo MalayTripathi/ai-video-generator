@@ -6,6 +6,12 @@ import { stalenessFor } from '@/lib/shot-staleness'
 import { stepIndex } from '@/lib/config/pipeline'
 import { voiceOverIsValid, EMPTY_VOICEOVER_MESSAGE } from '@/lib/shot-voiceover'
 import { visualDescriptionIsValid, EMPTY_VISUAL_DESCRIPTION_MESSAGE } from '@/lib/shot-visual-description'
+import {
+  getProjectElementsForUser,
+  resignElementReferenceImageForUser,
+  type GetProjectElementsResult,
+  type ResignElementImageResult,
+} from '@/lib/elements/read'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -424,4 +430,31 @@ export async function deleteShot(shotId: string): Promise<ShotDeleteResult> {
   if (!user) return { success: false, error: 'Not authenticated' }
 
   return deleteShotForUser(supabase, shotId, user.id)
+}
+
+// Serves both the initial Assets-tab load and a client-driven refresh ahead of the
+// signed URLs' one-hour expiry - re-running the same one-query-plus-one-batch-sign path
+// is already cheap and correct, so there is no separate "refresh" function.
+export async function getProjectElements(projectId: string): Promise<GetProjectElementsResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return getProjectElementsForUser(supabase, projectId, user.id)
+}
+
+// Recovers one broken reference image without refetching the whole batch.
+export async function resignElementReferenceImage(
+  projectId: string,
+  path: string
+): Promise<ResignElementImageResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return resignElementReferenceImageForUser(supabase, projectId, path, user.id)
 }
