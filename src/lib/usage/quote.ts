@@ -1,5 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk'
-import { computeCost, TOOL_USE_SYSTEM_OVERHEAD_TOKENS, type UsageBreakdown } from '@/lib/config/pricing'
+import { computeCost, OPENAI_RATES, TOOL_USE_SYSTEM_OVERHEAD_TOKENS, type UsageBreakdown } from '@/lib/config/pricing'
 
 // Crude on purpose: a real tokenizer isn't available at this layer, and this number
 // only ever feeds a worst-case reservation that settle immediately corrects downward -
@@ -53,5 +53,37 @@ export function quoteClaudeCall(params: {
   // pricing.ts), so this can only happen for a genuinely unrecognized model string.
   // Falling back to 0 rather than throwing keeps a rate-table gap from blocking every
   // call outright; it under-quotes only in that narrow, easily-noticed case.
+  return { estimatedCost: estimatedCost ?? 0, quotedBreakdown }
+}
+
+/**
+ * The pre-flight quote for an OpenAI image call. Unlike quoteClaudeCall, the output
+ * half is EXACT, not worst-case: OpenAI meters image generation at a fixed
+ * output-token count per size/quality tier (OPENAI_RATES.images[model].outputTokensBySize),
+ * so there is no "ceiling" to reserve against - the real call can never produce more or
+ * fewer output tokens than this. The input half still goes through the same chars/4
+ * estimate as every other call (the prompt is short: element name + description +
+ * style keywords), since real tokenization still isn't knowable before the call.
+ */
+export function quoteOpenAiImageCall(params: {
+  model: string
+  size: string
+  quality: string
+  estimatedInputTokens: number
+}): { estimatedCost: number; quotedBreakdown: UsageBreakdown } {
+  const outputTokens = OPENAI_RATES.images[params.model]?.outputTokensBySize[params.size]?.[params.quality] ?? 0
+
+  const quotedBreakdown: UsageBreakdown = {
+    input_tokens: params.estimatedInputTokens,
+    output_tokens: outputTokens,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+  }
+
+  const { estimatedCost } = computeCost('openai', params.model, quotedBreakdown)
+
+  // Same fallback reasoning as quoteClaudeCall: an unrecognized model/size/quality
+  // combination (outside OPENAI_RATES) would make estimatedCost null - fall back to 0
+  // rather than blocking the call outright.
   return { estimatedCost: estimatedCost ?? 0, quotedBreakdown }
 }

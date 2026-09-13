@@ -583,7 +583,7 @@ export async function runShotGeneration(params: {
 
   const claim = await claimGeneration({
     supabase,
-    identity: { projectId, step: 'workbench', operation: 'generate_shots', shotId: null },
+    identity: { projectId, step: 'workbench', operation: 'generate_shots', shotId: null, elementId: null },
     retry,
   })
 

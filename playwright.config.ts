@@ -29,7 +29,8 @@ export default defineConfig({
     reuseExistingServer: true,
     // Playwright spawns this as a child process that would otherwise inherit an
     // already-exported shell value. Force it closed regardless - there is no sanctioned
-    // way to make a live Anthropic call through the dev server this suite drives.
-    env: { ALLOW_REAL_CLAUDE: '' },
+    // way to make a live Anthropic or OpenAI images call through the dev server this
+    // suite drives.
+    env: { ALLOW_REAL_CLAUDE: '', ALLOW_REAL_OPENAI_IMAGES: '' },
   },
 })

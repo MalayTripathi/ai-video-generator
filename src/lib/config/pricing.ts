@@ -57,9 +57,8 @@ function perMillionToPerToken(ratePerMillion: number): number {
   return ratePerMillion / 1_000_000
 }
 
-// Stub shapes only - no values yet. Filling these in is what makes a new
-// provider's usage/cost tracking real; until then computeCost returns a null
-// estimatedCost for any provider below.
+// elevenlabs/fal below are stub shapes only - no values yet, and computeCost returns a
+// null estimatedCost for both until they're filled in.
 
 // OpenAI meters image generation as tokens, not a flat per-image fee: a given size is a
 // fixed output-token count per quality tier, times the model's output-token rate. Keyed
@@ -67,8 +66,9 @@ function perMillionToPerToken(ratePerMillion: number): number {
 // never collide with gpt-image-1-mini's in the same size/quality keys. Authority:
 // https://platform.openai.com/docs/pricing - image-input token rates are deliberately
 // omitted below, since this product never uploads an image for editing at the
-// workbench step. computeCost has no `openai` branch yet; populating this table is the
-// config half only.
+// workbench step. computeCost's `openai` branch reads textInputPerMTok/outputPerMTok
+// directly; outputTokensBySize is consumed by quoteOpenAiImageCall (usage/quote.ts) for
+// the pre-flight quote, not by computeCost.
 type OpenAiImageRates = {
   images: Record<
     string,
@@ -106,9 +106,11 @@ type FalRates = {
 }
 export const FAL_RATES: FalRates = { perClipUsd: {}, perSecondUsd: {} }
 
+type OpenAiImageAppliedRates = { textInputPerMTok: number; outputPerMTok: number }
+
 export type CostResult = {
   estimatedCost: number | null
-  appliedRates: ClaudeRates | null
+  appliedRates: ClaudeRates | OpenAiImageAppliedRates | null
   quantity: number
   unit: 'tokens' | 'unknown'
 }
@@ -116,9 +118,28 @@ export type CostResult = {
 /**
  * The single place a cost or credit number is computed from a provider's raw usage
  * report. Returns a null estimatedCost (never a guess) for an unknown model or a
- * provider with no rates configured yet (openai/elevenlabs/fal - see the stubs above).
+ * provider with no rates configured yet (elevenlabs/fal - see the stubs above).
  */
 export function computeCost(provider: Provider, model: string, breakdown: UsageBreakdown): CostResult {
+  if (provider === 'openai') {
+    const quantity = breakdown.input_tokens + breakdown.output_tokens
+    const rates = OPENAI_RATES.images[model]
+    if (!rates) {
+      return { estimatedCost: null, appliedRates: null, quantity, unit: 'tokens' }
+    }
+
+    const estimatedCost =
+      breakdown.input_tokens * perMillionToPerToken(rates.textInputPerMTok) +
+      breakdown.output_tokens * perMillionToPerToken(rates.outputPerMTok)
+
+    return {
+      estimatedCost,
+      appliedRates: { textInputPerMTok: rates.textInputPerMTok, outputPerMTok: rates.outputPerMTok },
+      quantity,
+      unit: 'tokens',
+    }
+  }
+
   if (provider !== 'anthropic') {
     return { estimatedCost: null, appliedRates: null, quantity: 0, unit: 'unknown' }
   }

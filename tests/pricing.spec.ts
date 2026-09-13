@@ -51,13 +51,38 @@ test.describe('computeCost', () => {
     expect(result.quantity).toBe(200)
   })
 
-  test('a non-anthropic provider returns a null cost (stub rates, no values yet)', () => {
-    const result = computeCost('openai', 'gpt-image-1', {
+  test('a still-stub provider (elevenlabs/fal) returns a null cost, no values yet', () => {
+    const result = computeCost('elevenlabs', 'eleven_v3', {
       input_tokens: 100,
       output_tokens: 100,
     })
     expect(result.estimatedCost).toBeNull()
     expect(result.appliedRates).toBeNull()
     expect(result.unit).toBe('unknown')
+  })
+
+  test('openai: computes cost from input/output tokens at the model rate', () => {
+    // gpt-image-1-mini: textInputPerMTok 2.0, outputPerMTok 8.0
+    const result = computeCost('openai', 'gpt-image-1-mini', {
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+    })
+    expect(result.estimatedCost).toBeCloseTo(2.0 + 8.0, 6)
+    expect(result.quantity).toBe(2_000_000)
+    expect(result.unit).toBe('tokens')
+    expect(result.appliedRates).not.toBeNull()
+  })
+
+  test('an unrecognized openai model returns a null cost, never a guess', () => {
+    // gpt-image-1 (the non-mini model) deliberately has no OPENAI_RATES entry - this
+    // repo never calls it, so it must behave as "unrecognized," not silently price at
+    // gpt-image-1-mini's rate.
+    const result = computeCost('openai', 'gpt-image-1', {
+      input_tokens: 100,
+      output_tokens: 100,
+    })
+    expect(result.estimatedCost).toBeNull()
+    expect(result.appliedRates).toBeNull()
+    expect(result.quantity).toBe(200)
   })
 })

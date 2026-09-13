@@ -137,6 +137,7 @@ export type Database = {
       generations: {
         Row: {
           created_at: string
+          element_id: string | null
           error: string | null
           external_id: string | null
           id: string
@@ -151,6 +152,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
+          element_id?: string | null
           error?: string | null
           external_id?: string | null
           id?: string
@@ -165,6 +167,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
+          element_id?: string | null
           error?: string | null
           external_id?: string | null
           id?: string
@@ -178,6 +181,13 @@ export type Database = {
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "generations_element_id_fkey"
+            columns: ["element_id"]
+            isOneToOne: false
+            referencedRelation: "elements"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "generations_project_id_fkey"
             columns: ["project_id"]

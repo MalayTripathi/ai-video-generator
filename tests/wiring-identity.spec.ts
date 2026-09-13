@@ -99,6 +99,18 @@ test.describe('wiring-identity - source-level guard against a type-compatible wr
     expect(block).toMatch(/(^|[,{\s])recordFixedSpend(\s*[,}]|\s*$)/)
   })
 
+  test('elements/[elementId]/reference/generate/route.ts wires the real mintAttemptId/recordFixedSpend into runElementReferenceGeneration', () => {
+    const source = read('src/app/api/projects/[id]/elements/[elementId]/reference/generate/route.ts')
+    const imported = importLine(source, '@/lib/credits/ledger')
+    expect(imported).toMatch(/\bmintAttemptId\b/)
+    expect(imported).toMatch(/\brecordFixedSpend\b/)
+
+    const block = stripComments(extractCallBlock(source, 'runElementReferenceGeneration'))
+    expect(block).toMatch(/\battemptId:\s*mintAttemptId\(\)/)
+    // Shorthand property - the imported name IS the param name here.
+    expect(block).toMatch(/(^|[,{\s])recordFixedSpend(\s*[,}]|\s*$)/)
+  })
+
   // The exception: the agent's regenerate_all_shots tool must NOT wire the real
   // recordFixedSpend - its cost is already folded into the turn's dynamic agent_turn
   // charge (Task 5), and double-wiring here would double-bill the same Claude call.

@@ -18,7 +18,7 @@ async function insertProject(userId: string) {
   return data!.id as string
 }
 
-const IDENTITY = { step: 'workbench', operation: 'generate_shots', shotId: null } as const
+const IDENTITY = { step: 'workbench', operation: 'generate_shots', shotId: null, elementId: null } as const
 
 test.describe('generations claim primitives', () => {
   test('two concurrent claims on a fresh identity: exactly one claims, the other is blocked as already_generating', async () => {
@@ -153,7 +153,7 @@ test.describe('generations claim primitives', () => {
   })
 })
 
-const AGENT_TURN_IDENTITY = { step: 'workbench', operation: 'agent_turn', shotId: null } as const
+const AGENT_TURN_IDENTITY = { step: 'workbench', operation: 'agent_turn', shotId: null, elementId: null } as const
 const AGENT_TURN_STALE_AFTER_MS = 180 * 1000
 
 test.describe('OPERATION_POLICY-driven claim behaviour', () => {

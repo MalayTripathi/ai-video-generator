@@ -71,6 +71,34 @@ export class MissingCreditPriceError extends Error {
   }
 }
 
+// Thrown by a runner's balance gate (e.g. runElementReferenceGeneration) after
+// claim/recover but before reserving usage or calling the provider - mapped to 402
+// (never 429) by the route, mirroring AllowanceExceededError's positioning
+// (src/lib/usage/allowance.ts). Lives in this module rather than the ledger writer's
+// own, so it can be value-imported by a route's logic.ts without pulling in the
+// ledger writer's transitive service-role/'server-only' dependency (see
+// runElementReferenceGeneration's own getBalance/recordFixedSpend type-only-import
+// comment) - tests/ledger.spec.ts's module-hygiene check enforces that only a route
+// and its logic.ts import the ledger writer directly, so this class deliberately
+// avoids even naming that module's path in this comment.
+export class InsufficientCreditsError extends Error {
+  // Plain fields, not TS constructor-parameter properties: this file is transitively
+  // imported by the ledger writer module, which several tests load in a plain-Node
+  // child process under Node's default (strip-only) type stripping - that mode cannot
+  // parse a constructor parameter property (see tests/wiring-identity.spec.ts's own
+  // comment on this exact limitation). A parameter property here would break every
+  // test that goes through that dispatcher, not just ones touching this class.
+  readonly requiredCredits: number
+  readonly balanceCredits: number
+
+  constructor(requiredCredits: number, balanceCredits: number) {
+    super(`Not enough credits: this action costs ${requiredCredits}, balance is ${balanceCredits}.`)
+    this.name = 'InsufficientCreditsError'
+    this.requiredCredits = requiredCredits
+    this.balanceCredits = balanceCredits
+  }
+}
+
 /**
  * Fixed-price lookup for a (step, operation) pair. Throws when no entry exists -
  * never falls back to zero. `quantity` must always be supplied by the caller and

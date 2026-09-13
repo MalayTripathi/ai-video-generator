@@ -45,11 +45,49 @@ async function normalizeReferenceImage(
   return { success: true, buffer }
 }
 
-// Upload is insert-only by construction (a fresh, randomUUID()-suffixed path every call) -
-// the artifacts bucket's storage.objects RLS grants select/insert/delete but no update, so
-// there is no in-place overwrite to attempt. Replacing an existing reference therefore
-// writes the new object and updates the element row before removing the old object, so a
-// failure part-way always leaves the element pointing at something real.
+export type UploadReferenceObjectResult = { success: true; path: string } | { success: false; error: string }
+
+// The storage-only half of a reference upload: normalize + write to a fresh,
+// randomUUID()-suffixed path (the artifacts bucket's storage.objects RLS grants
+// select/insert/delete but no update, so every write is insert-only by construction -
+// there is no in-place overwrite to attempt). No DB write, no signing, no old-object
+// cleanup - callers with different sequencing needs (a plain manual upload vs. a
+// claimed AI generation that must persist a generations payload BETWEEN the storage
+// write and the elements row update) each do their own next steps on top of this.
+export async function uploadNormalizedReferenceObject(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string,
+  elementId: string,
+  fileBuffer: Buffer
+): Promise<UploadReferenceObjectResult> {
+  const normalized = await normalizeReferenceImage(fileBuffer)
+  if (!normalized.success) return normalized
+
+  const path = `${userId}/${projectId}/elements/${elementId}/${randomUUID()}.webp`
+
+  const { error } = await supabase.storage
+    .from('artifacts')
+    .upload(path, normalized.buffer, { contentType: 'image/webp', upsert: false })
+  if (error) return { success: false, error: error.message }
+
+  return { success: true, path }
+}
+
+// Best-effort old-object cleanup, shared by every replacement path (manual upload,
+// manual removal, AI generation/regeneration) - logs and swallows rather than failing
+// the caller, since by the time this runs the element row already points at something
+// valid (or nothing), and the orphaned object is a cleanup concern, not a correctness one.
+async function removeReferenceObject(supabase: SupabaseServerClient, path: string): Promise<void> {
+  const { error } = await supabase.storage.from('artifacts').remove([path])
+  if (error) {
+    console.error(`[elements] Failed to remove reference image ${path}:`, error.message)
+  }
+}
+
+// Replacing an existing reference writes the new object and updates the element row
+// before removing the old object, so a failure part-way always leaves the element
+// pointing at something real.
 export async function uploadReferenceImageForUser(
   supabase: SupabaseServerClient,
   projectId: string,
@@ -66,19 +104,12 @@ export async function uploadReferenceImageForUser(
     return { success: false, error: 'Element not found' }
   }
 
-  const normalized = await normalizeReferenceImage(fileBuffer)
-  if (!normalized.success) return normalized
-
-  const newPath = `${userId}/${projectId}/elements/${elementId}/${randomUUID()}.webp`
-
-  const { error: uploadError } = await supabase.storage
-    .from('artifacts')
-    .upload(newPath, normalized.buffer, { contentType: 'image/webp', upsert: false })
-  if (uploadError) return { success: false, error: uploadError.message }
+  const uploaded = await uploadNormalizedReferenceObject(supabase, userId, projectId, elementId, fileBuffer)
+  if (!uploaded.success) return uploaded
 
   const { error: dbError } = await supabase
     .from('elements')
-    .update({ reference_image_path: newPath })
+    .update({ reference_image_path: uploaded.path })
     .eq('id', elementId)
   if (dbError) {
     // The new object is now orphaned - tolerated per spec. The element row is untouched,
@@ -88,20 +119,16 @@ export async function uploadReferenceImageForUser(
 
   const { data: signed, error: signError } = await supabase.storage
     .from('artifacts')
-    .createSignedUrl(newPath, SIGNED_URL_EXPIRES_IN_SECONDS)
+    .createSignedUrl(uploaded.path, SIGNED_URL_EXPIRES_IN_SECONDS)
   if (signError || !signed) {
     return { success: false, error: signError?.message ?? 'Failed to sign uploaded image' }
   }
 
-  const oldPath = element.reference_image_path
-  if (oldPath) {
-    const { error: removeError } = await supabase.storage.from('artifacts').remove([oldPath])
-    if (removeError) {
-      console.error(`[elements] Failed to remove old reference image ${oldPath}:`, removeError.message)
-    }
+  if (element.reference_image_path) {
+    await removeReferenceObject(supabase, element.reference_image_path)
   }
 
-  return { success: true, path: newPath, url: signed.signedUrl }
+  return { success: true, path: uploaded.path, url: signed.signedUrl }
 }
 
 // The DB path is cleared before the storage object is removed, mirroring the upload
@@ -126,10 +153,7 @@ export async function removeReferenceImageForUser(
     .eq('id', elementId)
   if (dbError) return { success: false, error: dbError.message }
 
-  const { error: removeError } = await supabase.storage.from('artifacts').remove([element.reference_image_path])
-  if (removeError) {
-    console.error(`[elements] Failed to remove reference image ${element.reference_image_path}:`, removeError.message)
-  }
+  await removeReferenceObject(supabase, element.reference_image_path)
 
   return { success: true }
 }
