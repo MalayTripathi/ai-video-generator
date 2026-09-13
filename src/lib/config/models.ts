@@ -70,11 +70,6 @@ export function isDurationAllowed(config: VideoModelConfig, seconds: number): bo
 }
 
 export type ModelsConfig = {
-  prompts: {
-    provider: 'anthropic'
-    model: string
-    maxTokens: number
-  }
   shots: {
     provider: 'anthropic'
     model: string
@@ -89,23 +84,17 @@ export type ModelsConfig = {
     provider: 'anthropic'
     model: string
     maxTokens: number
-  }
-  video: {
-    provider: 'fal'
+  },
+  prompts: {
+    provider: 'anthropic'
     model: string
+    maxTokens: number
   }
   // Future steps (image, storyboard) each get their own section here as
   // they're implemented - keep this type and the object below in sync.
 }
 
 export const modelsConfig: ModelsConfig = {
-  prompts: {
-    provider: 'anthropic',
-    model:
-      process.env.CLAUDE_PROMPTS_MODEL ??
-      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
-    maxTokens: Number(process.env.CLAUDE_PROMPTS_MAX_TOKENS) || 8192,
-  },
   shots: {
     provider: 'anthropic',
     model:
@@ -138,8 +127,11 @@ export const modelsConfig: ModelsConfig = {
       (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
     maxTokens: Number(process.env.CLAUDE_AGENT_MAX_TOKENS) || 8192,
   },
-  video: {
-    provider: 'fal',
-    model: process.env.FAL_VIDEO_MODEL ?? VIDEO_MODELS[DEFAULT_VIDEO_MODEL].id,
-  },
+  prompts: {
+    provider: 'anthropic',
+    model:
+      process.env.CLAUDE_PROMPTS_MODEL ??
+      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
+    maxTokens: Number(process.env.CLAUDE_PROMPTS_MAX_TOKENS) || 8192,
+  }
 }

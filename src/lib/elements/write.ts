@@ -40,19 +40,22 @@ type OwnedElement = {
   name: string
   description: string | null
   type: ElementType
+  reference_image_path: string | null
 }
 
 // Not found and wrong-owner collapse to the same null, same reasoning as loadOwnedShot in
 // workbench/actions.ts: RLS is the backstop, not the only check, since these functions are
 // called directly (with an explicit userId) by tests against an RLS-bypassing client.
-async function loadOwnedElement(
+// Exported so src/lib/elements/reference.ts can reuse the same ownership join rather than
+// duplicating it.
+export async function loadOwnedElement(
   supabase: SupabaseServerClient,
   elementId: string,
   userId: string
 ): Promise<OwnedElement | null> {
   const { data } = await supabase
     .from('elements')
-    .select('id, project_id, name, description, type, projects!inner(user_id)')
+    .select('id, project_id, name, description, type, reference_image_path, projects!inner(user_id)')
     .eq('id', elementId)
     .eq('projects.user_id', userId)
     .is('deleted_at', null)
@@ -65,6 +68,7 @@ async function loadOwnedElement(
     name: data.name,
     description: data.description,
     type: data.type as ElementType,
+    reference_image_path: data.reference_image_path,
   }
 }
 
