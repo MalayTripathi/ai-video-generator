@@ -41,8 +41,8 @@ test.describe('creditsFor', () => {
   })
 
   test('per_element scales with quantity', async () => {
-    const one = creditsFor({ step: 'workbench', operation: 'generate_image', quantity: 1 })
-    const four = creditsFor({ step: 'workbench', operation: 'generate_image', quantity: 4 })
+    const one = creditsFor({ step: 'workbench', operation: 'generate_element_reference', quantity: 1 })
+    const four = creditsFor({ step: 'workbench', operation: 'generate_element_reference', quantity: 4 })
     expect(four).toBe(one * 4)
   })
 

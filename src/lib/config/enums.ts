@@ -56,11 +56,20 @@ export type CameraMovement = (typeof CAMERA_MOVEMENTS)[number]
 
 // Duplicated the same way as the enums above (tool schema + sanitizeEnum). elements.type
 // does have a DB CHECK constraint (elements_type_check, added in
-// 20260827051112_elements_and_shot_elements.sql) - covered by the enum drift test like
-// every other enum here.
-export const ELEMENT_TYPES = ['character', 'location', 'prop'] as const
+// 20260827051112_elements_and_shot_elements.sql, widened to add 'style' in
+// 20260913133230_add_style_element_soft_delete_and_reference_op.sql) - covered by the enum
+// drift test like every other enum here.
+export const ELEMENT_TYPES = ['character', 'location', 'prop', 'style'] as const
 
 export type ElementType = (typeof ELEMENT_TYPES)[number]
+
+// 'style' is project-level - reported through write_shots' separate top-level `style`
+// field, never through a shot's element_names. Derived (like CLASSIFIABLE_VIDEO_TYPES /
+// MODEL_REPORTABLE_CAMERA_ORIGINS above) so the per-shot schema can't drift into accepting
+// a value that would let a style element get bound to a shot via shot_elements.
+export const SHOT_ELEMENT_TYPES = ELEMENT_TYPES.filter(
+  (v): v is Exclude<ElementType, 'style'> => v !== 'style'
+)
 
 // auto: the visual description said nothing about this camera choice, so the AI chose it
 // freely. derived: the visual description explicitly named this choice, so the AI was

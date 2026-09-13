@@ -19,7 +19,7 @@ import {
   type BlockedReason,
 } from '@/lib/generations/claim'
 import {
-  SHOT_GENERATION_SYSTEM_PROMPT_V5,
+  SHOT_GENERATION_SYSTEM_PROMPT_V6,
   buildWriteShotsTool,
   buildShotsDynamicBlock,
 } from '@/lib/prompts/shot-generation'
@@ -27,7 +27,7 @@ import {
   SHOT_SIZES,
   CAMERA_ANGLES,
   CAMERA_MOVEMENTS,
-  ELEMENT_TYPES,
+  SHOT_ELEMENT_TYPES,
   CLASSIFIABLE_VIDEO_TYPES,
   MODEL_REPORTABLE_CAMERA_ORIGINS,
 } from '@/lib/config/enums'
@@ -39,6 +39,7 @@ type ElementRow = Tables<'elements'>
 
 export type RawDialogueLine = { speaker_name: string; line: string }
 export type RawElementRef = { name: string; type: string; description: string }
+export type RawStyleRef = { name: string; description: string }
 
 export type RawShot = {
   voice_over: string
@@ -82,6 +83,12 @@ function isElementRef(value: unknown): value is RawElementRef {
     typeof v.type === 'string' &&
     typeof v.description === 'string'
   )
+}
+
+function isStyleRef(value: unknown): value is RawStyleRef {
+  if (typeof value !== 'object' || value === null) return false
+  const v = value as Record<string, unknown>
+  return typeof v.name === 'string' && v.name.trim().length > 0 && typeof v.description === 'string'
 }
 
 function isRawShotShape(value: unknown): value is Record<string, unknown> {
@@ -216,6 +223,7 @@ async function runShotsPipeline(
     message?: unknown
     video_type?: unknown
     shots?: unknown
+    style?: unknown
   }
 
   const validatedShots = parseRawShots(input.shots).map((shot) => ({
@@ -258,14 +266,22 @@ async function runShotsPipeline(
   const parsedMessage = typeof input.message === 'string' ? input.message.trim() : ''
   const parsedVideoType = sanitizeEnum(input.video_type, CLASSIFIABLE_VIDEO_TYPES)
 
+  // At most one style: the tool-use API can't express maxItems, so a model that ignores
+  // the "never more than one" schema description still gets truncated here rather than
+  // inserting several.
+  const styleCandidate =
+    (Array.isArray(input.style) ? input.style.filter(isStyleRef) : [])[0] ?? null
+
   // Dedup source of truth: reused across the whole request so two shots naming the same
   // new element resolve to one row, not one each. The project's (project_id, lower(name))
   // unique index is only a race safety net, not the primary mechanism - hence the
-  // sequential awaits below.
+  // sequential awaits below. Soft-deleted elements are excluded: without this filter,
+  // regenerating shots would resurrect a deleted element by reusing its row.
   const { data: existingElements, error: elementsFetchError } = await supabase
     .from('elements')
     .select('*')
     .eq('project_id', projectId)
+    .is('deleted_at', null)
 
   if (elementsFetchError) {
     return { ok: false, status: 500, error: elementsFetchError.message }
@@ -302,6 +318,7 @@ async function runShotsPipeline(
           .from('elements')
           .select('*')
           .eq('project_id', projectId)
+          .is('deleted_at', null)
           .ilike('name', name.trim())
           .single()
         if (raced) {
@@ -316,6 +333,18 @@ async function runShotsPipeline(
     return data
   }
 
+  // The style element is project-level and must never be bound to a shot. resolveElement
+  // dedups by lower(name) alone, with no type component, so a per-shot element_names or
+  // dialogue speaker_name reference that happens to share the style element's name would
+  // otherwise resolve to that same row and get bound into shot_elements. This guard makes
+  // that impossible to introduce silently, by later editing the prompt or the binding
+  // logic below, without failing loudly.
+  function assertNotStyle(el: ElementRow): void {
+    if (el.type === 'style') {
+      throw new Error(`"${el.name}" is the project's style element and cannot be bound to a shot`)
+    }
+  }
+
   type ShotBuild = {
     shot: RawShot
     elementIds: string[]
@@ -326,13 +355,24 @@ async function runShotsPipeline(
   const shotBuilds: ShotBuild[] = []
 
   try {
+    // Resolved once, before any shot's elements, and never added to a shot's elementIds -
+    // this is what a style element is: project-level, one per project, never shot-bound.
+    // Must use resolveElement, not a separate insert: same dedup path, same race behavior
+    // as any other element (the uniqueness index has no type component, so a style sharing
+    // a name with an existing character/location/prop collides exactly like any other pair
+    // would).
+    if (styleCandidate) {
+      await resolveElement(styleCandidate.name, 'style', styleCandidate.description)
+    }
+
     for (const shot of validatedShots) {
       const elementIds = new Set<string>()
       const elementsForResponse: ElementRow[] = []
 
       for (const ref of shot.element_names) {
-        const type = sanitizeEnum(ref.type, ELEMENT_TYPES) ?? 'prop'
+        const type = sanitizeEnum(ref.type, SHOT_ELEMENT_TYPES) ?? 'prop'
         const el = await resolveElement(ref.name, type, ref.description)
+        assertNotStyle(el)
         if (!elementIds.has(el.id)) {
           elementIds.add(el.id)
           elementsForResponse.push(el)
@@ -342,6 +382,7 @@ async function runShotsPipeline(
       const dialogueResolved: { element_id: string; element_name: string; line: string }[] = []
       for (const line of shot.dialogue) {
         const el = await resolveElement(line.speaker_name, 'character', null)
+        assertNotStyle(el)
         if (!elementIds.has(el.id)) {
           elementIds.add(el.id)
           elementsForResponse.push(el)
@@ -589,7 +630,7 @@ export async function runShotGeneration(params: {
     const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
       model: modelsConfig.shots.model,
       estimatedInputTokens: estimateInputTokens({
-        texts: [SHOT_GENERATION_SYSTEM_PROMPT_V5, buildShotsDynamicBlock(project, targetShots), userMessage],
+        texts: [SHOT_GENERATION_SYSTEM_PROMPT_V6, buildShotsDynamicBlock(project, targetShots), userMessage],
         tools: [writeShotsTool],
       }),
       maxTokens: modelsConfig.shots.maxTokens,
@@ -617,7 +658,7 @@ export async function runShotGeneration(params: {
       model: modelsConfig.shots.model,
       max_tokens: modelsConfig.shots.maxTokens,
       system: [
-        { type: 'text', text: SHOT_GENERATION_SYSTEM_PROMPT_V5, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: SHOT_GENERATION_SYSTEM_PROMPT_V6, cache_control: { type: 'ephemeral' } },
         { type: 'text', text: buildShotsDynamicBlock(project, targetShots) },
       ],
       tools: [writeShotsTool],

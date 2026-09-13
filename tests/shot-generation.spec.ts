@@ -385,3 +385,213 @@ test.describe('Step 2 workbench - shot generation', () => {
     }
   })
 })
+
+test.describe('Step 2 workbench - style element (C5 Task 2)', () => {
+  function inputWithStyle(style: unknown, shots = buildShots(1)) {
+    return {
+      title: 'Style Test',
+      message: 'Here is your shot list.',
+      video_type: 'narrated_story',
+      shots,
+      style,
+    }
+  }
+
+  test('a single style candidate produces exactly one elements row of type style', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+    const gateway: ClaudeGateway = {
+      async createMessage() {
+        return successMessage(inputWithStyle([{ name: 'Warm Nostalgia', description: 'clean lines, soft colors, warm tones' }]))
+      },
+    }
+
+    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
+    expect(result.ok).toBe(true)
+
+    const { data: styleElements, error } = await admin
+      .from('elements')
+      .select('id, name, type, description')
+      .eq('project_id', projectId)
+      .eq('type', 'style')
+    expect(error).toBeNull()
+    expect(styleElements!.length).toBe(1)
+    expect(styleElements![0].name).toBe('Warm Nostalgia')
+    expect(styleElements![0].description).toBe('clean lines, soft colors, warm tones')
+  })
+
+  test('more than one style candidate: only the first is inserted, the rest discarded', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+    const gateway: ClaudeGateway = {
+      async createMessage() {
+        return successMessage(
+          inputWithStyle([
+            { name: 'First Look', description: 'first' },
+            { name: 'Second Look', description: 'second' },
+          ])
+        )
+      },
+    }
+
+    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
+    expect(result.ok).toBe(true)
+
+    const { data: styleElements, error } = await admin
+      .from('elements')
+      .select('name')
+      .eq('project_id', projectId)
+      .eq('type', 'style')
+    expect(error).toBeNull()
+    expect(styleElements!.length).toBe(1)
+    expect(styleElements![0].name).toBe('First Look')
+  })
+
+  test('no shot_elements row ever references the style element', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+    const input = { ...RICH_INPUT, style: [{ name: 'House Style', description: 'muted palette' }] }
+    const gateway: ClaudeGateway = { async createMessage() { return successMessage(input) } }
+
+    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
+    expect(result.ok).toBe(true)
+
+    const { data: styleElement, error: styleError } = await admin
+      .from('elements')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('type', 'style')
+      .single()
+    expect(styleError).toBeNull()
+
+    const { data: bindings, error: bindingsError } = await admin
+      .from('shot_elements')
+      .select('element_id')
+      .eq('element_id', styleElement!.id)
+    expect(bindingsError).toBeNull()
+    expect(bindings!.length).toBe(0)
+  })
+
+  test('a soft-deleted element with a matching name is not reused - regeneration inserts a fresh row', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+
+    const { data: deletedElement, error: insertError } = await admin
+      .from('elements')
+      .insert({
+        project_id: projectId,
+        name: 'Vintage Film',
+        type: 'style',
+        description: 'an old, now-deleted style',
+        deleted_at: new Date().toISOString(),
+      })
+      .select('id, deleted_at')
+      .single()
+    expect(insertError).toBeNull()
+
+    const gateway: ClaudeGateway = {
+      async createMessage() {
+        return successMessage(inputWithStyle([{ name: 'Vintage Film', description: 'a fresh take' }]))
+      },
+    }
+
+    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
+    expect(result.ok).toBe(true)
+
+    const { data: matches, error } = await admin
+      .from('elements')
+      .select('id, deleted_at, description')
+      .eq('project_id', projectId)
+      .ilike('name', 'Vintage Film')
+    expect(error).toBeNull()
+    expect(matches!.length).toBe(2)
+
+    const original = matches!.find((m) => m.id === deletedElement!.id)
+    const fresh = matches!.find((m) => m.id !== deletedElement!.id)
+    expect(original).toBeTruthy()
+    expect(original!.deleted_at).not.toBeNull()
+    expect(fresh).toBeTruthy()
+    expect(fresh!.deleted_at).toBeNull()
+    expect(fresh!.description).toBe('a fresh take')
+  })
+
+  test('a style name matching an existing (non-deleted) element resolves to that row instead of erroring', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+
+    const { data: existing, error: insertError } = await admin
+      .from('elements')
+      .insert({ project_id: projectId, name: 'Golden Hour', type: 'prop', description: 'a lighting prop' })
+      .select('id')
+      .single()
+    expect(insertError).toBeNull()
+
+    const gateway: ClaudeGateway = {
+      async createMessage() {
+        return successMessage(inputWithStyle([{ name: 'Golden Hour', description: 'warm backlight everywhere' }]))
+      },
+    }
+
+    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
+    expect(result.ok).toBe(true)
+
+    const { data: matches, error } = await admin
+      .from('elements')
+      .select('id, type')
+      .eq('project_id', projectId)
+      .ilike('name', 'Golden Hour')
+    expect(error).toBeNull()
+    // No duplicate inserted - resolveElement's name-only match reused the existing row,
+    // exactly as any other name collision would (the unique index has no type component).
+    expect(matches!.length).toBe(1)
+    expect(matches![0].id).toBe(existing!.id)
+    expect(matches![0].type).toBe('prop')
+  })
+
+  test('a per-shot element colliding by name with the style element fails loudly instead of binding it into shot_elements', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+    const input = {
+      title: 'Collision Test',
+      message: 'Here is your shot list.',
+      video_type: 'narrated_story',
+      style: [{ name: 'Echo', description: 'muted tones' }],
+      shots: [
+        {
+          voice_over: 'Narration.',
+          visual_description: 'Wide shot.',
+          shot_size: 'wide',
+          camera_angle: 'eye_level',
+          camera_movement: 'static',
+          shot_size_origin: 'auto',
+          camera_angle_origin: 'auto',
+          camera_movement_origin: 'auto',
+          duration_sec: 3,
+          section_label: 'Intro',
+          dialogue: [],
+          // Same name as the style candidate above - resolveElement will hand back the
+          // style row, and the guard must refuse to bind it into shot_elements.
+          element_names: [{ name: 'Echo', type: 'prop', description: 'a prop that is not the style' }],
+        },
+      ],
+    }
+    const gateway: ClaudeGateway = { async createMessage() { return successMessage(input) } }
+
+    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
+    expect(result.ok).toBe(false)
+    expect(result.status).toBe(500)
+
+    const { data: shots, error: shotsError } = await admin.from('shots').select('id').eq('project_id', projectId)
+    expect(shotsError).toBeNull()
+    // The guard fires inside the resolve-elements try block, before the shots
+    // delete-and-reinsert - nothing was ever persisted for this failed attempt.
+    expect(shots!.length).toBe(0)
+
+    const { data: bindings, error: bindingsError } = await admin
+      .from('shot_elements')
+      .select('shot_id')
+      .in('shot_id', (shots ?? []).map((s) => s.id))
+    expect(bindingsError).toBeNull()
+    expect(bindings!.length).toBe(0)
+  })
+})

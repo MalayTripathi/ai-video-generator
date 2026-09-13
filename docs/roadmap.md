@@ -5,6 +5,13 @@ are not lost.
 
 ## Known bugs
 
+- **`resolveElement` matches only on current name, so a renamed element gets duplicated on
+  regeneration.** `resolveElement` (`src/app/api/projects/[id]/shots/logic.ts`) dedups
+  purely by `lower(name)`. If a user renames an element (a character, or the project's
+  style element) after it's created, the next shot-list regeneration no longer matches it
+  by its old name and inserts a new row alongside the renamed one instead of reusing it.
+  Understood, low severity (surfaced while adding style-element generation, C5), and
+  deliberately not fixed here.
 - **Camera field override reported to empty that field's dropdown — unreproduced.** Eight
   live-reproduction scenarios (plain override, all three overridden in sequence, override
   after a real re-derivation, rapid double-selection, keyboard-driven override, per-field
