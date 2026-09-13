@@ -44,6 +44,7 @@ export const OPERATION_POLICY: Record<Operation, OperationPolicy> = {
   write_image_prompts: DEFAULT_POLICY,
   write_video_prompts: DEFAULT_POLICY,
   generate_image: DEFAULT_POLICY,
+  generate_element_reference: DEFAULT_POLICY,
   generate_clip: DEFAULT_POLICY,
   merge: DEFAULT_POLICY,
   // derive_camera never actually claims a `generations` row (see pipeline.ts), but it

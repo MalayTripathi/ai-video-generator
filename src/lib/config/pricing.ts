@@ -3,7 +3,7 @@ import type { Provider } from '@/lib/config/pipeline'
 // Single place edited when a rate changes. Bump by hand on any edit below -
 // raw_usage.rates on every settled `usage` row records the rate_version that
 // produced it, so a past row's cost stays reconstructable even after rates move.
-export const RATE_VERSION = '2026-09-01'
+export const RATE_VERSION = '2026-09-13'
 
 // Anthropic injects a fixed system-prompt overhead when tools are present, on top of
 // the tool schema JSON and the visible system/user text - this approximates that
@@ -61,11 +61,38 @@ function perMillionToPerToken(ratePerMillion: number): number {
 // provider's usage/cost tracking real; until then computeCost returns a null
 // estimatedCost for any provider below.
 
-/** Keyed by size (e.g. '1024x1024'), then quality (e.g. 'standard' | 'hd'). */
+// OpenAI meters image generation as tokens, not a flat per-image fee: a given size is a
+// fixed output-token count per quality tier, times the model's output-token rate. Keyed
+// by OpenAI image model (not just size/quality) so a second image model's rates can
+// never collide with gpt-image-1-mini's in the same size/quality keys. Authority:
+// https://platform.openai.com/docs/pricing - image-input token rates are deliberately
+// omitted below, since this product never uploads an image for editing at the
+// workbench step. computeCost has no `openai` branch yet; populating this table is the
+// config half only.
 type OpenAiImageRates = {
-  images: Record<string, Record<string, number>>
+  images: Record<
+    string,
+    {
+      /** USD per 1M text input (prompt) tokens. */
+      textInputPerMTok: number
+      /** USD per 1M output (generated image) tokens. */
+      outputPerMTok: number
+      /** Fixed output-token count, keyed by size (e.g. '1024x1024') then quality (e.g. 'low'). */
+      outputTokensBySize: Record<string, Record<string, number>>
+    }
+  >
 }
-export const OPENAI_RATES: OpenAiImageRates = { images: {} }
+export const OPENAI_RATES: OpenAiImageRates = {
+  images: {
+    'gpt-image-1-mini': {
+      textInputPerMTok: 2.0,
+      outputPerMTok: 8.0,
+      outputTokensBySize: {
+        '1024x1024': { low: 272, medium: 1056, high: 4160 },
+      },
+    },
+  },
+}
 
 type ElevenLabsRates = {
   perCharacterUsd: number | null

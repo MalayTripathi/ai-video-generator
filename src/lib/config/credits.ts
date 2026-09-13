@@ -12,7 +12,7 @@ export const SIGNUP_GRANT_CREDITS = 5000
 
 // Stamped onto every credit_ledger row so a past row's price stays reconstructable
 // after this table changes later - same pattern as pricing.ts's RATE_VERSION.
-export const CREDIT_PRICE_VERSION = '2026-09-11'
+export const CREDIT_PRICE_VERSION = '2026-09-13'
 
 /**
  * Converts a measured USD cost into credits, rounding up. Used only for agent_turn,
@@ -28,10 +28,11 @@ export type CreditUnit = 'per_shot' | 'per_element' | 'per_project'
 
 type PriceEntry = { credits: number; unit: CreditUnit }
 
-// Keyed on (step, operation), not operation alone: generate_image exists at two
-// steps (workbench thumbnail, storyboard full render) with different prices, and the
-// two prompt-writing operations sit at different steps. Operation alone can't
-// express this.
+// Keyed on (step, operation), not operation alone: generate_image (storyboard's Step 4
+// frame render) and generate_element_reference (workbench's per-element reference
+// image) are two different things that happen to both generate images, at different
+// steps with different prices, and the two prompt-writing operations sit at different
+// steps too. Operation alone can't express this.
 //
 // workbench/agent_turn has no entry - dynamically priced via usdToCredits.
 // generation/generate_clip has no entry, deliberately - the most expensive action in
@@ -41,7 +42,11 @@ export const PRICE_TABLE: Partial<Record<Step, Partial<Record<Operation, PriceEn
   workbench: {
     generate_shots: { credits: 2, unit: 'per_shot' }, // measured
     derive_camera: { credits: 3, unit: 'per_shot' }, // measured
-    generate_image: { credits: 5, unit: 'per_element' }, // placeholder
+    // 3 credits derives from gpt-image-1-mini at low quality, 1024x1024: 272 output
+    // tokens at $8/1M tokens is roughly $0.0022, and usdToCredits rounds up to 3.
+    // Placeholder because published per-image figures for this model don't all
+    // reconcile with that arithmetic - see pricing.ts's OPENAI_RATES comment.
+    generate_element_reference: { credits: 3, unit: 'per_element' }, // placeholder
   },
   image_prompts: {
     write_image_prompts: { credits: 2, unit: 'per_shot' }, // placeholder
