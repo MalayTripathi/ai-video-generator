@@ -128,10 +128,8 @@ function ShotList({ shots }: { shots: DisplayShot[] }) {
   )
 }
 
-// "Reopen Step 2" is deliberately inert - making it work would need an advanceStep()
-// caller, which this task must not add (see CLAUDE.md's coupling warning on
-// workbench-step-indicator.tsx). Stated once here, not repeated per card - the cards
-// themselves carry the read-only meaning by shape (see shot-card.tsx).
+// Stated once here, not repeated per card - the cards themselves carry the read-only
+// meaning by shape (see shot-card.tsx).
 function ReadOnlyBanner() {
   return (
     <div className="flex items-center gap-rc-xs border-b border-border-subtle pb-rc-sm">
@@ -140,8 +138,7 @@ function ReadOnlyBanner() {
         View only
       </span>
       <span className="text-small leading-[1.5] text-text-secondary">
-        The storyboard is built from these shots.{' '}
-        <span className="cursor-not-allowed text-accent">Reopen Step 2</span> to change them.
+        The storyboard is built from these shots.
       </span>
     </div>
   )

@@ -1,15 +1,13 @@
 'use client'
 
-import type { WorkbenchTab } from './workbench-tabs'
 import { useShots } from './shots-context'
 import { ShotsFooter } from './shots-footer'
-import { AssetsFooter } from './assets-footer'
 
-export function WorkbenchFooter({ activeTab }: { activeTab: WorkbenchTab }) {
+// Shared across all three Workbench tabs (Shots, Assets, Script) - one implementation.
+// Only elements attached to at least one shot count: an unbound element's missing
+// reference can't affect any output, so counting it would be a warning nobody can act on.
+export function WorkbenchFooter() {
   const { shots } = useShots()
-
-  if (activeTab === 'assets') return <AssetsFooter />
-  if (activeTab === 'script') return null
 
   const namesWithoutReference = new Map<string, string>()
   for (const shot of shots) {

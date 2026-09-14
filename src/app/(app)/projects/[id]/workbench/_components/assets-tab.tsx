@@ -17,9 +17,7 @@ function AssetsLockedBanner() {
       </span>
       <span className="text-small leading-[1.5] text-text-secondary">
         Shots are locked from the storyboard step on. Assets stay editable — anything you
-        add here shows up in the element picker.{' '}
-        <span className="cursor-not-allowed text-accent">Reopen Step 2</span> to change the
-        shots.
+        add here shows up in the element picker.
       </span>
     </div>
   )

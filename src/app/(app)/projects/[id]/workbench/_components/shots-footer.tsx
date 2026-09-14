@@ -12,11 +12,12 @@ export function ShotsFooter({ elementNamesWithoutReference }: { elementNamesWith
 
   return (
     <>
-      <div className="text-small leading-[1.5] text-text-secondary">
+      <div className="text-small leading-[1.5] text-text-secondary" data-testid="workbench-footer-warning">
         {elementNamesWithoutReference.length > 0 && (
           <>
             <span className="font-medium text-banner-active-title">
-              {elementNamesWithoutReference.length} elements without a reference image
+              {elementNamesWithoutReference.length} element{elementNamesWithoutReference.length === 1 ? '' : 's'}{' '}
+              without a reference image
             </span>{' '}
             ({shown.join(', ')}
             {suffix}). They&rsquo;ll be written from their descriptions — fine, just less consistent.

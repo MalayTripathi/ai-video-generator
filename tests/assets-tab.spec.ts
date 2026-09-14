@@ -283,17 +283,26 @@ test.describe('Assets tab', () => {
     await expect(menu).toContainText(`${expectedCredits} cr`)
   })
 
-  test('the footer names elements without a reference image', async ({ page }) => {
+  test('the footer names shot-bound elements without a reference image, excluding unbound ones', async ({
+    page,
+  }) => {
     const projectId = await seedProject()
-    await seedElement(projectId, { name: 'No Ref One', type: 'prop' })
-    await seedElement(projectId, { name: 'No Ref Two', type: 'prop' })
+    const shot = await seedShot(projectId)
+    const boundOne = await seedElement(projectId, { name: 'No Ref One', type: 'prop' })
+    const boundTwo = await seedElement(projectId, { name: 'No Ref Two', type: 'prop' })
+    await seedElement(projectId, { name: 'Unbound No Ref', type: 'prop' })
+    await admin.from('shot_elements').insert([
+      { shot_id: shot, element_id: boundOne },
+      { shot_id: shot, element_id: boundTwo },
+    ])
 
     await page.goto(`/projects/${projectId}/workbench?tab=assets`)
 
-    const footerWarning = page.getByTestId('assets-footer-warning')
+    const footerWarning = page.getByTestId('workbench-footer-warning')
     await expect(footerWarning).toContainText('2 elements without a reference image')
     await expect(footerWarning).toContainText('No Ref One')
     await expect(footerWarning).toContainText('No Ref Two')
+    await expect(footerWarning).not.toContainText('Unbound No Ref')
   })
 
   // C5 Task 8: once furthest_step reaches the storyboard boundary, Shots goes read-only
