@@ -2,6 +2,7 @@ import { notFound, redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { WorkbenchShell } from '@/components/workbench-shell'
 import { ShotsProvider } from './_components/shots-context'
+import { AssetsProvider } from './_components/assets-context'
 import { WorkbenchHeader } from './_components/workbench-header'
 import { WorkbenchTabs, type WorkbenchTab } from './_components/workbench-tabs'
 import { ShotsTab } from './_components/shots-tab'
@@ -9,12 +10,14 @@ import { AssetsTab } from './_components/assets-tab'
 import { ScriptTab } from './_components/script-tab'
 import { WorkbenchFooter } from './_components/workbench-footer'
 import { buildAgentMessages } from './_components/build-agent-messages'
+import { getElementGenerateAffordability } from './actions'
+import { getProjectElementsForUser, type ElementGroup } from '@/lib/elements/read'
 import type { DisplayDialogueLine, DisplayShot } from './_components/types'
 import type { Tables } from '@/lib/database.types'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
 import type { CameraOrigin } from '@/lib/config/enums'
 
-type ElementRow = Tables<'elements'>
+type ElementRow = Pick<Tables<'elements'>, 'id' | 'name' | 'type' | 'status' | 'reference_image_path'>
 type ShotRow = Tables<'shots'> & { shot_elements: { elements: ElementRow | null }[] }
 type ShotDialogueRow = Pick<
   Tables<'shot_dialogue'>,
@@ -76,7 +79,8 @@ export default async function WorkbenchPage({
 
   const [
     { data: shotsRows },
-    { data: elementsRows },
+    elementsResult,
+    affordability,
     { data: dialogueRows },
     { data: messageRows },
     { data: generation },
@@ -88,7 +92,12 @@ export default async function WorkbenchPage({
       .select('*, shot_elements(elements(id, name, type, status, reference_image_path))')
       .eq('project_id', projectId)
       .order('order_index', { ascending: true }),
-    supabase.from('elements').select('*').eq('project_id', projectId),
+    // Same grouped-and-signed read the Assets tab's client-driven refresh reuses (see
+    // workbench/actions.ts's getProjectElements comment) - one call serves both the
+    // shots/dialogue join below and the Assets tab's initial render, so there is no
+    // second raw `elements` query.
+    getProjectElementsForUser(supabase, projectId, user.id),
+    getElementGenerateAffordability(),
     supabase
       .from('shot_dialogue')
       .select('id, shot_id, element_id, line, order_index')
@@ -123,7 +132,19 @@ export default async function WorkbenchPage({
       .eq('operation', 'agent_turn'),
   ])
 
-  const elementsById = new Map((elementsRows ?? []).map((el) => [el.id, el]))
+  const elementGroups: ElementGroup[] = elementsResult.success ? elementsResult.groups : []
+  const elementsExpiresAt = elementsResult.success ? elementsResult.expires_at : new Date().toISOString()
+  if (!elementsResult.success) {
+    console.error(`[workbench] Failed to load elements for project ${projectId}:`, elementsResult.error)
+  }
+  const elementsById = new Map<string, ElementRow>(
+    elementGroups
+      .flatMap((group) => group.elements)
+      .map((el) => [
+        el.id,
+        { id: el.id, name: el.name, type: el.type, status: el.status, reference_image_path: el.reference_image_path },
+      ])
+  )
   const dialogueByShot = groupDialogueByShot(dialogueRows ?? [], elementsById)
   const typedShotsRows = (shotsRows ?? []) as unknown as ShotRow[]
 
@@ -185,18 +206,26 @@ export default async function WorkbenchPage({
       initialFurthestStep={project.furthest_step}
       estimatedCredits={estimatedCredits}
     >
-      <WorkbenchShell
-        project={project}
-        agentMessages={agentMessages}
-        header={<WorkbenchHeader project={project} />}
-        footer={<WorkbenchFooter />}
+      <AssetsProvider
+        projectId={projectId}
+        initialGroups={elementGroups}
+        initialExpiresAt={elementsExpiresAt}
+        generateCredits={affordability.generateCredits}
+        hasInsufficientBalance={affordability.hasInsufficientBalance}
       >
-        <WorkbenchTabs projectId={projectId} activeTab={activeTab}>
-          {activeTab === 'shots' && <ShotsTab />}
-          {activeTab === 'assets' && <AssetsTab />}
-          {activeTab === 'script' && <ScriptTab />}
-        </WorkbenchTabs>
-      </WorkbenchShell>
+        <WorkbenchShell
+          project={project}
+          agentMessages={agentMessages}
+          header={<WorkbenchHeader project={project} />}
+          footer={<WorkbenchFooter activeTab={activeTab} />}
+        >
+          <WorkbenchTabs projectId={projectId} activeTab={activeTab}>
+            {activeTab === 'shots' && <ShotsTab />}
+            {activeTab === 'assets' && <AssetsTab />}
+            {activeTab === 'script' && <ScriptTab />}
+          </WorkbenchTabs>
+        </WorkbenchShell>
+      </AssetsProvider>
     </ShotsProvider>
   )
 }

@@ -23,6 +23,14 @@ import {
   type ElementDeleteResult,
 } from '@/lib/elements/write'
 import type { ElementType } from '@/lib/config/enums'
+import { creditsFor } from '@/lib/config/credits'
+// Value import, not type-only: this is a genuine new read call site (Assets-tab
+// Generate-affordance), not a billing write - see tests/ledger.spec.ts's "exactly the
+// agent/shots/camera/elements wiring imports this module" hygiene test, whose allowlist
+// this file has been added to for exactly this getBalance call. Safe here because this
+// file is a 'use server' module that only ever runs inside Next's server bundle, same
+// reasoning as every other legitimate importer of credits/ledger.ts.
+import { getBalance } from '@/lib/credits/ledger'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -454,6 +462,27 @@ export async function getProjectElements(projectId: string): Promise<GetProjectE
   if (!user) return { success: false, error: 'Not authenticated' }
 
   return getProjectElementsForUser(supabase, projectId, user.id)
+}
+
+// Read-only affordance check for the Assets tab's Generate controls: the per-element
+// price (never hardcoded - CLAUDE.md) plus whether the user's current balance covers
+// it. This never reserves, spends, or writes anything - runElementReferenceGeneration
+// (the actual paid call) still runs its own balance gate independently; this is purely
+// so the UI can disable Generate proactively instead of only reacting to a 402.
+export async function getElementGenerateAffordability(): Promise<{
+  generateCredits: number
+  hasInsufficientBalance: boolean
+}> {
+  const generateCredits = creditsFor({ step: 'workbench', operation: 'generate_element_reference', quantity: 1 })
+
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { generateCredits, hasInsufficientBalance: true }
+
+  const balance = await getBalance(user.id)
+  return { generateCredits, hasInsufficientBalance: balance < generateCredits }
 }
 
 // Recovers one broken reference image without refetching the whole batch.

@@ -1,0 +1,132 @@
+'use client'
+
+import { useState } from 'react'
+import type { ElementType } from '@/lib/config/enums'
+import {
+  ELEMENT_TYPE_LABELS,
+  ELEMENT_TYPE_DESCRIPTIONS,
+  ELEMENT_TYPE_SINGULAR_LABELS,
+} from '@/lib/element-type-labels'
+import { createElement } from '../actions'
+import { useAssets, useElementGroup } from './assets-context'
+import { ElementCard } from './element-card'
+
+function AddIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+      <rect x="5.75" y="1" width="1.5" height="11" fill="currentColor" />
+      <rect x="1" y="5.75" width="11" height="1.5" fill="currentColor" />
+    </svg>
+  )
+}
+
+// One footprint, two contents: the dashed "Add {type}" card, or (while creating) the
+// same grid cell as a name/description form. No modal, no drawer - canvas: "2. Inline
+// create and edit."
+function AddElementCard({ type }: { type: ElementType }) {
+  const { projectId, addElementLocal } = useAssets()
+  const [creating, setCreating] = useState(false)
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  function reset() {
+    setCreating(false)
+    setName('')
+    setDescription('')
+    setError(null)
+  }
+
+  async function handleAdd() {
+    setPending(true)
+    setError(null)
+    const result = await createElement(projectId, name, description.trim() || null, type)
+    setPending(false)
+    if (!result.success) {
+      setError(result.error)
+      return
+    }
+    addElementLocal(result.element)
+    reset()
+  }
+
+  if (!creating) {
+    return (
+      <button
+        type="button"
+        data-testid="add-element-card"
+        onClick={() => setCreating(true)}
+        className="flex min-h-[120px] cursor-pointer flex-col items-center justify-center gap-[7px] rounded-control border border-dashed border-border-strong text-text-tertiary hover:border-accent hover:bg-accent-wash hover:text-accent"
+      >
+        <AddIcon />
+        <span className="text-small">Add {ELEMENT_TYPE_SINGULAR_LABELS[type]}</span>
+      </button>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-[8px] rounded-control border border-accent bg-bg-surface p-[10px] shadow-[0_0_0_3px_rgba(91,91,214,0.18)]">
+      <span className="font-mono text-mono uppercase tracking-[0.06em] text-text-tertiary">
+        New {ELEMENT_TYPE_SINGULAR_LABELS[type]}
+      </span>
+      <input
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder={`${ELEMENT_TYPE_SINGULAR_LABELS[type].charAt(0).toUpperCase()}${ELEMENT_TYPE_SINGULAR_LABELS[type].slice(1)} name`}
+        className="h-8 rounded-control border border-accent bg-bg-canvas px-[9px] text-control outline-none"
+      />
+      <textarea
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        placeholder="Description — what should it look like?"
+        rows={3}
+        className="min-h-[86px] resize-none rounded-control border border-border-strong bg-bg-canvas p-[8px_9px] text-meta leading-[1.45] outline-none focus:border-accent"
+      />
+      {error && <span className="text-meta text-status-failed-fg">{error}</span>}
+      <div className="flex gap-[6px]">
+        <button
+          type="button"
+          onClick={handleAdd}
+          disabled={pending || !name.trim()}
+          className="flex h-[30px] flex-1 cursor-pointer items-center justify-center rounded-control border border-accent text-meta font-medium text-accent hover:bg-accent-wash disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {pending ? 'Adding…' : 'Add'}
+        </button>
+        <button
+          type="button"
+          onClick={reset}
+          disabled={pending}
+          className="flex h-[30px] flex-1 cursor-pointer items-center justify-center rounded-control border border-border-strong text-meta text-text-primary hover:bg-bg-inset disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export function ElementGroup({ type }: { type: ElementType }) {
+  const group = useElementGroup(type)
+
+  return (
+    <div className="flex flex-col gap-[10px]" data-testid="element-group" data-element-type={type}>
+      <div className="flex items-baseline gap-rc-xs">
+        <span className="text-label font-medium uppercase tracking-label text-text-tertiary">
+          {ELEMENT_TYPE_LABELS[type]}
+        </span>
+        <span className="font-mono text-mono text-text-tertiary">{group.count}</span>
+        <span className="text-small text-text-tertiary">{ELEMENT_TYPE_DESCRIPTIONS[type]}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-rc-sm sm:grid-cols-4">
+        {group.elements.map((element) => (
+          <ElementCard key={element.id} element={element} groupType={type} />
+        ))}
+        {/* Style is generated by the shot pipeline, never user-created - see
+            src/lib/elements/write.ts's CREATABLE_ELEMENT_TYPES. No add card here. */}
+        {type !== 'style' && <AddElementCard type={type} />}
+      </div>
+    </div>
+  )
+}

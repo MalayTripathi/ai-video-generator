@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useShots } from './shots-context'
+import { useAssets } from './assets-context'
 
 export type WorkbenchTab = 'shots' | 'assets' | 'script'
 
@@ -15,7 +16,7 @@ export function WorkbenchTabs({
   children: React.ReactNode
 }) {
   const { shots } = useShots()
-  const elementCount = new Set(shots.flatMap((shot) => shot.elements.map((el) => el.id))).size
+  const { elementCount } = useAssets()
   const tabs: { key: WorkbenchTab; label: string; count: number | null }[] = [
     { key: 'shots', label: 'Shots', count: shots.length },
     { key: 'assets', label: 'Assets', count: elementCount },

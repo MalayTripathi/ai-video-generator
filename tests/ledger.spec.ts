@@ -371,7 +371,7 @@ test.describe('module hygiene', () => {
     expect(contents).not.toMatch(/\.delete\(/)
   })
 
-  test('exactly the agent/shots/camera/elements wiring imports this module - nothing else', async () => {
+  test('exactly the agent/shots/camera/elements wiring plus the Assets-tab affordance read imports this module - nothing else', async () => {
     // Task 5 (wire agent_turn to the ledger) was this module's first legitimate
     // caller; Task 6 (wire generate_shots and derive_camera) added two more of the
     // same shape, plus a fourth (generate_element_reference, the first non-Claude
@@ -384,8 +384,14 @@ test.describe('module hygiene', () => {
     // dependency (confirmed: tests that import a logic.ts directly, like
     // tests/agent-turn.spec.ts/tests/shot-generation.spec.ts/
     // tests/camera-derivation.spec.ts, do so from plain Node with no "react-server"
-    // condition and do not throw). Any OTHER importer means a second, unreviewed call
-    // site.
+    // condition and do not throw).
+    //
+    // C5 Task 7 (Assets tab UI) added a ninth: workbench/actions.ts's
+    // getElementGenerateAffordability, a read-only getBalance call so the Assets tab
+    // can disable Generate proactively instead of only reacting to a 402 - it never
+    // reserves, spends, or writes. It's a 'use server' module in the same server
+    // bundle as every route above, so the same safety reasoning applies. Any OTHER
+    // importer beyond these nine means a second, unreviewed call site.
     const srcDir = path.resolve(__dirname, '../src')
     const ownFile = path.resolve(__dirname, '../src/lib/credits/ledger.ts')
     const expectedImporters = [
@@ -403,6 +409,7 @@ test.describe('module hygiene', () => {
         __dirname,
         '../src/app/api/projects/[id]/elements/[elementId]/reference/generate/route.ts'
       ),
+      path.resolve(__dirname, '../src/app/(app)/projects/[id]/workbench/actions.ts'),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []

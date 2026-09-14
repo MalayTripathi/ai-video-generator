@@ -10,6 +10,7 @@ export type ProjectElement = {
   name: string
   description: string | null
   type: ElementType
+  status: string
   reference_image_path: string | null
   reference_image_url: string | null
 }
@@ -44,7 +45,7 @@ export async function getProjectElementsForUser(
 ): Promise<GetProjectElementsResult> {
   const { data: rows, error } = await supabase
     .from('elements')
-    .select('id, name, description, type, reference_image_path, projects!inner(user_id)')
+    .select('id, name, description, type, status, reference_image_path, projects!inner(user_id)')
     .eq('project_id', projectId)
     .eq('projects.user_id', userId)
     .is('deleted_at', null)
@@ -81,6 +82,7 @@ export async function getProjectElementsForUser(
         name: row.name,
         description: row.description,
         type,
+        status: row.status,
         reference_image_path: row.reference_image_path,
         reference_image_url: row.reference_image_path ? (urlByPath.get(row.reference_image_path) ?? null) : null,
       }))

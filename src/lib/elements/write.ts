@@ -157,7 +157,7 @@ export async function createElementForUser(
   const { data, error } = await supabase
     .from('elements')
     .insert({ project_id: projectId, name: trimmedName, description: trimmedDescription, type })
-    .select('id, name, description, type, reference_image_path')
+    .select('id, name, description, type, status, reference_image_path')
     .single()
 
   if (error) {
@@ -180,6 +180,7 @@ export async function createElementForUser(
       name: data.name,
       description: data.description,
       type: data.type as ElementType,
+      status: data.status,
       reference_image_path: data.reference_image_path,
       reference_image_url: null,
     },
