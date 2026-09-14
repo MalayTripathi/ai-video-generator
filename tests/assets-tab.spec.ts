@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 import sharp from 'sharp'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
+import { stepIndex } from '../src/lib/config/pipeline'
 
 // C5 Task 7 - Assets tab UI. Business-logic coverage (create/rename/delete/bind-block,
 // upload/generate/remove, signed-URL batch+single re-sign) already lives in
@@ -238,5 +239,54 @@ test.describe('Assets tab', () => {
     await expect(footerWarning).toContainText('2 elements without a reference image')
     await expect(footerWarning).toContainText('No Ref One')
     await expect(footerWarning).toContainText('No Ref Two')
+  })
+
+  // C5 Task 8: once furthest_step reaches the storyboard boundary, Shots goes read-only
+  // but Assets stays fully live - reached from Step 3's element picker. Canvas: "12G
+  // Assets live, shots locked".
+  test('past the storyboard lock, Shots reads locked in the tab bar while Assets stays fully editable', async ({
+    page,
+  }) => {
+    const projectId = await seedProject({ furthest_step: stepIndex('storyboard') })
+    const elementId = await seedElement(projectId, { name: 'Pre-existing Prop', type: 'prop' })
+
+    await page.goto(`/projects/${projectId}/workbench?tab=assets`)
+
+    // The Shots tab item is still a real, clickable link (reading is never locked) but
+    // carries the locked treatment - tertiary ink, same class the canvas specifies.
+    const shotsTabLink = page.getByRole('link', { name: /Shots/ })
+    await expect(shotsTabLink).toHaveClass(/text-text-tertiary/)
+    await expect(shotsTabLink).toBeEnabled()
+
+    // The new banner explains the split, only on the Assets side.
+    await expect(page.getByText('Shots view only')).toBeVisible()
+    await expect(page.getByText(/Assets stay editable/)).toBeVisible()
+
+    // Real writes still succeed, server-side, in this state: create, rename, delete.
+    const propGroup = page.locator('[data-testid="element-group"][data-element-type="prop"]')
+    await propGroup.getByTestId('add-element-card').click()
+    await propGroup.getByPlaceholder('Prop name').fill('Added While Locked')
+    await propGroup.getByPlaceholder('Description — what should it look like?').fill('Created past the lock.')
+    await propGroup.getByRole('button', { name: 'Add' }).click()
+    await expect(elementCard(page, 'Added While Locked')).toBeVisible()
+    const { data: created } = await admin
+      .from('elements')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('name', 'Added While Locked')
+      .single()
+    expect(created).not.toBeNull()
+
+    const card = elementCard(page, 'Pre-existing Prop')
+    await card.getByText('Pre-existing Prop', { exact: true }).click()
+    await card.getByPlaceholder('Name').fill('Renamed While Locked')
+    await card.getByRole('button', { name: 'Save' }).click()
+    await expect(elementCard(page, 'Renamed While Locked')).toBeVisible()
+    await expect.poll(async () => (await readElement(elementId))?.name).toBe('Renamed While Locked')
+
+    await elementCard(page, 'Renamed While Locked').getByTestId('delete-element-trigger').click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete element' }).click()
+    await expect(elementCard(page, 'Renamed While Locked')).toHaveCount(0)
+    await expect.poll(async () => (await readElement(elementId))?.deleted_at).not.toBeNull()
   })
 })

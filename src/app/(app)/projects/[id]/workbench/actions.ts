@@ -71,6 +71,20 @@ async function loadOwnedShot(supabase: SupabaseServerClient, shotId: string, use
   return data
 }
 
+// Same boundary as deleteShotForUser's own inline check (see its comment on the three
+// canonical, independently-duplicated enforcement sites) - reused here so every direct
+// shot/dialogue field-save action in this file is refused by the same threshold, without
+// adding a fourth site that recomputes stepIndex('storyboard') inline at each call site.
+// A separate query, not the embedded projects!inner join, mirroring deleteShotForUser's
+// own shape.
+async function isWorkbenchLockedForProject(supabase: SupabaseServerClient, projectId: string): Promise<boolean> {
+  const { data: project } = await supabase.from('projects').select('furthest_step').eq('id', projectId).single()
+  return !!project && project.furthest_step >= stepIndex('storyboard')
+}
+
+const SHOTS_LOCKED_MESSAGE =
+  "This project's workbench is locked - later steps have already started, so shots can no longer be changed here."
+
 export async function updateShotVoiceOver(shotId: string, value: string): Promise<ShotFieldSaveResult> {
   const field: ShotField = 'voice_over'
   const supabase = await createClient()
@@ -81,6 +95,9 @@ export async function updateShotVoiceOver(shotId: string, value: string): Promis
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const trimmed = value.trim()
 
@@ -140,6 +157,9 @@ export async function updateShotVisualDescription(
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const trimmed = value.trim()
 
@@ -174,6 +194,9 @@ export async function updateShotDuration(shotId: string, value: number): Promise
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const rounded = Math.round(value * 10) / 10
   if (rounded === shot.duration_sec) return { field, success: true, unchanged: true }
@@ -215,6 +238,9 @@ async function updateCameraField(field: CameraField, shotId: string, value: stri
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const originColumn = CAMERA_ORIGIN_COLUMN[field]
   // Diff on the (value, origin) PAIR, not value alone: re-selecting the same value
@@ -265,6 +291,9 @@ export async function saveDialogueLine(input: {
     .eq('projects.user_id', user.id)
     .maybeSingle()
   if (!shot) return { success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const trimmedLine = input.line.trim()
 
@@ -322,11 +351,14 @@ export async function deleteDialogueLine(id: string, shotId: string): Promise<Di
 
   const { data: shot } = await supabase
     .from('shots')
-    .select('id, projects!inner(user_id)')
+    .select('id, project_id, projects!inner(user_id)')
     .eq('id', shotId)
     .eq('projects.user_id', user.id)
     .maybeSingle()
   if (!shot) return { success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const { error: deleteError } = await supabase
     .from('shot_dialogue')

@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { LockIcon } from './lock-icon'
 import { useShots } from './shots-context'
 import { useAssets } from './assets-context'
 
@@ -15,7 +16,7 @@ export function WorkbenchTabs({
   activeTab: WorkbenchTab
   children: React.ReactNode
 }) {
-  const { shots } = useShots()
+  const { shots, readOnly } = useShots()
   const { elementCount } = useAssets()
   const tabs: { key: WorkbenchTab; label: string; count: number | null }[] = [
     { key: 'shots', label: 'Shots', count: shots.length },
@@ -28,16 +29,20 @@ export function WorkbenchTabs({
       <div className="flex h-[42px] flex-none items-center gap-rc-lg border-b border-border-subtle px-rc-md">
         {tabs.map((tab) => {
           const active = tab.key === activeTab
+          const locked = tab.key === 'shots' && readOnly
           return (
             <Link
               key={tab.key}
               href={`/projects/${projectId}/workbench?tab=${tab.key}`}
               className={
                 active
-                  ? 'relative flex h-[42px] items-center text-control font-medium text-accent'
-                  : 'flex h-[42px] items-center text-control text-text-secondary hover:text-text-primary'
+                  ? 'relative flex h-[42px] items-center gap-[6px] text-control font-medium text-accent'
+                  : locked
+                    ? 'flex h-[42px] items-center gap-[6px] text-control text-text-tertiary hover:text-text-secondary'
+                    : 'flex h-[42px] items-center text-control text-text-secondary hover:text-text-primary'
               }
             >
+              {locked && <LockIcon width={9} height={11} />}
               {tab.label}
               {tab.count !== null && <span className="ml-[5px] font-normal text-text-tertiary">{tab.count}</span>}
               {active && (
