@@ -24,9 +24,6 @@ export function ShotsFooter({ elementNamesWithoutReference }: { elementNamesWith
         )}
       </div>
       <div className="flex flex-none gap-rc-sm">
-        <span className="flex h-9 cursor-not-allowed items-center rounded-control border border-border-strong px-rc-md text-control opacity-60">
-          Add references
-        </span>
         <span className="flex h-9 cursor-not-allowed items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent opacity-60">
           Generate Image Prompts
           <ArrowIcon />

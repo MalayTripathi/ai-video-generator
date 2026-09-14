@@ -3,8 +3,8 @@ const isProduction = process.env.NODE_ENV === 'production'
 // Provider selection for element reference images. A second provider (fal) can be
 // added later without touching call sites - they read modelsConfig.elements.provider,
 // never this env var directly.
-const imageProvider: 'openai' | 'fal' =
-  process.env.IMAGE_PROVIDER === 'fal' ? 'fal' : 'openai'
+const elementImageProvider: 'openai' | 'fal' =
+  process.env.ELEMENT_IMAGE_PROVIDER === 'fal' ? 'fal' : 'openai'
 
 // Video-model registry: duration bounds per model, for the Step 2 duration stepper to
 // clamp against once it's built. This registry will grow - adding a model is one entry
@@ -149,16 +149,16 @@ export const modelsConfig: ModelsConfig = {
     // reference image is a consistency anchor the model looks at, never a frame the
     // viewer sees, so paying for more than the cheapest tier is waste in production
     // exactly as it is in development.
-    provider: imageProvider,
+    provider: elementImageProvider,
     // The provider decides which env var fills `model` - there is no separate
-    // per-provider model field. fal isn't implemented yet (FALAI_IMAGE_MODEL is read
-    // so the env var audit is complete, but nothing consumes it until a fal
+    // per-provider model field. fal isn't implemented yet (FALAI_ELEMENT_IMAGE_MODEL
+    // is read so the env var audit is complete, but nothing consumes it until a fal
     // ImageGateway branch exists).
     model:
-      imageProvider === 'openai'
-        ? (process.env.OPENAI_IMAGE_MODEL ?? 'gpt-image-1-mini')
-        : (process.env.FALAI_IMAGE_MODEL ?? ''),
-    quality: process.env.OPENAI_IMAGE_QUALITY ?? 'low',
+      elementImageProvider === 'openai'
+        ? (process.env.OPENAI_ELEMENT_IMAGE_MODEL ?? 'gpt-image-1-mini')
+        : (process.env.FALAI_ELEMENT_IMAGE_MODEL ?? ''),
+    quality: process.env.OPENAI_ELEMENT_IMAGE_QUALITY ?? 'low',
     size: '1024x1024',
   },
   prompts: {
@@ -172,4 +172,17 @@ export const modelsConfig: ModelsConfig = {
     provider: 'fal',
     model: process.env.FAL_VIDEO_MODEL ?? VIDEO_MODELS[DEFAULT_VIDEO_MODEL].id,
   },
+}
+
+// generate_element_reference's credit price (PRICE_TABLE, src/lib/config/credits.ts)
+// is calibrated for gpt-image-1-mini at 'low' quality / 1024x1024 only - the price
+// can't see quality (keyed on step+operation), so a quality change here would
+// silently raise real provider cost while the charge stayed fixed. Fails at startup,
+// in every environment - a real cost-safety bug, not a dev-only concern.
+if (modelsConfig.elements.quality !== 'low') {
+  throw new Error(
+    `OPENAI_ELEMENT_IMAGE_QUALITY is "${modelsConfig.elements.quality}", but the ` +
+      `generate_element_reference credit price is calibrated for "low" only. Update ` +
+      `PRICE_TABLE (src/lib/config/credits.ts) before changing element image quality.`
+  )
 }

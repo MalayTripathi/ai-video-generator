@@ -183,6 +183,9 @@ export async function createElementForUser(
       status: data.status,
       reference_image_path: data.reference_image_path,
       reference_image_url: null,
+      // A brand-new element has no shot_elements/shot_dialogue rows yet - it can't be
+      // bound before it exists.
+      in_use: false,
     },
   }
 }

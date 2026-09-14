@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState, type ChangeEvent } from 'react'
+import { useRouter } from 'next/navigation'
 import type { ProjectElement } from '@/lib/elements/read'
 import type { ElementType } from '@/lib/config/enums'
 import { ELEMENT_TYPE_DOT_CLASSNAME } from '@/lib/element-type-labels'
@@ -38,6 +39,7 @@ function WarningIcon() {
 }
 
 export function ElementCard({ element, groupType }: { element: ProjectElement; groupType: ElementType }) {
+  const router = useRouter()
   const { projectId, updateElementLocal, generateCredits, hasInsufficientBalance } = useAssets()
   const [mode, setMode] = useState<'view' | 'editing'>('view')
   const [nameDraft, setNameDraft] = useState(element.name)
@@ -150,6 +152,10 @@ export function ElementCard({ element, groupType }: { element: ProjectElement; g
         status: 'ready',
       })
       setImageOp('idle')
+      // Refreshes the rail's spend figures and this tab's balance/affordability
+      // props in one round trip - neither holds its own client state, so a fresh RSC
+      // payload is all either needs.
+      router.refresh()
     } catch {
       setFailedSource('generate')
       setImageError("Couldn't generate")
@@ -268,9 +274,9 @@ export function ElementCard({ element, groupType }: { element: ProjectElement; g
               <button
                 type="button"
                 onClick={() => setChangeMenuOpen((v) => !v)}
-                className="cursor-pointer rounded-[3px] bg-[rgba(251,251,254,0.9)] px-[6px] py-[2px] text-chip text-text-secondary hover:text-text-primary"
+                className="cursor-pointer rounded-[3px] bg-[rgba(251,251,254,0.9)] px-[5px] py-[2px] text-[10.5px] uppercase tracking-[0.06em] text-text-secondary hover:bg-accent-wash-strong hover:text-accent"
               >
-                Change
+                Edit
               </button>
               {changeMenuOpen && (
                 <ChangeMenu
@@ -327,9 +333,23 @@ export function ElementCard({ element, groupType }: { element: ProjectElement; g
           <>
             <span className="flex items-center gap-[6px] text-control font-medium tracking-[-0.01em]">
               <span className={`h-[5px] w-[5px] flex-none rounded-full ${ELEMENT_TYPE_DOT_CLASSNAME[groupType]}`} />
-              <button type="button" onClick={openEdit} className="cursor-pointer truncate text-left hover:underline">
+              <button
+                type="button"
+                onClick={openEdit}
+                className="min-w-0 flex-1 cursor-pointer truncate text-left hover:underline"
+              >
                 {element.name}
               </button>
+              {/* Answers "will deleting this be refused?" before the person tries -
+                  same shot_elements/shot_dialogue bindings deleteElementForUser blocks
+                  on, not a second query (see ProjectElement.in_use). */}
+              <span
+                className={`flex-none rounded-badge px-rc-xs py-rc-3xs text-chip font-medium ${
+                  element.in_use ? 'bg-status-active-bg text-status-active-fg' : 'bg-status-draft-bg text-text-secondary'
+                }`}
+              >
+                {element.in_use ? 'In use' : 'Not used'}
+              </span>
             </span>
             <button
               type="button"

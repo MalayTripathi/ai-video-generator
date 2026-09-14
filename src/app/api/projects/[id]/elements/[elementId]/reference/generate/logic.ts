@@ -1,17 +1,22 @@
 import type { createClient } from '@/lib/supabase/server'
 import type { Json } from '@/lib/database.types'
 import type { ElementType } from '@/lib/config/enums'
-import type { ImageGateway } from '@/lib/images/gateway'
+import { ImageLiveCallsBlockedError, type ImageGateway } from '@/lib/images/gateway'
 import { modelsConfig } from '@/lib/config/models'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 import { estimateInputTokens, quoteOpenAiImageCall, reserveUsage, settleUsage } from '@/lib/usage'
 import { creditsFor, InsufficientCreditsError } from '@/lib/config/credits'
-// Type-only: credits/ledger.ts transitively imports the service-role Supabase client
-// module, which imports 'server-only' - a VALUE import here would crash any test that
-// imports this module directly, same reason runShotGeneration/runCameraDerivation's
-// logic.ts files do this for recordFixedSpend. getBalance is DI'd for the identical
-// reason - it also only lives in credits/ledger.ts.
-import type { recordFixedSpend, getBalance } from '@/lib/credits/ledger'
+// Type-only: credits/ledger.ts and credits/signup-grant.ts both transitively import
+// the service-role Supabase client module, which imports 'server-only' - a VALUE
+// import here would crash any test that imports this module directly, same reason
+// runShotGeneration/runCameraDerivation's logic.ts files do this for
+// recordFixedSpend. ensureSignupGrant is DI'd for the identical reason. getBalance's
+// own module (credits/balance.ts) is service-role-free, so it could be a value
+// import, but stays type-only here too - this file never calls it directly, only via
+// the injected param, same as the other two.
+import type { recordFixedSpend } from '@/lib/credits/ledger'
+import type { getBalance } from '@/lib/credits/balance'
+import type { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import {
   claimGeneration,
   persistGenerationPayload,
@@ -26,15 +31,32 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
 const SIGNED_URL_EXPIRES_IN_SECONDS = 3600
 
+// error is always the raw diagnostic text (err.message, a Postgres/storage error, etc.)
+// - this is what settleGeneration/settleUsage persist, the same way usage.error always
+// has. It is never the user-facing copy; a classified 500 additionally carries `code`,
+// and mapping code -> safe copy happens only in route.ts, at the boundary where the
+// HTTP response is built - never here, and never written to either table.
 export type ElementReferenceGenerationResult =
   | { ok: true; status: 200; data: { path: string; url: string } }
   | { ok: false; status: 404; error: string }
   | { ok: false; status: 409; error: string }
   | { ok: false; status: 402; error: string }
-  | { ok: false; status: 500; error: string }
+  | { ok: false; status: 500; error: string; code?: GenerationFailureCode }
 
 const BLOCKED_REASON_MESSAGES: Partial<Record<BlockedReason, string>> = {
   already_generating: 'A reference image is already generating for this element.',
+}
+
+// Classification only - never a message. Anything provider/SDK-shaped (including
+// ImageLiveCallsBlockedError, whose message names an env var) must never reach the
+// client, but the raw text is exactly what generations.error/usage.error need to keep
+// as the diagnostic record - see route.ts's GENERATION_FAILURE_MESSAGES for the copy
+// this code maps to on the way out.
+export type GenerationFailureCode = 'blocked' | 'provider_error'
+
+export function classifyGenerationFailure(err: unknown): GenerationFailureCode {
+  if (err instanceof ImageLiveCallsBlockedError) return 'blocked'
+  return 'provider_error'
 }
 
 /**
@@ -90,8 +112,10 @@ export async function runElementReferenceGeneration(params: {
   attemptId: string
   recordFixedSpend: typeof recordFixedSpend
   getBalance: typeof getBalance
+  ensureSignupGrant: typeof ensureSignupGrant
 }): Promise<ElementReferenceGenerationResult> {
-  const { gateway, supabase, projectId, elementId, userId, attemptId, recordFixedSpend, getBalance } = params
+  const { gateway, supabase, projectId, elementId, userId, attemptId, recordFixedSpend, getBalance, ensureSignupGrant } =
+    params
 
   const element = await loadOwnedElement(supabase, elementId, userId)
   if (!element || element.project_id !== projectId) {
@@ -174,6 +198,10 @@ export async function runElementReferenceGeneration(params: {
 
   try {
     const required = creditsFor({ step: 'workbench', operation: 'generate_element_reference', quantity: 1 })
+    // Defensive: AppLayout already ensures this on every page load, but a client
+    // whose first contact is this API call (not a page render) needs it here too -
+    // idempotent, costs one existence check when the row already exists.
+    await ensureSignupGrant(userId)
     const balance = await getBalance(userId)
     if (balance < required) {
       throw new InsufficientCreditsError(required, balance)
@@ -267,11 +295,16 @@ export async function runElementReferenceGeneration(params: {
     return outcome
   } catch (err) {
     caughtError = err
-    outcome = {
-      ok: false,
-      status: err instanceof InsufficientCreditsError ? 402 : 500,
-      error: err instanceof Error ? err.message : 'Unexpected error during reference generation',
-    }
+    console.error('[elements] reference generation failed', err)
+    outcome =
+      err instanceof InsufficientCreditsError
+        ? { ok: false, status: 402, error: err.message }
+        : {
+            ok: false,
+            status: 500,
+            error: err instanceof Error ? err.message : 'Unexpected error during reference generation',
+            code: classifyGenerationFailure(err),
+          }
     return outcome
   } finally {
     // SETTLE. Never clearPayload here - unlike a Claude max_tokens truncation, there is

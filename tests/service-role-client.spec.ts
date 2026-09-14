@@ -70,9 +70,15 @@ test.describe('service-role client isolation', () => {
     const ownFile = path.resolve(__dirname, '../src/lib/supabase/service-role.ts')
     // src/lib/credits/ledger.ts (Task 4) is this client's first legitimate consumer -
     // every credit_ledger write goes through it, since that table has no authenticated
-    // write policy by design. Any OTHER importer means a second RLS-bypassing call
-    // site nothing has reviewed for the user_id-scoping discipline this client demands.
-    const expectedImporter = path.resolve(__dirname, '../src/lib/credits/ledger.ts')
+    // write policy by design. src/lib/credits/signup-grant.ts (Task 11) is the second -
+    // the signup-grant bootstrap is also a write, split out of ledger.ts specifically so
+    // a balance READ never has to import this client at all. Any OTHER importer means a
+    // second RLS-bypassing call site nothing has reviewed for the user_id-scoping
+    // discipline this client demands.
+    const expectedImporters = [
+      path.resolve(__dirname, '../src/lib/credits/ledger.ts'),
+      path.resolve(__dirname, '../src/lib/credits/signup-grant.ts'),
+    ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []
       for (const entry of readdirSync(dir)) {
@@ -87,6 +93,6 @@ test.describe('service-role client isolation', () => {
       }
       return hits
     }
-    expect(findImporters(srcDir)).toEqual([expectedImporter])
+    expect(findImporters(srcDir).sort()).toEqual(expectedImporters)
   })
 })

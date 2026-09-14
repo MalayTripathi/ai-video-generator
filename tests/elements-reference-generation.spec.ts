@@ -6,7 +6,10 @@ import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { successImageGateway, throwingImageGateway } from './helpers/openai-fakes'
 import { runElementReferenceGeneration } from '../src/app/api/projects/[id]/elements/[elementId]/reference/generate/logic'
-import type { recordFixedSpend, getBalance as getBalanceType } from '../src/lib/credits/ledger'
+import type { recordFixedSpend } from '../src/lib/credits/ledger'
+import type { getBalance as getBalanceType } from '../src/lib/credits/balance'
+import type { ensureSignupGrant as ensureSignupGrantType } from '../src/lib/credits/signup-grant'
+import { SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
 
 // Same child-process dispatcher as tests/fixed-price-ledger.spec.ts / tests/ledger.spec.ts
 // - credit_ledger.ts transitively imports 'server-only', so it can't be imported
@@ -58,12 +61,42 @@ const realRecordFixedSpend: typeof recordFixedSpend = async (params) => {
   }
 }
 
+// getBalance (credits/balance.ts) is a pure read on the ordinary, cookie-scoped
+// Supabase client - it has no service-role dependency to dodge, but it also can't run
+// outside a real Next.js request (next/headers's cookies() needs that context, which
+// a bare Node child process doesn't have). runElementReferenceGeneration only ever
+// calls it through this injected param, so the fake below reads the same rows the
+// real implementation would, directly via the admin client already used to seed and
+// assert on these tests.
 const realGetBalance: typeof getBalanceType = async (userId) => {
-  const result = await runLedgerCall('getBalance', userId)
-  if (!result.ok) {
-    throw new Error(`getBalance failed: ${result.errorName}: ${result.message}`)
+  const { data, error } = await admin.from('credit_ledger').select('delta').eq('user_id', userId)
+  if (error) {
+    throw new Error(`getBalance failed: ${error.message}`)
   }
-  return result.result as number
+  return data.reduce((sum, row) => sum + row.delta, 0)
+}
+
+// ensureSignupGrant (credits/signup-grant.ts) is service-role and would need the same
+// child-process dispatch as recordFixedSpend, but these tests don't need real
+// concurrency coverage of it (that's ledger.spec.ts's job) - just its effect, so a
+// fake that mirrors its idempotent insert-if-missing semantics via the admin client
+// is enough.
+const realEnsureSignupGrant: typeof ensureSignupGrantType = async (userId) => {
+  const { data: existing } = await admin
+    .from('credit_ledger')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('dedupe_key', `signup_grant:${userId}`)
+    .maybeSingle()
+  if (existing) return
+
+  await admin.from('credit_ledger').insert({
+    user_id: userId,
+    kind: 'signup_grant',
+    delta: SIGNUP_GRANT_CREDITS,
+    dedupe_key: `signup_grant:${userId}`,
+    price_version: 'test',
+  })
 }
 
 async function seedProject(userId: string, overrides: Record<string, unknown> = {}) {
@@ -129,6 +162,18 @@ async function readUsageRows(projectId: string) {
   return data ?? []
 }
 
+async function readGeneration(projectId: string, elementId: string) {
+  const { data, error } = await admin
+    .from('generations')
+    .select('error')
+    .eq('project_id', projectId)
+    .eq('operation', 'generate_element_reference')
+    .eq('element_id', elementId)
+    .single()
+  expect(error).toBeNull()
+  return data!
+}
+
 async function readElement(elementId: string) {
   const { data, error } = await admin
     .from('elements')
@@ -146,10 +191,13 @@ async function listObjectsUnder(userId: string, projectId: string, elementId: st
 }
 
 /** Drains a fresh test user's balance down to `remaining` credits via a synthetic
- * spend row - a fresh createTestSession() user always starts at SIGNUP_GRANT_CREDITS,
- * so the 402 test needs a deliberate, isolated drain rather than sharing primary's
- * balance (which every other spec's fixed user also spends against). */
+ * spend row - a fresh createTestSession() user has no ledger rows until granted, so
+ * this seeds the grant first (getBalance no longer does that lazily - see
+ * realEnsureSignupGrant above), then drains it. A deliberate, isolated drain rather
+ * than sharing primary's balance (which every other spec's fixed user also spends
+ * against). */
 async function drainBalanceTo(userId: string, remaining: number): Promise<void> {
+  await realEnsureSignupGrant(userId)
   const balance = await realGetBalance(userId)
   const { error } = await admin.from('credit_ledger').insert({
     user_id: userId,
@@ -183,6 +231,7 @@ test.describe('generate_element_reference - balance gate', () => {
         attemptId: crypto.randomUUID(),
         recordFixedSpend: realRecordFixedSpend,
         getBalance: realGetBalance,
+        ensureSignupGrant: realEnsureSignupGrant,
       })
 
       expect(result.ok).toBe(false)
@@ -214,6 +263,7 @@ test.describe('generate_element_reference - one call, no retry', () => {
       attemptId: crypto.randomUUID(),
       recordFixedSpend: realRecordFixedSpend,
       getBalance: realGetBalance,
+      ensureSignupGrant: realEnsureSignupGrant,
     })
 
     expect(result.ok).toBe(true)
@@ -234,6 +284,7 @@ test.describe('generate_element_reference - one call, no retry', () => {
       attemptId: crypto.randomUUID(),
       recordFixedSpend: realRecordFixedSpend,
       getBalance: realGetBalance,
+      ensureSignupGrant: realEnsureSignupGrant,
     })
 
     expect(result.ok).toBe(false)
@@ -252,6 +303,36 @@ test.describe('generate_element_reference - one call, no retry', () => {
     expect(element.status).toBe('failed')
     expect(element.reference_image_path).toBeNull()
   })
+
+  test('a classified failure (blocked or generic) writes the raw diagnostic text to generations.error and usage, never the mapped copy the client sees', async () => {
+    const projectId = await seedProject(primary.user.id)
+    const elementId = await seedElement(projectId)
+    const gateway = throwingImageGateway('simulated OpenAI failure: rate limited')
+
+    const result = await runElementReferenceGeneration({
+      gateway,
+      supabase: admin,
+      projectId,
+      elementId,
+      userId: primary.user.id,
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: realRecordFixedSpend,
+      getBalance: realGetBalance,
+      ensureSignupGrant: realEnsureSignupGrant,
+    })
+
+    expect(result.ok).toBe(false)
+    // result.error (what runElementReferenceGeneration itself returns) is the raw
+    // text too - mapping to safe, fixed copy is route.ts's job alone, never logic.ts's.
+    if (!result.ok) expect(result.error).toContain('simulated OpenAI failure: rate limited')
+
+    const generation = await readGeneration(projectId, elementId)
+    expect(generation.error).toContain('simulated OpenAI failure: rate limited')
+
+    const usageRows = await readUsageRows(projectId)
+    expect(usageRows.length).toBe(1)
+    expect(JSON.stringify(usageRows[0].raw_usage)).toContain('simulated OpenAI failure: rate limited')
+  })
 })
 
 test.describe('generate_element_reference - success', () => {
@@ -269,6 +350,7 @@ test.describe('generate_element_reference - success', () => {
       attemptId: crypto.randomUUID(),
       recordFixedSpend: realRecordFixedSpend,
       getBalance: realGetBalance,
+      ensureSignupGrant: realEnsureSignupGrant,
     })
 
     expect(result.ok).toBe(true)
@@ -308,6 +390,7 @@ test.describe('generate_element_reference - image-prompt staleness', () => {
       attemptId: crypto.randomUUID(),
       recordFixedSpend: realRecordFixedSpend,
       getBalance: realGetBalance,
+      ensureSignupGrant: realEnsureSignupGrant,
     })
 
     expect(result.ok).toBe(true)
@@ -330,6 +413,7 @@ test.describe('generate_element_reference - image-prompt staleness', () => {
       attemptId: crypto.randomUUID(),
       recordFixedSpend: realRecordFixedSpend,
       getBalance: realGetBalance,
+      ensureSignupGrant: realEnsureSignupGrant,
     })
 
     expect(result.ok).toBe(true)
@@ -378,6 +462,7 @@ test.describe('generate_element_reference - recovery', () => {
       attemptId: crypto.randomUUID(),
       recordFixedSpend: realRecordFixedSpend,
       getBalance: realGetBalance,
+      ensureSignupGrant: realEnsureSignupGrant,
     })
 
     expect(result.ok).toBe(true)
@@ -407,6 +492,7 @@ test.describe('generate_element_reference - regeneration', () => {
       attemptId: crypto.randomUUID(),
       recordFixedSpend: realRecordFixedSpend,
       getBalance: realGetBalance,
+      ensureSignupGrant: realEnsureSignupGrant,
     })
     expect(first.ok).toBe(true)
     const firstPath = first.ok ? first.data.path : null
@@ -422,6 +508,7 @@ test.describe('generate_element_reference - regeneration', () => {
       attemptId: crypto.randomUUID(),
       recordFixedSpend: realRecordFixedSpend,
       getBalance: realGetBalance,
+      ensureSignupGrant: realEnsureSignupGrant,
     })
     expect(second.ok).toBe(true)
     const secondPath = second.ok ? second.data.path : null
@@ -455,6 +542,7 @@ test.describe('generate_element_reference - independent per-element claims', () 
         attemptId: crypto.randomUUID(),
         recordFixedSpend: realRecordFixedSpend,
         getBalance: realGetBalance,
+        ensureSignupGrant: realEnsureSignupGrant,
       }),
       runElementReferenceGeneration({
         gateway: successImageGateway(),
@@ -465,6 +553,7 @@ test.describe('generate_element_reference - independent per-element claims', () 
         attemptId: crypto.randomUUID(),
         recordFixedSpend: realRecordFixedSpend,
         getBalance: realGetBalance,
+        ensureSignupGrant: realEnsureSignupGrant,
       }),
     ])
 

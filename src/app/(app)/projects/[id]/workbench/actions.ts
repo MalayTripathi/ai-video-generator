@@ -24,13 +24,13 @@ import {
 } from '@/lib/elements/write'
 import type { ElementType } from '@/lib/config/enums'
 import { creditsFor } from '@/lib/config/credits'
-// Value import, not type-only: this is a genuine new read call site (Assets-tab
-// Generate-affordance), not a billing write - see tests/ledger.spec.ts's "exactly the
-// agent/shots/camera/elements wiring imports this module" hygiene test, whose allowlist
-// this file has been added to for exactly this getBalance call. Safe here because this
-// file is a 'use server' module that only ever runs inside Next's server bundle, same
-// reasoning as every other legitimate importer of credits/ledger.ts.
-import { getBalance } from '@/lib/credits/ledger'
+// The balance module is a pure read on the ordinary authenticated client - safe to
+// import here even though this file is dynamically imported directly by some
+// Playwright specs (tests/shot-deletion.spec.ts) outside Next's server bundle. The
+// ledger's write functions and the signup-grant bootstrap both transitively pull in
+// the service-role client's 'server-only' guard and must never be imported here for
+// that reason.
+import { getBalance } from '@/lib/credits/balance'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 

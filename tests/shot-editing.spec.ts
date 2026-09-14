@@ -692,15 +692,11 @@ test.describe('shot card editing', () => {
 // updateCameraField/saveDialogueLine/deleteDialogueLine had no server-side lock check at
 // all before this task - only the UI hid their controls (server-side coverage now lives
 // in actions.ts's isWorkbenchLockedForProject helper, added alongside the UI change
-// below). Directly importing workbench/actions.ts from a test (the way
-// shot-deletion.spec.ts calls deleteShotForUser) currently crashes outside a real Next
-// request - actions.ts now statically pulls in getBalance from credits/ledger.ts, which
-// chains into the 'server-only'-marked service-role.ts; that's a pre-existing break (it
-// already breaks shot-deletion.spec.ts's own boundary test at HEAD) unrelated to this
-// task and intentionally left unfixed here. So this asserts through the real browser
-// instead: once locked, every one of these fields/controls renders inert and no write is
-// reachable from the UI at all - the same "view only" wiring exercised at a coarser grain
-// by shots-tab.tsx's ReadOnlyBanner (already covered in agent-chat-panel.spec.ts).
+// below). This asserts through the real browser rather than a direct import of
+// workbench/actions.ts (the way shot-deletion.spec.ts calls deleteShotForUser): once
+// locked, every one of these fields/controls renders inert and no write is reachable
+// from the UI at all - the same "view only" wiring exercised at a coarser grain by
+// shots-tab.tsx's ReadOnlyBanner (already covered in agent-chat-panel.spec.ts).
 test.describe('shot fields are inert once the workbench is locked', () => {
   test('voiceover, visual description, duration, camera and dialogue all render read-only, and no field writes', async ({
     page,

@@ -13,6 +13,12 @@ export type ProjectElement = {
   status: string
   reference_image_path: string | null
   reference_image_url: string | null
+  // Whether any shot binds this element - via shot_elements or a shot_dialogue speaker
+  // (a dialogue line's element_id is a non-null FK, so a speaking character is bound
+  // even with no shot_elements row - see findBoundShots in elements/write.ts, whose
+  // delete-block check this mirrors). Sourced from the same two relationships that
+  // check reads, embedded into the one query below rather than a second round trip.
+  in_use: boolean
 }
 
 export type ElementGroup = {
@@ -45,7 +51,9 @@ export async function getProjectElementsForUser(
 ): Promise<GetProjectElementsResult> {
   const { data: rows, error } = await supabase
     .from('elements')
-    .select('id, name, description, type, status, reference_image_path, projects!inner(user_id)')
+    .select(
+      'id, name, description, type, status, reference_image_path, shot_elements(count), shot_dialogue(count), projects!inner(user_id)'
+    )
     .eq('project_id', projectId)
     .eq('projects.user_id', userId)
     .is('deleted_at', null)
@@ -85,6 +93,7 @@ export async function getProjectElementsForUser(
         status: row.status,
         reference_image_path: row.reference_image_path,
         reference_image_url: row.reference_image_path ? (urlByPath.get(row.reference_image_path) ?? null) : null,
+        in_use: (row.shot_elements[0]?.count ?? 0) + (row.shot_dialogue[0]?.count ?? 0) > 0,
       }))
     return { type, count: elements.length, elements }
   })

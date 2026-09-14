@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/server'
+import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { Rail } from './dashboard/rail'
 import { getUsageRows } from './usage/data'
 import { aggregateUsage } from './usage/aggregate'
@@ -11,6 +12,12 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const {
     data: { user },
   } = await supabase.auth.getUser()
+
+  // First place application code runs for a signed-in user (auth.users inserts
+  // happen Supabase-side, no application code in that path) - guarantees every
+  // balance read anywhere in the app finds a row, without any read needing to grant
+  // one itself. Never throws, so a transient failure here never breaks a page load.
+  if (user) await ensureSignupGrant(user.id)
 
   // Reuses the same aggregation path /usage itself uses, rather than a second query
   // shape - just with an empty projects list, since the rail only needs settledTotal,

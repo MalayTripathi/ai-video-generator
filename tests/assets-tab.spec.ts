@@ -3,6 +3,7 @@ import sharp from 'sharp'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
+import { creditsFor } from '../src/lib/config/credits'
 
 // C5 Task 7 - Assets tab UI. Business-logic coverage (create/rename/delete/bind-block,
 // upload/generate/remove, signed-URL batch+single re-sign) already lives in
@@ -225,7 +226,61 @@ test.describe('Assets tab', () => {
       .setInputFiles({ name: 'reference.png', mimeType: 'image/png', buffer: await pngBuffer() })
 
     await expect(card.getByText('Reference set')).toBeVisible({ timeout: 10000 })
-    await expect(card.getByText('Change')).toBeVisible()
+    await expect(card.getByText('Edit')).toBeVisible()
+  })
+
+  test('the usage tag reads "Not used" for an unbound element and "In use" once a shot binds it', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    const elementId = await seedElement(projectId, { name: 'Loose Prop', type: 'prop' })
+    const shot = await seedShot(projectId)
+
+    await page.goto(`/projects/${projectId}/workbench?tab=assets`)
+    const card = elementCard(page, 'Loose Prop')
+    await expect(card.getByText('Not used')).toBeVisible()
+    await expect(card.getByText('In use')).toHaveCount(0)
+
+    await admin.from('shot_elements').insert({ shot_id: shot, element_id: elementId })
+    await page.reload()
+
+    const reloadedCard = elementCard(page, 'Loose Prop')
+    await expect(reloadedCard.getByText('In use')).toBeVisible()
+    await expect(reloadedCard.getByText('Not used')).toHaveCount(0)
+  })
+
+  test('a dialogue-only binding (no shot_elements row) still reads "In use"', async ({ page }) => {
+    const projectId = await seedProject()
+    const elementId = await seedElement(projectId, { name: 'Speaking Only', type: 'character' })
+    const shot = await seedShot(projectId)
+    const { error } = await admin
+      .from('shot_dialogue')
+      .insert({ shot_id: shot, project_id: projectId, element_id: elementId, line: 'Hello.', order_index: 0 })
+    expect(error).toBeNull()
+
+    await page.goto(`/projects/${projectId}/workbench?tab=assets`)
+    await expect(elementCard(page, 'Speaking Only').getByText('In use')).toBeVisible()
+  })
+
+  test('the Edit menu on a reference-set card offers Regenerate, not Generate, priced from config', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    await seedElement(projectId, { name: 'Fresh Element', type: 'prop' })
+
+    await page.goto(`/projects/${projectId}/workbench?tab=assets`)
+    const card = elementCard(page, 'Fresh Element')
+    await card
+      .getByTestId('element-reference-file-input')
+      .setInputFiles({ name: 'reference.png', mimeType: 'image/png', buffer: await pngBuffer() })
+    await expect(card.getByText('Edit')).toBeVisible({ timeout: 10000 })
+
+    await card.getByText('Edit').click()
+    const menu = page.getByRole('menu')
+    await expect(menu.getByText('Regenerate')).toBeVisible()
+    await expect(menu.getByText('Generate', { exact: true })).toHaveCount(0)
+    const expectedCredits = creditsFor({ step: 'workbench', operation: 'generate_element_reference', quantity: 1 })
+    await expect(menu).toContainText(`${expectedCredits} cr`)
   })
 
   test('the footer names elements without a reference image', async ({ page }) => {
