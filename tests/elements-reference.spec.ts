@@ -51,6 +51,28 @@ async function elementPath(elementId: string): Promise<string | null> {
   return data!.reference_image_path
 }
 
+async function seedShot(projectId: string, overrides: Record<string, unknown> = {}) {
+  const { data, error } = await admin
+    .from('shots')
+    .insert({
+      project_id: projectId,
+      order_index: 0,
+      shot_key: `t${Math.random().toString(36).slice(2, 6)}`,
+      voice_over: 'Placeholder voice-over.',
+      ...overrides,
+    })
+    .select('id')
+    .single()
+  expect(error).toBeNull()
+  return data!.id as string
+}
+
+async function imagePromptStale(shotId: string): Promise<boolean> {
+  const { data, error } = await admin.from('shots').select('image_prompt_stale').eq('id', shotId).single()
+  expect(error).toBeNull()
+  return data!.image_prompt_stale
+}
+
 async function listObjectsUnder(userId: string, projectId: string, elementId: string) {
   const { data, error } = await admin.storage.from('artifacts').list(`${userId}/${projectId}/elements/${elementId}`)
   expect(error).toBeNull()
@@ -230,5 +252,94 @@ test.describe('reference image removal', () => {
 
     expect(result.success).toBe(false)
     expect(await elementPath(elementId)).toBe(uploaded.path)
+  })
+})
+
+test.describe('reference image staleness', () => {
+  test('uploading a first reference marks bound shots image-prompt stale, leaving unbound shots untouched', async () => {
+    const projectId = await seedProject()
+    const elementId = await seedElement(projectId)
+    const bound = await seedShot(projectId, { order_index: 0 })
+    const unbound = await seedShot(projectId, { order_index: 1 })
+    await admin.from('shot_elements').insert({ shot_id: bound, element_id: elementId })
+
+    const result = await uploadReferenceImageForUser(admin, projectId, elementId, primary.user.id, await pngBuffer(400, 400))
+
+    expect(result.success).toBe(true)
+    expect(await imagePromptStale(bound)).toBe(true)
+    expect(await imagePromptStale(unbound)).toBe(false)
+  })
+
+  test('replacing an existing reference marks bound shots image-prompt stale', async () => {
+    const projectId = await seedProject()
+    const elementId = await seedElement(projectId)
+    const bound = await seedShot(projectId, { order_index: 0 })
+    await admin.from('shot_elements').insert({ shot_id: bound, element_id: elementId })
+    const first = await uploadReferenceImageForUser(admin, projectId, elementId, primary.user.id, await pngBuffer(400, 400))
+    expect(first.success).toBe(true)
+    await admin.from('shots').update({ image_prompt_stale: false }).eq('id', bound)
+
+    const second = await uploadReferenceImageForUser(admin, projectId, elementId, primary.user.id, await pngBuffer(500, 500))
+
+    expect(second.success).toBe(true)
+    expect(await imagePromptStale(bound)).toBe(true)
+  })
+
+  test('uploading a reference to the style element marks every shot in the project stale, including unbound ones', async () => {
+    const projectId = await seedProject()
+    const styleId = await seedElement(projectId, { name: 'Project Style', type: 'style' })
+    const shot1 = await seedShot(projectId, { order_index: 0 })
+    const shot2 = await seedShot(projectId, { order_index: 1 })
+
+    const result = await uploadReferenceImageForUser(admin, projectId, styleId, primary.user.id, await pngBuffer(400, 400))
+
+    expect(result.success).toBe(true)
+    expect(await imagePromptStale(shot1)).toBe(true)
+    expect(await imagePromptStale(shot2)).toBe(true)
+  })
+
+  test('removing a reference marks bound shots image-prompt stale', async () => {
+    const projectId = await seedProject()
+    const elementId = await seedElement(projectId)
+    const bound = await seedShot(projectId, { order_index: 0 })
+    await admin.from('shot_elements').insert({ shot_id: bound, element_id: elementId })
+    const uploaded = await uploadReferenceImageForUser(admin, projectId, elementId, primary.user.id, await pngBuffer(400, 400))
+    expect(uploaded.success).toBe(true)
+    await admin.from('shots').update({ image_prompt_stale: false }).eq('id', bound)
+
+    const result = await removeReferenceImageForUser(admin, projectId, elementId, primary.user.id)
+
+    expect(result.success).toBe(true)
+    expect(await imagePromptStale(bound)).toBe(true)
+  })
+
+  test('a shot bound only via shot_dialogue (a speaking character) is also marked stale', async () => {
+    const projectId = await seedProject()
+    const elementId = await seedElement(projectId)
+    const shotId = await seedShot(projectId, { order_index: 0 })
+    await admin.from('shot_dialogue').insert({
+      project_id: projectId,
+      shot_id: shotId,
+      element_id: elementId,
+      line: 'Hello there.',
+      order_index: 0,
+    })
+
+    const result = await uploadReferenceImageForUser(admin, projectId, elementId, primary.user.id, await pngBuffer(400, 400))
+
+    expect(result.success).toBe(true)
+    expect(await imagePromptStale(shotId)).toBe(true)
+  })
+
+  test('removing when there is no reference to remove does not set the flag', async () => {
+    const projectId = await seedProject()
+    const elementId = await seedElement(projectId)
+    const bound = await seedShot(projectId, { order_index: 0 })
+    await admin.from('shot_elements').insert({ shot_id: bound, element_id: elementId })
+
+    const result = await removeReferenceImageForUser(admin, projectId, elementId, primary.user.id)
+
+    expect(result.success).toBe(true)
+    expect(await imagePromptStale(bound)).toBe(false)
   })
 })

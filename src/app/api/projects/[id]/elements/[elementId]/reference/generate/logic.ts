@@ -20,6 +20,7 @@ import {
 } from '@/lib/generations/claim'
 import { loadOwnedElement } from '@/lib/elements/write'
 import { uploadNormalizedReferenceObject } from '@/lib/elements/reference'
+import { markImagePromptsStaleForElementReference } from '@/lib/elements/staleness'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -140,6 +141,8 @@ export async function runElementReferenceGeneration(params: {
       return { ok: false, status: 500, error: relinkError.message }
     }
 
+    await markImagePromptsStaleForElementReference(supabase, projectId, elementId, element.type)
+
     if (oldPath && oldPath !== path) {
       const { error: removeError } = await supabase.storage.from('artifacts').remove([oldPath])
       if (removeError) {
@@ -241,6 +244,8 @@ export async function runElementReferenceGeneration(params: {
       outcome = { ok: false, status: 500, error: relinkError.message }
       return outcome
     }
+
+    await markImagePromptsStaleForElementReference(supabase, projectId, elementId, element.type)
 
     const oldPath = element.reference_image_path
     if (oldPath && oldPath !== uploaded.path) {

@@ -95,6 +95,28 @@ async function seedElement(projectId: string, overrides: Record<string, unknown>
   return data!.id as string
 }
 
+async function seedShot(projectId: string, overrides: Record<string, unknown> = {}) {
+  const { data, error } = await admin
+    .from('shots')
+    .insert({
+      project_id: projectId,
+      order_index: 0,
+      shot_key: `t${Math.random().toString(36).slice(2, 6)}`,
+      voice_over: 'Placeholder voice-over.',
+      ...overrides,
+    })
+    .select('id')
+    .single()
+  expect(error).toBeNull()
+  return data!.id as string
+}
+
+async function imagePromptStale(shotId: string): Promise<boolean> {
+  const { data, error } = await admin.from('shots').select('image_prompt_stale').eq('id', shotId).single()
+  expect(error).toBeNull()
+  return data!.image_prompt_stale
+}
+
 async function readLedgerRows(projectId: string) {
   const { data, error } = await admin.from('credit_ledger').select('*').eq('project_id', projectId)
   expect(error).toBeNull()
@@ -269,10 +291,59 @@ test.describe('generate_element_reference - success', () => {
   })
 })
 
+test.describe('generate_element_reference - image-prompt staleness', () => {
+  test('a successful generation marks bound shots image-prompt stale, leaving unbound shots untouched', async () => {
+    const projectId = await seedProject(primary.user.id)
+    const elementId = await seedElement(projectId)
+    const bound = await seedShot(projectId, { order_index: 0 })
+    const unbound = await seedShot(projectId, { order_index: 1 })
+    await admin.from('shot_elements').insert({ shot_id: bound, element_id: elementId })
+
+    const result = await runElementReferenceGeneration({
+      gateway: successImageGateway(),
+      supabase: admin,
+      projectId,
+      elementId,
+      userId: primary.user.id,
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: realRecordFixedSpend,
+      getBalance: realGetBalance,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(await imagePromptStale(bound)).toBe(true)
+    expect(await imagePromptStale(unbound)).toBe(false)
+  })
+
+  test('generating a reference for the style element marks every shot in the project stale', async () => {
+    const projectId = await seedProject(primary.user.id)
+    const styleId = await seedElement(projectId, { name: 'Project Style', type: 'style' })
+    const shot1 = await seedShot(projectId, { order_index: 0 })
+    const shot2 = await seedShot(projectId, { order_index: 1 })
+
+    const result = await runElementReferenceGeneration({
+      gateway: successImageGateway(),
+      supabase: admin,
+      projectId,
+      elementId: styleId,
+      userId: primary.user.id,
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: realRecordFixedSpend,
+      getBalance: realGetBalance,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(await imagePromptStale(shot1)).toBe(true)
+    expect(await imagePromptStale(shot2)).toBe(true)
+  })
+})
+
 test.describe('generate_element_reference - recovery', () => {
   test('a replayed claim (payload already present) never calls the provider again', async () => {
     const projectId = await seedProject(primary.user.id)
     const elementId = await seedElement(projectId)
+    const bound = await seedShot(projectId, { order_index: 0 })
+    await admin.from('shot_elements').insert({ shot_id: bound, element_id: elementId })
 
     const { error: generationError } = await admin.from('generations').insert({
       project_id: projectId,
@@ -318,6 +389,7 @@ test.describe('generate_element_reference - recovery', () => {
 
     const element = await readElement(elementId)
     expect(element.status).toBe('ready')
+    expect(await imagePromptStale(bound)).toBe(true)
   })
 })
 

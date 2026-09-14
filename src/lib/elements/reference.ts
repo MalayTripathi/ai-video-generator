@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import sharp from 'sharp'
 import type { createClient } from '@/lib/supabase/server'
 import { loadOwnedElement } from '@/lib/elements/write'
+import { markImagePromptsStaleForElementReference } from '@/lib/elements/staleness'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -117,6 +118,8 @@ export async function uploadReferenceImageForUser(
     return { success: false, error: dbError.message }
   }
 
+  await markImagePromptsStaleForElementReference(supabase, projectId, elementId, element.type)
+
   const { data: signed, error: signError } = await supabase.storage
     .from('artifacts')
     .createSignedUrl(uploaded.path, SIGNED_URL_EXPIRES_IN_SECONDS)
@@ -153,6 +156,7 @@ export async function removeReferenceImageForUser(
     .eq('id', elementId)
   if (dbError) return { success: false, error: dbError.message }
 
+  await markImagePromptsStaleForElementReference(supabase, projectId, elementId, element.type)
   await removeReferenceObject(supabase, element.reference_image_path)
 
   return { success: true }

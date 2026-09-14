@@ -179,6 +179,21 @@ test.describe('elements write path', () => {
       expect(data!.description).toBe('New description.')
     })
 
+    test('does not mark bound shots image-prompt stale - only reference-image changes do that', async () => {
+      const projectId = await seedProject()
+      const elementId = await seedElement(projectId, { name: 'Keeps Name', description: 'Old description.' })
+      const shotId = await seedShot(projectId)
+      await admin.from('shot_elements').insert({ shot_id: shotId, element_id: elementId })
+
+      const nameResult = await updateElementNameForUser(admin, elementId, 'New Name', primary.user.id)
+      const descriptionResult = await updateElementDescriptionForUser(admin, elementId, 'New description.', primary.user.id)
+
+      expect(nameResult.success).toBe(true)
+      expect(descriptionResult.success).toBe(true)
+      const { data } = await admin.from('shots').select('image_prompt_stale').eq('id', shotId).single()
+      expect(data!.image_prompt_stale).toBe(false)
+    })
+
     test('setting the same description twice is a no-op the second time', async () => {
       const projectId = await seedProject()
       const elementId = await seedElement(projectId, { name: 'Elem', description: 'Same.' })
