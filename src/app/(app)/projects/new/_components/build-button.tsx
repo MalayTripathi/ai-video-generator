@@ -29,7 +29,7 @@ export function BuildButton({ disabled }: { disabled: boolean }) {
       className={
         disabled
           ? 'flex h-11 w-full cursor-not-allowed items-center justify-center rounded-control border border-border-subtle bg-bg-inset text-control font-medium text-text-tertiary'
-          : 'flex h-11 w-full cursor-pointer items-center justify-center rounded-control border border-accent bg-accent text-control font-medium text-white outline-none hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:bg-accent-active'
+          : 'flex h-11 w-full cursor-pointer items-center justify-center rounded-control border border-accent bg-transparent text-control font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active'
       }
     >
       Build workbench

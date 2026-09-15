@@ -40,6 +40,7 @@ type OwnedElement = {
   name: string
   description: string | null
   type: ElementType
+  status: string
   reference_image_path: string | null
 }
 
@@ -55,7 +56,7 @@ export async function loadOwnedElement(
 ): Promise<OwnedElement | null> {
   const { data } = await supabase
     .from('elements')
-    .select('id, project_id, name, description, type, reference_image_path, projects!inner(user_id)')
+    .select('id, project_id, name, description, type, status, reference_image_path, projects!inner(user_id)')
     .eq('id', elementId)
     .eq('projects.user_id', userId)
     .is('deleted_at', null)
@@ -68,6 +69,7 @@ export async function loadOwnedElement(
     name: data.name,
     description: data.description,
     type: data.type as ElementType,
+    status: data.status,
     reference_image_path: data.reference_image_path,
   }
 }

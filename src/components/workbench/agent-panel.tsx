@@ -275,7 +275,11 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
               type="button"
               disabled={input.trim().length === 0}
               onClick={() => handleSend(input)}
-              className="h-[38px] flex-none cursor-pointer rounded-control border border-border-subtle px-rc-sm text-small text-text-secondary hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:text-text-quiet disabled:hover:border-border-subtle disabled:hover:text-text-quiet"
+              className={
+                input.trim().length === 0
+                  ? 'h-[38px] flex-none cursor-not-allowed rounded-control border border-border-subtle bg-bg-inset px-rc-sm text-small font-medium text-text-tertiary'
+                  : 'h-[38px] flex-none cursor-pointer rounded-control border border-accent bg-transparent px-rc-sm text-small font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active'
+              }
             >
               Send
             </button>

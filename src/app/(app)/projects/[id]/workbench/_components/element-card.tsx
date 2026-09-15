@@ -294,21 +294,23 @@ export function ElementCard({ element, groupType }: { element: ProjectElement; g
 
         {imageOp === 'idle' && !hasReference && (
           <div className="flex h-full w-full flex-col items-center justify-center gap-[6px] bg-bg-well p-[10px]">
-            <button
-              type="button"
-              onClick={openFilePicker}
-              className="flex h-[27px] cursor-pointer items-center rounded-control border border-border-strong bg-bg-surface px-[10px] text-meta text-text-primary hover:border-border-strong-hover hover:bg-bg-inset"
-            >
-              Upload
-            </button>
-            <button
-              type="button"
-              onClick={handleGenerate}
-              disabled={hasInsufficientBalance}
-              className="flex h-[27px] cursor-pointer items-center rounded-control border border-accent px-[10px] text-meta font-medium text-accent hover:bg-accent-wash disabled:cursor-not-allowed disabled:border-border-strong disabled:text-text-quiet disabled:hover:bg-transparent"
-            >
-              Generate · {generateCredits} credit{generateCredits === 1 ? '' : 's'}
-            </button>
+            <div className="flex w-fit flex-col items-stretch gap-[6px]">
+              <button
+                type="button"
+                onClick={openFilePicker}
+                className="flex h-[27px] cursor-pointer items-center justify-center rounded-control border border-accent bg-transparent px-[10px] text-meta font-medium text-accent hover:bg-accent-wash active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
+              >
+                Upload
+              </button>
+              <button
+                type="button"
+                onClick={handleGenerate}
+                disabled={hasInsufficientBalance}
+                className="flex h-[27px] cursor-pointer items-center justify-center rounded-control border border-accent bg-transparent px-[10px] text-meta font-medium text-accent hover:bg-accent-wash active:border-accent-active active:bg-accent-wash-strong active:text-accent-active disabled:cursor-not-allowed disabled:border-border-strong disabled:text-text-quiet disabled:hover:bg-transparent"
+              >
+                Generate · {generateCredits} credit{generateCredits === 1 ? '' : 's'}
+              </button>
+            </div>
             <span className="text-center font-mono text-mono text-text-tertiary">
               or leave it — description is used
             </span>
