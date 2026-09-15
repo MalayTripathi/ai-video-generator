@@ -6,7 +6,17 @@ function ArrowIcon() {
   )
 }
 
-export function ShotsFooter({ elementNamesWithoutReference }: { elementNamesWithoutReference: string[] }) {
+export function ShotsFooter({
+  elementNamesWithoutReference,
+  generateImagePromptsCredits,
+  onGenerateImagePromptsClick,
+  generateDisabled,
+}: {
+  elementNamesWithoutReference: string[]
+  generateImagePromptsCredits: number
+  onGenerateImagePromptsClick: () => void
+  generateDisabled?: boolean
+}) {
   const shown = elementNamesWithoutReference.slice(0, 3)
   const suffix = elementNamesWithoutReference.length > 3 ? '…' : ''
 
@@ -25,10 +35,15 @@ export function ShotsFooter({ elementNamesWithoutReference }: { elementNamesWith
         )}
       </div>
       <div className="flex flex-none gap-rc-sm">
-        <span className="flex h-9 cursor-not-allowed items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent opacity-60">
-          Generate Image Prompts
+        <button
+          type="button"
+          onClick={onGenerateImagePromptsClick}
+          disabled={generateDisabled}
+          className="flex h-9 cursor-pointer items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Generate Image Prompts - {generateImagePromptsCredits} Credits
           <ArrowIcon />
-        </span>
+        </button>
       </div>
     </>
   )

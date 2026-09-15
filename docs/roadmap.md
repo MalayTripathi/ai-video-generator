@@ -87,14 +87,14 @@ are not lost.
   purely the chat panel wiring: sending a message, rendering the SSE stream's events onto
   `AgentMessageKind`, a `client_id` per send.
 - Element upload and reference-image generation from the Assets tab.
-- Step-guard navigation: gate step-to-step links on `furthest_step`, not `current_step`
-  position. Blocked in practice until `advanceStep()` has its first caller. The step
-  indicator must switch in that same slice — see the coupling warning in CLAUDE.md.
 - The Queue rail item is visual-only, pending real data.
 - Whether and when to flip `SPEND_CAP_ENABLED` on is an open product decision; the
   mechanism is wired.
 - `updateProjectTitle` (`src/app/(app)/projects/[id]/actions.ts`) is unused, pending a
   workbench title editor.
+- The "Add credits" button shown on insufficient-balance (workbench Step 2's Generate
+  Image Prompts confirm modal) is a non-functional placeholder — no credit-purchase flow
+  exists yet.
 - **Credit gating is not implemented.** No balance check refuses any operation today —
   every priced call fires regardless of the caller's balance, and `getBalance()` has no
   caller outside `/credits`. Deferred by explicit instruction; lands with Step 4.

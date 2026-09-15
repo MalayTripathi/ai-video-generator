@@ -214,8 +214,8 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   if it's actually built and has a real per-project route
   (`/projects/[id]/{step}`); `intake` has no such route (`/projects/new`
   is a pre-project screen) and always renders inert even when shown
-  complete. Complete/current/locked is derived from `current_step`'s
-  position alone — it does not consult `furthest_step` yet.
+  complete. Complete/current/locked is derived from `furthest_step`; the
+  `current` highlight alone still comes from `current_step`.
 
 ## Code conventions
 - All external API calls happen server-side only (API routes / server
@@ -959,15 +959,8 @@ via its own save action and must not call `advanceStep`; if saving advanced the 
 Unsaved edits may live in component state but must never reach the database without an
 explicit save. The agent is available throughout steps 2 through 7.
 
-`advanceStep` currently has **zero production callers** — it exists so the
-first real transition has somewhere correct to go. The coupling warning
-below depends on this being true; check it before trusting that warning.
-
-**COUPLING WARNING**: `workbench-step-indicator.tsx` currently derives complete/current/
-locked from `current_step`'s position alone (`STEPS.findIndex`) and does not consult
-`furthest_step`. That is correct **only** because `advanceStep` has no callers yet, so
-`current_step` never regresses in practice. The moment the first `advanceStep` caller
-lands, `current_step` starts regressing on backward navigation, and the indicator would
-then render an already-unlocked step as locked — locking a user out of work they've
-already finished. **The indicator must switch to consulting `furthest_step` in the same
-slice that adds the first `advanceStep` caller, not in a later one.**
+`advanceStep`'s first caller is the balance-gated Step 2 → Step 3 transition
+(`src/app/api/projects/[id]/image_prompts/advance/`). The step indicator
+(`workbench-step-indicator.tsx`) consults `furthest_step` for the complete/locked
+boundary and the locked-step tooltip's target step; `current_step` alone still decides
+the `current` highlight.

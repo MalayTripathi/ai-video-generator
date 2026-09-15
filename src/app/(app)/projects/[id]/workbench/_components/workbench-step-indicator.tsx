@@ -88,16 +88,23 @@ function LockedStep({ index, label, unlockLabel }: { index: number; label: strin
 export function WorkbenchStepIndicator({
   projectId,
   currentStep,
+  furthestStep,
 }: {
   projectId: string
   currentStep: string
+  furthestStep: number
 }) {
   const currentIndex = STEPS.findIndex((step) => step.key === currentStep)
+  // furthestStep is on pipeline.ts's stepIndex() scale, where intake conceptually
+  // occupies slot 1 without being a STEPS member (stepIndex('workbench') === 2) - this
+  // component's own STEPS array is 0-based with intake at index 0, so -1 lines the two
+  // scales up.
+  const furthestIndex = furthestStep - 1
 
   return (
-    <div className="flex h-[50px] flex-none items-stretch gap-rc-lg overflow-x-auto border-b border-border-subtle px-rc-md">
+    <div className="flex h-[50px] flex-none items-stretch gap-rc-sm overflow-x-auto border-b border-border-subtle px-rc-md">
       {STEPS.map((step, index) => {
-        const state = index < currentIndex ? 'complete' : index === currentIndex ? 'current' : 'locked'
+        const state = index === currentIndex ? 'current' : index <= furthestIndex ? 'complete' : 'locked'
 
         if (state === 'complete') {
           const content = (
@@ -114,8 +121,9 @@ export function WorkbenchStepIndicator({
           // link to, so it renders inert even though it's complete.
           if (step.key === 'intake') {
             return (
-              <div key={step.key} className="flex flex-none items-center gap-[9px]">
+              <div key={step.key} className="relative flex flex-1 items-center justify-center gap-[9px]">
                 {content}
+                <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-[1px] bg-border-strong" aria-hidden />
               </div>
             )
           }
@@ -124,16 +132,17 @@ export function WorkbenchStepIndicator({
             <Link
               key={step.key}
               href={`/projects/${projectId}/${step.key}`}
-              className="group flex flex-none items-center gap-[9px] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              className="group relative flex flex-1 items-center justify-center gap-[9px] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               {content}
+              <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-[1px] bg-border-strong" aria-hidden />
             </Link>
           )
         }
 
         if (state === 'current') {
           return (
-            <div key={step.key} className="relative flex flex-none items-center gap-[9px]">
+            <div key={step.key} className="relative flex flex-1 items-center justify-center gap-[9px]">
               <Badge className="border-accent font-medium text-accent">{index + 1}</Badge>
               <span className="whitespace-nowrap text-label font-medium uppercase tracking-label text-accent">
                 {step.label}
@@ -144,7 +153,10 @@ export function WorkbenchStepIndicator({
         }
 
         return (
-          <LockedStep key={step.key} index={index} label={step.label} unlockLabel={STEPS[currentIndex]?.label} />
+          <div key={step.key} className="relative flex flex-1 items-center justify-center">
+            <LockedStep index={index} label={step.label} unlockLabel={STEPS[furthestIndex]?.label} />
+            <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-[1px] bg-border-strong" aria-hidden />
+          </div>
         )
       })}
     </div>
