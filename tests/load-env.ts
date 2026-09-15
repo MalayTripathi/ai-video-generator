@@ -28,3 +28,6 @@ loadEnvLocal()
 // Never let a value left in .env.local from a deliberate manual live run (see
 // src/lib/claude.ts's assertLiveCallsAllowed) reach the test-runner process itself.
 delete process.env.ALLOW_REAL_CLAUDE
+// Same reasoning, for the OpenAI images live-call guard (src/lib/images/gateway.ts's
+// assertLiveImageCallsAllowed).
+delete process.env.ALLOW_REAL_OPENAI_IMAGES

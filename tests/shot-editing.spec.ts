@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Locator } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
+import { stepIndex } from '../src/lib/config/pipeline'
 
 let seq = 0
 function nextShotIdentity() {
@@ -684,5 +685,58 @@ test.describe('shot card editing', () => {
     const after = await readProject(projectId)
     expect(after?.current_step).toBe(before?.current_step)
     expect(after?.furthest_step).toBe(before?.furthest_step)
+  })
+})
+
+// C5 Task 8: updateShotVoiceOver/updateShotVisualDescription/updateShotDuration/
+// updateCameraField/saveDialogueLine/deleteDialogueLine had no server-side lock check at
+// all before this task - only the UI hid their controls (server-side coverage now lives
+// in actions.ts's isWorkbenchLockedForProject helper, added alongside the UI change
+// below). This asserts through the real browser rather than a direct import of
+// workbench/actions.ts (the way shot-deletion.spec.ts calls deleteShotForUser): once
+// locked, every one of these fields/controls renders inert and no write is reachable
+// from the UI at all - the same "view only" wiring exercised at a coarser grain by
+// shots-tab.tsx's ReadOnlyBanner (already covered in agent-chat-panel.spec.ts).
+test.describe('shot fields are inert once the workbench is locked', () => {
+  test('voiceover, visual description, duration, camera and dialogue all render read-only, and no field writes', async ({
+    page,
+  }) => {
+    const projectId = await seedProject({ furthest_step: stepIndex('storyboard') })
+    const shotId = await seedShot(projectId, {
+      voice_over: 'Locked voiceover text.',
+      visual_description: 'Locked visual description.',
+      duration_sec: 3.0,
+      shot_size: 'wide',
+      shot_size_origin: 'auto',
+    })
+    const elementId = await seedCharacter(projectId, shotId, 'Locked Speaker')
+    const { error: dialogueError } = await admin
+      .from('shot_dialogue')
+      .insert({ project_id: projectId, shot_id: shotId, element_id: elementId, line: 'Locked line.', order_index: 0 })
+    expect(dialogueError).toBeNull()
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+
+    // No editable control reaches the DOM at all - not merely disabled.
+    await expect(page.getByLabel('Voiceover')).toHaveCount(0)
+    await expect(page.getByLabel('Visual description')).toHaveCount(0)
+    await expect(page.getByText('Locked voiceover text.')).toBeVisible()
+    await expect(page.getByText('Locked visual description.')).toBeVisible()
+
+    await expect(page.getByRole('button', { name: 'Increase duration' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Decrease duration' })).toHaveCount(0)
+
+    await expect(page.getByRole('combobox', { name: 'Shot size' })).toHaveCount(0)
+
+    await expect(page.getByRole('button', { name: '+ Add line' })).toHaveCount(0)
+
+    const after = await readShot(shotId)
+    expect(after?.voice_over).toBe('Locked voiceover text.')
+    expect(after?.visual_description).toBe('Locked visual description.')
+    expect(after?.duration_sec).toBe(3.0)
+    expect(after?.shot_size).toBe('wide')
+    const { data: dialogueRows } = await admin.from('shot_dialogue').select('id').eq('shot_id', shotId)
+    expect(dialogueRows ?? []).toHaveLength(1)
   })
 })

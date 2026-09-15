@@ -33,6 +33,10 @@ export const OPERATIONS = [
   // CLAUDE.md: a claim's terminal 'succeeded' state would block every subsequent edit
   // of the same shot's description. generations_operation_check is not widened for it.
   'derive_camera',
+  // Reference-image generation for a single element, at the workbench step. Distinct
+  // from storyboard/generate_image (the Step 4 frame render) - different price,
+  // different reporting bucket, two different things that happen to both be images.
+  'generate_element_reference',
 ] as const
 
 export type Operation = (typeof OPERATIONS)[number]
@@ -42,7 +46,7 @@ export const PROVIDERS = ['anthropic', 'openai', 'elevenlabs', 'fal'] as const
 export type Provider = (typeof PROVIDERS)[number]
 
 export const STEP_OPERATIONS: Record<Step, readonly Operation[]> = {
-  workbench: ['generate_shots', 'agent_turn', 'derive_camera'],
+  workbench: ['generate_shots', 'agent_turn', 'derive_camera', 'generate_element_reference'],
   image_prompts: ['write_image_prompts', 'generate_image'],
   storyboard: ['generate_image', 'voiceover', 'background_music'],
   video_prompts: ['write_video_prompts'],
@@ -63,7 +67,12 @@ const STEP_LABELS: Record<Step, string> = {
 }
 
 const OPERATION_LABELS: Record<Step, Partial<Record<Operation, string>>> = {
-  workbench: { generate_shots: 'New shots', agent_turn: 'Agent turn', derive_camera: 'Camera framing' },
+  workbench: {
+    generate_shots: 'New shots',
+    agent_turn: 'Agent turn',
+    derive_camera: 'Camera framing',
+    generate_element_reference: 'Element reference image',
+  },
   image_prompts: { write_image_prompts: 'Prompt writing', generate_image: 'Image generation' },
   storyboard: {
     generate_image: 'Image generation',

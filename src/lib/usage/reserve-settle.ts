@@ -1,9 +1,11 @@
 import type { createClient } from '@/lib/supabase/server'
 import { APIError } from '@anthropic-ai/sdk'
+import { APIError as OpenAIApiError } from 'openai'
 import type { Step, Operation, Provider } from '@/lib/config/pipeline'
 import { computeCost, type UsageBreakdown } from '@/lib/config/pricing'
 import { RATE_VERSION } from '@/lib/config/pricing'
 import { LiveCallsBlockedError } from '@/lib/claude'
+import { ImageLiveCallsBlockedError } from '@/lib/images/gateway'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -118,27 +120,33 @@ export async function settleUsage(params: {
     update.quantity = quantity
     update.unit = unit
     update.raw_usage = { breakdown: params.breakdown, rates: appliedRates }
-  } else if (params.error instanceof LiveCallsBlockedError) {
-    // NARROW, DELIBERATE EXCEPTION: LiveCallsBlockedError is thrown by
-    // assertLiveCallsAllowed() before any request reaches Anthropic, so unlike every
-    // other unmeasured throw in the branch below, this one is PROVABLY unbilled, not
-    // just probably unbilled. Settling it at the pre-flight quote would inflate real
-    // spend with calls that never happened. Do not add more branches like this one for
-    // anything that isn't verified pre-network the same way - a network failure,
-    // stream error, or timeout after the request left the process is unverifiable and
-    // must keep retaining the quote in the branch below.
+  } else if (params.error instanceof LiveCallsBlockedError || params.error instanceof ImageLiveCallsBlockedError) {
+    // NARROW, DELIBERATE EXCEPTION: LiveCallsBlockedError/ImageLiveCallsBlockedError are
+    // thrown by assertLiveCallsAllowed()/assertLiveImageCallsAllowed() before any
+    // request reaches the provider, so unlike every other unmeasured throw in the
+    // branch below, these are PROVABLY unbilled, not just probably unbilled. Settling
+    // at the pre-flight quote would inflate real spend with calls that never happened.
+    // Do not add more branches like this one for anything that isn't verified
+    // pre-network the same way - a network failure, stream error, or timeout after the
+    // request left the process is unverifiable and must keep retaining the quote in
+    // the branch below.
     update.estimated_cost = 0
     update.raw_usage = { blocked: true, billed: false, reason: params.error.message }
-  } else if (params.error instanceof APIError && typeof params.error.status === 'number' && params.error.status < 500) {
-    // SECOND, EQUALLY NARROW EXCEPTION: every 4xx (400/401/403/404/422/429) is
-    // Anthropic's own request-validation rejection, returned synchronously before the
-    // model ever runs - there is no partial-generation 4xx. This is as provably unbilled
-    // as LiveCallsBlockedError, just verified a different way (instanceof + status,
-    // never message text). A 5xx or a status-less network/timeout error CAN occur after
-    // generation has started, so those are not provably unbilled and fall through to the
-    // unverifiable branch below - do not widen this to `status !== undefined` or any
-    // status, and do not add a third branch for a throw that merely seems unlikely to
-    // have been billed.
+  } else if (
+    (params.error instanceof APIError || params.error instanceof OpenAIApiError) &&
+    typeof params.error.status === 'number' &&
+    params.error.status < 500
+  ) {
+    // SECOND, EQUALLY NARROW EXCEPTION: every 4xx (400/401/403/404/422/429) from either
+    // provider is that provider's own request-validation rejection, returned
+    // synchronously before the model/image ever runs - there is no partial-generation
+    // 4xx. This is as provably unbilled as the live-call-blocked case, just verified a
+    // different way (instanceof + status, never message text) - the OpenAI branch is
+    // the exact provider analog of the Anthropic one, not a new pattern. A 5xx or a
+    // status-less network/timeout error CAN occur after generation has started, so
+    // those are not provably unbilled and fall through to the unverifiable branch
+    // below - do not widen this to `status !== undefined` or any status, and do not
+    // add a further branch for a throw that merely seems unlikely to have been billed.
     update.estimated_cost = 0
     update.raw_usage = { unmeasured: true, billed: false, error: params.error.message, status: params.error.status }
   } else {

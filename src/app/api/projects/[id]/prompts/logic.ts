@@ -260,7 +260,7 @@ export async function runPromptGeneration(params: {
 
   const claim = await claimGeneration({
     supabase,
-    identity: { projectId, step: 'image_prompts', operation: 'write_image_prompts', shotId: null },
+    identity: { projectId, step: 'image_prompts', operation: 'write_image_prompts', shotId: null, elementId: null },
     retry,
   })
 

@@ -86,6 +86,15 @@ export default async function globalSetup() {
     )
   }
 
+  if (process.env.ALLOW_REAL_OPENAI_IMAGES === '1') {
+    throw new Error(
+      'ALLOW_REAL_OPENAI_IMAGES=1 is set. This suite must never make a real, billed OpenAI image ' +
+        'call. Unset ALLOW_REAL_OPENAI_IMAGES before running the Playwright suite. The only ' +
+        'sanctioned way to make a live call is `npm run dev` with ALLOW_REAL_OPENAI_IMAGES=1 ' +
+        'exported by hand in your own shell, outside Playwright entirely.'
+    )
+  }
+
   // Deliberately dynamic, and deliberately after the guard above. load-env.ts's module
   // evaluation deletes ALLOW_REAL_CLAUDE from process.env as one of its own side effects
   // (so a value left in .env.local from a manual live-debugging session can't leak into

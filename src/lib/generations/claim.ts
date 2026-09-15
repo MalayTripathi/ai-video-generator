@@ -12,6 +12,7 @@ export type GenerationIdentity = {
   step: Step
   operation: Operation
   shotId: string | null
+  elementId: string | null
 }
 
 export type BlockedReason = 'already_ready' | 'already_generating' | 'retry_required'
@@ -67,7 +68,7 @@ export async function claimGeneration(params: {
   retry: boolean
 }): Promise<ClaimResult> {
   const { supabase, identity, retry } = params
-  const { projectId, step, operation, shotId } = identity
+  const { projectId, step, operation, shotId, elementId } = identity
   const now = new Date().toISOString()
 
   const { data: inserted, error: insertError } = await supabase
@@ -77,6 +78,7 @@ export async function claimGeneration(params: {
       step,
       operation,
       shot_id: shotId,
+      element_id: elementId,
       state: 'generating',
       payload: null,
       started_at: now,
@@ -100,8 +102,9 @@ export async function claimGeneration(params: {
     .eq('step', step)
     .eq('operation', operation)
 
+  const withShot = shotId === null ? identityQuery.is('shot_id', null) : identityQuery.eq('shot_id', shotId)
   const { data: existing, error: selectError } = await (
-    shotId === null ? identityQuery.is('shot_id', null) : identityQuery.eq('shot_id', shotId)
+    elementId === null ? withShot.is('element_id', null) : withShot.eq('element_id', elementId)
   ).maybeSingle()
 
   if (selectError || !existing) {

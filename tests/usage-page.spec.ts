@@ -381,7 +381,7 @@ test.describe('rail usage spending', () => {
 
   // Credits Task 8, gates 6/7: the footer's dollar and credits figures each navigate
   // to their own page; the label/caption text between them navigates nowhere; the
-  // rail's separate "Usage" nav item is untouched.
+  // rail's separate "Usage" nav item now opens /credits too.
   test('the footer\'s dollar figure opens /usage, the credits figure opens /credits, and the label opens neither', async ({
     page,
     context,
@@ -402,9 +402,9 @@ test.describe('rail usage spending', () => {
       await page.getByText('Usage spending').click()
       await expect(page).toHaveURL(/\/dashboard$/)
 
-      // The rail's separate nav item still opens the dollar page, unchanged.
+      // The rail's separate nav item now opens the credits page, same as rail-credits-spend.
       await page.getByRole('link', { name: 'Usage' }).click()
-      await expect(page).toHaveURL(/\/usage$/)
+      await expect(page).toHaveURL(/\/credits$/)
     } finally {
       await deleteTestUser(user.id)
     }

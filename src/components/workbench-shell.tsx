@@ -10,7 +10,7 @@ export function WorkbenchShell({
   footer,
   children,
 }: {
-  project: { id: string; current_step: string }
+  project: { id: string; current_step: string; furthest_step: number }
   agentMessages: AgentMessage[]
   header: ReactNode
   footer?: ReactNode
@@ -19,7 +19,11 @@ export function WorkbenchShell({
   return (
     <>
       <div className="flex-none border-b border-border-subtle px-rc-md py-rc-md">{header}</div>
-      <WorkbenchStepIndicator projectId={project.id} currentStep={project.current_step} />
+      <WorkbenchStepIndicator
+        projectId={project.id}
+        currentStep={project.current_step}
+        furthestStep={project.furthest_step}
+      />
       <div className="flex min-h-0 flex-1">
         <AgentPanel initialMessages={agentMessages} />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>

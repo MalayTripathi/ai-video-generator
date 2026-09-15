@@ -4,17 +4,15 @@ import {
   SHOT_SIZES,
   CAMERA_ANGLES,
   CAMERA_MOVEMENTS,
-  ELEMENT_TYPES,
+  SHOT_ELEMENT_TYPES,
   MODEL_REPORTABLE_CAMERA_ORIGINS,
 } from '@/lib/config/enums'
 
-// v5 - visual_description's instruction now states explicitly that it must never be left
-// empty (an advisory nudge only - the tool schema's `required` already listed it and
-// didn't stop this either; runShotsPipeline still accepts and persists an empty one if
-// the model ignores this, since discarding an already-paid-for shot is worse than a
-// visible gap - see isUsableShot). Bump the suffix (and this comment) on any content
-// change so usage logs / evals can be attributed to a specific wording.
-export const SHOT_GENERATION_SYSTEM_PROMPT_V5 = `You are breaking a video brief into a structured shot list for a short narrated video.
+// v6 - adds the top-level `style` field: one optional project-wide look (a name plus a
+// keyword description) generated once per video, never as a per-shot element_names entry.
+// Bump the suffix (and this comment) on any content change so usage logs / evals can be
+// attributed to a specific wording.
+export const SHOT_GENERATION_SYSTEM_PROMPT_V6 = `You are breaking a video brief into a structured shot list for a short narrated video.
 
 Write the shot list as structured data via the write_shots tool - never as free-text JSON in your reply. Call write_shots exactly once.
 
@@ -32,6 +30,7 @@ Also write:
 - title: a short project title (max ~60 characters), in the same language as the source text
 - message: one short sentence for the user describing what you created (e.g. "I've created 6 shots detailing the construction of the Taj Mahal.")
 - video_type: classify this video as exactly one of narrated_story, explainer, facts_listicle, character_drama, product_ad, trailer - pick the closest match based on the brief and the shots you're writing, even if a video type was already given to you
+- style: if the brief or shots you're writing suggest a consistent visual look (e.g. "clean lines, soft colors, historical details, educational tone"), write it once for the whole video as a short name plus a keyword description - never one per shot, and never listed among any shot's element_names. Leave this empty if no clear house style applies.
 
 Write voice_over and dialogue in the project's target language. Give a recurring character, location, or prop the exact same element name every time it appears - this is how the app knows to reuse one image across shots instead of generating a new one per shot.
 
@@ -121,12 +120,12 @@ export function buildWriteShotsTool(targetShots: number): Anthropic.Tool {
               },
               element_names: {
                 type: 'array',
-                description: 'Every character, location, and prop in this shot. Reuse exact names for recurring elements.',
+                description: 'Every character, location, and prop in this shot. Reuse exact names for recurring elements. Never include a project-wide style here - use the top-level style field instead.',
                 items: {
                   type: 'object',
                   properties: {
                     name: { type: 'string' },
-                    type: { type: 'string', enum: [...ELEMENT_TYPES] },
+                    type: { type: 'string', enum: [...SHOT_ELEMENT_TYPES] },
                     description: { type: 'string' },
                   },
                   required: ['name', 'type', 'description'],
@@ -151,8 +150,22 @@ export function buildWriteShotsTool(targetShots: number): Anthropic.Tool {
             additionalProperties: false,
           },
         },
+        style: {
+          type: 'array',
+          description: "At most one project-wide visual style: a short name plus a keyword description (e.g. \"clean lines, soft colors, historical details, educational tone\"), applied to every shot's image prompt. Empty if no clear house style applies. Never more than one - only the first is used.",
+          minItems: 0,
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              description: { type: 'string' },
+            },
+            required: ['name', 'description'],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ['title', 'message', 'video_type', 'shots'],
+      required: ['title', 'message', 'video_type', 'shots', 'style'],
       additionalProperties: false,
     },
     strict: true,

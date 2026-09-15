@@ -44,6 +44,12 @@ export const OPERATION_POLICY: Record<Operation, OperationPolicy> = {
   write_image_prompts: DEFAULT_POLICY,
   write_video_prompts: DEFAULT_POLICY,
   generate_image: DEFAULT_POLICY,
+  // A reusable per-element claim slot, not a one-shot job record: regenerating a
+  // reference is a legitimate, repeatable user action (the Generate button), and must
+  // never be blocked by a prior claim in either terminal state. No retry flag needed -
+  // same reasoning as agent_turn's mutex, just element-scoped instead of project-scoped
+  // (see the generations.element_id migration).
+  generate_element_reference: { ...DEFAULT_POLICY, claimableFrom: { succeeded: 'always', failed: 'always' } },
   generate_clip: DEFAULT_POLICY,
   merge: DEFAULT_POLICY,
   // derive_camera never actually claims a `generations` row (see pipeline.ts), but it

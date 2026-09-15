@@ -1,24 +1,21 @@
 import { createServiceRoleClient } from '@/lib/supabase/service-role'
 import { isUniqueViolation } from '@/lib/shot-key'
 import type { Step, Operation } from '@/lib/config/pipeline'
-import { creditsFor, usdToCredits, SIGNUP_GRANT_CREDITS, CREDIT_PRICE_VERSION } from '@/lib/config/credits'
+import { creditsFor, usdToCredits, CREDIT_PRICE_VERSION } from '@/lib/config/credits'
 
-// Every write in this module goes through the service-role client (bypasses RLS -
-// credit_ledger has no authenticated write policy by design, see CLAUDE.md). RLS
-// normally scopes a query to its caller; a service-role client doesn't, so every
-// query here carries an explicit .eq('user_id', userId) by hand instead - a query
-// without one is a bug.
+// Write-only: spends and refunds. Every write in this module goes through the
+// service-role client (bypasses RLS - credit_ledger has no authenticated write
+// policy by design, see CLAUDE.md). RLS normally scopes a query to its caller; a
+// service-role client doesn't, so every query here carries an explicit
+// .eq('user_id', userId) by hand instead - a query without one is a bug.
 //
 // Rows are immutable: this module only ever inserts. No UPDATE or DELETE against
 // credit_ledger anywhere below.
 //
-// Balance is SUM(delta), never a stored running total. No Postgres functions/
-// triggers/.rpc() (standing rule), and PostgREST aggregate select syntax isn't used
-// either - getBalance selects every delta for the user and sums in TypeScript, the
-// same shape assertWithinAllowance already uses for the analogous usage-sum problem.
-// This is a full-column read of every ledger row a user has ever had; fine at
-// current scale, will want revisiting (a real Postgres aggregate, or a maintained
-// running total) once row counts grow.
+// Balance reads live in credits/balance.ts (ordinary client - a read never needs
+// service-role, since credit_ledger has a SELECT policy on user_id = auth.uid()) and
+// the signup-grant bootstrap lives in credits/signup-grant.ts (service-role, since
+// that IS a write) - neither belongs in this write-only module.
 
 export class InvalidRefundTargetError extends Error {
   constructor(ledgerId: string) {
@@ -46,42 +43,6 @@ export class DuplicateRefundError extends Error {
  */
 export function mintAttemptId(): string {
   return crypto.randomUUID()
-}
-
-/**
- * Sums delta for the user. A user with zero rows gets the signup grant inserted
- * lazily right here - this is the only grant mechanism there is: no trigger, no
- * signup hook, auth.users inserts happen Supabase-side with no application code in
- * the path.
- */
-export async function getBalance(userId: string): Promise<number> {
-  const supabase = createServiceRoleClient()
-
-  const { data, error } = await supabase.from('credit_ledger').select('delta').eq('user_id', userId)
-  if (error) {
-    throw new Error(`getBalance query failed: ${error.message}`)
-  }
-
-  if (data.length === 0) {
-    const { error: insertError } = await supabase.from('credit_ledger').insert({
-      user_id: userId,
-      kind: 'signup_grant',
-      delta: SIGNUP_GRANT_CREDITS,
-      dedupe_key: `signup_grant:${userId}`,
-      price_version: CREDIT_PRICE_VERSION,
-    })
-
-    if (insertError && !isUniqueViolation(insertError)) {
-      throw new Error(`getBalance grant insert failed: ${insertError.message}`)
-    }
-
-    // Either this call just inserted the grant, or a concurrent first read beat it to
-    // the unique (user_id, dedupe_key) index (23505) - either way the grant now
-    // exists. Re-read rather than assuming the value.
-    return getBalance(userId)
-  }
-
-  return data.reduce((sum, row) => sum + row.delta, 0)
 }
 
 /**

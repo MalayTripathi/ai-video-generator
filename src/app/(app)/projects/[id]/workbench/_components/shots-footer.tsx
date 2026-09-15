@@ -6,17 +6,28 @@ function ArrowIcon() {
   )
 }
 
-export function ShotsFooter({ elementNamesWithoutReference }: { elementNamesWithoutReference: string[] }) {
+export function ShotsFooter({
+  elementNamesWithoutReference,
+  generateImagePromptsCredits,
+  onGenerateImagePromptsClick,
+  generateDisabled,
+}: {
+  elementNamesWithoutReference: string[]
+  generateImagePromptsCredits: number
+  onGenerateImagePromptsClick: () => void
+  generateDisabled?: boolean
+}) {
   const shown = elementNamesWithoutReference.slice(0, 3)
   const suffix = elementNamesWithoutReference.length > 3 ? '…' : ''
 
   return (
     <>
-      <div className="text-small leading-[1.5] text-text-secondary">
+      <div className="text-small leading-[1.5] text-text-secondary" data-testid="workbench-footer-warning">
         {elementNamesWithoutReference.length > 0 && (
           <>
             <span className="font-medium text-banner-active-title">
-              {elementNamesWithoutReference.length} elements without a reference image
+              {elementNamesWithoutReference.length} element{elementNamesWithoutReference.length === 1 ? '' : 's'}{' '}
+              without a reference image
             </span>{' '}
             ({shown.join(', ')}
             {suffix}). They&rsquo;ll be written from their descriptions — fine, just less consistent.
@@ -24,13 +35,15 @@ export function ShotsFooter({ elementNamesWithoutReference }: { elementNamesWith
         )}
       </div>
       <div className="flex flex-none gap-rc-sm">
-        <span className="flex h-9 cursor-not-allowed items-center rounded-control border border-border-strong px-rc-md text-control opacity-60">
-          Add references
-        </span>
-        <span className="flex h-9 cursor-not-allowed items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent opacity-60">
-          Generate Image Prompts
+        <button
+          type="button"
+          onClick={onGenerateImagePromptsClick}
+          disabled={generateDisabled}
+          className="flex h-9 cursor-pointer items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Generate Image Prompts - {generateImagePromptsCredits} Credits
           <ArrowIcon />
-        </span>
+        </button>
       </div>
     </>
   )

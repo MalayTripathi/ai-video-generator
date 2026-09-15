@@ -5,6 +5,13 @@ are not lost.
 
 ## Known bugs
 
+- **`resolveElement` matches only on current name, so a renamed element gets duplicated on
+  regeneration.** `resolveElement` (`src/app/api/projects/[id]/shots/logic.ts`) dedups
+  purely by `lower(name)`. If a user renames an element (a character, or the project's
+  style element) after it's created, the next shot-list regeneration no longer matches it
+  by its old name and inserts a new row alongside the renamed one instead of reusing it.
+  Understood, low severity (surfaced while adding style-element generation, C5), and
+  deliberately not fixed here.
 - **Camera field override reported to empty that field's dropdown — unreproduced.** Eight
   live-reproduction scenarios (plain override, all three overridden in sequence, override
   after a real re-derivation, rapid double-selection, keyboard-driven override, per-field
@@ -80,14 +87,14 @@ are not lost.
   purely the chat panel wiring: sending a message, rendering the SSE stream's events onto
   `AgentMessageKind`, a `client_id` per send.
 - Element upload and reference-image generation from the Assets tab.
-- Step-guard navigation: gate step-to-step links on `furthest_step`, not `current_step`
-  position. Blocked in practice until `advanceStep()` has its first caller. The step
-  indicator must switch in that same slice — see the coupling warning in CLAUDE.md.
 - The Queue rail item is visual-only, pending real data.
 - Whether and when to flip `SPEND_CAP_ENABLED` on is an open product decision; the
   mechanism is wired.
 - `updateProjectTitle` (`src/app/(app)/projects/[id]/actions.ts`) is unused, pending a
   workbench title editor.
+- The "Add credits" button shown on insufficient-balance (workbench Step 2's Generate
+  Image Prompts confirm modal) is a non-functional placeholder — no credit-purchase flow
+  exists yet.
 - **Credit gating is not implemented.** No balance check refuses any operation today —
   every priced call fires regardless of the caller's balance, and `getBalance()` has no
   caller outside `/credits`. Deferred by explicit instruction; lands with Step 4.

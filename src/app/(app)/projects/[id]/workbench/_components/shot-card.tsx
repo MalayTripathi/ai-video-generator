@@ -434,7 +434,7 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
             )}
           </div>
 
-          <BoundElements elements={shot.elements} />
+          <BoundElements shotId={shot.id} elements={shot.elements} readOnly={readOnly} />
 
           <div className="flex items-end justify-between gap-rc-md">
             <DurationStepper

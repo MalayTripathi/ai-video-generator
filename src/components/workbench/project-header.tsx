@@ -3,6 +3,7 @@ import { VIDEO_MODELS, type VideoModelId } from '@/lib/config/models'
 import { videoTypeLabel } from '@/lib/video-type-labels'
 import { languageLabel } from '@/lib/language-labels'
 import { displayTitle } from '@/lib/display-title'
+import { formatDuration } from '@/lib/format-duration'
 
 function videoModelLabel(videoModel: string | null): string | null {
   if (!videoModel) return null
@@ -10,12 +11,6 @@ function videoModelLabel(videoModel: string | null): string | null {
   // 'Kling 2.1' placeholder default) - never blank a chip just because a model isn't
   // (yet) registered.
   return VIDEO_MODELS[videoModel as VideoModelId]?.label ?? videoModel
-}
-
-function formatDuration(totalSeconds: number) {
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
 function LockIcon() {

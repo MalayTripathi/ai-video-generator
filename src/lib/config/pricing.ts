@@ -3,7 +3,7 @@ import type { Provider } from '@/lib/config/pipeline'
 // Single place edited when a rate changes. Bump by hand on any edit below -
 // raw_usage.rates on every settled `usage` row records the rate_version that
 // produced it, so a past row's cost stays reconstructable even after rates move.
-export const RATE_VERSION = '2026-09-01'
+export const RATE_VERSION = '2026-09-13'
 
 // Anthropic injects a fixed system-prompt overhead when tools are present, on top of
 // the tool schema JSON and the visible system/user text - this approximates that
@@ -57,15 +57,42 @@ function perMillionToPerToken(ratePerMillion: number): number {
   return ratePerMillion / 1_000_000
 }
 
-// Stub shapes only - no values yet. Filling these in is what makes a new
-// provider's usage/cost tracking real; until then computeCost returns a null
-// estimatedCost for any provider below.
+// elevenlabs/fal below are stub shapes only - no values yet, and computeCost returns a
+// null estimatedCost for both until they're filled in.
 
-/** Keyed by size (e.g. '1024x1024'), then quality (e.g. 'standard' | 'hd'). */
+// OpenAI meters image generation as tokens, not a flat per-image fee: a given size is a
+// fixed output-token count per quality tier, times the model's output-token rate. Keyed
+// by OpenAI image model (not just size/quality) so a second image model's rates can
+// never collide with gpt-image-1-mini's in the same size/quality keys. Authority:
+// https://platform.openai.com/docs/pricing - image-input token rates are deliberately
+// omitted below, since this product never uploads an image for editing at the
+// workbench step. computeCost's `openai` branch reads textInputPerMTok/outputPerMTok
+// directly; outputTokensBySize is consumed by quoteOpenAiImageCall (usage/quote.ts) for
+// the pre-flight quote, not by computeCost.
 type OpenAiImageRates = {
-  images: Record<string, Record<string, number>>
+  images: Record<
+    string,
+    {
+      /** USD per 1M text input (prompt) tokens. */
+      textInputPerMTok: number
+      /** USD per 1M output (generated image) tokens. */
+      outputPerMTok: number
+      /** Fixed output-token count, keyed by size (e.g. '1024x1024') then quality (e.g. 'low'). */
+      outputTokensBySize: Record<string, Record<string, number>>
+    }
+  >
 }
-export const OPENAI_RATES: OpenAiImageRates = { images: {} }
+export const OPENAI_RATES: OpenAiImageRates = {
+  images: {
+    'gpt-image-1-mini': {
+      textInputPerMTok: 2.0,
+      outputPerMTok: 8.0,
+      outputTokensBySize: {
+        '1024x1024': { low: 272, medium: 1056, high: 4160 },
+      },
+    },
+  },
+}
 
 type ElevenLabsRates = {
   perCharacterUsd: number | null
@@ -79,9 +106,11 @@ type FalRates = {
 }
 export const FAL_RATES: FalRates = { perClipUsd: {}, perSecondUsd: {} }
 
+type OpenAiImageAppliedRates = { textInputPerMTok: number; outputPerMTok: number }
+
 export type CostResult = {
   estimatedCost: number | null
-  appliedRates: ClaudeRates | null
+  appliedRates: ClaudeRates | OpenAiImageAppliedRates | null
   quantity: number
   unit: 'tokens' | 'unknown'
 }
@@ -89,9 +118,28 @@ export type CostResult = {
 /**
  * The single place a cost or credit number is computed from a provider's raw usage
  * report. Returns a null estimatedCost (never a guess) for an unknown model or a
- * provider with no rates configured yet (openai/elevenlabs/fal - see the stubs above).
+ * provider with no rates configured yet (elevenlabs/fal - see the stubs above).
  */
 export function computeCost(provider: Provider, model: string, breakdown: UsageBreakdown): CostResult {
+  if (provider === 'openai') {
+    const quantity = breakdown.input_tokens + breakdown.output_tokens
+    const rates = OPENAI_RATES.images[model]
+    if (!rates) {
+      return { estimatedCost: null, appliedRates: null, quantity, unit: 'tokens' }
+    }
+
+    const estimatedCost =
+      breakdown.input_tokens * perMillionToPerToken(rates.textInputPerMTok) +
+      breakdown.output_tokens * perMillionToPerToken(rates.outputPerMTok)
+
+    return {
+      estimatedCost,
+      appliedRates: { textInputPerMTok: rates.textInputPerMTok, outputPerMTok: rates.outputPerMTok },
+      quantity,
+      unit: 'tokens',
+    }
+  }
+
   if (provider !== 'anthropic') {
     return { estimatedCost: null, appliedRates: null, quantity: 0, unit: 'unknown' }
   }

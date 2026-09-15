@@ -1166,3 +1166,38 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   one-off script, run once and not committed to this repository — this describes
   the mechanism its dedupe keys had to satisfy given the schema, not a read of the
   script's own source.)
+
+## Element reference generation: why `generations` needed a real schema change
+
+- **`generations.element_id` was added, widening `generations_identity_idx` to
+  `(project_id, step, operation, shot_id, element_id)`.** The alternative — let
+  `generate_element_reference` share one project-level row, the same shape
+  `generate_shots`/`agent_turn` already use — was considered and rejected.
+  `generate_shots`/`agent_turn` are legitimately project-singleton actions (one shot
+  list, one agent mutex); a project's elements are not a singleton. With no
+  `element_id`, every element's claim collided on the same identity row
+  (`shot_id` is always null here), so generating Character A's reference would put
+  the row in `'generating'` and block Location B's `Generate` press with a 409 it
+  had no part in — serializing what must be N independent, concurrently-claimable
+  actions (one per element, each its own claim/charge/failure).
+- **`OPERATION_POLICY['generate_element_reference']` is `{succeeded: 'always',
+  failed: 'always'}`, not the default `{succeeded: 'never', failed: 'retry'}`.** A
+  reference image is a `Generate`-button action a person can press again any time
+  they want a different result, unlike `generate_shots`, which needs a `retry: true`
+  confirmation because regenerating replaces the whole shot list. There is no
+  equivalent destructive blast radius here — regenerating one element's reference
+  never touches any other row — so gating it behind a retry flag would just be
+  friction with no corresponding safety benefit. Same reasoning as `agent_turn`'s
+  mutex, just applied to a per-element lock instead of a per-project one.
+- **The credit-balance gate lives inside the runner, after claim/recover, not in
+  `route.ts` before the claim.** A claimed row whose `payload` is already present
+  (a crashed prior attempt) must always be recoverable for free — recovery relinks
+  an already-paid-for object and never calls the provider again. Checking balance
+  before the claim can't distinguish "fresh request" from "this will turn out to be
+  a free recovery" until after the claim is inspected, so a balance check placed
+  there would incorrectly 402 a user with zero balance out of recovering a
+  generation they already paid for. This is why `getBalance` (like
+  `recordFixedSpend`) is dependency-injected into the runner as a type-only import
+  in `logic.ts`, with the real value passed from `route.ts` — the same
+  `server-only`-avoidance shape `runShotGeneration`/`runCameraDerivation` already use
+  for `recordFixedSpend`.

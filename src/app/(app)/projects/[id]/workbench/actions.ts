@@ -1,11 +1,39 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS } from '@/lib/config/enums'
+import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, SHOT_ELEMENT_TYPES } from '@/lib/config/enums'
 import { stalenessFor } from '@/lib/shot-staleness'
 import { stepIndex } from '@/lib/config/pipeline'
 import { voiceOverIsValid, EMPTY_VOICEOVER_MESSAGE } from '@/lib/shot-voiceover'
 import { visualDescriptionIsValid, EMPTY_VISUAL_DESCRIPTION_MESSAGE } from '@/lib/shot-visual-description'
+import { isUniqueViolation } from '@/lib/shot-key'
+import {
+  getProjectElementsForUser,
+  resignElementReferenceImageForUser,
+  type GetProjectElementsResult,
+  type ResignElementImageResult,
+} from '@/lib/elements/read'
+import {
+  createElementForUser,
+  updateElementNameForUser,
+  updateElementDescriptionForUser,
+  deleteElementForUser,
+  loadOwnedElement,
+  type ElementCreateResult,
+  type ElementNameSaveResult,
+  type ElementDescriptionSaveResult,
+  type ElementDeleteResult,
+} from '@/lib/elements/write'
+import type { ElementType } from '@/lib/config/enums'
+import { creditsFor } from '@/lib/config/credits'
+import type { DisplayElement } from './_components/types'
+// The balance module is a pure read on the ordinary authenticated client - safe to
+// import here even though this file is dynamically imported directly by some
+// Playwright specs (tests/shot-deletion.spec.ts) outside Next's server bundle. The
+// ledger's write functions and the signup-grant bootstrap both transitively pull in
+// the service-role client's 'server-only' guard and must never be imported here for
+// that reason.
+import { getBalance } from '@/lib/credits/balance'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -46,6 +74,20 @@ async function loadOwnedShot(supabase: SupabaseServerClient, shotId: string, use
   return data
 }
 
+// Same boundary as deleteShotForUser's own inline check (see its comment on the three
+// canonical, independently-duplicated enforcement sites) - reused here so every direct
+// shot/dialogue field-save action in this file is refused by the same threshold, without
+// adding a fourth site that recomputes stepIndex('storyboard') inline at each call site.
+// A separate query, not the embedded projects!inner join, mirroring deleteShotForUser's
+// own shape.
+async function isWorkbenchLockedForProject(supabase: SupabaseServerClient, projectId: string): Promise<boolean> {
+  const { data: project } = await supabase.from('projects').select('furthest_step').eq('id', projectId).single()
+  return !!project && project.furthest_step >= stepIndex('storyboard')
+}
+
+const SHOTS_LOCKED_MESSAGE =
+  "This project's workbench is locked - later steps have already started, so shots can no longer be changed here."
+
 export async function updateShotVoiceOver(shotId: string, value: string): Promise<ShotFieldSaveResult> {
   const field: ShotField = 'voice_over'
   const supabase = await createClient()
@@ -56,6 +98,9 @@ export async function updateShotVoiceOver(shotId: string, value: string): Promis
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const trimmed = value.trim()
 
@@ -115,6 +160,9 @@ export async function updateShotVisualDescription(
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const trimmed = value.trim()
 
@@ -149,6 +197,9 @@ export async function updateShotDuration(shotId: string, value: number): Promise
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const rounded = Math.round(value * 10) / 10
   if (rounded === shot.duration_sec) return { field, success: true, unchanged: true }
@@ -190,6 +241,9 @@ async function updateCameraField(field: CameraField, shotId: string, value: stri
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const originColumn = CAMERA_ORIGIN_COLUMN[field]
   // Diff on the (value, origin) PAIR, not value alone: re-selecting the same value
@@ -240,6 +294,9 @@ export async function saveDialogueLine(input: {
     .eq('projects.user_id', user.id)
     .maybeSingle()
   if (!shot) return { success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const trimmedLine = input.line.trim()
 
@@ -297,11 +354,14 @@ export async function deleteDialogueLine(id: string, shotId: string): Promise<Di
 
   const { data: shot } = await supabase
     .from('shots')
-    .select('id, projects!inner(user_id)')
+    .select('id, project_id, projects!inner(user_id)')
     .eq('id', shotId)
     .eq('projects.user_id', user.id)
     .maybeSingle()
   if (!shot) return { success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
 
   const { error: deleteError } = await supabase
     .from('shot_dialogue')
@@ -424,4 +484,234 @@ export async function deleteShot(shotId: string): Promise<ShotDeleteResult> {
   if (!user) return { success: false, error: 'Not authenticated' }
 
   return deleteShotForUser(supabase, shotId, user.id)
+}
+
+export type ElementBindResult =
+  | { success: true; element: DisplayElement; unchanged?: true }
+  | { success: false; error: string; reason?: 'style' | 'not_found' }
+
+export type ElementUnbindResult = { success: true } | { success: false; error: string }
+
+function toDisplayElement(element: {
+  id: string
+  name: string
+  type: ElementType
+  status: string
+  reference_image_path: string | null
+}): DisplayElement {
+  return {
+    id: element.id,
+    name: element.name,
+    type: element.type,
+    status: element.status,
+    reference_image_path: element.reference_image_path,
+  }
+}
+
+// Same threshold as every other shot mutation in this file (isWorkbenchLockedForProject,
+// site #1 of the three canonical, independently-duplicated lock sites - see
+// deleteShotForUser's comment above) - binding is shot content, not element content, so it
+// does not get the Assets tab's exemption from the lock.
+async function markImagePromptStale(supabase: SupabaseServerClient, shotId: string) {
+  const { error } = await supabase.from('shots').update({ image_prompt_stale: true }).eq('id', shotId)
+  if (error) {
+    console.error(`[workbench] Failed to set image_prompt_stale for shot ${shotId}:`, error.message)
+  }
+}
+
+export async function bindElementToShotForUser(
+  supabase: SupabaseServerClient,
+  shotId: string,
+  elementId: string,
+  userId: string
+): Promise<ElementBindResult> {
+  const shot = await loadOwnedShot(supabase, shotId, userId)
+  if (!shot) return { success: false, error: 'Shot not found', reason: 'not_found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
+
+  const element = await loadOwnedElement(supabase, elementId, userId)
+  // loadOwnedElement already filters deleted_at IS NULL and ownership by user - a
+  // soft-deleted, not-owned, or cross-project element collapses to the same "not found"
+  // as a bad id, mirroring loadOwnedShot's own null-collapse reasoning.
+  if (!element || element.project_id !== shot.project_id) {
+    return { success: false, error: 'Element not found', reason: 'not_found' }
+  }
+  // Mirrors runShotsPipeline's assertNotStyle guard (shots/logic.ts) - this is a second,
+  // independent write path (the picker), so it re-derives the same rule from
+  // SHOT_ELEMENT_TYPES rather than importing that pipeline-only helper. Style is
+  // project-wide and never shot-bound; this is enforced here regardless of whether the
+  // picker's own filtering already kept it off the list.
+  if (!(SHOT_ELEMENT_TYPES as readonly string[]).includes(element.type)) {
+    return {
+      success: false,
+      error: "The style element can't be bound to a shot — it applies to the whole project.",
+      reason: 'style',
+    }
+  }
+
+  const { error } = await supabase.from('shot_elements').insert({ shot_id: shotId, element_id: elementId })
+  if (error) {
+    // (shot_id, element_id) is the table's PRIMARY KEY - already-bound is a unique
+    // violation, detected by Postgres error code (never message-matching). The desired
+    // end state (this pair bound) already holds, so a race lands as a benign no-op,
+    // same shape as every other diff-before-write 'unchanged' case in this file.
+    if (isUniqueViolation(error)) {
+      return { success: true, unchanged: true, element: toDisplayElement(element) }
+    }
+    return { success: false, error: error.message }
+  }
+
+  // Same flag Task 9's markImagePromptsStaleForElementReference sets, scoped to this one
+  // shot directly (that helper is for "every shot bound to element X"; here we already
+  // know the single shot_id). Never video_prompt_stale, never voiceover_stale, never
+  // nulling image_prompt itself - the flag is the whole mechanism.
+  await markImagePromptStale(supabase, shotId)
+
+  return { success: true, element: toDisplayElement(element) }
+}
+
+export async function unbindElementFromShotForUser(
+  supabase: SupabaseServerClient,
+  shotId: string,
+  elementId: string,
+  userId: string
+): Promise<ElementUnbindResult> {
+  const shot = await loadOwnedShot(supabase, shotId, userId)
+  if (!shot) return { success: false, error: 'Shot not found' }
+  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+    return { success: false, error: SHOTS_LOCKED_MESSAGE }
+  }
+
+  // No separate element-ownership check needed: the delete is scoped to shot_id, already
+  // confirmed owned above - a matching row can only exist if a prior bind already
+  // validated the cross-project match. Unconditional, not gated on "did a row exist" -
+  // a stale double-click hitting zero rows is harmless to re-flag.
+  const { error } = await supabase.from('shot_elements').delete().eq('shot_id', shotId).eq('element_id', elementId)
+  if (error) return { success: false, error: error.message }
+
+  // Never touches elements/reference_image_path/storage - only the binding. This is what
+  // keeps deleteElementForUser's findBoundShots delete-block rule (write.ts) working
+  // unmodified: once the last shot_elements/shot_dialogue row is gone, the element
+  // becomes deletable again.
+  await markImagePromptStale(supabase, shotId)
+
+  return { success: true }
+}
+
+export async function bindElementToShot(shotId: string, elementId: string): Promise<ElementBindResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return bindElementToShotForUser(supabase, shotId, elementId, user.id)
+}
+
+export async function unbindElementFromShot(shotId: string, elementId: string): Promise<ElementUnbindResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return unbindElementFromShotForUser(supabase, shotId, elementId, user.id)
+}
+
+// Serves both the initial Assets-tab load and a client-driven refresh ahead of the
+// signed URLs' one-hour expiry - re-running the same one-query-plus-one-batch-sign path
+// is already cheap and correct, so there is no separate "refresh" function.
+export async function getProjectElements(projectId: string): Promise<GetProjectElementsResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return getProjectElementsForUser(supabase, projectId, user.id)
+}
+
+// Read-only affordance check for the Assets tab's Generate controls: the per-element
+// price (never hardcoded - CLAUDE.md) plus whether the user's current balance covers
+// it. This never reserves, spends, or writes anything - runElementReferenceGeneration
+// (the actual paid call) still runs its own balance gate independently; this is purely
+// so the UI can disable Generate proactively instead of only reacting to a 402.
+export async function getElementGenerateAffordability(): Promise<{
+  generateCredits: number
+  hasInsufficientBalance: boolean
+}> {
+  const generateCredits = creditsFor({ step: 'workbench', operation: 'generate_element_reference', quantity: 1 })
+
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { generateCredits, hasInsufficientBalance: true }
+
+  const balance = await getBalance(user.id)
+  return { generateCredits, hasInsufficientBalance: balance < generateCredits }
+}
+
+// Recovers one broken reference image without refetching the whole batch.
+export async function resignElementReferenceImage(
+  projectId: string,
+  path: string
+): Promise<ResignElementImageResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return resignElementReferenceImageForUser(supabase, projectId, path, user.id)
+}
+
+export async function createElement(
+  projectId: string,
+  name: string,
+  description: string | null,
+  type: ElementType
+): Promise<ElementCreateResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return createElementForUser(supabase, projectId, name, description, type, user.id)
+}
+
+export async function updateElementName(elementId: string, name: string): Promise<ElementNameSaveResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return updateElementNameForUser(supabase, elementId, name, user.id)
+}
+
+export async function updateElementDescription(
+  elementId: string,
+  description: string | null
+): Promise<ElementDescriptionSaveResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return updateElementDescriptionForUser(supabase, elementId, description, user.id)
+}
+
+export async function deleteElement(elementId: string): Promise<ElementDeleteResult> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Not authenticated' }
+
+  return deleteElementForUser(supabase, elementId, user.id)
 }

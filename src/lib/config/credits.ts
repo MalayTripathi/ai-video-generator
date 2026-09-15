@@ -12,7 +12,7 @@ export const SIGNUP_GRANT_CREDITS = 5000
 
 // Stamped onto every credit_ledger row so a past row's price stays reconstructable
 // after this table changes later - same pattern as pricing.ts's RATE_VERSION.
-export const CREDIT_PRICE_VERSION = '2026-09-11'
+export const CREDIT_PRICE_VERSION = '2026-09-13'
 
 /**
  * Converts a measured USD cost into credits, rounding up. Used only for agent_turn,
@@ -28,10 +28,11 @@ export type CreditUnit = 'per_shot' | 'per_element' | 'per_project'
 
 type PriceEntry = { credits: number; unit: CreditUnit }
 
-// Keyed on (step, operation), not operation alone: generate_image exists at two
-// steps (workbench thumbnail, storyboard full render) with different prices, and the
-// two prompt-writing operations sit at different steps. Operation alone can't
-// express this.
+// Keyed on (step, operation), not operation alone: generate_image (storyboard's Step 4
+// frame render) and generate_element_reference (workbench's per-element reference
+// image) are two different things that happen to both generate images, at different
+// steps with different prices, and the two prompt-writing operations sit at different
+// steps too. Operation alone can't express this.
 //
 // workbench/agent_turn has no entry - dynamically priced via usdToCredits.
 // generation/generate_clip has no entry, deliberately - the most expensive action in
@@ -41,7 +42,11 @@ export const PRICE_TABLE: Partial<Record<Step, Partial<Record<Operation, PriceEn
   workbench: {
     generate_shots: { credits: 2, unit: 'per_shot' }, // measured
     derive_camera: { credits: 3, unit: 'per_shot' }, // measured
-    generate_image: { credits: 5, unit: 'per_element' }, // placeholder
+    // 3 credits derives from gpt-image-1-mini at low quality, 1024x1024: 272 output
+    // tokens at $8/1M tokens is roughly $0.0022, and usdToCredits rounds up to 3.
+    // Placeholder because published per-image figures for this model don't all
+    // reconcile with that arithmetic - see pricing.ts's OPENAI_RATES comment.
+    generate_element_reference: { credits: 3, unit: 'per_element' }, // placeholder
   },
   image_prompts: {
     write_image_prompts: { credits: 2, unit: 'per_shot' }, // placeholder
@@ -63,6 +68,34 @@ export class MissingCreditPriceError extends Error {
   constructor(step: Step, operation: Operation) {
     super(`No fixed credit price for (${step}, ${operation}).`)
     this.name = 'MissingCreditPriceError'
+  }
+}
+
+// Thrown by a runner's balance gate (e.g. runElementReferenceGeneration) after
+// claim/recover but before reserving usage or calling the provider - mapped to 402
+// (never 429) by the route, mirroring AllowanceExceededError's positioning
+// (src/lib/usage/allowance.ts). Lives in this module rather than the ledger writer's
+// own, so it can be value-imported by a route's logic.ts without pulling in the
+// ledger writer's transitive service-role/'server-only' dependency (see
+// runElementReferenceGeneration's own getBalance/recordFixedSpend type-only-import
+// comment) - tests/ledger.spec.ts's module-hygiene check enforces that only a route
+// and its logic.ts import the ledger writer directly, so this class deliberately
+// avoids even naming that module's path in this comment.
+export class InsufficientCreditsError extends Error {
+  // Plain fields, not TS constructor-parameter properties: this file is transitively
+  // imported by the ledger writer module, which several tests load in a plain-Node
+  // child process under Node's default (strip-only) type stripping - that mode cannot
+  // parse a constructor parameter property (see tests/wiring-identity.spec.ts's own
+  // comment on this exact limitation). A parameter property here would break every
+  // test that goes through that dispatcher, not just ones touching this class.
+  readonly requiredCredits: number
+  readonly balanceCredits: number
+
+  constructor(requiredCredits: number, balanceCredits: number) {
+    super(`Not enough credits: this action costs ${requiredCredits}, balance is ${balanceCredits}.`)
+    this.name = 'InsufficientCreditsError'
+    this.requiredCredits = requiredCredits
+    this.balanceCredits = balanceCredits
   }
 }
 

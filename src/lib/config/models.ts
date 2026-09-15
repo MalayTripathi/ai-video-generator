@@ -1,5 +1,11 @@
 const isProduction = process.env.NODE_ENV === 'production'
 
+// Provider selection for element reference images. A second provider (fal) can be
+// added later without touching call sites - they read modelsConfig.elements.provider,
+// never this env var directly.
+const elementImageProvider: 'openai' | 'fal' =
+  process.env.ELEMENT_IMAGE_PROVIDER === 'fal' ? 'fal' : 'openai'
+
 // Video-model registry: duration bounds per model, for the Step 2 duration stepper to
 // clamp against once it's built. This registry will grow - adding a model is one entry
 // here, not edits scattered across several places. Seconds are fractional (real clip
@@ -70,11 +76,6 @@ export function isDurationAllowed(config: VideoModelConfig, seconds: number): bo
 }
 
 export type ModelsConfig = {
-  prompts: {
-    provider: 'anthropic'
-    model: string
-    maxTokens: number
-  }
   shots: {
     provider: 'anthropic'
     model: string
@@ -90,22 +91,26 @@ export type ModelsConfig = {
     model: string
     maxTokens: number
   }
+  elements: {
+    provider: 'openai' | 'fal'
+    model: string
+    quality: string
+    size: '1024x1024'
+  }
+  prompts: {
+    provider: 'anthropic'
+    model: string
+    maxTokens: number
+  }
   video: {
     provider: 'fal'
     model: string
   }
-  // Future steps (image, storyboard) each get their own section here as
-  // they're implemented - keep this type and the object below in sync.
+  // Future steps (storyboard) each get their own section here as they're
+  // implemented - keep this type and the object below in sync.
 }
 
 export const modelsConfig: ModelsConfig = {
-  prompts: {
-    provider: 'anthropic',
-    model:
-      process.env.CLAUDE_PROMPTS_MODEL ??
-      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
-    maxTokens: Number(process.env.CLAUDE_PROMPTS_MAX_TOKENS) || 8192,
-  },
   shots: {
     provider: 'anthropic',
     model:
@@ -138,8 +143,46 @@ export const modelsConfig: ModelsConfig = {
       (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
     maxTokens: Number(process.env.CLAUDE_AGENT_MAX_TOKENS) || 8192,
   },
+  elements: {
+    // Low quality/1024x1024 is correct in both environments, permanently - like
+    // camera above, this sits outside the isProduction ternary on purpose. A
+    // reference image is a consistency anchor the model looks at, never a frame the
+    // viewer sees, so paying for more than the cheapest tier is waste in production
+    // exactly as it is in development.
+    provider: elementImageProvider,
+    // The provider decides which env var fills `model` - there is no separate
+    // per-provider model field. fal isn't implemented yet (FALAI_ELEMENT_IMAGE_MODEL
+    // is read so the env var audit is complete, but nothing consumes it until a fal
+    // ImageGateway branch exists).
+    model:
+      elementImageProvider === 'openai'
+        ? (process.env.OPENAI_ELEMENT_IMAGE_MODEL ?? 'gpt-image-1-mini')
+        : (process.env.FALAI_ELEMENT_IMAGE_MODEL ?? ''),
+    quality: process.env.OPENAI_ELEMENT_IMAGE_QUALITY ?? 'low',
+    size: '1024x1024',
+  },
+  prompts: {
+    provider: 'anthropic',
+    model:
+      process.env.CLAUDE_PROMPTS_MODEL ??
+      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
+    maxTokens: Number(process.env.CLAUDE_PROMPTS_MAX_TOKENS) || 8192,
+  },
   video: {
     provider: 'fal',
     model: process.env.FAL_VIDEO_MODEL ?? VIDEO_MODELS[DEFAULT_VIDEO_MODEL].id,
   },
+}
+
+// generate_element_reference's credit price (PRICE_TABLE, src/lib/config/credits.ts)
+// is calibrated for gpt-image-1-mini at 'low' quality / 1024x1024 only - the price
+// can't see quality (keyed on step+operation), so a quality change here would
+// silently raise real provider cost while the charge stayed fixed. Fails at startup,
+// in every environment - a real cost-safety bug, not a dev-only concern.
+if (modelsConfig.elements.quality !== 'low') {
+  throw new Error(
+    `OPENAI_ELEMENT_IMAGE_QUALITY is "${modelsConfig.elements.quality}", but the ` +
+      `generate_element_reference credit price is calibrated for "low" only. Update ` +
+      `PRICE_TABLE (src/lib/config/credits.ts) before changing element image quality.`
+  )
 }

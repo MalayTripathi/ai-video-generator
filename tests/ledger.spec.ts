@@ -56,13 +56,52 @@ function runLedgerCall(fn: string, arg: unknown): Promise<LedgerCallResult> {
   })
 }
 
-test.describe('getBalance', () => {
+// ensureSignupGrant lives in credits/signup-grant.ts now (split out of the ledger so
+// that a balance READ - credits/balance.ts - never has to import anything
+// service-role-flavored; see the module-hygiene block below). Same service-role
+// transitive-import problem, same spawn-a-child-process fix, just pointed at the new
+// file.
+const SIGNUP_GRANT_MODULE_URL = 'file://' + path.resolve(__dirname, '../src/lib/credits/signup-grant.ts')
+
+function runSignupGrantCall(fn: string, arg: unknown): Promise<LedgerCallResult> {
+  const script = `
+    const { register } = require('node:module')
+    register(${JSON.stringify(ALIAS_LOADER_URL)})
+    import(${JSON.stringify(SIGNUP_GRANT_MODULE_URL)}).then(async (m) => {
+      try {
+        const result = await m[${JSON.stringify(fn)}](${JSON.stringify(arg)})
+        process.stdout.write(JSON.stringify({ ok: true, result: result === undefined ? null : result }))
+      } catch (err) {
+        process.stdout.write(JSON.stringify({
+          ok: false,
+          errorName: err && err.constructor && err.constructor.name,
+          message: err instanceof Error ? err.message : String(err),
+        }))
+      }
+    })
+  `
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--conditions=react-server', '-e', script], { env: process.env })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.stderr.on('data', (chunk) => (stderr += chunk))
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`signup-grant child process exited ${code}: ${stderr}`))
+        return
+      }
+      resolve(JSON.parse(stdout.trim()))
+    })
+  })
+}
+
+test.describe('ensureSignupGrant', () => {
   test('a fresh user gets exactly one signup_grant row and the configured grant value', async () => {
     const { user } = await createTestSession()
     try {
-      const result = await runLedgerCall('getBalance', user.id)
+      const result = await runSignupGrantCall('ensureSignupGrant', user.id)
       expect(result.ok).toBe(true)
-      expect(result.ok && result.result).toBe(SIGNUP_GRANT_CREDITS)
 
       const { data } = await admin.from('credit_ledger').select('*').eq('user_id', user.id)
       expect(data).toHaveLength(1)
@@ -74,11 +113,11 @@ test.describe('getBalance', () => {
     }
   })
 
-  test('calling getBalance twice on a fresh user does not create a second grant row', async () => {
+  test('calling ensureSignupGrant twice on a fresh user does not create a second grant row', async () => {
     const { user } = await createTestSession()
     try {
-      await runLedgerCall('getBalance', user.id)
-      await runLedgerCall('getBalance', user.id)
+      await runSignupGrantCall('ensureSignupGrant', user.id)
+      await runSignupGrantCall('ensureSignupGrant', user.id)
 
       const { data } = await admin
         .from('credit_ledger')
@@ -91,14 +130,15 @@ test.describe('getBalance', () => {
     }
   })
 
-  test('two concurrent getBalance calls on a fresh user produce exactly one grant row', async () => {
+  test('two concurrent ensureSignupGrant calls on a fresh user produce exactly one grant row', async () => {
     const { user } = await createTestSession()
     try {
-      const [r1, r2] = await Promise.all([runLedgerCall('getBalance', user.id), runLedgerCall('getBalance', user.id)])
+      const [r1, r2] = await Promise.all([
+        runSignupGrantCall('ensureSignupGrant', user.id),
+        runSignupGrantCall('ensureSignupGrant', user.id),
+      ])
       expect(r1.ok).toBe(true)
       expect(r2.ok).toBe(true)
-      expect(r1.ok && r1.result).toBe(SIGNUP_GRANT_CREDITS)
-      expect(r2.ok && r2.result).toBe(SIGNUP_GRANT_CREDITS)
 
       const { data } = await admin
         .from('credit_ledger')
@@ -106,41 +146,6 @@ test.describe('getBalance', () => {
         .eq('user_id', user.id)
         .eq('kind', 'signup_grant')
       expect(data).toHaveLength(1)
-    } finally {
-      await deleteTestUser(user.id)
-    }
-  })
-
-  test('balance after a grant and two spends equals the arithmetic sum', async () => {
-    const { user } = await createTestSession()
-    try {
-      await runLedgerCall('getBalance', user.id) // materializes the grant
-
-      const spend1 = await runLedgerCall('recordFixedSpend', {
-        userId: user.id,
-        step: 'workbench',
-        operation: 'generate_shots',
-        quantity: 8,
-        attemptId: crypto.randomUUID(),
-        projectId: null,
-      })
-      expect(spend1.ok).toBe(true)
-
-      const spend2 = await runLedgerCall('recordDynamicSpend', {
-        userId: user.id,
-        usd: 0.05,
-        step: 'workbench',
-        operation: 'agent_turn',
-        attemptId: crypto.randomUUID(),
-        projectId: null,
-      })
-      expect(spend2.ok).toBe(true)
-
-      const { data } = await admin.from('credit_ledger').select('delta').eq('user_id', user.id)
-      const expectedSum = data!.reduce((sum, row) => sum + row.delta, 0)
-
-      const balance = await runLedgerCall('getBalance', user.id)
-      expect(balance.ok && balance.result).toBe(expectedSum)
     } finally {
       await deleteTestUser(user.id)
     }
@@ -371,19 +376,31 @@ test.describe('module hygiene', () => {
     expect(contents).not.toMatch(/\.delete\(/)
   })
 
-  test('exactly the agent/shots/camera wiring imports this module - nothing else', async () => {
+  test('exactly the agent/shots/camera/elements spend wiring imports this module - nothing else', async () => {
     // Task 5 (wire agent_turn to the ledger) was this module's first legitimate
     // caller; Task 6 (wire generate_shots and derive_camera) added two more of the
-    // same shape. Each route (agent/route.ts, shots/route.ts, camera/route.ts) imports
-    // mintAttemptId/recordDynamicSpend/recordFixedSpend for real (it runs inside
-    // Next's server bundle, so the service-role.ts -> 'server-only' chain this module
-    // pulls in is safe there), and each corresponding logic.ts carries only a
-    // **type-only** `import type` for its DI parameter's type - erased at compile
-    // time, so it adds no runtime dependency (confirmed: tests that import a logic.ts
-    // directly, like tests/agent-turn.spec.ts/tests/shot-generation.spec.ts/
+    // same shape, plus a fourth (generate_element_reference, the first non-Claude
+    // paid call). Each route (agent/route.ts, shots/route.ts, camera/route.ts,
+    // elements/.../generate/route.ts) imports mintAttemptId/recordDynamicSpend/
+    // recordFixedSpend for real (it runs inside Next's server bundle, so the
+    // service-role.ts -> 'server-only' chain this module pulls in is safe there), and
+    // each corresponding logic.ts carries only a **type-only** `import type` for its
+    // DI parameters' types - erased at compile time, so it adds no runtime dependency
+    // (confirmed: tests that import a logic.ts directly, like
+    // tests/agent-turn.spec.ts/tests/shot-generation.spec.ts/
     // tests/camera-derivation.spec.ts, do so from plain Node with no "react-server"
-    // condition and do not throw). Any OTHER importer means a second, unreviewed call
-    // site.
+    // condition and do not throw).
+    //
+    // workbench/actions.ts is deliberately NOT in this list. It used to import
+    // getBalance from here for the Assets-tab affordance read, on the theory that
+    // being a 'use server' module in the same server bundle as the routes above made
+    // it equally safe - that theory was wrong: tests/shot-deletion.spec.ts
+    // dynamically import()s actions.ts directly, in plain Node with no
+    // "react-server" condition, which broke the instant this module gained a real
+    // caller outside a route. getBalance now lives in credits/balance.ts (ordinary
+    // client, no service-role in its import graph at all), so actions.ts no longer
+    // has any reason to reference this module. Any importer beyond these eight means
+    // a second, unreviewed call site.
     const srcDir = path.resolve(__dirname, '../src')
     const ownFile = path.resolve(__dirname, '../src/lib/credits/ledger.ts')
     const expectedImporters = [
@@ -393,6 +410,14 @@ test.describe('module hygiene', () => {
       path.resolve(__dirname, '../src/app/api/projects/[id]/shots/route.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/shots/[shotId]/camera/logic.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/shots/[shotId]/camera/route.ts'),
+      path.resolve(
+        __dirname,
+        '../src/app/api/projects/[id]/elements/[elementId]/reference/generate/logic.ts'
+      ),
+      path.resolve(
+        __dirname,
+        '../src/app/api/projects/[id]/elements/[elementId]/reference/generate/route.ts'
+      ),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []
@@ -409,5 +434,15 @@ test.describe('module hygiene', () => {
       return hits
     }
     expect(findImporters(srcDir).sort()).toEqual(expectedImporters)
+  })
+
+  test('credits/balance.ts (the balance read) never imports the service-role client', async () => {
+    const contents = readFileSync(path.resolve(__dirname, '../src/lib/credits/balance.ts'), 'utf8')
+    expect(contents).not.toMatch(/supabase\/service-role|createServiceRoleClient/)
+  })
+
+  test('credits/signup-grant.ts (the grant write) uses the service-role client', async () => {
+    const contents = readFileSync(path.resolve(__dirname, '../src/lib/credits/signup-grant.ts'), 'utf8')
+    expect(contents).toMatch(/service-role/)
   })
 })

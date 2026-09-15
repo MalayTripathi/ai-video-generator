@@ -199,7 +199,7 @@ export async function runAgentTurn(params: {
 
   const claim = await claimGeneration({
     supabase,
-    identity: { projectId, step: 'workbench', operation: 'agent_turn', shotId: null },
+    identity: { projectId, step: 'workbench', operation: 'agent_turn', shotId: null, elementId: null },
     // agent_turn's policy is claimableFrom: {succeeded: 'always', failed: 'always'} -
     // there is no "job" to protect from re-attempt, only a lock to release, so this is
     // always true and the policy is what actually gates reclaiming, not this flag.
