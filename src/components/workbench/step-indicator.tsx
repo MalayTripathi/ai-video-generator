@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState } from 'react'
+import { usePathname } from 'next/navigation'
 import { createPortal } from 'react-dom'
 import Link from 'next/link'
 import { STEPS as PIPELINE_STEPS, type Step } from '@/lib/config/pipeline'
@@ -87,14 +88,19 @@ function LockedStep({ index, label, unlockLabel }: { index: number; label: strin
 
 export function WorkbenchStepIndicator({
   projectId,
-  currentStep,
   furthestStep,
 }: {
   projectId: string
-  currentStep: string
   furthestStep: number
 }) {
-  const currentIndex = STEPS.findIndex((step) => step.key === currentStep)
+  // Route-derived, not current_step-derived: current_step is a DB value that only
+  // changes on an explicit advanceStep() write, so Back/Forward navigation (which
+  // changes the route with no DB write) would otherwise disagree with the page the
+  // user is actually looking at. See rail.tsx for the same usePathname() pattern.
+  const pathname = usePathname()
+  const currentIndex = STEPS.findIndex(
+    (step) => step.key !== 'intake' && pathname === `/projects/${projectId}/${step.key}`
+  )
   // furthestStep is on pipeline.ts's stepIndex() scale, where intake conceptually
   // occupies slot 1 without being a STEPS member (stepIndex('workbench') === 2) - this
   // component's own STEPS array is 0-based with intake at index 0, so -1 lines the two
@@ -109,8 +115,10 @@ export function WorkbenchStepIndicator({
         if (state === 'complete') {
           const content = (
             <>
-              <Badge className="border-status-done-fg text-status-done-fg">{index + 1}</Badge>
-              <span className="whitespace-nowrap text-label uppercase tracking-label text-status-done-fg group-hover:text-text-primary">
+              <Badge className="border-status-done-fg text-status-done-fg group-hover:border-accent group-hover:text-accent">
+                {index + 1}
+              </Badge>
+              <span className="whitespace-nowrap text-label uppercase tracking-label text-status-done-fg group-hover:font-medium group-hover:text-accent">
                 {step.label}
               </span>
             </>
@@ -135,7 +143,10 @@ export function WorkbenchStepIndicator({
               className="group relative flex flex-1 items-center justify-center gap-[9px] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               {content}
-              <span className="absolute inset-x-0 bottom-0 h-[2px] rounded-[1px] bg-border-strong" aria-hidden />
+              <span
+                className="absolute inset-x-0 bottom-0 h-[2px] rounded-[1px] bg-border-strong group-hover:bg-accent"
+                aria-hidden
+              />
             </Link>
           )
         }

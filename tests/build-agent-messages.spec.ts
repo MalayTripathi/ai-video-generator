@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { buildAgentMessages } from '../src/app/(app)/projects/[id]/workbench/_components/build-agent-messages'
+import { buildAgentMessages } from '../src/lib/build-agent-messages'
 import { describeToolActivity } from '../src/lib/agent-activity-display'
 import type { Tables } from '../src/lib/database.types'
 

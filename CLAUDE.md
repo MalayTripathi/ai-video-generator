@@ -210,12 +210,12 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   over-target overrun** (sum vs. `durationConfig[...].targetSecondsMax`)
   is project-level: stated once on the header's Current total, and
   deliberately not repeated on every locked shot's stepper.
-- The step indicator (`workbench-step-indicator.tsx`) only links a step
+- The step indicator (`step-indicator.tsx`) only links a step
   if it's actually built and has a real per-project route
   (`/projects/[id]/{step}`); `intake` has no such route (`/projects/new`
   is a pre-project screen) and always renders inert even when shown
-  complete. Complete/current/locked is derived from `furthest_step`; the
-  `current` highlight alone still comes from `current_step`.
+  complete. Complete/locked is derived from `furthest_step`; the
+  `current` highlight is derived from the active route, client-side.
 
 ## Code conventions
 - All external API calls happen server-side only (API routes / server
@@ -421,6 +421,7 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
 | `src/lib/camera-labels.ts` | `shot_size` / `camera_angle` / `camera_movement` display labels |
 | `src/lib/video-type-labels.ts` | `video_type` display labels |
 | `src/lib/language-labels.ts` | `language` display labels |
+| `src/lib/build-agent-messages.ts` | Reconstructs the agent panel's message list from persisted `messages` rows |
 
 ## Provider calls
 - `ClaudeGateway` (`src/lib/claude.ts`) is the only place `@anthropic-ai/sdk`
@@ -961,6 +962,6 @@ explicit save. The agent is available throughout steps 2 through 7.
 
 `advanceStep`'s first caller is the balance-gated Step 2 → Step 3 transition
 (`src/app/api/projects/[id]/image_prompts/advance/`). The step indicator
-(`workbench-step-indicator.tsx`) consults `furthest_step` for the complete/locked
-boundary and the locked-step tooltip's target step; `current_step` alone still decides
-the `current` highlight.
+(`step-indicator.tsx`) consults `furthest_step` for the complete/locked
+boundary and the locked-step tooltip's target step; the `current` highlight is
+derived from the active route, client-side, not `current_step`.

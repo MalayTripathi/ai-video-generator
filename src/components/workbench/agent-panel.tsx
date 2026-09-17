@@ -1,9 +1,9 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import { AgentMessageItem, type AgentMessage } from './agent-message'
-import { useShots } from '@/app/(app)/projects/[id]/workbench/_components/shots-context'
+import { ShotsContext } from '@/app/(app)/projects/[id]/workbench/_components/shots-context'
 import { useAgentTurn } from '@/app/(app)/projects/[id]/workbench/_components/use-agent-turn'
 import { describeToolActivity } from '@/lib/agent-activity-display'
 import { formatCost } from '@/lib/format-cost'
@@ -32,9 +32,34 @@ function nowIso() {
   return new Date().toISOString()
 }
 
-export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[] }) {
+// The panel's real data contract is these props, not a specific route's context - a
+// step page with no ShotsProvider (e.g. image_prompts) passes them directly. The
+// workbench tab passes none of them and falls back to ShotsProvider's own context
+// below, so its behavior is unchanged.
+export function AgentPanel({
+  initialMessages,
+  projectId,
+  readOnly: readOnlyProp,
+  shots: shotsProp,
+  lockShot: lockShotProp,
+  unlockAllShots: unlockAllShotsProp,
+  markShotsTouched: markShotsTouchedProp,
+}: {
+  initialMessages: AgentMessage[]
+  projectId: string
+  readOnly?: boolean
+  shots?: { shot_key: string; order_index: number }[]
+  lockShot?: (shotKey: string) => void
+  unlockAllShots?: () => void
+  markShotsTouched?: (shotKeys: string[]) => void
+}) {
   const router = useRouter()
-  const { projectId, readOnly, shots, lockShot, unlockAllShots, markShotsTouched } = useShots()
+  const shotsCtx = useContext(ShotsContext)
+  const readOnly = readOnlyProp ?? shotsCtx?.readOnly ?? false
+  const shots = shotsProp ?? shotsCtx?.shots ?? []
+  const lockShot = lockShotProp ?? shotsCtx?.lockShot ?? (() => {})
+  const unlockAllShots = unlockAllShotsProp ?? shotsCtx?.unlockAllShots ?? (() => {})
+  const markShotsTouched = markShotsTouchedProp ?? shotsCtx?.markShotsTouched ?? (() => {})
   const { isRunning, send, stop } = useAgentTurn(projectId)
   // Seeded rows carrying retryContent/retryClientId (an abandoned historical turn) need a
   // real onRetry closure, which a server component can't hand them - wire it up once here.
