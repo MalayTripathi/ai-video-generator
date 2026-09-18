@@ -1,4 +1,8 @@
+'use client'
+
 import { stepLabel } from '@/lib/config/pipeline'
+import { useImagePrompts } from './image-prompts-context'
+import { describeShotNumbers, isUngenerated } from './derive-image-prompts-phase'
 
 function ArrowIcon() {
   return (
@@ -8,21 +12,43 @@ function ArrowIcon() {
   )
 }
 
-// Same footer chrome as workbench's ShotsFooter (border, sizing, button style) minus the
-// "elements without a reference image" warning - that message is specific to the workbench
-// generate-trigger and doesn't apply here. Visual placeholder only: no action is wired yet,
-// since there is no storyboard route/advance endpoint to send it to.
+// Continue stays inert: there is no Storyboard route or advance endpoint to send it to
+// yet, so it is deliberately not offered as an enabled control.
 export function ImagePromptsFooter() {
+  const { shots, busyIds, externalGenerating, outcome } = useImagePrompts()
+
+  const numberById = new Map(shots.map((s) => [s.id, s.order_index + 1]))
+  const ungenerated = shots.filter(isUngenerated)
+
+  let note: string
+  if (externalGenerating) {
+    note = 'Prompts are being written. This page updates when they land.'
+  } else if (busyIds.size > 0) {
+    note = 'Prompts are being written. The rest of the list stays editable.'
+  } else if (outcome?.kind === 'partial') {
+    const ids = [...outcome.keptIds, ...outcome.unwrittenIds]
+    const nums = ids.map((id) => numberById.get(id) ?? 0).filter((n) => n > 0)
+    note =
+      outcome.unwrittenIds.length > 0
+        ? `${describeShotNumbers(nums)} still ${nums.length === 1 ? 'needs' : 'need'} a prompt. Retry ${nums.length === 1 ? 'it' : 'those'} first.`
+        : `${describeShotNumbers(nums)} still ${nums.length === 1 ? 'has its' : 'have their'} previous ${nums.length === 1 ? 'prompt' : 'prompts'}. You can retry ${nums.length === 1 ? 'it' : 'those'} first.`
+  } else if (ungenerated.length > 0) {
+    note = 'Some shots have no prompt yet.'
+  } else {
+    note = 'Every shot has a prompt. Edits save when you click away.'
+  }
+
   return (
-    <div className="flex flex-1 justify-end gap-rc-sm">
+    <>
+      <span className="text-small leading-[1.5] text-text-secondary">{note}</span>
       <button
         type="button"
         disabled
-        className="flex h-9 cursor-pointer items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent disabled:cursor-not-allowed disabled:opacity-60"
+        className="flex h-9 flex-none cursor-pointer items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent disabled:cursor-not-allowed disabled:opacity-60"
       >
         Continue to {stepLabel('storyboard')}
         <ArrowIcon />
       </button>
-    </div>
+    </>
   )
 }

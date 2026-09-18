@@ -29,4 +29,15 @@ export async function advanceStep(
     .update({ furthest_step: idx })
     .eq('id', projectId)
     .lt('furthest_step', idx)
+
+  // Leaving the workbench is what makes a project "in progress". Conditional at the
+  // database on status = 'draft' - like the furthest_step guard above - so backward
+  // navigation and repeat calls are no-ops and a later status is never overwritten.
+  if (idx > stepIndex('workbench')) {
+    await supabase
+      .from('projects')
+      .update({ status: 'in_progress', updated_at: new Date().toISOString() })
+      .eq('id', projectId)
+      .eq('status', 'draft')
+  }
 }

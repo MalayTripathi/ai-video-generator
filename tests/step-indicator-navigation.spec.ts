@@ -40,6 +40,9 @@ async function seedProject() {
     order_index: 0,
     shot_key: 'si001',
     voice_over: 'Placeholder voice-over.',
+    // A prompt already present is what keeps Step 3 from auto-generating on arrival
+    // (which would race with this test's navigation, same as the workbench trigger above).
+    image_prompt: 'A stored image prompt so that Step 3 has nothing to generate on arrival.',
   })
   expect(shotError).toBeNull()
 
@@ -66,7 +69,7 @@ test.describe('step indicator', () => {
     // for the Back press below.
     await imagePromptsLink.click()
     await expect(page).toHaveURL(`/projects/${projectId}/image_prompts`)
-    await expect(page.getByText('Image prompts — design pending')).toBeVisible()
+    await expect(page.getByRole('button', { name: /Regenerate All/ })).toBeVisible()
     await expect(imagePromptsLink).toHaveCount(0)
     await expect(workbenchLink).toHaveCount(1)
 

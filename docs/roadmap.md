@@ -126,8 +126,20 @@ are not lost.
   `{ costPerUnit, … }`. The duration-bounds half is closed (`VIDEO_MODELS` carries a real
   `kind: 'continuous' | 'discrete'` union). Still open: the per-step provider model map
   itself, and per-model cost config.
-- **Project-lifecycle `status` design.** `projects.status` is unconstrained text and
-  `/prompts` no longer writes `'in_progress'`; no substitute vocabulary has been chosen.
+- **Project-lifecycle `status` design.** `projects.status` is unconstrained text; the only
+  writes are `draft` (creation) and `draft` → `in_progress` (leaving the workbench, in
+  `advanceStep`). `completed`/`failed` have no writer, and projects that passed Step 2
+  before that write existed are still `draft`.
+- **Identity-token retrofit.** The Assets tab still reads `--accent` / `--status-done-fg` /
+  `--status-active-fg` / `--accent-quiet` for its four type dots (`ELEMENT_TYPE_DOT_CLASSNAME`);
+  the Shots tab, the element picker and Step 3 read `--ident-*`. Until Assets is swapped
+  (a mechanical change, canvas section 13), the same element has two dot colours.
+- **Balance gate still follows the claim on other claimed routes.** `image-prompts` now runs
+  its balance check before `claimGeneration` (a refused request leaves no generations,
+  usage or ledger row). `elements/.../reference/generate` and the workbench routes still
+  gate after the claim, so a 402 there settles a `failed` row naming a call that never
+  reached a provider. `assertWithinAllowance` (spend cap, off by default) is also still
+  after the claim on `image-prompts` itself.
 - **Failed-call credit charge policy is undecided.** Today a failed call writes no
   `credit_ledger` row even when real provider cost was already incurred (see
   docs/decisions.md). Whether that stays the permanent policy, or failed calls should be

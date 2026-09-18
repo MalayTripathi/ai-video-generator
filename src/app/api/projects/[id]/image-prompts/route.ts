@@ -80,6 +80,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     )
   }
 
+  if (result.status === 402 && result.requiredCredits !== undefined) {
+    return NextResponse.json(
+      { error: result.error, requiredCredits: result.requiredCredits, balanceCredits: result.balanceCredits },
+      { status: 402 }
+    )
+  }
+
   return NextResponse.json(
     'reason' in result ? { error: result.error, reason: result.reason } : { error: result.error },
     { status: result.status }

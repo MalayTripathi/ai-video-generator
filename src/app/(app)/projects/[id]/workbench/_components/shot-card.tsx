@@ -14,10 +14,11 @@ import { DeleteShotConfirmModal } from './delete-shot-confirm-modal'
 import { useShots } from './shots-context'
 import { useCameraDerivation, type CameraFieldUpdate } from './use-camera-derivation'
 import type { FieldSaveStatus } from './use-field-save'
-import type { DisplayElement, DisplayShot } from './types'
+import type { DisplayShot } from './types'
 import { CAMERA_FIELD_NAMES, type CameraFieldName } from '@/lib/prompts/camera-derivation'
 import type { CameraOrigin } from '@/lib/config/enums'
 import { deleteShot } from '../actions'
+import { identDotClassName } from '@/lib/element-type-labels'
 
 // canvas: "11 Delete affordance" - the exact bin glyph, shared by the collapsed
 // icon-only trigger and the expanded icon+label trigger so the two read as one control
@@ -42,13 +43,6 @@ const CAMERA_FIELD_LABELS: Record<CameraFieldName, string> = {
   shot_size: 'shot size',
   camera_angle: 'camera angle',
   camera_movement: 'camera movement',
-}
-
-function elementDotClassName(el: DisplayElement) {
-  if (el.reference_image_path) return 'bg-status-done-fg'
-  if (el.status === 'generating') return 'bg-status-active-fg'
-  if (el.status === 'failed') return 'bg-status-failed-fg'
-  return 'bg-border-strong' // pending / no reference - the only state reachable this task
 }
 
 type FieldStatusEntry = { status: FieldSaveStatus; retry: () => void }
@@ -345,7 +339,7 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
                     key={el.id}
                     className="flex items-center gap-[5px] rounded-badge bg-bg-inset px-rc-xs py-[3px] text-chip text-text-secondary"
                   >
-                    <span className={`h-[5px] w-[5px] rounded-full ${elementDotClassName(el)}`} aria-hidden />
+                    <span className={`h-[5px] w-[5px] rounded-full ${identDotClassName(el.type)}`} aria-hidden />
                     {el.name}
                   </span>
                 ))}

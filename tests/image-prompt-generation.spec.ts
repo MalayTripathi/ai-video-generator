@@ -4,6 +4,7 @@ import { primary } from './fixed-users'
 import { runImagePromptGeneration } from '../src/app/api/projects/[id]/image-prompts/logic'
 import { successMessage, truncatedMessage, throwingGateway } from './helpers/claude-fakes'
 import type { ClaudeGateway } from '../src/lib/claude'
+import { creditsFor } from '../src/lib/config/credits'
 
 const GOOD_IMAGE_PROMPT =
   'A warm, detailed shot with rich color and lighting that fully describes the moment for an image generation model.'
@@ -43,7 +44,12 @@ async function insertProject(userId: string) {
 
 async function insertShots(
   projectId: string,
-  shots: { shot_key: string; image_prompt?: string | null; image_prompt_stale?: boolean }[]
+  shots: {
+    shot_key: string
+    image_prompt?: string | null
+    image_prompt_stale?: boolean
+    image_prompt_edited?: boolean
+  }[]
 ) {
   const rows = shots.map((s, index) => ({
     project_id: projectId,
@@ -52,6 +58,7 @@ async function insertShots(
     voice_over: `Voice over for ${s.shot_key}`,
     image_prompt: s.image_prompt ?? null,
     image_prompt_stale: s.image_prompt_stale ?? true,
+    image_prompt_edited: s.image_prompt_edited ?? false,
   }))
   const { data, error } = await admin.from('shots').insert(rows).select('id, shot_key')
   expect(error).toBeNull()
@@ -74,7 +81,7 @@ async function readGeneration(projectId: string) {
 async function readShots(projectId: string) {
   const { data, error } = await admin
     .from('shots')
-    .select('id, shot_key, image_prompt, image_prompt_stale')
+    .select('id, shot_key, image_prompt, image_prompt_stale, image_prompt_edited')
     .eq('project_id', projectId)
   expect(error).toBeNull()
   return data!
@@ -392,5 +399,226 @@ test.describe('image prompt generation', () => {
     })
     expect(result.ok).toBe(false)
     expect(result.status).toBe(400)
+  })
+
+  test('a regeneration overwrites a hand edit and clears image_prompt_edited with it', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+    const shots = await insertShots(projectId, [
+      { shot_key: 'b2c3d', image_prompt: 'hand written', image_prompt_stale: false, image_prompt_edited: true },
+      { shot_key: 'f4g5h', image_prompt: 'hand written', image_prompt_stale: false, image_prompt_edited: true },
+    ])
+    const { gateway } = fakeGateway(['b2c3d', 'f4g5h'])
+
+    // Only the first shot is in scope: the second keeps its edit and its flag.
+    const result = await runImagePromptGeneration({
+      gateway,
+      supabase: admin,
+      projectId,
+      userId: user.id,
+      shotIds: [shots[0].id],
+      retry: false,
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: noopRecordFixedSpend,
+      getBalance: generousGetBalance,
+      ensureSignupGrant: noopEnsureSignupGrant,
+    })
+    expect(result.ok).toBe(true)
+
+    const byKey = new Map((await readShots(projectId)).map((r) => [r.shot_key, r]))
+    expect(byKey.get('b2c3d')!.image_prompt).toBe(GOOD_IMAGE_PROMPT)
+    expect(byKey.get('b2c3d')!.image_prompt_edited).toBe(false)
+    expect(byKey.get('f4g5h')!.image_prompt).toBe('hand written')
+    expect(byKey.get('f4g5h')!.image_prompt_edited).toBe(true)
+  })
+
+  test('a stored payload that does not cover the request is not replayed: a fresh call is made', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+    const shots = await insertShots(projectId, [{ shot_key: 'b2c3d' }, { shot_key: 'f4g5h' }])
+
+    const { error: generationError } = await admin.from('generations').insert({
+      project_id: projectId,
+      step: 'image_prompts',
+      operation: 'write_image_prompts',
+      shot_id: null,
+      state: 'failed',
+      payload: { prompts: [{ shot_key: 'b2c3d', image_prompt: GOOD_IMAGE_PROMPT }] } as never,
+    })
+    expect(generationError).toBeNull()
+
+    const { gateway, getCalls } = fakeGateway(['b2c3d', 'f4g5h'])
+    const result = await runImagePromptGeneration({
+      gateway,
+      supabase: admin,
+      projectId,
+      userId: user.id,
+      shotIds: shots.map((s) => s.id),
+      retry: true,
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: noopRecordFixedSpend,
+      getBalance: generousGetBalance,
+      ensureSignupGrant: noopEnsureSignupGrant,
+    })
+    expect(result.ok).toBe(true)
+    expect(getCalls()).toBe(1)
+    for (const row of await readShots(projectId)) {
+      expect(row.image_prompt).toBe(GOOD_IMAGE_PROMPT)
+    }
+  })
+
+  test('after a partial run, retrying the missing shot reaches a fresh call instead of replaying the exhausted payload', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+    const shots = await insertShots(projectId, [{ shot_key: 'b2c3d' }, { shot_key: 'f4g5h' }])
+    const idByKey = new Map(shots.map((s) => [s.shot_key, s.id]))
+    const base = {
+      supabase: admin,
+      projectId,
+      userId: user.id,
+      recordFixedSpend: noopRecordFixedSpend,
+      getBalance: generousGetBalance,
+      ensureSignupGrant: noopEnsureSignupGrant,
+    }
+
+    const first = await runImagePromptGeneration({
+      ...base,
+      gateway: fakeGateway(['b2c3d', 'f4g5h'], { omitKeys: ['f4g5h'] }).gateway,
+      shotIds: shots.map((s) => s.id),
+      retry: false,
+      attemptId: crypto.randomUUID(),
+    })
+    expect(first.ok).toBe(false)
+    expect((await readGeneration(projectId)).payload).toBeNull()
+
+    const retry = fakeGateway(['f4g5h'])
+    const second = await runImagePromptGeneration({
+      ...base,
+      gateway: retry.gateway,
+      shotIds: [idByKey.get('f4g5h')!],
+      retry: true,
+      attemptId: crypto.randomUUID(),
+    })
+    expect(second.ok).toBe(true)
+    expect(retry.getCalls()).toBe(1)
+    const byKey = new Map((await readShots(projectId)).map((r) => [r.shot_key, r]))
+    expect(byKey.get('f4g5h')!.image_prompt).toBe(GOOD_IMAGE_PROMPT)
+  })
+
+  test('402 carries the required and available credit figures', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+    const shots = await insertShots(projectId, [{ shot_key: 'b2c3d' }, { shot_key: 'f4g5h' }])
+
+    const result = await runImagePromptGeneration({
+      gateway: throwingGateway('must never be called'),
+      supabase: admin,
+      projectId,
+      userId: user.id,
+      shotIds: shots.map((s) => s.id),
+      retry: false,
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: noopRecordFixedSpend,
+      getBalance: async () => 1,
+      ensureSignupGrant: noopEnsureSignupGrant,
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok || result.status !== 402) throw new Error(`expected a 402, got ${JSON.stringify(result)}`)
+    expect(result.requiredCredits).toBe(
+      creditsFor({ step: 'image_prompts', operation: 'write_image_prompts', quantity: 2 })
+    )
+    expect(result.balanceCredits).toBe(1)
+  })
+
+  test('a refused balance check is the first gate: no generations row, no usage row, no ledger write, no provider call', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+    const shots = await insertShots(projectId, [{ shot_key: 'b2c3d' }, { shot_key: 'f4g5h' }])
+    let ledgerWrites = 0
+
+    const result = await runImagePromptGeneration({
+      gateway: throwingGateway('a refused request must never reach the provider'),
+      supabase: admin,
+      projectId,
+      userId: user.id,
+      shotIds: shots.map((s) => s.id),
+      retry: false,
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: async () => {
+        ledgerWrites++
+      },
+      getBalance: async () => 0,
+      ensureSignupGrant: noopEnsureSignupGrant,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.status).toBe(402)
+
+    const { data: generations } = await admin.from('generations').select('id').eq('project_id', projectId)
+    expect(generations).toEqual([])
+    const { data: usageRows } = await admin.from('usage').select('id').eq('project_id', projectId)
+    expect(usageRows).toEqual([])
+    expect(ledgerWrites).toBe(0)
+  })
+
+  test('a refused balance check leaves an existing reusable row exactly as it was - never turned into a failure', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+    const shots = await insertShots(projectId, [{ shot_key: 'b2c3d', image_prompt: GOOD_IMAGE_PROMPT, image_prompt_stale: true }])
+    const { error: generationError } = await admin.from('generations').insert({
+      project_id: projectId,
+      step: 'image_prompts',
+      operation: 'write_image_prompts',
+      shot_id: null,
+      state: 'succeeded',
+    })
+    expect(generationError).toBeNull()
+
+    const result = await runImagePromptGeneration({
+      gateway: throwingGateway('must never be called'),
+      supabase: admin,
+      projectId,
+      userId: user.id,
+      shotIds: shots.map((s) => s.id),
+      retry: true,
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: noopRecordFixedSpend,
+      getBalance: async () => 0,
+      ensureSignupGrant: noopEnsureSignupGrant,
+    })
+    expect(result.status).toBe(402)
+
+    const generation = await readGeneration(projectId)
+    expect(generation.state).toBe('succeeded')
+    expect(generation.error).toBeNull()
+  })
+
+  test('an empty balance never blocks RECOVER: a payload that answers the request still lands for free', async () => {
+    const user = primary.user
+    const projectId = await insertProject(user.id)
+    const shots = await insertShots(projectId, [{ shot_key: 'b2c3d' }])
+    const { error: generationError } = await admin.from('generations').insert({
+      project_id: projectId,
+      step: 'image_prompts',
+      operation: 'write_image_prompts',
+      shot_id: null,
+      state: 'failed',
+      payload: { prompts: [{ shot_key: 'b2c3d', image_prompt: GOOD_IMAGE_PROMPT }] } as never,
+    })
+    expect(generationError).toBeNull()
+
+    const result = await runImagePromptGeneration({
+      gateway: throwingGateway('RECOVER must never call the gateway'),
+      supabase: admin,
+      projectId,
+      userId: user.id,
+      shotIds: shots.map((s) => s.id),
+      retry: true,
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: noopRecordFixedSpend,
+      getBalance: async () => 0,
+      ensureSignupGrant: noopEnsureSignupGrant,
+    })
+    expect(result.ok).toBe(true)
+    expect((await readShots(projectId))[0].image_prompt).toBe(GOOD_IMAGE_PROMPT)
   })
 })

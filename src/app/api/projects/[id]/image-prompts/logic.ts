@@ -17,6 +17,7 @@ import type { getBalance } from '@/lib/credits/balance'
 import type { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import {
   claimGeneration,
+  peekGenerationPayload,
   persistGenerationPayload,
   settleGeneration,
   type BlockedReason,
@@ -56,6 +57,17 @@ export function resolveImagePromptResults(
   return { validEntries, missingShotKeys }
 }
 
+/**
+ * A stored payload is only worth replaying when it answers every requested shot. A
+ * payload left by a partial run lacks the shots Claude never returned; replaying it
+ * for a retry of exactly those shots (or for a wider scope) would re-derive the same
+ * misses for free, forever, and never call Claude again.
+ */
+export function payloadCoversScope(rawPayload: unknown, targetShotKeys: string[]): boolean {
+  const prompts = (rawPayload as { prompts?: unknown } | null)?.prompts
+  return resolveImagePromptResults(prompts, targetShotKeys).missingShotKeys.length === 0
+}
+
 type ImagePromptShot = {
   id: string
   shot_key: string | null
@@ -93,6 +105,53 @@ async function projectExistsForUser(
   return data !== null
 }
 
+export type ImagePromptsBalanceGate =
+  | { ok: true; recoverable: boolean }
+  | { ok: false; kind: 'insufficient'; requiredCredits: number; balanceCredits: number }
+  | { ok: false; kind: 'error'; message: string }
+
+const IMAGE_PROMPTS_IDENTITY = (projectId: string) =>
+  ({ projectId, step: 'image_prompts', operation: 'write_image_prompts', shotId: null, elementId: null }) as const
+
+/**
+ * The first gate on a request that could spend: is the balance enough? It runs BEFORE
+ * the claim - the claim exists to stop duplicate concurrent spend, and a request refused
+ * before any spend has nothing to protect against (and must not leave a failed
+ * generations row, a usage row or a ledger row naming a call that never reached a
+ * provider). The only exemption is a stored payload that answers every requested shot:
+ * RECOVER replays it for free, so a caller whose balance has since dropped to zero can
+ * still land what was already paid for. Also called by Step 3's client-side preflight so
+ * the UI never enters its writing state for a refused request.
+ */
+export async function gateImagePromptsBalance(params: {
+  supabase: SupabaseServerClient
+  projectId: string
+  userId: string
+  shotKeys: string[]
+  getBalance: typeof getBalance
+  // Optional: a caller that cannot import the service-role module (a server action
+  // imported directly by tests) relies on the layout having already granted.
+  ensureSignupGrant?: typeof ensureSignupGrant
+}): Promise<ImagePromptsBalanceGate> {
+  const { supabase, projectId, userId, shotKeys } = params
+
+  const peek = await peekGenerationPayload(supabase, IMAGE_PROMPTS_IDENTITY(projectId))
+  if (peek.error) return { ok: false, kind: 'error', message: peek.error }
+  if (peek.payload !== null && payloadCoversScope(peek.payload, shotKeys)) {
+    return { ok: true, recoverable: true }
+  }
+
+  const required = creditsFor({ step: 'image_prompts', operation: 'write_image_prompts', quantity: shotKeys.length })
+  // Defensive: AppLayout already ensures this on every page load, but a client whose
+  // first contact is this API call needs it here too - idempotent.
+  await params.ensureSignupGrant?.(userId)
+  const balance = await params.getBalance(userId)
+  if (balance < required) {
+    return { ok: false, kind: 'insufficient', requiredCredits: required, balanceCredits: balance }
+  }
+  return { ok: true, recoverable: false }
+}
+
 export type ImagePromptGenerationResult =
   | { ok: true; status: 200; data: { shots: unknown[] } }
   | { ok: false; status: 400; error: string }
@@ -104,7 +163,7 @@ export type ImagePromptGenerationResult =
       reason: BlockedReason
     }
   | { ok: false; status: 422; error: string; missingShotKeys?: string[]; failedShotKeys?: string[]; shots?: unknown[] }
-  | { ok: false; status: 402; error: string }
+  | { ok: false; status: 402; error: string; requiredCredits?: number; balanceCredits?: number }
   | { ok: false; status: 500; error: string }
 
 type PipelineOutcome = {
@@ -119,8 +178,9 @@ type PipelineOutcome = {
  * Runs the resolve -> per-shot update -> refetch pipeline against a write_image_prompts
  * tool input. Called from both the fresh-Claude-call path and the RECOVER path -
  * rawInput is either the live toolUseBlock.input or a stored generations.payload,
- * identical shape either way. Each shot's image_prompt and image_prompt_stale are
- * written together in one .update() - a shot Claude never returned (missingShotKeys)
+ * identical shape either way. Each shot's image_prompt, image_prompt_stale and
+ * image_prompt_edited are written together in one .update() (a regeneration overwrites
+ * any hand edit, so the edited flag always clears with it) - a shot Claude never returned (missingShotKeys)
  * or whose own .update() errors (failedShotKeys, tracked independently) never has
  * either column touched, so it keeps its prior value and stale flag exactly as before.
  */
@@ -139,7 +199,7 @@ async function runImagePromptsPipeline(
     validEntries.map(async (entry) => {
       const { error } = await supabase
         .from('shots')
-        .update({ image_prompt: entry.image_prompt, image_prompt_stale: false })
+        .update({ image_prompt: entry.image_prompt, image_prompt_stale: false, image_prompt_edited: false })
         .eq('id', idByKey.get(entry.shot_key)!)
       return { shotKey: entry.shot_key, error }
     })
@@ -226,9 +286,32 @@ export async function runImagePromptGeneration(params: {
     return { ok: false, status: 400, error: 'One or more shotIds do not belong to this project' }
   }
 
+  // BALANCE GATE - first, before the claim (see gateImagePromptsBalance). A 402 here
+  // leaves no generations row, no usage row and no ledger row.
+  const gate = await gateImagePromptsBalance({
+    supabase,
+    projectId,
+    userId,
+    shotKeys: scopedShots.map((s) => s.shot_key),
+    getBalance,
+    ensureSignupGrant,
+  })
+  if (!gate.ok) {
+    if (gate.kind === 'error') return { ok: false, status: 500, error: gate.message }
+    return {
+      ok: false,
+      status: 402,
+      error: new InsufficientCreditsError(gate.requiredCredits, gate.balanceCredits).message,
+      requiredCredits: gate.requiredCredits,
+      balanceCredits: gate.balanceCredits,
+    }
+  }
+  // Only true when the peek saw a covering payload and the gate was therefore skipped.
+  const balanceCheckSkipped = gate.recoverable
+
   const claim = await claimGeneration({
     supabase,
-    identity: { projectId, step: 'image_prompts', operation: 'write_image_prompts', shotId: null, elementId: null },
+    identity: IMAGE_PROMPTS_IDENTITY(projectId),
     retry,
   })
 
@@ -257,11 +340,12 @@ export async function runImagePromptGeneration(params: {
   let persistedCount = 0
 
   try {
-    // RECOVER BEFORE SPEND - and before the balance gate: nothing new is being spent,
-    // so a recoverable payload must stay recoverable even if the caller's balance has
-    // since dropped to zero. usageId stays null here, which is what keeps both the
-    // usage settle and the ledger charge out of the `finally` block below.
-    if (pendingPayload !== null) {
+    // RECOVER BEFORE SPEND: nothing new is being spent, so a payload that answers every
+    // requested shot (payloadCoversScope) is replayed even if the caller's balance has
+    // since dropped to zero - which is why the pre-claim gate exempts exactly this case.
+    // Any other payload means a fresh call. usageId stays null on the recover path, which
+    // keeps both the usage settle and the ledger charge out of the `finally` block below.
+    if (pendingPayload !== null && payloadCoversScope(pendingPayload, scopedShots.map((s) => s.shot_key))) {
       console.warn(
         `[image-prompts] recovering pending payload for project=${projectId} generation=${generation.id} - skipping a new Claude call`
       )
@@ -271,17 +355,22 @@ export async function runImagePromptGeneration(params: {
       return outcome
     }
 
-    // BALANCE GATE - before any quote/reserve/provider call. quantity is the
-    // requested scope size; this is a pre-flight check only, nothing is charged off
-    // this number. The real charge (below, in `finally`) is keyed on what actually
-    // persists.
-    const required = creditsFor({ step: 'image_prompts', operation: 'write_image_prompts', quantity: scopedShots.length })
-    // Defensive: AppLayout already ensures this on every page load, but a client whose
-    // first contact is this API call needs it here too - idempotent.
-    await ensureSignupGrant(userId)
-    const balance = await getBalance(userId)
-    if (balance < required) {
-      throw new InsufficientCreditsError(required, balance)
+    // The gate ran before the claim. It is re-run here only when it was skipped for a
+    // payload that has since stopped covering this request (another window settled or
+    // replaced it between the peek and the claim): this fresh call would otherwise spend
+    // with no balance check at all.
+    if (balanceCheckSkipped) {
+      const recheck = await gateImagePromptsBalance({
+        supabase,
+        projectId,
+        userId,
+        shotKeys: scopedShots.map((s) => s.shot_key),
+        getBalance,
+        ensureSignupGrant,
+      })
+      if (!recheck.ok && recheck.kind === 'insufficient') {
+        throw new InsufficientCreditsError(recheck.requiredCredits, recheck.balanceCredits)
+      }
     }
 
     const dynamicBlock = buildImagePromptsDynamicBlock(
@@ -389,14 +478,29 @@ export async function runImagePromptGeneration(params: {
       return outcome
     }
 
+    // Claude never returned some requested shots and every write that could land did:
+    // the payload is exhausted, so keep it out of RECOVER's way - a retry of the missing
+    // shots (or any other scope) must reach a fresh call, not replay this one. If any
+    // write itself failed (failedShotKeys) it stays, since replay would land those for free.
+    if (pipeline.missingShotKeys.length > 0 && pipeline.failedShotKeys.length === 0) {
+      clearPayloadOnSettle = true
+    }
+
     outcome = pipelineOutcomeToResult(pipeline)
     return outcome
   } catch (err) {
     caughtError = err
-    outcome = {
-      ok: false,
-      status: err instanceof InsufficientCreditsError || err instanceof AllowanceExceededError ? 402 : 500,
-      error: err instanceof Error ? err.message : 'Unexpected error during image prompt generation',
+    const message = err instanceof Error ? err.message : 'Unexpected error during image prompt generation'
+    if (err instanceof InsufficientCreditsError) {
+      outcome = {
+        ok: false,
+        status: 402,
+        error: message,
+        requiredCredits: err.requiredCredits,
+        balanceCredits: err.balanceCredits,
+      }
+    } else {
+      outcome = { ok: false, status: err instanceof AllowanceExceededError ? 402 : 500, error: message }
     }
     return outcome
   } finally {

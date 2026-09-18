@@ -7,6 +7,7 @@ import type { getBalance as getBalanceType } from '@/lib/credits/balance'
 import type { ensureSignupGrant as ensureSignupGrantType } from '@/lib/credits/signup-grant'
 import { creditsFor } from '@/lib/config/credits'
 import { advanceStep } from '@/lib/projects/advance-step'
+import { stepIndex } from '@/lib/config/pipeline'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -34,7 +35,7 @@ export async function runAdvanceToImagePrompts({
 }): Promise<AdvanceToImagePromptsResult> {
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('id')
+    .select('id, furthest_step')
     .eq('id', projectId)
     .eq('user_id', userId)
     .single()
@@ -57,6 +58,14 @@ export async function runAdvanceToImagePrompts({
     operation: 'write_image_prompts',
     quantity: shotCount ?? 0,
   })
+
+  // A project that has already advanced past the Workbench owns this step: getting to it
+  // spends nothing (generation is gated by its own route), so it must never be refused on
+  // balance - e.g. from a page that was restored stale and still offered this button.
+  if (project.furthest_step >= stepIndex('image_prompts')) {
+    await advanceStep(supabase, projectId, 'image_prompts')
+    return { ok: true, status: 200, data: { requiredCredits: required } }
+  }
 
   await ensureSignupGrant(userId)
   const balance = await getBalance(userId)

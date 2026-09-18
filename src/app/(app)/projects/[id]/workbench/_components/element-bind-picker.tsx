@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
 import { useRouter } from 'next/navigation'
 import { createPortal } from 'react-dom'
 import { SHOT_ELEMENT_TYPES } from '@/lib/config/enums'
-import { ELEMENT_TYPE_SINGULAR_LABELS } from '@/lib/element-type-labels'
+import { ELEMENT_TYPE_SINGULAR_LABELS, identDotClassName } from '@/lib/element-type-labels'
 import type { ProjectElement } from '@/lib/elements/read'
 import type { DisplayElement } from './types'
 import { useAssets } from './assets-context'
@@ -20,8 +20,9 @@ function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
-const PANEL_WIDTH = 260
-const PANEL_MAX_HEIGHT = 280
+const PANEL_WIDTH = 300
+// Header + the list's own max height + divider + footer button, for the flip-upward check.
+const PANEL_MAX_HEIGHT = 340
 const VIEWPORT_MARGIN = 12
 
 type Position = { top?: number; bottom?: number; left: number }
@@ -123,54 +124,63 @@ export function ElementBindPicker({
       ref={panelRef}
       role="menu"
       aria-label="Attach an element"
-      className="fixed z-40 flex w-[260px] flex-col overflow-hidden rounded-control border border-border-strong bg-bg-surface p-1 shadow-card-hover"
+      className="fixed z-40 flex w-[300px] flex-col overflow-hidden rounded-frame border border-border-strong bg-bg-canvas shadow-card-hover"
       style={{ top: position.top, bottom: position.bottom, left: position.left }}
     >
-      <span className="px-2 pb-1 pt-[3px] text-label font-medium uppercase leading-4 tracking-label text-text-tertiary">
+      <span className="border-b border-border-subtle px-[14px] pb-2 pt-[11px] text-label uppercase tracking-label text-text-tertiary">
         Attach an element
       </span>
-      {pickable.length === 0 ? (
-        <span className="px-2 py-2 text-meta text-text-tertiary">No elements available to bind yet.</span>
-      ) : (
-        <div className="flex max-h-[220px] flex-col gap-[2px] overflow-y-auto">
-          {pickable.map((el) => (
-            <button
-              key={el.id}
-              type="button"
-              role="menuitem"
-              disabled={pendingId === el.id}
-              onClick={() => handlePick(el)}
-              className="flex w-full cursor-pointer items-center gap-rc-xs rounded-badge px-2 py-[6px] text-left hover:bg-bg-inset disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {el.reference_image_path ? (
-                <div className="h-8 w-8 flex-none overflow-hidden rounded-badge border border-border-subtle">
-                  <ElementImage path={el.reference_image_path} url={el.reference_image_url} alt={el.name} />
-                </div>
-              ) : (
-                <span className="flex h-8 w-8 flex-none items-center justify-center rounded-badge border border-dashed border-border-muted bg-bg-well text-meta text-text-quiet">
-                  {el.name.charAt(0).toUpperCase()}
+      <div className="flex flex-col p-[6px]">
+        {pickable.length === 0 ? (
+          <span className="px-2 py-2 text-meta text-text-tertiary">No elements available to bind yet.</span>
+        ) : (
+          <div className="flex max-h-[220px] flex-col overflow-y-auto">
+            {pickable.map((el) => (
+              <button
+                key={el.id}
+                type="button"
+                role="menuitem"
+                disabled={pendingId === el.id}
+                onClick={() => handlePick(el)}
+                className="flex w-full cursor-pointer items-center gap-[10px] rounded-control px-2 py-[7px] text-left outline-none hover:bg-bg-inset focus-visible:bg-bg-inset disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {el.reference_image_path ? (
+                  <div className="h-[34px] w-[34px] flex-none overflow-hidden rounded-badge border border-border-subtle">
+                    <ElementImage path={el.reference_image_path} url={el.reference_image_url} alt={el.name} />
+                  </div>
+                ) : (
+                  <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-badge border border-dashed border-border-muted bg-bg-well text-control text-text-quiet">
+                    {el.name.charAt(0).toUpperCase()}
+                  </span>
+                )}
+                <span className="flex min-w-0 flex-1 flex-col gap-px">
+                  <span className="truncate text-control text-text-primary">{el.name}</span>
+                  <span className="flex items-center gap-[5px]">
+                    <span
+                      className={`h-[5px] w-[5px] flex-none rounded-full ${identDotClassName(el.type)}`}
+                      aria-hidden
+                    />
+                    <span
+                      className={`truncate text-meta ${el.reference_image_path ? 'text-text-tertiary' : 'text-text-quiet'}`}
+                    >
+                      {capitalize(ELEMENT_TYPE_SINGULAR_LABELS[el.type])}
+                      {!el.reference_image_path && ' · No reference yet'}
+                    </span>
+                  </span>
                 </span>
-              )}
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-control text-text-primary">{el.name}</span>
-                <span className="truncate text-meta text-text-tertiary">
-                  {capitalize(ELEMENT_TYPE_SINGULAR_LABELS[el.type])}
-                  {!el.reference_image_path && ' · No reference yet'}
-                </span>
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-      {error && <span className="px-2 pt-1 text-meta text-status-failed-fg">{error}</span>}
-      <div className="mt-1 border-t border-border-subtle pt-1">
-        {/* A button, not a link: this leaves the screen rather than picking a row, and
-            as a link it read as a fourth item in the list above. Full-width and set off
-            by the border-t above so it reads as a distinct action, not another row. */}
+              </button>
+            ))}
+          </div>
+        )}
+        {error && <span className="px-2 pt-1 text-meta text-status-failed-fg">{error}</span>}
+        <div className="mx-2 my-[6px] h-px bg-border-subtle" />
+        {/* A button, not a link: this leaves the screen rather than picking a row, and as
+            a link it read as a fourth item in the list above. Neutral, per canvas 14G - the
+            accent stays with the step's primary action. */}
         <button
           type="button"
           onClick={handleCreateNew}
-          className="flex h-8 w-full cursor-pointer items-center justify-center rounded-control border border-accent bg-transparent px-2 text-small font-medium text-accent outline-none hover:bg-accent-wash focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
+          className="m-[2px] flex h-[34px] cursor-pointer items-center justify-center rounded-control border border-border-strong bg-transparent text-control text-text-primary outline-none hover:border-border-strong-hover hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           Upload or generate a new element
         </button>

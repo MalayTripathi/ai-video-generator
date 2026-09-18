@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { InsufficientCreditsBanner } from '@/components/insufficient-credits-banner'
 
 export function ImagePromptsConfirmModal({
   open,
@@ -58,23 +59,11 @@ export function ImagePromptsConfirmModal({
         </span>
 
         {phase === 'insufficient' && (
-          <div className="flex items-start gap-rc-sm rounded-control border-l-2 border-status-active-fg bg-status-active-bg p-[14px_16px]">
-            <div className="flex flex-1 flex-col gap-[3px]">
-              <span className="text-control font-medium text-banner-active-title">
-                Not enough credits for image prompts
-              </span>
-              <span className="text-small leading-[1.5] text-banner-active-body">
-                This step needs {requiredCredits} credits. You have {balanceCredits ?? 0} credits available.
-              </span>
-            </div>
-            <button
-              type="button"
-              disabled
-              className="flex h-8 flex-none cursor-not-allowed items-center rounded-control border border-accent bg-bg-surface px-rc-sm text-small font-medium text-accent opacity-60 hover:bg-status-active-bg-hover"
-            >
-              Add credits
-            </button>
-          </div>
+          <InsufficientCreditsBanner
+            title="Not enough credits for image prompts"
+            requiredCredits={requiredCredits}
+            balanceCredits={balanceCredits}
+          />
         )}
 
         <div className="mt-rc-2xs flex justify-end gap-rc-xs">

@@ -422,6 +422,7 @@ export type Database = {
           id: string
           image_path: string | null
           image_prompt: string | null
+          image_prompt_edited: boolean
           image_prompt_stale: boolean
           image_status: string
           order_index: number
@@ -449,6 +450,7 @@ export type Database = {
           id?: string
           image_path?: string | null
           image_prompt?: string | null
+          image_prompt_edited?: boolean
           image_prompt_stale?: boolean
           image_status?: string
           order_index: number
@@ -476,6 +478,7 @@ export type Database = {
           id?: string
           image_path?: string | null
           image_prompt?: string | null
+          image_prompt_edited?: boolean
           image_prompt_stale?: boolean
           image_status?: string
           order_index?: number

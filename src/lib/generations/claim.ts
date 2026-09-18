@@ -152,6 +152,33 @@ export async function claimGeneration(params: {
   return reclaim(supabase, existing, { expectedState: 'pending' })
 }
 
+/**
+ * Read-only look at an identity's stored payload, with no claim and no write. It lets a
+ * caller decide BEFORE claiming whether a request would be answered by RECOVER (nothing
+ * new spent) - the one fact a pre-claim balance gate needs. It is not a lock: the claim
+ * still re-decides authoritatively, and a caller that acted on a stale peek must
+ * re-check once it holds the claim.
+ */
+export async function peekGenerationPayload(
+  supabase: SupabaseServerClient,
+  identity: GenerationIdentity
+): Promise<{ payload: Json | null; error: string | null }> {
+  const { projectId, step, operation, shotId, elementId } = identity
+  const base = supabase
+    .from('generations')
+    .select('payload')
+    .eq('project_id', projectId)
+    .eq('step', step)
+    .eq('operation', operation)
+  const withShot = shotId === null ? base.is('shot_id', null) : base.eq('shot_id', shotId)
+  const { data, error } = await (
+    elementId === null ? withShot.is('element_id', null) : withShot.eq('element_id', elementId)
+  ).maybeSingle()
+
+  if (error) return { payload: null, error: error.message }
+  return { payload: data?.payload ?? null, error: null }
+}
+
 export async function persistGenerationPayload(
   supabase: SupabaseServerClient,
   generationId: string,
