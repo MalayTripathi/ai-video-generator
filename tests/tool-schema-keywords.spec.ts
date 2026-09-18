@@ -3,7 +3,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { AGENT_TOOLS } from '../src/lib/prompts/agent'
 import { buildWriteShotsTool } from '../src/lib/prompts/shot-generation'
 import { buildDeriveCameraTool, CAMERA_FIELD_NAMES } from '../src/lib/prompts/camera-derivation'
-import { WRITE_PROMPTS_TOOL } from '../src/app/api/projects/[id]/prompts/logic'
+import { WRITE_IMAGE_PROMPTS_TOOL } from '../src/lib/prompts/image-prompts'
 
 // The Anthropic API's tool `input_schema` accepts only a subset of JSON Schema - see
 // platform.claude.com/docs/en/build-with-claude/structured-outputs, "JSON Schema
@@ -104,6 +104,6 @@ test.describe('tool input_schema keyword allowlist', () => {
   })
 
   test('write_image_prompts uses only API-supported JSON Schema keywords', () => {
-    assertSchemaIsClean(WRITE_PROMPTS_TOOL)
+    assertSchemaIsClean(WRITE_IMAGE_PROMPTS_TOOL)
   })
 })

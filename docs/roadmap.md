@@ -82,6 +82,15 @@ are not lost.
 
 ## Unbuilt product surface
 
+- **Video-prompt generation (`write_video_prompts`, `step: 'video_prompts'`) has no
+  route at all.** The old combined `/api/projects/[id]/prompts` route (which
+  incorrectly generated both `image_prompt` and `video_prompt` in one call,
+  attributed entirely to `image_prompts`) was removed outright rather than carried
+  forward as a rename, since Step 5 has no UI yet and the right request shape isn't
+  decided. A real `POST /api/projects/[id]/video-prompts` route needs to be built
+  from scratch when Step 5 is designed, following `image-prompts`' pattern
+  (client-supplied shot scope, balance-gated, ledger-wired, persisted-count-based
+  charge) rather than the old route's design.
 - Agent chat UI on the workbench; the composer is rendered but disabled. The server-side
   turn (C4) is built (`POST /api/projects/[id]/agent`, `runAgentTurn`) — this item is now
   purely the chat panel wiring: sending a message, rendering the SSE stream's events onto
@@ -164,13 +173,6 @@ are not lost.
   question is resolved — both write paths already set
   `image_prompt_stale`/`video_prompt_stale`, now consolidated in
   `src/lib/shot-staleness.ts`.)
-- **Before Step 3:** split `/api/projects/[id]/prompts` into separate
-  image-prompts and video-prompts routes, each with its own claim. The route's
-  original defect — video prompts written before images existed or retiming
-  happened — is fixed by the new step order (images at Step 3, video prompts
-  at Step 5, after storyboard). The remaining reasons for the split are
-  per-route claims (one `generations` row per operation, not a shared one)
-  and correct step attribution — see the attribution constraint in CLAUDE.md.
 - **Before C5:** add the missing DB CHECK constraint on `elements.type` if
   verification shows it absent (CLAUDE.md's own claim about this has been
   wrong in both directions historically — verify against the migration, do

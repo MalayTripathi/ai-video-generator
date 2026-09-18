@@ -97,7 +97,7 @@ export type ModelsConfig = {
     quality: string
     size: '1024x1024'
   }
-  prompts: {
+  imagePrompts: {
     provider: 'anthropic'
     model: string
     maxTokens: number
@@ -161,12 +161,12 @@ export const modelsConfig: ModelsConfig = {
     quality: process.env.OPENAI_ELEMENT_IMAGE_QUALITY ?? 'low',
     size: '1024x1024',
   },
-  prompts: {
+  imagePrompts: {
     provider: 'anthropic',
     model:
-      process.env.CLAUDE_PROMPTS_MODEL ??
+      process.env.CLAUDE_IMAGE_PROMPTS_MODEL ??
       (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
-    maxTokens: Number(process.env.CLAUDE_PROMPTS_MAX_TOKENS) || 8192,
+    maxTokens: Number(process.env.CLAUDE_IMAGE_PROMPTS_MAX_TOKENS) || 8192,
   },
   video: {
     provider: 'fal',

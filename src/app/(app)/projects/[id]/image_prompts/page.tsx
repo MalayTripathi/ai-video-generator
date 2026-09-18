@@ -2,6 +2,7 @@ import { notFound, redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { WorkbenchShell } from '@/components/workbench-shell'
 import { ProjectHeader } from '@/components/workbench/project-header'
+import { ImagePromptsFooter } from './_components/image-prompts-footer'
 import { buildAgentMessages } from '@/lib/build-agent-messages'
 import { stepIndex } from '@/lib/config/pipeline'
 
@@ -81,6 +82,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
       readOnly={readOnly}
       shots={shots}
       header={<ProjectHeader project={project} shots={shots} />}
+      footer={<ImagePromptsFooter />}
     >
       <div className="flex flex-1 items-center justify-center">
         <span className="text-body text-text-tertiary">Image prompts — design pending</span>
