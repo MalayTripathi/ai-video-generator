@@ -10,6 +10,8 @@ import { successMessage, throwingGateway, textMessage } from './helpers/claude-f
 import { runShotGeneration, BILLED_BY_TURN } from '../src/app/api/projects/[id]/shots/logic'
 import { runCameraDerivation } from '../src/app/api/projects/[id]/shots/[shotId]/camera/logic'
 import { runAgentTurn } from '../src/app/api/projects/[id]/agent/logic'
+import { grantAndReadBalance } from './helpers/ledger-child'
+import { getAgentStepConfig } from '../src/app/api/projects/[id]/agent/steps'
 import { runImagePromptGeneration } from '../src/app/api/projects/[id]/image-prompts/logic'
 import type { recordFixedSpend, recordDynamicSpend } from '../src/lib/credits/ledger'
 import type { ClaudeGateway } from '../src/lib/claude'
@@ -71,13 +73,6 @@ const realRecordDynamicSpend: typeof recordDynamicSpend = async (params) => {
   }
 }
 
-async function getBalance(userId: string): Promise<number> {
-  const result = await runLedgerCall('getBalance', userId)
-  if (!result.ok) {
-    throw new Error(`getBalance failed: ${result.errorName}: ${result.message}`)
-  }
-  return result.result as number
-}
 
 async function seedProject(userId: string, overrides: Record<string, unknown> = {}) {
   const { data, error } = await admin
@@ -919,13 +914,14 @@ test.describe('balance across a mixed sequence (gate 11)', () => {
   test('balance = grant - (one agent turn + one button generation + two camera derivations)', async () => {
     const { user } = await createTestSession()
     try {
-      const startingBalance = await getBalance(user.id) // materializes the signup grant
+      const startingBalance = await grantAndReadBalance(user.id) // grants the signup credits, then reads the sum
       expect(startingBalance).toBe(SIGNUP_GRANT_CREDITS)
 
       const projectId = await seedProject(user.id)
 
       // One agent turn: a single text-only reply, default 10/10 usage -> $0.00006 -> 1 credit.
       const turnResult = await runAgentTurn({
+        config: getAgentStepConfig('workbench'),
         gateway: { async createMessage() { return textMessage('No changes needed.') } },
         supabase: admin,
         projectId,
@@ -988,7 +984,7 @@ test.describe('balance across a mixed sequence (gate 11)', () => {
       })
       expect(camera2.ok).toBe(true)
 
-      const finalBalance = await getBalance(user.id)
+      const finalBalance = await grantAndReadBalance(user.id)
       const expectedCharge = 1 /* agent turn */ + 4 /* generate_shots: 2*2 */ + 3 + 3 /* two derive_camera */
       expect(finalBalance).toBe(SIGNUP_GRANT_CREDITS - expectedCharge)
     } finally {

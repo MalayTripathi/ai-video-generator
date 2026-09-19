@@ -1,11 +1,12 @@
 'use client'
 
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { creditsFor } from '@/lib/config/credits'
 import type { AspectRatio } from '@/lib/config/enums'
 import type { PromptShot } from './types'
 import { isEdited, isStale, isUngenerated } from './derive-image-prompts-phase'
+import { AgentLocksContext } from '@/components/workbench/agent-locks-context'
 import { checkImagePromptsAffordability } from '../actions'
 
 export type Outcome =
@@ -105,9 +106,16 @@ export function ImagePromptsProvider({
   const router = useRouter()
 
   const [shots, setShots] = useState(initialShots)
-  const [busyIds, setBusyIds] = useState<Set<string>>(
+  // Cards our own button-driven request is writing. Kept apart from the agent's locks below:
+  // a request settling clears only its own ids, never a lock the agent still holds.
+  const [runBusyIds, setBusyIds] = useState<Set<string>>(
     () => new Set(autoGenerate ? initialShots.map((s) => s.id) : [])
   )
+  // Cards the agent's current tool is writing (see AgentLocksContext). A locked card is a
+  // busy card: its editor gives way to the writing state, exactly as for a Regenerate, so a
+  // hand edit cannot race the agent's write and be silently overwritten.
+  const [agentLockedIds, setAgentLockedIds] = useState<Set<string>>(() => new Set())
+  const busyIds = useMemo(() => new Set([...runBusyIds, ...agentLockedIds]), [runBusyIds, agentLockedIds])
   const [outcome, setOutcome] = useState<Outcome | null>(
     initialInsufficient
       ? { kind: 'insufficient', required: initialInsufficient.required, balance: initialInsufficient.balance }
@@ -165,6 +173,17 @@ export function ImagePromptsProvider({
     }, POLL_INTERVAL_MS)
     return () => clearInterval(timer)
   }, [externalGenerating, router])
+
+  const agentLocks = useMemo(
+    () => ({
+      lockShot: (shotKey: string) => {
+        const shot = shotsRef.current.find((s) => s.shot_key === shotKey)
+        if (shot) setAgentLockedIds((prev) => new Set(prev).add(shot.id))
+      },
+      unlockAllShots: () => setAgentLockedIds(new Set()),
+    }),
+    []
+  )
 
   function updateShotLocal(shotId: string, patch: Partial<PromptShot>) {
     setShots((prev) => prev.map((s) => (s.id === shotId ? { ...s, ...patch } : s)))
@@ -370,5 +389,9 @@ export function ImagePromptsProvider({
     dismissOutcome: () => setOutcome(null),
   }
 
-  return <ImagePromptsContext.Provider value={value}>{children}</ImagePromptsContext.Provider>
+  return (
+    <ImagePromptsContext.Provider value={value}>
+      <AgentLocksContext.Provider value={agentLocks}>{children}</AgentLocksContext.Provider>
+    </ImagePromptsContext.Provider>
+  )
 }

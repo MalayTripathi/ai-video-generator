@@ -5,6 +5,8 @@ const VERBS: Record<ToolName, string> = {
   update_shot: 'Updated',
   insert_shot: 'Inserted',
   regenerate_all_shots: 'Regenerated all shots', // never carries a shotKey
+  regenerate_all_image_prompts: 'Rewrote all image prompts', // never carries a shotKey
+  regenerate_image_prompt: 'Rewrote',
 }
 
 /**
@@ -21,6 +23,10 @@ const VERBS: Record<ToolName, string> = {
  */
 export function describeToolActivity(toolName: string, shotNumber: number | null, fallback: string): string {
   if (toolName === 'regenerate_all_shots') return VERBS.regenerate_all_shots
+  if (toolName === 'regenerate_all_image_prompts') return VERBS.regenerate_all_image_prompts
+  if (toolName === 'regenerate_image_prompt') {
+    return shotNumber !== null ? `Rewrote Shot ${shotNumber} prompt` : "Rewrote a prompt for a shot that's since been deleted"
+  }
   const verb = (TOOL_NAMES as readonly string[]).includes(toolName) ? VERBS[toolName as ToolName] : null
   if (!verb) return fallback
   if (shotNumber !== null) return `${verb} Shot ${shotNumber}`

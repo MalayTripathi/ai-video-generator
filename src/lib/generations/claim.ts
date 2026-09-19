@@ -162,11 +162,11 @@ export async function claimGeneration(params: {
 export async function peekGenerationPayload(
   supabase: SupabaseServerClient,
   identity: GenerationIdentity
-): Promise<{ payload: Json | null; error: string | null }> {
+): Promise<{ payload: Json | null; heldByLiveRun: boolean; error: string | null }> {
   const { projectId, step, operation, shotId, elementId } = identity
   const base = supabase
     .from('generations')
-    .select('payload')
+    .select('payload, state, started_at')
     .eq('project_id', projectId)
     .eq('step', step)
     .eq('operation', operation)
@@ -175,8 +175,16 @@ export async function peekGenerationPayload(
     elementId === null ? withShot.is('element_id', null) : withShot.eq('element_id', elementId)
   ).maybeSingle()
 
-  if (error) return { payload: null, error: error.message }
-  return { payload: data?.payload ?? null, error: null }
+  if (error) return { payload: null, heldByLiveRun: false, error: error.message }
+
+  // The same test the claim applies: a 'generating' row younger than the operation's stale
+  // window belongs to a run that is still going (its payload is saved a moment before its
+  // writes finish, so it is present but not "unapplied" - the run is about to apply it).
+  // The claim will refuse a request against it; a caller acting on the payload before the
+  // claim must not answer as though nobody holds the slot.
+  const staleBefore = new Date(Date.now() - getOperationPolicy(operation).staleAfterMs).toISOString()
+  const heldByLiveRun = data?.state === 'generating' && (data.started_at === null || data.started_at >= staleBefore)
+  return { payload: data?.payload ?? null, heldByLiveRun, error: null }
 }
 
 export async function persistGenerationPayload(

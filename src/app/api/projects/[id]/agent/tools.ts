@@ -22,6 +22,10 @@ export type AgentToolContext = {
   // handler checks it, zero extra queries per tool call.
   furthestStepIndex: number
   messageId: string
+  // The last HISTORY_LIMIT chat messages (tool_done rows and interstitial narration
+  // already excluded), oldest first. Context for a tool that makes its own model call -
+  // never standing instruction. Optional so a handler test can build a context without it.
+  history?: { role: 'user' | 'assistant'; content: string }[]
 }
 
 export type AgentToolOutcome =
@@ -29,13 +33,19 @@ export type AgentToolOutcome =
   // lock that card or refetch it - stable across order_index renumbering, unlike a
   // display number. Omitted when the tool/refusal concerns the whole list, not one shot
   // (regenerate_all_shots; a lock refusal before any shot was resolved).
-  // costUsd is set only by regenerate_all_shots, when its nested runShotGeneration
-  // call actually spent money (fresh call, not RECOVER) - the agent turn's own
-  // accumulator adds this into the turn's total ledger charge. No other tool ever
-  // sets it.
+  //
+  // costUsd is set only by a tool that makes its own paid call (regenerate_all_shots, the
+  // Step 3 regeneration tools), and on ANY outcome kind: a nested call is paid the moment
+  // it returns, so one that spends and then fails or only half-lands still owes its
+  // measured cost to the turn's single ledger charge. The turn accumulates it whatever
+  // the kind - never only on 'applied'.
   | { kind: 'applied'; label: string; forModel: unknown; shotKey?: string; costUsd?: number }
-  | { kind: 'refused'; label: string; forModel: unknown; shotKey?: string }
-  | { kind: 'errored'; message: string; forModel: unknown }
+  | { kind: 'refused'; label: string; forModel: unknown; shotKey?: string; costUsd?: number }
+  | { kind: 'errored'; message: string; forModel: unknown; costUsd?: number }
+  // Neither an action nor a failure: the tool did nothing and is handing the model something
+  // to act on (a question to put to the user, an input to correct). Persists no message
+  // and emits no event - the user sees only what the model then says. Not a message kind.
+  | { kind: 'deferred'; forModel: unknown }
 
 const READ_ONLY_LOCK_MESSAGE =
   "This project's workbench is locked - later steps have already started, so shots can no longer be changed here."
@@ -614,9 +624,9 @@ export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolCo
 
   if (!result.ok) {
     if (result.status === 409 || result.status === 402) {
-      return { kind: 'refused', label: "Couldn't regenerate shots", forModel: { error: result.error } }
+      return { kind: 'refused', label: "Couldn't regenerate shots", forModel: { error: result.error }, costUsd }
     }
-    return { kind: 'errored', message: result.error, forModel: { error: result.error } }
+    return { kind: 'errored', message: result.error, forModel: { error: result.error }, costUsd }
   }
 
   // Cost is no longer embedded in forModel (the model never sees a dollar figure):

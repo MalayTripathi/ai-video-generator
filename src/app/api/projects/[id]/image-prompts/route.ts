@@ -4,6 +4,7 @@ import { createClaudeGateway } from '@/lib/claude'
 import { mintAttemptId, recordFixedSpend } from '@/lib/credits/ledger'
 import { getBalance } from '@/lib/credits/balance'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
+import { parseImagePromptsInstruction } from '@/lib/prompts/image-prompts'
 import { runImagePromptGeneration } from './logic'
 
 // shotIds is the request's explicit write scope - see CLAUDE.md's "scope is never
@@ -51,6 +52,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
   const retry = (body as { retry?: unknown } | null)?.retry === true
 
+  // Optional steer for this one generation ("make it feel colder"). Validated here, before
+  // any DB read or model call; absent or blank changes nothing. Sent to the model by the
+  // runner and stored nowhere.
+  const parsedInstruction = parseImagePromptsInstruction((body as { instruction?: unknown } | null)?.instruction)
+  if (!parsedInstruction.ok) {
+    return NextResponse.json({ error: parsedInstruction.error }, { status: 400 })
+  }
+
   const result = await runImagePromptGeneration({
     gateway: createClaudeGateway(),
     supabase,
@@ -58,6 +67,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     userId: user.id,
     shotIds,
     retry,
+    instruction: parsedInstruction.instruction,
     attemptId: mintAttemptId(),
     recordFixedSpend,
     getBalance,

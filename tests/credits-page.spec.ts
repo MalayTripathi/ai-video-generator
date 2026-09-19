@@ -6,6 +6,7 @@ import type { LedgerRow } from '../src/app/(app)/credits/data'
 import { operationUnitLabel } from '../src/app/(app)/credits/operation-unit-label'
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
+import { SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -184,12 +185,18 @@ test.describe('credit_ledger RLS', () => {
 })
 
 test.describe('credits page', () => {
-  test('empty state renders for a user with no ledger rows', async ({ page, context }) => {
+  // The layout grants a new user their signup credits on first load, but the layout and the
+  // page render in parallel, so a page that read the ledger without granting first would show
+  // "No credit activity yet" or the balance depending only on which query landed first - and
+  // that empty state's own copy says it appears before the account has a balance. The page
+  // grants first (idempotently), so a brand-new user always sees the balance they were given.
+  test("a brand-new user's first visit shows their signup balance, never the empty state", async ({ page, context }) => {
     const { user, cookie } = await createTestSession()
     try {
       await context.addCookies([cookie])
       await page.goto('/credits')
-      await expect(page.getByText('No credit activity yet')).toBeVisible()
+      await expect(page.getByTestId('credits-balance')).toHaveText(SIGNUP_GRANT_CREDITS.toLocaleString('en-US'))
+      await expect(page.getByText('No credit activity yet')).toHaveCount(0)
     } finally {
       await deleteTestUser(user.id)
     }

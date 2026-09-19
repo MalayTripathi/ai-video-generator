@@ -417,8 +417,9 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
 | `src/lib/config/models.ts` | Per-call model + `maxTokens` config, `VIDEO_MODELS` duration registry, `resolveVideoModel`, `isDurationAllowed` |
 | `src/lib/generations/claim.ts` | The only reader/writer of `state`/`payload`/`started_at`/`error`; claim, persist, settle |
 | `src/lib/usage/reserve-settle.ts` | `reserveUsage` / `settleUsage` and the throw/never-throw asymmetry |
-| `src/lib/usage/quote.ts` | `estimateInputTokens` / `quoteClaudeCall` — the pre-flight quote |
+| `src/lib/usage/quote.ts` | `estimateInputTokens` / `quoteClaudeCall` (the worst-case reservation quote) and `estimateAgentTurnCost` / `estimateExpectedCallCost` (the calibrated turn estimate a balance gate uses) |
 | `src/lib/usage/allowance.ts` | `assertWithinAllowance`, the monthly spend ceiling, `AllowanceExceededError` |
+| `src/app/api/projects/[id]/agent/steps.ts` | Per-step agent config: prompt, tools, dispatch, context block, lock rule, and optional `toolLockScope` / `toolEstimateUsd` (the balance gate). A new step adds a config here and never edits `runAgentTurn` |
 | `src/lib/projects/advance-step.ts` | The sole write site for `current_step` / `furthest_step` |
 | `src/lib/display-title.ts` | Project title fallback chain |
 | `src/lib/shot-key.ts` | `generateUniqueShotKeys`, `isUniqueViolation` |

@@ -74,6 +74,10 @@ test.describe('wiring-identity - source-level guard against a type-compatible wr
     const block = stripComments(extractCallBlock(source, 'runAgentTurn'))
     expect(block).toMatch(/\battemptId:\s*mintAttemptId\(\)/)
     expect(block).toMatch(/\brecordTurnSpend:\s*recordDynamicSpend\b/)
+    // The Step 3 turn-level balance gate reads the real balance, never a stand-in.
+    const balanceImports = importLine(source, '@/lib/credits/balance')
+    expect(balanceImports).toMatch(/\bgetBalance\b/)
+    expect(block).toMatch(/(^|[,{\s])getBalance(\s*[,}]|\s*$)/)
   })
 
   test('shots/route.ts wires the real mintAttemptId/recordFixedSpend into runShotGeneration', () => {
@@ -126,6 +130,18 @@ test.describe('wiring-identity - source-level guard against a type-compatible wr
     // The real writer must never appear as the value here - only as the sentinel name
     // ('recordFixedSpend' itself never occurs standalone in this block, only as the
     // param key on the left of ':').
+    expect(block).not.toMatch(/:\s*recordFixedSpend\b/)
+  })
+
+  // Same exception for Step 3's two regeneration tools: their nested
+  // write_image_prompts call is billed inside the turn's agent_turn charge.
+  test('agent/tools-image-prompts.ts wires BILLED_BY_TURN, not the real recordFixedSpend, into its runImagePromptGeneration call', () => {
+    const source = read('src/app/api/projects/[id]/agent/tools-image-prompts.ts')
+    const imported = importLine(source, '@/app/api/projects/[id]/shots/logic')
+    expect(imported).toMatch(/\bBILLED_BY_TURN\b/)
+
+    const block = stripComments(extractCallBlock(source, 'runImagePromptGeneration'))
+    expect(block).toMatch(/\brecordFixedSpend:\s*BILLED_BY_TURN\b/)
     expect(block).not.toMatch(/:\s*recordFixedSpend\b/)
   })
 })

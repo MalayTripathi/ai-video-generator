@@ -3,11 +3,11 @@ import type { createClient } from '@/lib/supabase/server'
 import type { ClaudeGateway } from '@/lib/claude'
 import type { Tables } from '@/lib/database.types'
 import { modelsConfig } from '@/lib/config/models'
-import { stepIndex } from '@/lib/config/pipeline'
 import { insertUserMessage, insertAssistantReply, insertToolActivity, insertInterstitialReply } from '@/lib/messages-idempotency'
 import { claimGeneration, settleGeneration } from '@/lib/generations/claim'
 import {
   estimateInputTokens,
+  estimateAgentTurnCost,
   quoteClaudeCall,
   assertWithinAllowance,
   reserveUsage,
@@ -15,9 +15,11 @@ import {
   sumTurnCost,
   AllowanceExceededError,
 } from '@/lib/usage'
-import { AGENT_SYSTEM_PROMPT_V11, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
 import type { ToolName } from '@/lib/config/messages'
-import { dispatchAgentTool, type AgentToolContext } from './tools'
+import { usdToCredits } from '@/lib/config/credits'
+import { formatCredits } from '@/lib/format-credits'
+import type { AgentToolContext } from './tools'
+import type { AgentStepConfig, ToolLockScope } from './steps'
 // Type-only: credits/ledger.ts transitively imports the service-role Supabase client
 // module, which imports the `server-only` package - that throws unconditionally
 // unless resolved under Next's "react-server" bundler condition. A VALUE import here
@@ -28,6 +30,8 @@ import { dispatchAgentTool, type AgentToolContext } from './tools'
 // Next's server bundle) - see
 // `recordTurnSpend` below, the same caller-injection shape `gateway` already uses.
 import type { recordDynamicSpend } from '@/lib/credits/ledger'
+import type { getBalance } from '@/lib/credits/balance'
+import type { ensureSignupGrant } from '@/lib/credits/signup-grant'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type MessageRow = Tables<'messages'>
@@ -37,6 +41,11 @@ const HISTORY_LIMIT = 20
 
 export type AgentStreamEvent =
   | { type: 'turn_started' }
+  // Sent just before a paid tool call that will write to cards a person could be editing,
+  // only for a step that declares a lock scope (steps.ts). The client locks those cards for
+  // the call's whole duration - tool_completed comes too late, after the nested call has
+  // already been running - and releases them when the turn settles.
+  | { type: 'tool_started'; scope: ToolLockScope }
   | { type: 'text_delta'; text: string }
   // shotKey is the structured identifier for card locking/refetch - stable across
   // order_index renumbering, unlike a display number. Present whenever the tool acted on
@@ -89,9 +98,6 @@ async function loadProjectForTurn(
   return data
 }
 
-const READ_ONLY_LOCK_REPLY =
-  "This project's workbench is locked because later steps have already started, so I can no longer change shots here."
-
 /**
  * Wraps insertToolActivity so a failed activity-log write can never turn an
  * already-applied shot mutation (or an already-reported refusal) into a reported turn
@@ -122,6 +128,10 @@ async function persistToolActivity(params: {
  * per its OPERATION_POLICY entry (claimableFrom: always/always) - see docs/decisions.md.
  */
 export async function runAgentTurn(params: {
+  // What the current step supplies: prompt, tools, dispatch, context, lock (see steps.ts).
+  // Required, so a caller can never run a turn against a step's project without saying
+  // which step's tools it is running.
+  config: AgentStepConfig
   gateway: ClaudeGateway
   supabase: SupabaseServerClient
   projectId: string
@@ -136,8 +146,16 @@ export async function runAgentTurn(params: {
   // recordDynamicSpend from @/lib/credits/ledger; a test passes its own fakes.
   attemptId: string
   recordTurnSpend: typeof recordDynamicSpend
+  // Injected for the same reason: only used by a step whose config carries
+  // toolEstimateUsd (the turn-level balance gate). Reading the credit ledger, never
+  // `usage`. A gated config without getBalance is a wiring bug and throws before any write.
+  getBalance?: typeof getBalance
+  ensureSignupGrant?: typeof ensureSignupGrant
 }): Promise<AgentTurnResult> {
-  const { gateway, supabase, projectId, userId, content, clientId, attemptId, recordTurnSpend } = params
+  const { config, gateway, supabase, projectId, userId, content, clientId, attemptId, recordTurnSpend } = params
+  if (config.toolEstimateUsd && !params.getBalance) {
+    throw new Error(`The ${config.step} agent turn is balance-gated but no getBalance was supplied`)
+  }
   const emit = (event: AgentStreamEvent) => {
     try {
       params.onEvent?.(event)
@@ -187,14 +205,96 @@ export async function runAgentTurn(params: {
   const userMessage = userMsgResult.message
   const furthestStepIndex = project.furthest_step
 
+  // A refused or failed start is a known outcome, not a dropped connection: persist a
+  // terminal reply for THIS attempt (a resend of this client_id would otherwise find a user
+  // row and no reply forever) and emit `settled` so the client renders it on first attempt.
+  async function failBeforeClaim(reply: string, status: 402 | 500): Promise<AgentTurnResult> {
+    await insertAssistantReply(supabase, projectId, clientId, reply)
+    emit({ type: 'settled', content: reply, cost: 0, messageId: userMessage.id })
+    return { ok: false, status, error: reply }
+  }
+
   // Read-only lock: top-level short-circuit, before any claim and before ever calling
   // Claude - no cost, no mutex row, for a request that can't do anything anyway.
-  if (furthestStepIndex >= stepIndex('storyboard')) {
-    const assistantRow = await insertAssistantReply(supabase, projectId, clientId, READ_ONLY_LOCK_REPLY)
+  if (config.isLocked(furthestStepIndex)) {
+    const assistantRow = await insertAssistantReply(supabase, projectId, clientId, config.lockedReply)
     // No reserveUsage call has happened yet at this short-circuit - sumTurnCost is 0.
     // Claude was never called, so nothing streamed live.
-    emit({ type: 'settled', content: READ_ONLY_LOCK_REPLY, cost: 0, messageId: userMessage.id })
+    emit({ type: 'settled', content: config.lockedReply, cost: 0, messageId: userMessage.id })
     return { ok: true, status: 200, message: assistantRow }
+  }
+
+  // Context and history are read before the claim so the balance gate below can size its
+  // quote from exactly what the first call will send. A failure here is answered the way a
+  // failed claim is: a terminal reply for this attempt, so a resend resolves instead of
+  // looping.
+  let contextBlock: string
+  let history: { role: string; content: string }[]
+  try {
+    contextBlock = await config.buildContextBlock(supabase, projectId)
+    const { data: historyRows } = await supabase
+      .from('messages')
+      .select('role, content')
+      .eq('project_id', projectId)
+      // Two independent exclusions - kept as two separate clauses on purpose, not folded
+      // into one, because they have already been accidentally coupled twice (see
+      // docs/decisions.md):
+      // 1. tool_done rows - pure activity-log entries ("Updated Shot 3") that would burn
+      //    HISTORY_LIMIT slots and confuse the model without adding conversational content.
+      // 2. Interstitial narration (kind: 'text' with no client_id) - the model's own
+      //    mid-turn commentary ("Let me check that shot first"), not a turn's answer to the
+      //    user. It accumulates every turn without bound and was crowding out real
+      //    turn reach-back within the fixed HISTORY_LIMIT window.
+      // A refusal row (kind: 'refusal', also client_id-less) is DELIBERATELY NOT covered
+      // by either clause - it IS a real answer to part of what the user asked, and
+      // dropping it is the exact regression a previous session already fixed (an earlier
+      // declined request got re-answered, unprompted, because history made it look
+      // unanswered). This must never narrow back to .eq('kind', 'text').
+      .neq('kind', 'tool_done')
+      .or('kind.neq.text,client_id.not.is.null')
+      .neq('id', userMessage.id)
+      .order('created_at', { ascending: false })
+      .limit(HISTORY_LIMIT)
+    history = (historyRows ?? []).reverse()
+  } catch (err) {
+    console.error('[agent] failed to load turn context', err)
+    return failBeforeClaim('Something went wrong starting that - nothing was changed. Please try again.', 500)
+  }
+
+  // Balance gate (steps that opt in). BEFORE the claim and before any paid call, so a turn
+  // refused here spends nothing and leaves no generations, usage or ledger row - only the
+  // user's message and a plain reply, so a resend of this message resolves. The quote is
+  // the estimated cost of a real turn (up to three agent calls, calibrated on recorded
+  // turns - see AGENT_TURN_ESTIMATE) plus the largest tool call the step could make at its
+  // expected size, converted once. Deliberately NOT the per-call max_tokens ceiling.
+  if (config.toolEstimateUsd) {
+    try {
+      const agentEstimate = estimateAgentTurnCost({
+        model: modelsConfig.agent.model,
+        estimatedInputTokens: estimateInputTokens({
+          texts: [config.systemPrompt, contextBlock, ...history.map((m) => m.content), content],
+          tools: config.tools,
+        }),
+      }).estimatedCost
+      const toolEstimate = await config.toolEstimateUsd({
+        supabase,
+        projectId,
+        history: history.filter(
+          (m): m is { role: 'user' | 'assistant'; content: string } => m.role === 'user' || m.role === 'assistant'
+        ),
+      })
+      const required = usdToCredits(agentEstimate + toolEstimate)
+      await params.ensureSignupGrant?.(userId)
+      const balance = await params.getBalance!(userId)
+      if (balance < required) {
+        const reply = `There aren't enough credits for this: it needs roughly ${formatCredits(required)} and you have ${formatCredits(balance)}. Nothing was changed.`
+        const refusal = await failBeforeClaim(reply, 402)
+        return refusal
+      }
+    } catch (err) {
+      console.error('[agent] balance gate failed', err)
+      return failBeforeClaim('Something went wrong starting that - nothing was changed. Please try again.', 500)
+    }
   }
 
   const claim = await claimGeneration({
@@ -271,7 +371,7 @@ export async function runAgentTurn(params: {
       generationId: generation.id,
       shotId: null,
       messageId: userMessage.id,
-      step: 'workbench',
+      step: config.step,
       operation: 'agent_turn',
       provider: 'anthropic',
       model: modelsConfig.agent.model,
@@ -299,40 +399,6 @@ export async function runAgentTurn(params: {
   }
 
   try {
-    const { data: shotRows } = await supabase
-      .from('shots')
-      .select(
-        'order_index, visual_description, voice_over, section_label, shot_size_origin, camera_angle_origin, camera_movement_origin'
-      )
-      .eq('project_id', projectId)
-      .order('order_index', { ascending: true })
-    const shotIndexBlock = buildShotIndexBlock(shotRows ?? [])
-
-    const { data: historyRows } = await supabase
-      .from('messages')
-      .select('role, content')
-      .eq('project_id', projectId)
-      // Two independent exclusions - kept as two separate clauses on purpose, not folded
-      // into one, because they have already been accidentally coupled twice (see
-      // docs/decisions.md):
-      // 1. tool_done rows - pure activity-log entries ("Updated Shot 3") that would burn
-      //    HISTORY_LIMIT slots and confuse the model without adding conversational content.
-      // 2. Interstitial narration (kind: 'text' with no client_id) - the model's own
-      //    mid-turn commentary ("Let me check that shot first"), not a turn's answer to the
-      //    user. It accumulates every turn without bound and was crowding out real
-      //    turn reach-back within the fixed HISTORY_LIMIT window.
-      // A refusal row (kind: 'refusal', also client_id-less) is DELIBERATELY NOT covered
-      // by either clause - it IS a real answer to part of what the user asked, and
-      // dropping it is the exact regression a previous session already fixed (an earlier
-      // declined request got re-answered, unprompted, because history made it look
-      // unanswered). This must never narrow back to .eq('kind', 'text').
-      .neq('kind', 'tool_done')
-      .or('kind.neq.text,client_id.not.is.null')
-      .neq('id', userMessage.id)
-      .order('created_at', { ascending: false })
-      .limit(HISTORY_LIMIT)
-    const history = (historyRows ?? []).reverse()
-
     const messages: Anthropic.MessageParam[] = [
       ...history
         .filter((m) => m.role === 'user' || m.role === 'assistant')
@@ -347,14 +413,17 @@ export async function runAgentTurn(params: {
       userId,
       furthestStepIndex,
       messageId: userMessage.id,
+      history: history.filter(
+        (m): m is { role: 'user' | 'assistant'; content: string } => m.role === 'user' || m.role === 'assistant'
+      ),
     }
 
     let finalText: string | null = null
 
     for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       const estimatedInputTokens = estimateInputTokens({
-        texts: [AGENT_SYSTEM_PROMPT_V11, shotIndexBlock, ...history.map((m) => m.content), content],
-        tools: AGENT_TOOLS,
+        texts: [config.systemPrompt, contextBlock, ...history.map((m) => m.content), content],
+        tools: config.tools,
       })
       const { markSettled } = await reserveAndSettle(estimatedInputTokens)
 
@@ -363,10 +432,10 @@ export async function runAgentTurn(params: {
           model: modelsConfig.agent.model,
           max_tokens: modelsConfig.agent.maxTokens,
           system: [
-            { type: 'text', text: AGENT_SYSTEM_PROMPT_V11, cache_control: { type: 'ephemeral' } },
-            { type: 'text', text: shotIndexBlock, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: config.systemPrompt, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: contextBlock, cache_control: { type: 'ephemeral' } },
           ],
-          tools: AGENT_TOOLS,
+          tools: config.tools,
           messages,
         },
         { onTextDelta: (text) => emit({ type: 'text_delta', text }) }
@@ -410,10 +479,13 @@ export async function runAgentTurn(params: {
 
       const toolResultBlocks: Anthropic.ToolResultBlockParam[] = []
       for (const block of toolUseBlocks) {
-        const result = await dispatchAgentTool(block.name, block.input, toolCtx)
-        if (result.kind === 'applied' && result.costUsd) {
-          // Only regenerate_all_shots ever sets this - its own, separately-claimed
-          // generate_shots call, folded into this turn's single ledger charge.
+        const lockScope = config.toolLockScope?.(block.name, block.input) ?? null
+        if (lockScope) emit({ type: 'tool_started', scope: lockScope })
+        const result = await config.dispatch(block.name, block.input, toolCtx)
+        // Whatever the outcome kind: a nested paid call that spent and then failed or half-
+        // landed is still billed, and its usage row already carries this turn's message_id,
+        // so the USD line counts it - the ledger charge must too.
+        if ('costUsd' in result && result.costUsd) {
           turnCostUsd += result.costUsd
         }
         if (result.kind === 'applied') {
@@ -443,7 +515,7 @@ export async function runAgentTurn(params: {
           type: 'tool_result',
           tool_use_id: block.id,
           content: JSON.stringify(result.forModel),
-          is_error: result.kind !== 'applied',
+          is_error: result.kind === 'refused' || result.kind === 'errored',
         })
       }
 
@@ -512,7 +584,7 @@ export async function runAgentTurn(params: {
         await recordTurnSpend({
           userId,
           usd: turnCostUsd,
-          step: 'workbench',
+          step: config.step,
           operation: 'agent_turn',
           attemptId,
           projectId,

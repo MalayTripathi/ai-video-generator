@@ -41,13 +41,23 @@ export const OPERATIONS = [
 
 export type Operation = (typeof OPERATIONS)[number]
 
+// The steps whose agent panel is wired (agent/steps.ts registers one config per entry).
+// Sent by the client with each turn and validated against this list server-side.
+export const AGENT_STEPS = ['workbench', 'image_prompts'] as const satisfies readonly Step[]
+
+export type AgentStep = (typeof AGENT_STEPS)[number]
+
+export function isAgentStep(value: unknown): value is AgentStep {
+  return typeof value === 'string' && (AGENT_STEPS as readonly string[]).includes(value)
+}
+
 export const PROVIDERS = ['anthropic', 'openai', 'elevenlabs', 'fal'] as const
 
 export type Provider = (typeof PROVIDERS)[number]
 
 export const STEP_OPERATIONS: Record<Step, readonly Operation[]> = {
   workbench: ['generate_shots', 'agent_turn', 'derive_camera', 'generate_element_reference'],
-  image_prompts: ['write_image_prompts', 'generate_image'],
+  image_prompts: ['write_image_prompts', 'generate_image', 'agent_turn'],
   storyboard: ['generate_image', 'voiceover', 'background_music'],
   video_prompts: ['write_video_prompts'],
   generation: ['generate_clip'],
@@ -73,7 +83,7 @@ const OPERATION_LABELS: Record<Step, Partial<Record<Operation, string>>> = {
     derive_camera: 'Camera framing',
     generate_element_reference: 'Element reference image',
   },
-  image_prompts: { write_image_prompts: 'Prompt writing', generate_image: 'Image generation' },
+  image_prompts: { write_image_prompts: 'Prompt writing', generate_image: 'Image generation', agent_turn: 'Agent turn' },
   storyboard: {
     generate_image: 'Image generation',
     voiceover: 'Voiceover',

@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
+import { holdAgentTurnOpen, agentRequestSent, pushAgentEvent, settleAgentTurn } from './helpers/agent-stream'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 
@@ -242,14 +243,14 @@ test.describe('agent chat panel', () => {
     const shotA = await seedShot(projectId, { voice_over: 'Shot A voiceover.' })
     await seedShot(projectId, { voice_over: 'Shot B voiceover.' })
 
-    await mockAgentRoute(page, [
-      { type: 'turn_started' },
-      { type: 'tool_completed', label: 'Updated Shot 1', shotKey: shotA.shotKey },
-      { type: 'settled', content: 'Updated shot 1.' },
-    ])
-
+    // The turn is held open by the test, so "while the turn runs" is a state the assertions
+    // can rely on, not a ~300ms window between the panel's per-event yields.
+    await holdAgentTurnOpen(page)
     await page.goto(`/projects/${projectId}/workbench`)
     await sendMessage(page, 'tighten shot 1')
+    await agentRequestSent(page)
+    await pushAgentEvent(page, { type: 'turn_started' })
+    await pushAgentEvent(page, { type: 'tool_completed', label: 'Updated Shot 1', shotKey: shotA.shotKey })
 
     const cardA = page.locator(`[data-shot-key="${shotA.shotKey}"]`)
     const cardB = page.getByTestId('shot-card').filter({ hasText: 'Shot B voiceover.' })
@@ -261,7 +262,8 @@ test.describe('agent chat panel', () => {
     await cardB.click()
     await expect(page.getByLabel('Voiceover')).toBeEditable()
 
-    await expect(cardA).toHaveAttribute('data-locked', 'false', { timeout: 10000 })
+    await settleAgentTurn(page, 'Updated shot 1.')
+    await expect(cardA).toHaveAttribute('data-locked', 'false')
   })
 
   test('on settle, a named shot is refetched and its saved indicator clears; a focused field is not overwritten', async ({

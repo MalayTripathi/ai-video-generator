@@ -2,9 +2,11 @@ import type { ReactNode } from 'react'
 import { WorkbenchStepIndicator } from '@/components/workbench/step-indicator'
 import { AgentPanel } from '@/components/workbench/agent-panel'
 import type { AgentMessage } from '@/components/workbench/agent-message'
+import type { AgentStep } from '@/lib/config/pipeline'
 
 export function WorkbenchShell({
   project,
+  agentStep,
   agentMessages,
   readOnly,
   shots,
@@ -16,6 +18,7 @@ export function WorkbenchShell({
   children,
 }: {
   project: { id: string; furthest_step: number }
+  agentStep: AgentStep
   agentMessages: AgentMessage[]
   readOnly?: boolean
   shots?: { shot_key: string; order_index: number }[]
@@ -34,6 +37,7 @@ export function WorkbenchShell({
         <AgentPanel
           initialMessages={agentMessages}
           projectId={project.id}
+          step={agentStep}
           readOnly={readOnly}
           shots={shots}
           lockShot={lockShot}

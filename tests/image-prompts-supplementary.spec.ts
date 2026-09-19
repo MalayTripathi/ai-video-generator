@@ -158,6 +158,8 @@ test.describe('1. balance is the first gate', () => {
 
 test.describe('4. the rail refreshes when a generation settles', () => {
   test('the rail credits figure updates after a spend, and does not while merely refused', async ({ page, context }) => {
+    // Setup (a fresh session, a cold page compile) plus a server re-render: load-sensitive.
+    test.slow()
     const { user, cookie } = await createTestSession()
     try {
       const { projectId, shotIds } = await seed(user.id, [{ prompt: PROMPT(1), stale: true }])
@@ -186,7 +188,11 @@ test.describe('4. the rail refreshes when a generation settles', () => {
 
       await expect(page.getByTestId('rail-credits-spend')).toContainText('0 credits')
       await page.getByRole('button', { name: /Regenerate Stale/ }).click()
-      await expect(page.getByTestId('rail-credits-spend')).toContainText('2 credits')
+      // The rail is updated by a real server re-render (router.refresh -> the layout re-reads
+      // the ledger), which is several seconds under parallel load on the dev server: ~8s from
+      // click to update was measured with four workers, so the default 5s assertion timeout
+      // is too tight. The wait is for that re-render, not for anything the test controls.
+      await expect(page.getByTestId('rail-credits-spend')).toContainText('2 credits', { timeout: 20_000 })
     } finally {
       await deleteTestUser(user.id)
     }

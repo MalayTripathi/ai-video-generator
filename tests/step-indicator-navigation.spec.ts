@@ -56,8 +56,11 @@ test.describe('step indicator', () => {
     const projectId = await seedProject()
 
     await page.goto(`/projects/${projectId}/workbench`)
-    const workbenchLink = page.locator(`a[href="/projects/${projectId}/workbench"]`)
-    const imagePromptsLink = page.locator(`a[href="/projects/${projectId}/image_prompts"]`)
+    // Scoped to the indicator: once Step 3 is unlocked the Workbench footer also carries a
+    // plain "Go to Image prompts" link to the same URL (it must navigate, never regenerate).
+    const indicator = page.getByTestId('step-indicator')
+    const workbenchLink = indicator.locator(`a[href="/projects/${projectId}/workbench"]`)
+    const imagePromptsLink = indicator.locator(`a[href="/projects/${projectId}/image_prompts"]`)
 
     // On workbench: workbench is the active (non-link) item, image_prompts is an
     // unlocked-but-not-active Link - even though current_step in the DB still says
@@ -88,7 +91,9 @@ test.describe('step indicator', () => {
     const projectId = await seedProject()
     await page.goto(`/projects/${projectId}/workbench`)
 
-    const imagePromptsLink = page.locator(`a[href="/projects/${projectId}/image_prompts"]`)
+    const imagePromptsLink = page
+      .getByTestId('step-indicator')
+      .locator(`a[href="/projects/${projectId}/image_prompts"]`)
     const badge = imagePromptsLink.locator('span').first()
 
     const restColor = await badge.evaluate((el) => getComputedStyle(el).color)

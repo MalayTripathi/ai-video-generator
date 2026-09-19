@@ -5,8 +5,10 @@ import { admin, createTestSession, deleteTestUser } from './supabase-test-sessio
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
-import { successMessage, textMessage, throwingGateway, scriptedGateway } from './helpers/claude-fakes'
+import { successMessage, textMessage, throwingGateway, scriptedGateway, truncatedMessage } from './helpers/claude-fakes'
 import { runAgentTurn } from '../src/app/api/projects/[id]/agent/logic'
+import { grantAndReadBalance } from './helpers/ledger-child'
+import { getAgentStepConfig } from '../src/app/api/projects/[id]/agent/steps'
 import type { recordDynamicSpend } from '../src/lib/credits/ledger'
 import type { ClaudeGateway } from '../src/lib/claude'
 
@@ -64,14 +66,6 @@ const realRecordDynamicSpend: typeof recordDynamicSpend = async (params) => {
   if (!result.ok) {
     throw new Error(`recordDynamicSpend failed: ${result.errorName}: ${result.message}`)
   }
-}
-
-async function getBalance(userId: string): Promise<number> {
-  const result = await runLedgerCall('getBalance', userId)
-  if (!result.ok) {
-    throw new Error(`getBalance failed: ${result.errorName}: ${result.message}`)
-  }
-  return result.result as number
 }
 
 async function seedProject(userId: string, overrides: Record<string, unknown> = {}) {
@@ -146,6 +140,7 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
     ])
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       gateway,
       supabase: admin,
       projectId,
@@ -205,6 +200,7 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
     ])
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       gateway,
       supabase: admin,
       projectId,
@@ -257,6 +253,7 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
     ])
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       gateway,
       supabase: admin,
       projectId,
@@ -292,10 +289,52 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
     expect(ledgerRows.some((r) => r.operation === 'generate_shots')).toBe(false)
   })
 
+  test('a regenerate_all_shots whose nested call spends and then fails (max_tokens) is still billed into the turn\'s one charge', async () => {
+    const projectId = await seedProject(primary.user.id)
+    await seedShot(projectId)
+    const usage = (inputTokens: number, outputTokens: number) => ({
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+    })
+    // agent $0.0015 + nested $0.0015 (truncated, settles failed but still measured) +
+    // agent $0.0009 = $0.0039 -> 4 credits. Dropping the failed nested call would bill 3.
+    const gateway = scriptedGateway([
+      successMessage({}, 'regenerate_all_shots', usage(500, 200)),
+      truncatedMessage(
+        { title: 'x', message: 'y', video_type: 'narrated_story', shots: [] },
+        'write_shots',
+        usage(1000, 100)
+      ),
+      textMessage('That did not finish.', usage(400, 100)),
+    ])
+
+    const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
+      gateway,
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      content: 'regenerate all the shots',
+      clientId: crypto.randomUUID(),
+      attemptId: crypto.randomUUID(),
+      recordTurnSpend: realRecordDynamicSpend,
+    })
+    expect(result.ok).toBe(true)
+
+    const usageRows_ = await readUsageRows(projectId)
+    expect(usageRows_.find((r) => r.operation === 'generate_shots')!.estimated_cost).toBeGreaterThan(0)
+    const ledgerRows_ = await readLedgerRows(projectId)
+    expect(ledgerRows_.length).toBe(1)
+    expect(ledgerRows_[0].delta).toBe(-4)
+  })
+
   test('a turn that fails on its very first call writes no ledger row', async () => {
     const projectId = await seedProject(primary.user.id)
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       gateway: throwingGateway('simulated failure'),
       supabase: admin,
       projectId,
@@ -325,6 +364,7 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
     }
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       gateway,
       supabase: admin,
       projectId,
@@ -351,6 +391,7 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
     const projectId = await seedProject(primary.user.id)
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       gateway: scriptedGateway([textMessage('Just a quick reply.')]),
       supabase: admin,
       projectId,
@@ -375,16 +416,16 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
   test('balance after a turn equals the signup grant minus the turn\'s real charge', async () => {
     const { user } = await createTestSession()
     try {
-      // Materializes the lazy signup grant for this brand-new user - see
-      // src/lib/credits/ledger.ts's getBalance docblock: the grant only fires the
-      // first time a user with zero ledger rows is balance-checked.
-      const startingBalance = await getBalance(user.id)
+      // Grants the signup credits to this brand-new user through the real
+      // ensureSignupGrant (the layout does it on page load; a plain-Node test has none).
+      const startingBalance = await grantAndReadBalance(user.id)
       expect(startingBalance).toBe(SIGNUP_GRANT_CREDITS)
 
       const projectId = await seedProject(user.id)
       // Default (10 input / 10 output token) usage -> $0.00001 + $0.00005 = $0.00006 ->
       // usdToCredits floors any nonzero amount up to at least 1 credit -> 1 credit.
       const result = await runAgentTurn({
+        config: getAgentStepConfig('workbench'),
         gateway: scriptedGateway([textMessage('Hi there.')]),
         supabase: admin,
         projectId,
@@ -400,7 +441,7 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
       expect(ledgerRows.length).toBe(1)
       expect(ledgerRows[0].delta).toBe(-1)
 
-      const endingBalance = await getBalance(user.id)
+      const endingBalance = await grantAndReadBalance(user.id)
       expect(endingBalance).toBe(SIGNUP_GRANT_CREDITS - 1)
     } finally {
       await deleteTestUser(user.id)

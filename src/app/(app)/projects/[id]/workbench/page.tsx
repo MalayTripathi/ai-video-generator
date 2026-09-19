@@ -215,6 +215,7 @@ export default async function WorkbenchPage({
       >
         <WorkbenchShell
           project={project}
+          agentStep="workbench"
           agentMessages={agentMessages}
           header={<WorkbenchHeader project={project} />}
           footer={<WorkbenchFooter projectId={projectId} furthestStep={project.furthest_step} />}

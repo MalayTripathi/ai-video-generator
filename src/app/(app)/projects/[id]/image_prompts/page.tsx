@@ -178,6 +178,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
       >
         <WorkbenchShell
           project={project}
+          agentStep="image_prompts"
           agentMessages={agentMessages}
           readOnly={readOnly}
           shots={shots}

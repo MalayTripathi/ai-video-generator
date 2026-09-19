@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import type Anthropic from '@anthropic-ai/sdk'
 import { AGENT_TOOLS } from '../src/lib/prompts/agent'
+import { AGENT_IMAGE_PROMPTS_TOOLS } from '../src/lib/prompts/agent-image-prompts'
 import { buildWriteShotsTool } from '../src/lib/prompts/shot-generation'
 import { buildDeriveCameraTool, CAMERA_FIELD_NAMES } from '../src/lib/prompts/camera-derivation'
 import { WRITE_IMAGE_PROMPTS_TOOL } from '../src/lib/prompts/image-prompts'
@@ -91,6 +92,12 @@ function assertSchemaIsClean(tool: Anthropic.Tool) {
 test.describe('tool input_schema keyword allowlist', () => {
   for (const tool of AGENT_TOOLS) {
     test(`${tool.name} uses only API-supported JSON Schema keywords`, () => {
+      assertSchemaIsClean(tool)
+    })
+  }
+
+  for (const tool of AGENT_IMAGE_PROMPTS_TOOLS) {
+    test(`Step 3 agent tool ${tool.name} uses only API-supported JSON Schema keywords`, () => {
       assertSchemaIsClean(tool)
     })
   }

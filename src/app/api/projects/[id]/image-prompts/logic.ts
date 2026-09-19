@@ -23,7 +23,14 @@ import {
   type BlockedReason,
 } from '@/lib/generations/claim'
 import { hasUsablePrompt } from '@/lib/prompts/prompt-validation'
-import { IMAGE_PROMPTS_SYSTEM_PROMPT_V1, WRITE_IMAGE_PROMPTS_TOOL, buildImagePromptsDynamicBlock } from '@/lib/prompts/image-prompts'
+import {
+  IMAGE_PROMPTS_SYSTEM_PROMPT_V1,
+  WRITE_IMAGE_PROMPTS_TOOL,
+  buildImagePromptsDynamicBlock,
+  buildImagePromptsUserMessage,
+  type ImagePromptsHistoryEntry,
+} from '@/lib/prompts/image-prompts'
+import { BILLED_BY_TURN } from '@/app/api/projects/[id]/shots/logic'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -246,20 +253,105 @@ const BLOCKED_REASON_MESSAGES: Record<BlockedReason, string> = {
   retry_required: 'The last generation failed. Retry to try again.',
 }
 
-export async function runImagePromptGeneration(params: {
-  gateway: ClaudeGateway
-  supabase: SupabaseServerClient
-  projectId: string
-  userId: string
-  shotIds: string[]
-  retry: boolean
-  attemptId: string
-  recordFixedSpend: typeof recordFixedSpend
-  getBalance: typeof getBalance
-  ensureSignupGrant: typeof ensureSignupGrant
-}): Promise<ImagePromptGenerationResult> {
-  const { gateway, supabase, projectId, userId, shotIds, retry, attemptId, recordFixedSpend, getBalance, ensureSignupGrant } =
-    params
+export type ImagePromptsRequest = {
+  dynamicBlock: string
+  userMessage: string
+  estimatedInputTokens: number
+  estimatedCost: number
+  quotedBreakdown: ReturnType<typeof quoteClaudeCall>['quotedBreakdown']
+}
+
+/**
+ * Builds the model-facing half of a write_image_prompts call and its worst-case pre-flight
+ * quote in one place. The real call and an agent turn's balance gate (which quotes the
+ * largest regeneration before any paid call) both go through here, so the number quoted
+ * can never drift from what is actually sent.
+ */
+export function buildImagePromptsRequest(params: {
+  allShots: { shot_key: string; voice_over: string }[]
+  targetKeys: string[]
+  instruction?: string | null
+  history?: ImagePromptsHistoryEntry[]
+}): ImagePromptsRequest {
+  const dynamicBlock = buildImagePromptsDynamicBlock(
+    params.allShots.map(({ shot_key, voice_over }) => ({ shot_key, voice_over })),
+    params.targetKeys
+  )
+  const userMessage = buildImagePromptsUserMessage({ instruction: params.instruction, history: params.history })
+  const estimatedInputTokens = estimateInputTokens({
+    texts: [IMAGE_PROMPTS_SYSTEM_PROMPT_V1, dynamicBlock, userMessage],
+    tools: [WRITE_IMAGE_PROMPTS_TOOL],
+  })
+  const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
+    model: modelsConfig.imagePrompts.model,
+    estimatedInputTokens,
+    maxTokens: modelsConfig.imagePrompts.maxTokens,
+  })
+  return { dynamicBlock, userMessage, estimatedInputTokens, estimatedCost, quotedBreakdown }
+}
+
+// Two billing shapes, chosen by the caller and enforced at compile time. The button path
+// prices per shot and gates on balance before its claim. An agent turn passes
+// BILLED_BY_TURN instead: its cost is folded into the turn's own dynamic agent_turn charge
+// (see agent/logic.ts), and the turn already checked balance against its own quote, so
+// neither the fixed ledger write nor the fixed-price gate applies here.
+type ImagePromptsBilling =
+  | {
+      recordFixedSpend: typeof recordFixedSpend
+      getBalance: typeof getBalance
+      ensureSignupGrant: typeof ensureSignupGrant
+    }
+  | {
+      recordFixedSpend: typeof BILLED_BY_TURN
+      getBalance?: typeof getBalance
+      ensureSignupGrant?: typeof ensureSignupGrant
+    }
+
+export async function runImagePromptGeneration(
+  params: {
+    gateway: ClaudeGateway
+    supabase: SupabaseServerClient
+    projectId: string
+    userId: string
+    shotIds: string[]
+    retry: boolean
+    attemptId: string
+    // Applied to this generation only. Sent to the model, never persisted.
+    instruction?: string | null
+    // Recent chat, passed as context only (see buildImagePromptsUserMessage). Internal:
+    // set by an agent turn, never accepted from an HTTP request.
+    history?: ImagePromptsHistoryEntry[]
+    // Set only from an agent turn, so this call's usage row groups under that turn's chat
+    // message. The route omits it and gets null, unchanged.
+    messageId?: string | null
+    // Set only from an agent turn, so the turn's in-memory cost accumulator can fold this
+    // call's measured cost into its single ledger charge without reading `usage` back.
+    // Fires once, only on the fresh-call path - never on RECOVER, where nothing is spent.
+    onSettled?: (usd: number) => void
+    // Set only when the caller has been told a stored payload is not wanted (the user
+    // rejected it): forces a fresh call instead of replaying it. The fresh answer
+    // overwrites the stored payload at PERSIST.
+    skipStoredPayload?: boolean
+  } & ImagePromptsBilling
+): Promise<ImagePromptGenerationResult> {
+  const {
+    gateway,
+    supabase,
+    projectId,
+    userId,
+    shotIds,
+    retry,
+    attemptId,
+    recordFixedSpend,
+    getBalance,
+    ensureSignupGrant,
+    instruction,
+    history,
+    messageId,
+    onSettled,
+    skipStoredPayload,
+  } = params
+  const billedByTurn = recordFixedSpend === BILLED_BY_TURN
 
   // Loaded before the claim, same rationale as shots/logic.ts's loadProjectForClaim: a
   // vanished/unowned project returns 404 without needing to interpret an RLS/FK error
@@ -287,27 +379,31 @@ export async function runImagePromptGeneration(params: {
   }
 
   // BALANCE GATE - first, before the claim (see gateImagePromptsBalance). A 402 here
-  // leaves no generations row, no usage row and no ledger row.
-  const gate = await gateImagePromptsBalance({
-    supabase,
-    projectId,
-    userId,
-    shotKeys: scopedShots.map((s) => s.shot_key),
-    getBalance,
-    ensureSignupGrant,
-  })
-  if (!gate.ok) {
-    if (gate.kind === 'error') return { ok: false, status: 500, error: gate.message }
-    return {
-      ok: false,
-      status: 402,
-      error: new InsufficientCreditsError(gate.requiredCredits, gate.balanceCredits).message,
-      requiredCredits: gate.requiredCredits,
-      balanceCredits: gate.balanceCredits,
+  // leaves no generations row, no usage row and no ledger row. Skipped for an agent turn,
+  // whose own turn-level gate has already run against its worst-case quote.
+  let balanceCheckSkipped = false
+  if (!billedByTurn) {
+    const gate = await gateImagePromptsBalance({
+      supabase,
+      projectId,
+      userId,
+      shotKeys: scopedShots.map((s) => s.shot_key),
+      getBalance: getBalance!,
+      ensureSignupGrant,
+    })
+    if (!gate.ok) {
+      if (gate.kind === 'error') return { ok: false, status: 500, error: gate.message }
+      return {
+        ok: false,
+        status: 402,
+        error: new InsufficientCreditsError(gate.requiredCredits, gate.balanceCredits).message,
+        requiredCredits: gate.requiredCredits,
+        balanceCredits: gate.balanceCredits,
+      }
     }
+    // Only true when the peek saw a covering payload and the gate was therefore skipped.
+    balanceCheckSkipped = gate.recoverable
   }
-  // Only true when the peek saw a covering payload and the gate was therefore skipped.
-  const balanceCheckSkipped = gate.recoverable
 
   const claim = await claimGeneration({
     supabase,
@@ -345,7 +441,11 @@ export async function runImagePromptGeneration(params: {
     // since dropped to zero - which is why the pre-claim gate exempts exactly this case.
     // Any other payload means a fresh call. usageId stays null on the recover path, which
     // keeps both the usage settle and the ledger charge out of the `finally` block below.
-    if (pendingPayload !== null && payloadCoversScope(pendingPayload, scopedShots.map((s) => s.shot_key))) {
+    if (
+      !skipStoredPayload &&
+      pendingPayload !== null &&
+      payloadCoversScope(pendingPayload, scopedShots.map((s) => s.shot_key))
+    ) {
       console.warn(
         `[image-prompts] recovering pending payload for project=${projectId} generation=${generation.id} - skipping a new Claude call`
       )
@@ -365,7 +465,7 @@ export async function runImagePromptGeneration(params: {
         projectId,
         userId,
         shotKeys: scopedShots.map((s) => s.shot_key),
-        getBalance,
+        getBalance: getBalance!,
         ensureSignupGrant,
       })
       if (!recheck.ok && recheck.kind === 'insufficient') {
@@ -373,22 +473,11 @@ export async function runImagePromptGeneration(params: {
       }
     }
 
-    const dynamicBlock = buildImagePromptsDynamicBlock(
-      loaded.allShots
-        .filter((s): s is ImagePromptShot & { shot_key: string } => s.shot_key !== null)
-        .map(({ shot_key, voice_over }) => ({ shot_key, voice_over })),
-      scopedShots.map((s) => s.shot_key)
-    )
-
-    const userMessage = 'Generate the image prompts now.'
-
-    const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
-      model: modelsConfig.imagePrompts.model,
-      estimatedInputTokens: estimateInputTokens({
-        texts: [IMAGE_PROMPTS_SYSTEM_PROMPT_V1, dynamicBlock, userMessage],
-        tools: [WRITE_IMAGE_PROMPTS_TOOL],
-      }),
-      maxTokens: modelsConfig.imagePrompts.maxTokens,
+    const { dynamicBlock, userMessage, estimatedCost, quotedBreakdown } = buildImagePromptsRequest({
+      allShots: loaded.allShots.filter((s): s is ImagePromptShot & { shot_key: string } => s.shot_key !== null),
+      targetKeys: scopedShots.map((s) => s.shot_key),
+      instruction,
+      history,
     })
 
     await assertWithinAllowance({ supabase, userId, quotedCost: estimatedCost })
@@ -399,6 +488,7 @@ export async function runImagePromptGeneration(params: {
       projectId,
       generationId: generation.id,
       shotId: null,
+      messageId: messageId ?? null,
       step: 'image_prompts',
       operation: 'write_image_prompts',
       provider: 'anthropic',
@@ -522,7 +612,7 @@ export async function runImagePromptGeneration(params: {
     // usage SETTLE. Only reserved on the fresh-call path (RECOVER and the
     // balance-gate-throw path never spend, so usageId stays null there).
     if (usageId) {
-      await settleUsage({
+      const settledCostUsd = await settleUsage({
         supabase,
         usageId,
         provider: 'anthropic',
@@ -532,6 +622,13 @@ export async function runImagePromptGeneration(params: {
         stopReason: stopReasonForSettle,
         error: outcome.ok ? null : caughtError,
       })
+      try {
+        onSettled?.(settledCostUsd)
+      } catch (err) {
+        // Same rule as the settle steps above: by now the money is spent, and a throwing
+        // observer must not replace the outcome the caller is about to receive.
+        console.error('[image-prompts] onSettled threw', err)
+      }
 
       // Ledger. Gated on persistedCount, NOT outcome.ok - this is a deliberate
       // departure from every other ledger-wired route in this codebase
@@ -540,7 +637,7 @@ export async function runImagePromptGeneration(params: {
       // succeed (some shots persisted, some missing/truncated/failed) and still owe a
       // real charge for the ones that landed - a 422 with persistedCount > 0 must
       // still charge for persistedCount. Never throws to the caller.
-      if (persistedCount > 0) {
+      if (persistedCount > 0 && !billedByTurn) {
         try {
           await recordFixedSpend({
             userId,

@@ -203,6 +203,14 @@ test.describe('describeToolActivity', () => {
     expect(describeToolActivity('get_shot', 1, 'fallback')).toBe('Looked at Shot 1')
   })
 
+  test('the Step 3 regeneration tools re-derive their text live: single is shot-scoped, all ignores any number', () => {
+    expect(describeToolActivity('regenerate_image_prompt', 2, 'fallback')).toBe('Rewrote Shot 2 prompt')
+    expect(describeToolActivity('regenerate_image_prompt', null, 'fallback')).toBe(
+      "Rewrote a prompt for a shot that's since been deleted"
+    )
+    expect(describeToolActivity('regenerate_all_image_prompts', 5, 'fallback')).toBe('Rewrote all image prompts')
+  })
+
   test('regenerate_all_shots ignores any shot number - it is never shot-scoped', () => {
     expect(describeToolActivity('regenerate_all_shots', 5, 'fallback')).toBe('Regenerated all shots')
     expect(describeToolActivity('regenerate_all_shots', null, 'fallback')).toBe('Regenerated all shots')

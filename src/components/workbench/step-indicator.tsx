@@ -108,7 +108,10 @@ export function WorkbenchStepIndicator({
   const furthestIndex = furthestStep - 1
 
   return (
-    <div className="flex h-[50px] flex-none items-stretch gap-rc-sm overflow-x-auto border-b border-border-subtle px-rc-md">
+    <div
+      data-testid="step-indicator"
+      className="flex h-[50px] flex-none items-stretch gap-rc-sm overflow-x-auto border-b border-border-subtle px-rc-md"
+    >
       {STEPS.map((step, index) => {
         const state = index === currentIndex ? 'current' : index <= furthestIndex ? 'complete' : 'locked'
 
