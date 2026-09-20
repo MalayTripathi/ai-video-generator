@@ -6,7 +6,7 @@ import { stepIndex } from '../src/lib/config/pipeline'
 // current_step is deliberately seeded to 'image_prompts' and never changes for the
 // life of these tests - the whole point is proving the active highlight tracks the
 // browser route, not this DB column (which no client-side navigation ever writes).
-async function seedProject() {
+async function seedProject(furthestStep = stepIndex('image_prompts')) {
   const { data, error } = await admin
     .from('projects')
     .insert({
@@ -16,7 +16,7 @@ async function seedProject() {
       video_type: 'auto',
       duration_target: '30-60s',
       current_step: 'image_prompts',
-      furthest_step: stepIndex('image_prompts'),
+      furthest_step: furthestStep,
     })
     .select('id')
     .single()
@@ -105,5 +105,26 @@ test.describe('step indicator', () => {
     // rgb(91, 91, 214) is --accent, the same color the active step's badge carries at
     // rest - the exact color this hover state is meant to mirror.
     await expect.poll(() => badge.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(91, 91, 214)')
+  })
+
+  test('Storyboard unlocks at its own furthest_step and Steps 5-7 stay locked, with the existing dynamic tooltip', async ({
+    page,
+  }) => {
+    const beforeId = await seedProject(stepIndex('image_prompts'))
+    await page.goto(`/projects/${beforeId}/workbench`)
+    const before = page.getByTestId('step-indicator')
+    await expect(before.locator(`a[href="/projects/${beforeId}/storyboard"]`)).toHaveCount(0)
+    await expect(before.locator('[aria-disabled="true"]')).toHaveCount(4)
+
+    const projectId = await seedProject(stepIndex('storyboard'))
+    await page.goto(`/projects/${projectId}/workbench`)
+    const indicator = page.getByTestId('step-indicator')
+    await expect(indicator.locator(`a[href="/projects/${projectId}/storyboard"]`)).toHaveCount(1)
+    // Video prompts, Generation and Assembly.
+    await expect(indicator.locator('[aria-disabled="true"]')).toHaveCount(3)
+
+    // The tooltip names the furthest unlocked step - no string was added for Step 4.
+    await indicator.getByText('Video prompts').hover()
+    await expect(page.getByRole('tooltip')).toHaveText('Complete Storyboard to unlock')
   })
 })

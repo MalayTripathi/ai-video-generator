@@ -8,6 +8,11 @@ import {
   buildImagePromptIndexBlock,
 } from '@/lib/prompts/agent-image-prompts'
 import {
+  AGENT_STORYBOARD_SYSTEM_PROMPT_V1,
+  AGENT_STORYBOARD_TOOLS,
+  buildStoryboardContextBlock,
+} from '@/lib/prompts/agent-storyboard'
+import {
   IMAGE_PROMPTS_INSTRUCTION_MAX_CHARS,
   expectedImagePromptsOutputTokens,
   type ImagePromptsHistoryEntry,
@@ -126,9 +131,32 @@ const IMAGE_PROMPTS_CONFIG: AgentStepConfig = {
   },
 }
 
+// No tools: the storyboard step has nothing to offer yet, so it supplies an empty set rather
+// than inheriting another step's. With no tools the model can never return a tool_use, so
+// dispatch is unreachable; it errors rather than silently doing nothing if that ever changes.
+const STORYBOARD_CONFIG: AgentStepConfig = {
+  step: 'storyboard',
+  systemPrompt: AGENT_STORYBOARD_SYSTEM_PROMPT_V1,
+  tools: AGENT_STORYBOARD_TOOLS,
+  async dispatch(name) {
+    return {
+      kind: 'errored',
+      message: `No tool named "${name}" is available on this step`,
+      forModel: { error: 'unknown_tool' },
+    }
+  },
+  async buildContextBlock() {
+    return buildStoryboardContextBlock()
+  },
+  isLocked: (furthestStepIndex) => furthestStepIndex >= stepIndex('video_prompts'),
+  lockedReply:
+    "This project's storyboard is locked because video prompts have already started, so I can no longer change anything here.",
+}
+
 const CONFIGS: Record<AgentStep, AgentStepConfig> = {
   workbench: WORKBENCH_CONFIG,
   image_prompts: IMAGE_PROMPTS_CONFIG,
+  storyboard: STORYBOARD_CONFIG,
 }
 
 /**

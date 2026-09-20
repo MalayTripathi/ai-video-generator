@@ -183,7 +183,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
           readOnly={readOnly}
           shots={shots}
           header={<ProjectHeader project={project} shots={shots} />}
-          footer={<ImagePromptsFooter />}
+          footer={<ImagePromptsFooter furthestStep={project.furthest_step} />}
         >
           <PromptList />
         </WorkbenchShell>

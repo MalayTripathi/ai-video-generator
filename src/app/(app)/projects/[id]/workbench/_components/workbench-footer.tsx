@@ -6,7 +6,7 @@ import { creditsFor } from '@/lib/config/credits'
 import { stepIndex } from '@/lib/config/pipeline'
 import { useShots } from './shots-context'
 import { ShotsFooter, GoToImagePromptsFooter } from './shots-footer'
-import { ImagePromptsConfirmModal } from './image-prompts-confirm-modal'
+import { AdvanceConfirmModal } from '@/components/advance-confirm-modal'
 import { getProjectFurthestStep } from '../actions'
 
 type ModalPhase = 'closed' | 'confirm' | 'submitting' | 'insufficient'
@@ -116,10 +116,14 @@ function GenerateImagePromptsFooter({ onAdvancedSince }: { onAdvancedSince: () =
         onGenerateImagePromptsClick={openModal}
         generateDisabled={modalPhase === 'submitting'}
       />
-      <ImagePromptsConfirmModal
+      <AdvanceConfirmModal
         open={modalPhase !== 'closed'}
         phase={modalPhase === 'insufficient' ? 'insufficient' : 'confirm'}
         submitting={modalPhase === 'submitting'}
+        title="Generate image prompts?"
+        body={`This starts writing image prompts for every shot and uses ${requiredCredits} credits.`}
+        bannerTitle="Not enough credits for image prompts"
+        confirmLabel="Generate"
         requiredCredits={requiredCredits}
         balanceCredits={insufficient?.balance ?? null}
         onConfirm={confirm}

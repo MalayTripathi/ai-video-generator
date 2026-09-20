@@ -17,6 +17,8 @@ import type { AgentStep } from '@/lib/config/pipeline'
 const EXAMPLE_PROMPTS: Record<AgentStep, string[]> = {
   workbench: ['Make shot 3 shorter', 'Add a shot about the artisans', 'Rewrite everything, colder tone'],
   image_prompts: ['Make shot 2 feel colder', 'Rewrite every prompt, more cinematic'],
+  // Step 4's agent has no tools yet, so there is nothing it can be asked to do.
+  storyboard: [],
 }
 
 function LockIcon() {
@@ -260,7 +262,7 @@ export function AgentPanel({
         <div className="flex flex-1 flex-col justify-center gap-rc-xs px-rc-md">
           <span className="text-control font-medium text-text-primary">Ask for a change in plain words</span>
           <span className="text-small leading-[1.5] text-text-secondary">Every edit shows up here with what it cost.</span>
-          {!readOnly && (
+          {!readOnly && EXAMPLE_PROMPTS[step].length > 0 && (
             <div className="mt-rc-2xs flex flex-col gap-[5px]">
               {EXAMPLE_PROMPTS[step].map((example) => (
                 <button

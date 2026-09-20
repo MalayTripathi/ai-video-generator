@@ -43,7 +43,7 @@ export type Operation = (typeof OPERATIONS)[number]
 
 // The steps whose agent panel is wired (agent/steps.ts registers one config per entry).
 // Sent by the client with each turn and validated against this list server-side.
-export const AGENT_STEPS = ['workbench', 'image_prompts'] as const satisfies readonly Step[]
+export const AGENT_STEPS = ['workbench', 'image_prompts', 'storyboard'] as const satisfies readonly Step[]
 
 export type AgentStep = (typeof AGENT_STEPS)[number]
 
@@ -58,7 +58,7 @@ export type Provider = (typeof PROVIDERS)[number]
 export const STEP_OPERATIONS: Record<Step, readonly Operation[]> = {
   workbench: ['generate_shots', 'agent_turn', 'derive_camera', 'generate_element_reference'],
   image_prompts: ['write_image_prompts', 'generate_image', 'agent_turn'],
-  storyboard: ['generate_image', 'voiceover', 'background_music'],
+  storyboard: ['generate_image', 'voiceover', 'background_music', 'agent_turn'],
   video_prompts: ['write_video_prompts'],
   generation: ['generate_clip'],
   assembly: ['merge'],
@@ -88,6 +88,7 @@ const OPERATION_LABELS: Record<Step, Partial<Record<Operation, string>>> = {
     generate_image: 'Image generation',
     voiceover: 'Voiceover',
     background_music: 'Background music',
+    agent_turn: 'Agent turn',
   },
   video_prompts: { write_video_prompts: 'Prompt writing' },
   generation: { generate_clip: 'Clip generation' },
