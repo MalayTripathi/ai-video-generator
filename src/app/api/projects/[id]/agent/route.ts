@@ -2,7 +2,11 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClaudeGateway } from '@/lib/claude'
 import { mintAttemptId, recordDynamicSpend } from '@/lib/credits/ledger'
+import { getBalance } from '@/lib/credits/balance'
+import { ensureSignupGrant } from '@/lib/credits/signup-grant'
+import { isAgentStep, stepIndex, type AgentStep } from '@/lib/config/pipeline'
 import { runAgentTurn, type AgentStreamEvent } from './logic'
+import { getAgentStepConfig } from './steps'
 
 // Covers the 180s agent_turn stale-claim window with margin; the whole request is held
 // open for the turn (see docs/decisions.md).
@@ -22,7 +26,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   const { data: project } = await supabase
     .from('projects')
-    .select('id')
+    .select('id, furthest_step')
     .eq('id', projectId)
     .eq('user_id', user.id)
     .single()
@@ -33,16 +37,28 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   let content: string
   let clientId: string
+  let step: AgentStep
   try {
-    const body = (await request.json()) as { content?: unknown; clientId?: unknown }
+    const body = (await request.json()) as { content?: unknown; clientId?: unknown; step?: unknown }
     if (typeof body.content !== 'string' || body.content.trim().length === 0) {
       return NextResponse.json({ error: 'content is required' }, { status: 400 })
     }
     if (typeof body.clientId !== 'string' || body.clientId.trim().length === 0) {
       return NextResponse.json({ error: 'clientId is required' }, { status: 400 })
     }
+    // Which step's tools this turn runs. Required and validated, never inferred: the
+    // project's current_step follows navigation and would run one step's tools against
+    // another step's page. A step the project hasn't reached is refused the same way the
+    // page itself redirects away from it.
+    if (!isAgentStep(body.step)) {
+      return NextResponse.json({ error: 'step is required and must be a step with an agent' }, { status: 400 })
+    }
+    if (project.furthest_step < stepIndex(body.step)) {
+      return NextResponse.json({ error: 'That step has not been reached yet' }, { status: 409 })
+    }
     content = body.content
     clientId = body.clientId
+    step = body.step
   } catch {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
   }
@@ -65,6 +81,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
       try {
         await runAgentTurn({
+          config: getAgentStepConfig(step),
           gateway: createClaudeGateway(),
           supabase,
           projectId,
@@ -74,6 +91,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           onEvent: safeEnqueue,
           attemptId: mintAttemptId(),
           recordTurnSpend: recordDynamicSpend,
+          getBalance,
+          ensureSignupGrant,
         })
       } finally {
         try {

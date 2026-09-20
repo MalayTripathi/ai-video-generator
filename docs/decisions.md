@@ -1201,3 +1201,116 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   in `logic.ts`, with the real value passed from `route.ts` — the same
   `server-only`-avoidance shape `runShotGeneration`/`runCameraDerivation` already use
   for `recordFixedSpend`.
+
+## Step 3 agent: the step-config seam, and the decisions inside it
+
+The agent turn is one machine (`runAgentTurn`: idempotency, the mutex claim, the
+iteration loop, usage, one dynamic ledger charge) that each step feeds through an
+`AgentStepConfig` (`agent/steps.ts`): prompt, tools, dispatch, the compact context block,
+the lock rule, and an optional balance-gate quote. A step adds a config and a client
+`step` value; the panel already renders everything a turn can produce. `config` is a
+required parameter so a caller cannot run a turn without saying which step's tools it is
+running, and the route validates the client-sent `step` against `AGENT_STEPS` and
+`furthest_step` rather than inferring it from `current_step`, which follows navigation.
+
+**One mutex across steps.** The `agent_turn` claim identity stays `(workbench,
+agent_turn)` for every step's turns. The panel is one continuous project-wide chat, so
+one turn in flight per project is the right unit; keying the claim on the step would let
+two tabs on different steps run turns at once. Usage and ledger rows carry the turn's own
+step, which is what reporting wants.
+
+**The balance gate is new, opt-in, and an estimate, not a ceiling.** The Workbench agent
+has no credit-balance check (only `assertWithinAllowance`, a USD cap that is off by
+default), so Step 3's gate does not mirror one. It refuses before the claim, leaving no
+generations, usage or ledger row, when the balance is below `usdToCredits(estimated agent
+turn + the step's largest tool call at its expected size)`.
+
+The first version reused `quoteClaudeCall`, which reserves the full 8192-token output
+ceiling per call. That is right for a spend-cap reservation (it can never be overrun) and
+wrong for a balance gate: measured against 37 real agent calls it ran about 11x the
+measured cost (quoted ~$0.044 vs measured p50 ~$0.004), and made the gate demand ~170
+credits in production for turns that cost ~5. `estimateAgentTurnCost`
+(`src/lib/usage/quote.ts`) replaces it, from real turns: 1-3 calls each (3x one, 7x two,
+7x three), so it assumes three; output per call p50 81 / p90 312 / max 905 tokens, so 512;
+`estimateInputTokens` ran 0.85-0.94 of the measured first-call input, so it is scaled by
+1.25; later calls carry earlier tool results (+58..+1179, p50 332), so +800 per call. A
+tool's own call is `estimateExpectedCallCost` at `expectedImagePromptsOutputTokens(shots)`
+(300 per shot plus 100; real calls were ~175 per shot), built from the same request
+builder as the real call so the input side cannot drift. Back-tested on all 17 recorded
+turns: covers every one (tightest 20% over), median 2.6x, against ~6.5x for the ceiling
+figure. Result for a Step 3 project of 3 / 8 / 20 shots: 47 / 63 / 101 credits on Sonnet
+(was 170) and 24 / 32 / 51 on Haiku (was 85). A one-call turn (a question back to the user)
+is over-estimated by design: the gate cannot know in advance.
+
+The constants were measured on Haiku (development) only. Production Sonnet may be more
+verbose, so they are a starting point: re-cut `tests/fixtures/agent-turn-calibration.json`
+from production `usage` rows when they exist (per turn: group `agent_turn` rows by
+`message_id`, order by `created_at`, read `raw_usage.breakdown` input/output tokens, and back
+the first call's `estimateInputTokens` out of `quoted_cost - max_tokens * output rate`),
+then adjust `AGENT_TURN_ESTIMATE`; the spec fails if a constant changes without the fixture
+still being covered. Not gating the Workbench is a scoping decision for this task, not a
+finding that it should stay ungated.
+
+**History is context, never standing instruction.** The last 20 messages travel to the
+nested generation call, in the user turn (so the cached system prefix is unchanged),
+under a label saying they are not instructions. An instruction is applied to one
+generation and persisted nowhere but the user's own chat message. The agent itself still
+sees earlier user messages as real turns, so the guard against an earlier request leaking
+into a later one (a tone word such as "colder", or a whole request re-run) is the system
+prompt alone: it says earlier requests are handled, to act only on the current message, and
+gives a wrong/right example. This is a deliberate prompt-strength mitigation, not a
+mechanism, and an accepted residual gap: checking that an instruction is "grounded" in the
+current message would be keyword-sniffing, which this repo rejects (see the `targetShots`
+and bare-prose-decline entries), and would refuse legitimate paraphrases at the price of a
+paid call. Two things are separate and already fixed: refusals and closing replies stay in
+history so a declined request is not re-answered (the shared history query, pinned for Step
+3 by a test), and `stored_result: 'fresh'` deliberately re-passes an instruction from
+history. Whether the leak actually happens with the production model needs a live trial;
+the tests assert prompt construction, not model behaviour.
+
+**A stored paid payload and a new instruction.** RECOVER would replay a stored payload
+and silently ignore the instruction, and skipping RECOVER would discard paid output
+unasked. So an instruction plus a covering payload defers: the tool returns without
+claiming or spending, the agent asks the user whether the stored result is useful, and
+the follow-up call passes `stored_result: 'use'` (replay for free) or `'fresh'` (write
+anew with the instruction; the new answer overwrites the payload at PERSIST). The question
+is only asked when no run holds the slot: a payload also exists for a moment inside a live
+run (saved just before its writes finish, so it is about to be applied, not waiting on a
+decision), and a second tab's request then is refused by the claim as already in progress -
+`peekGenerationPayload` reports `heldByLiveRun` with the claim's own staleness test so the
+question never sits in front of that lock. A run past the stale window is a crashed one, and
+its payload is paid-for, so it still asks. `deferred`
+is a server-internal tool outcome, not a message kind: it persists and emits nothing.
+With no instruction, RECOVER runs exactly as for the button. The question is asked only
+when nobody holds the slot: a payload also exists for a moment on a run that is still in
+flight (saved just before its writes finish), and that run is about to apply it. The check
+is `peekGenerationPayload`'s `heldByLiveRun` (a `generating` row younger than the operation's
+stale window, the same test the claim applies), and when it is true the tool goes straight
+to the runner, whose claim refuses the request as already in progress. A run past the stale
+window died mid-flight, is reclaimable, and its payload is paid for, so it still gets the
+question.
+
+**Progress lines are past tense** ("Rewrote Shot 2 prompt"): a `tool_done` row is written
+after the tool completes and renders with a done dot, and the text is re-derived at render
+time like every other tool's.
+
+**Card locking on Step 3 mirrors the button path.** While a Regenerate rewrites a card its
+editor gives way to the writing state, so a hand edit cannot race the write and be silently
+overwritten; the agent's tools need the same. `tool_completed` is too late (the nested call
+has already been running for seconds), so a step whose tools write to editable cards
+declares `toolLockScope` in its config and the turn sends `tool_started` just before the
+paid call (`'all'` for regenerate-all, `{shotNumber}` for one). The Step 3 provider marks
+those cards busy, kept apart from its own request's busy ids so one settling never clears
+the other, and every lock releases when the turn settles, whatever its outcome. The
+Workbench declares no scope and sends no event: its cards still lock on completion. Known
+gap: a tool that ends without writing (a refusal, or the stored-payload question) leaves
+its cards showing the writing state until the turn settles, a few seconds at most.
+
+**A page opened before an update gets a clear error, not "connection dropped".** The agent
+route requires `step` and refuses (400/409) a request without a recognised, reached one,
+before anything is written. A tab whose script predates the field therefore fails every
+send, and the client used to report that as a dropped connection with a Retry that re-sent
+the identical request. `use-agent-turn.ts` now maps those two statuses to "This page is out
+of date... Reload the page and try again". Nothing reloads automatically. Defaulting a
+missing `step` to the Workbench was rejected: the committed Step 3 page talked to this same
+route, so an old Step 3 tab would silently get the Workbench's tools.

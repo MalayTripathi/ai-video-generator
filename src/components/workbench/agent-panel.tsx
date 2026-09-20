@@ -1,15 +1,25 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import { AgentMessageItem, type AgentMessage } from './agent-message'
-import { useShots } from '@/app/(app)/projects/[id]/workbench/_components/shots-context'
+import { AgentLocksContext } from './agent-locks-context'
+import { ShotsContext } from '@/app/(app)/projects/[id]/workbench/_components/shots-context'
 import { useAgentTurn } from '@/app/(app)/projects/[id]/workbench/_components/use-agent-turn'
 import { describeToolActivity } from '@/lib/agent-activity-display'
 import { formatCost } from '@/lib/format-cost'
 import { formatCredits } from '@/lib/format-credits'
+import type { AgentStep } from '@/lib/config/pipeline'
 
-const EXAMPLE_PROMPTS = ['Make shot 3 shorter', 'Add a shot about the artisans', 'Rewrite everything, colder tone']
+// Empty-state suggestions, per step: each must be something THAT step's agent can do (Step
+// 3's agent rewrites image prompts and declines shot edits, so it must never be offered
+// "Add a shot"). Data only - the panel itself is the same for every step.
+const EXAMPLE_PROMPTS: Record<AgentStep, string[]> = {
+  workbench: ['Make shot 3 shorter', 'Add a shot about the artisans', 'Rewrite everything, colder tone'],
+  image_prompts: ['Make shot 2 feel colder', 'Rewrite every prompt, more cinematic'],
+  // Step 4's agent has no tools yet, so there is nothing it can be asked to do.
+  storyboard: [],
+}
 
 function LockIcon() {
   return (
@@ -32,10 +42,39 @@ function nowIso() {
   return new Date().toISOString()
 }
 
-export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[] }) {
+// The panel's real data contract is these props, not a specific route's context - a
+// step page with no ShotsProvider (e.g. image_prompts) passes them directly. The
+// workbench tab passes none of them and falls back to ShotsProvider's own context
+// below, so its behavior is unchanged.
+export function AgentPanel({
+  initialMessages,
+  projectId,
+  step,
+  readOnly: readOnlyProp,
+  shots: shotsProp,
+  lockShot: lockShotProp,
+  unlockAllShots: unlockAllShotsProp,
+  markShotsTouched: markShotsTouchedProp,
+}: {
+  initialMessages: AgentMessage[]
+  projectId: string
+  // Which step's agent this panel talks to - the server runs that step's tools.
+  step: AgentStep
+  readOnly?: boolean
+  shots?: { shot_key: string; order_index: number }[]
+  lockShot?: (shotKey: string) => void
+  unlockAllShots?: () => void
+  markShotsTouched?: (shotKeys: string[]) => void
+}) {
   const router = useRouter()
-  const { projectId, readOnly, shots, lockShot, unlockAllShots, markShotsTouched } = useShots()
-  const { isRunning, send, stop } = useAgentTurn(projectId)
+  const shotsCtx = useContext(ShotsContext)
+  const locksCtx = useContext(AgentLocksContext)
+  const readOnly = readOnlyProp ?? shotsCtx?.readOnly ?? false
+  const shots = shotsProp ?? shotsCtx?.shots ?? []
+  const lockShot = lockShotProp ?? shotsCtx?.lockShot ?? locksCtx?.lockShot ?? (() => {})
+  const unlockAllShots = unlockAllShotsProp ?? shotsCtx?.unlockAllShots ?? locksCtx?.unlockAllShots ?? (() => {})
+  const markShotsTouched = markShotsTouchedProp ?? shotsCtx?.markShotsTouched ?? (() => {})
+  const { isRunning, send, stop } = useAgentTurn(projectId, step)
   // Seeded rows carrying retryContent/retryClientId (an abandoned historical turn) need a
   // real onRetry closure, which a server component can't hand them - wire it up once here.
   // Safe to reference `runTurn` before its own textual definition below: it's a hoisted
@@ -98,6 +137,13 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
           streamingId = crypto.randomUUID()
           return [...prev, { id: streamingId, kind: 'agent', content: text, createdAt: nowIso(), streaming: true }]
         })
+      },
+      onToolStarted: (scope) => {
+        // Lock the cards this tool is about to write, for its whole duration; they release
+        // at settle (unlockAllShots below), whatever the turn's outcome.
+        for (const shot of scope === 'all' ? shots : shots.filter((s) => s.order_index + 1 === scope.shotNumber)) {
+          lockShot(shot.shot_key)
+        }
       },
       onToolCompleted: (label, toolName, shotKey) => {
         clearPlaceholder()
@@ -216,9 +262,9 @@ export function AgentPanel({ initialMessages }: { initialMessages: AgentMessage[
         <div className="flex flex-1 flex-col justify-center gap-rc-xs px-rc-md">
           <span className="text-control font-medium text-text-primary">Ask for a change in plain words</span>
           <span className="text-small leading-[1.5] text-text-secondary">Every edit shows up here with what it cost.</span>
-          {!readOnly && (
+          {!readOnly && EXAMPLE_PROMPTS[step].length > 0 && (
             <div className="mt-rc-2xs flex flex-col gap-[5px]">
-              {EXAMPLE_PROMPTS.map((example) => (
+              {EXAMPLE_PROMPTS[step].map((example) => (
                 <button
                   key={example}
                   type="button"

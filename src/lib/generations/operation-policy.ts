@@ -41,7 +41,10 @@ export const OPERATION_POLICY: Record<Operation, OperationPolicy> = {
   },
   voiceover: DEFAULT_POLICY,
   background_music: DEFAULT_POLICY,
-  write_image_prompts: DEFAULT_POLICY,
+  // Like generate_shots: Regenerate All/Stale/single-row are normal, repeatable
+  // actions against an already-succeeded project, not exceptional retries - reclaim
+  // from 'succeeded' is allowed behind the same retry flag 'failed' already requires.
+  write_image_prompts: { ...DEFAULT_POLICY, claimableFrom: { succeeded: 'retry', failed: 'retry' } },
   write_video_prompts: DEFAULT_POLICY,
   generate_image: DEFAULT_POLICY,
   // A reusable per-element claim slot, not a one-shot job record: regenerating a

@@ -116,6 +116,27 @@
   --status-failed-bg: #fae2df;
   --status-failed-bg-hover: #f6e6e8;
   --status-failed-line: #f0c8c3;
+  --status-active-line: #eed9a4;
+  --status-stale-fg: #9a5312;
+  --status-stale-bg: #fceada;
+  --status-stale-line: #edc79b;
+  --status-edited-fg: #495271;
+  --status-edited-bg: #e7e9f3;
+
+  /* Identity: what a thing is, never a state. Dots, 2px rules, caps labels and chip
+     tints only - never a card fill, header band, or button. */
+  --ident-character-fg: #2d6a75;
+  --ident-character-bg: #e0eef0;
+  --ident-location-fg: #4d6a41;
+  --ident-location-bg: #e7efe2;
+  --ident-prop-fg: #7a5334;
+  --ident-prop-bg: #f4eae0;
+  --ident-style-fg: #74487a;
+  --ident-style-bg: #f2e8f3;
+  --ident-voiceover-fg: #3f5a85;
+  --ident-voiceover-bg: #e6ebf5;
+  --ident-dialogue-fg: #8a4260;
+  --ident-dialogue-bg: #f7e7ed;
 
   --bg-well: #f0f0f6; /* empty thumbnail well */
   --accent-quiet: #6560a6; /* timecode under an accent shot label */
@@ -192,6 +213,25 @@
   --status-failed-bg: #3a1e1c;
   --status-failed-bg-hover: #48282a;
   --status-failed-line: #4d2926;
+  --status-active-line: #54421c;
+  --status-stale-fg: #eda668;
+  --status-stale-bg: #45280f;
+  --status-stale-line: #5c3a18;
+  --status-edited-fg: #a9b2cc;
+  --status-edited-bg: #262a3c;
+
+  --ident-character-fg: #7cb8c3;
+  --ident-character-bg: #14303a;
+  --ident-location-fg: #9ec48f;
+  --ident-location-bg: #1e3220;
+  --ident-prop-fg: #d0a87f;
+  --ident-prop-bg: #392a20;
+  --ident-style-fg: #c49acb;
+  --ident-style-bg: #2f1f36;
+  --ident-voiceover-fg: #9db4dd;
+  --ident-voiceover-bg: #1b2540;
+  --ident-dialogue-fg: #dd9cb2;
+  --ident-dialogue-bg: #38202c;
 
   --bg-well: #16182a;
   --accent-quiet: #9188c4;
@@ -259,6 +299,25 @@
   --color-status-failed-bg: var(--status-failed-bg);
   --color-status-failed-bg-hover: var(--status-failed-bg-hover);
   --color-status-failed-line: var(--status-failed-line);
+  --color-status-active-line: var(--status-active-line);
+  --color-status-stale-fg: var(--status-stale-fg);
+  --color-status-stale-bg: var(--status-stale-bg);
+  --color-status-stale-line: var(--status-stale-line);
+  --color-status-edited-fg: var(--status-edited-fg);
+  --color-status-edited-bg: var(--status-edited-bg);
+
+  --color-ident-character-fg: var(--ident-character-fg);
+  --color-ident-character-bg: var(--ident-character-bg);
+  --color-ident-location-fg: var(--ident-location-fg);
+  --color-ident-location-bg: var(--ident-location-bg);
+  --color-ident-prop-fg: var(--ident-prop-fg);
+  --color-ident-prop-bg: var(--ident-prop-bg);
+  --color-ident-style-fg: var(--ident-style-fg);
+  --color-ident-style-bg: var(--ident-style-bg);
+  --color-ident-voiceover-fg: var(--ident-voiceover-fg);
+  --color-ident-voiceover-bg: var(--ident-voiceover-bg);
+  --color-ident-dialogue-fg: var(--ident-dialogue-fg);
+  --color-ident-dialogue-bg: var(--ident-dialogue-bg);
 
   --color-banner-failed-title: var(--banner-failed-title);
   --color-banner-failed-body: var(--banner-failed-body);

@@ -111,6 +111,10 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   source itself), bound as `:root` / `.dark` CSS variables and mapped into
   the Tailwind theme. **Light is the default mode.** Use tokens, never
   hard-coded hex.
+- Identity tokens (`--ident-*`) mark what a thing is — a 5px dot, 2px rule,
+  caps label or chip tint, never a fill, band or button.
+  `--status-stale-*` and `--status-edited-*` are states and extend status,
+  not identity.
 - **The canvas must be opened and read via the Claude Design MCP tools
   before any UI work in this repo — never assumed from a prior session's
   claim to have read it, and never built from a prose description of it.**
@@ -210,12 +214,12 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   over-target overrun** (sum vs. `durationConfig[...].targetSecondsMax`)
   is project-level: stated once on the header's Current total, and
   deliberately not repeated on every locked shot's stepper.
-- The step indicator (`workbench-step-indicator.tsx`) only links a step
+- The step indicator (`step-indicator.tsx`) only links a step
   if it's actually built and has a real per-project route
   (`/projects/[id]/{step}`); `intake` has no such route (`/projects/new`
   is a pre-project screen) and always renders inert even when shown
-  complete. Complete/current/locked is derived from `furthest_step`; the
-  `current` highlight alone still comes from `current_step`.
+  complete. Complete/locked is derived from `furthest_step`; the
+  `current` highlight is derived from the active route, client-side.
 
 ## Code conventions
 - All external API calls happen server-side only (API routes / server
@@ -413,14 +417,16 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
 | `src/lib/config/models.ts` | Per-call model + `maxTokens` config, `VIDEO_MODELS` duration registry, `resolveVideoModel`, `isDurationAllowed` |
 | `src/lib/generations/claim.ts` | The only reader/writer of `state`/`payload`/`started_at`/`error`; claim, persist, settle |
 | `src/lib/usage/reserve-settle.ts` | `reserveUsage` / `settleUsage` and the throw/never-throw asymmetry |
-| `src/lib/usage/quote.ts` | `estimateInputTokens` / `quoteClaudeCall` — the pre-flight quote |
+| `src/lib/usage/quote.ts` | `estimateInputTokens` / `quoteClaudeCall` (the worst-case reservation quote) and `estimateAgentTurnCost` / `estimateExpectedCallCost` (the calibrated turn estimate a balance gate uses) |
 | `src/lib/usage/allowance.ts` | `assertWithinAllowance`, the monthly spend ceiling, `AllowanceExceededError` |
+| `src/app/api/projects/[id]/agent/steps.ts` | Per-step agent config: prompt, tools, dispatch, context block, lock rule, and optional `toolLockScope` / `toolEstimateUsd` (the balance gate). A new step adds a config here and never edits `runAgentTurn` |
 | `src/lib/projects/advance-step.ts` | The sole write site for `current_step` / `furthest_step` |
 | `src/lib/display-title.ts` | Project title fallback chain |
 | `src/lib/shot-key.ts` | `generateUniqueShotKeys`, `isUniqueViolation` |
 | `src/lib/camera-labels.ts` | `shot_size` / `camera_angle` / `camera_movement` display labels |
 | `src/lib/video-type-labels.ts` | `video_type` display labels |
 | `src/lib/language-labels.ts` | `language` display labels |
+| `src/lib/build-agent-messages.ts` | Reconstructs the agent panel's message list from persisted `messages` rows |
 
 ## Provider calls
 - `ClaudeGateway` (`src/lib/claude.ts`) is the only place `@anthropic-ai/sdk`
@@ -625,8 +631,9 @@ invalidating; **dialogue** → that shot's `video_prompt_stale` only
 from narration text; a locked-duration mismatch is resolved for free at
 Step 4 by retiming); **deleting a shot** → `projects.voiceover_stale` only
 (the same one-continuous-file reasoning as a voiceover-text edit — the
-shot's own flags go with the deleted row). Staleness is a flag, never a
-null.
+shot's own flags go with the deleted row); **an image-prompt edit** →
+`shots.image_prompt_edited` only, never `image_prompt_stale` (a
+regeneration clears it). Staleness is a flag, never a null.
 
 Every field write above is preceded by a diff against the persisted
 value: an edit that resolves to the same value performs no write and
@@ -868,9 +875,9 @@ SETTLE** — and it must not be rearranged.
 claim is a 409, never a partial attempt. The project's own fields are
 loaded in a separate `SELECT` *before* the claim, so a vanished or unowned
 project returns 404 without interpreting an RLS/FK error off the INSERT.
-**Recover**: a claimed row already carrying a non-null `payload` never
-calls the gateway — the stored payload is replayed through the same
-pipeline.
+**Recover**: a claimed row carrying a non-null `payload` that answers every
+requested shot never calls the gateway — the stored payload is replayed
+through the same pipeline; a payload that doesn't cover the request is not.
 **Persist**: on a fresh call the raw tool_use input is written to
 `payload` immediately after the call returns, **before any derived row is
 inserted**.
@@ -899,9 +906,9 @@ differences. It claims unconditionally, even when nothing needs
 generating — so a call after `succeeded` needs `retry: true`, same as
 `/shots`. And it only `.update()`s the specific shots Claude was asked
 about; prompts are a field on an existing shot, so there is no wholesale
-delete-and-reinsert. A non-truncation 422 (requested shot_keys came back
-missing) leaves `payload` intact for recovery; a `max_tokens` truncation
-clears it, identically to `/shots`.
+delete-and-reinsert. A 422 for shot_keys Claude never returned clears
+`payload` (nothing is left to recover), as a `max_tokens` truncation
+does, identically to `/shots`.
 
 `/prompts` produces both `image_prompt` and `video_prompt` in a single Claude
 call, and the whole call is attributed to `step: 'image_prompts'` — so Step 5
@@ -939,13 +946,13 @@ constant would be exactly the kind of scattered second enforcement point this de
 exists to avoid).
 
 **`advanceStep(supabase, projectId, step)`** (`src/lib/projects/advance-step.ts`) is the
-**sole permitted write site for both columns outside project creation**. It runs two
+**sole permitted write site for both columns outside project creation**. It runs three
 statements, in order, no `.rpc()`, no read-then-write:
 1. An unconditional `current_step` update — it follows the user, forward or backward.
-2. A conditional `furthest_step` update, filtered `.lt('furthest_step', idx)` — a no-op
-   when navigating backward or re-entering an already-unlocked step. The `.lt()` filter
-   makes the never-decreases guarantee at the database, not by reading the current value
-   and computing a max in application code.
+2. A conditional `furthest_step` update, filtered `.lt('furthest_step', idx)` — the
+   never-decreases guarantee lives at the database, not in application code.
+3. Past the workbench only, a conditional `status` update `draft` → `in_progress`,
+   filtered `.eq('status', 'draft')` — a no-op on backward navigation or any other status.
 
 `idx` comes from `stepIndex(step)` (`pipeline.ts`), derived from `STEPS`
 rather than a parallel hand-maintained map. `STEPS` covers every
@@ -961,6 +968,6 @@ explicit save. The agent is available throughout steps 2 through 7.
 
 `advanceStep`'s first caller is the balance-gated Step 2 → Step 3 transition
 (`src/app/api/projects/[id]/image_prompts/advance/`). The step indicator
-(`workbench-step-indicator.tsx`) consults `furthest_step` for the complete/locked
-boundary and the locked-step tooltip's target step; `current_step` alone still decides
-the `current` highlight.
+(`step-indicator.tsx`) consults `furthest_step` for the complete/locked
+boundary and the locked-step tooltip's target step; the `current` highlight is
+derived from the active route, client-side, not `current_step`.

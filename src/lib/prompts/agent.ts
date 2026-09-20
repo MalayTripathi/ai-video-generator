@@ -287,7 +287,7 @@ const REGENERATE_ALL_SHOTS_TOOL: Anthropic.Tool = {
 // mechanism as a tool's own refusal (dispatchAgentTool, logic.ts), so it gets its own
 // message with the existing refusal treatment, independent of whatever else the turn
 // completes. See docs/decisions.md.
-const DECLINE_TOOL: Anthropic.Tool = {
+export const DECLINE_TOOL: Anthropic.Tool = {
   name: 'decline',
   description:
     "Call this once for each part of the request you will not do - something none of your tools can do (like deleting a shot), a hard rule blocking it, or a guess you won't make because it's destructive or too ambiguous. Explain why in plain language. This does not end the turn - if other parts of the request can still be done, keep going and do them, then close normally with your ordinary reply. A single turn can call this more than once, and can mix it with completed actions.",

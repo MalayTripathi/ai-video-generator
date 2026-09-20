@@ -15,6 +15,7 @@ import { stepIndex } from '../src/lib/config/pipeline'
 import { successMessage, throwingGateway, textMessage, scriptedGateway, multiToolMessage, mixedMessage } from './helpers/claude-fakes'
 import type { ClaudeGateway } from '../src/lib/claude'
 import { runAgentTurn, type AgentStreamEvent } from '../src/app/api/projects/[id]/agent/logic'
+import { getAgentStepConfig } from '../src/app/api/projects/[id]/agent/steps'
 import { STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
 
 // Shared by every runAgentTurn call in this file that isn't itself testing the ledger
@@ -1115,6 +1116,7 @@ test.describe('runAgentTurn', () => {
     const events: AgentStreamEvent[] = []
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shotNumber, voice_over: 'Changed by the agent.' }, 'update_shot'),
@@ -1145,6 +1147,7 @@ test.describe('runAgentTurn', () => {
     const events: AgentStreamEvent[] = []
 
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shot.order_index + 1, voice_over: 'Changed by the agent.' }, 'update_shot'),
@@ -1175,6 +1178,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway,
       supabase: admin,
@@ -1205,6 +1209,7 @@ test.describe('runAgentTurn', () => {
     // in the same response as a tool call. Without finish, that prose is only ever an
     // interstitial row - the turn's actual close comes from a later, separate response.
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([
         mixedMessage('Let me update that for you.', [
@@ -1248,6 +1253,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway,
       supabase: admin,
@@ -1276,6 +1282,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway,
       supabase: admin,
@@ -1306,6 +1313,7 @@ test.describe('runAgentTurn', () => {
     const projectId = await seedToolProject()
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ message: "There's no delete tool - use the shot's own delete button." }, 'decline'),
@@ -1334,6 +1342,7 @@ test.describe('runAgentTurn', () => {
     // targetShots in CLAUDE.md); it is documented here as real, current behavior rather
     // than left unverified. See docs/decisions.md.
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([textMessage("There's no delete tool - use the shot's own delete button in the UI.")]),
       supabase: admin,
@@ -1354,6 +1363,7 @@ test.describe('runAgentTurn', () => {
     const shotNumber = (await readShot(shotId)).order_index + 1
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([
         mixedMessage('Let me check that shot first.', [{ name: 'get_shot', input: { shot_number: shotNumber } }]),
@@ -1387,6 +1397,7 @@ test.describe('runAgentTurn', () => {
     const projectId = await seedToolProject()
 
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ message: "There's no delete tool - use the shot's own delete button." }, 'decline'),
@@ -1401,6 +1412,7 @@ test.describe('runAgentTurn', () => {
 
     const turn2Gateway = scriptedGateway([textMessage('Sure, on it.')])
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: turn2Gateway,
       supabase: admin,
@@ -1431,6 +1443,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway,
       supabase: admin,
@@ -1456,6 +1469,7 @@ test.describe('runAgentTurn', () => {
     )
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway,
       supabase: admin,
@@ -1483,6 +1497,7 @@ test.describe('runAgentTurn', () => {
 
     const before = (await readShots(projectId)).length
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway,
       supabase: admin,
@@ -1501,6 +1516,7 @@ test.describe('runAgentTurn', () => {
     const gateway = scriptedGateway([successMessage({}, 'update_shot')])
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway,
       supabase: admin,
@@ -1522,6 +1538,7 @@ test.describe('runAgentTurn', () => {
     const gateway = scriptedGateway([textMessage('First reply.')])
 
     const first = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway,
       supabase: admin,
@@ -1534,6 +1551,7 @@ test.describe('runAgentTurn', () => {
 
     const secondGateway = scriptedGateway([])
     const second = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: secondGateway,
       supabase: admin,
@@ -1563,6 +1581,7 @@ test.describe('runAgentTurn', () => {
     const events: AgentStreamEvent[] = []
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway,
       supabase: admin,
@@ -1618,6 +1637,7 @@ test.describe('runAgentTurn', () => {
     const clientId = crypto.randomUUID()
 
     const first = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([]),
       supabase: admin,
@@ -1638,6 +1658,7 @@ test.describe('runAgentTurn', () => {
     // looping the identical "still processing" 409 forever.
     const secondGateway = scriptedGateway([])
     const second = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: secondGateway,
       supabase: admin,
@@ -1665,6 +1686,7 @@ test.describe('runAgentTurn', () => {
     const gateway = scriptedGateway([textMessage('Reclaimed.')])
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway,
       supabase: admin,
@@ -1688,6 +1710,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     const result = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway,
       supabase: admin,
@@ -1719,6 +1742,7 @@ test.describe('runAgentTurn', () => {
     const clientId = crypto.randomUUID()
 
     const first = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shotNumber, voice_over: 'Changed once.' }, 'update_shot'),
@@ -1738,6 +1762,7 @@ test.describe('runAgentTurn', () => {
 
     const resendGateway = scriptedGateway([])
     const resend = await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: resendGateway,
       supabase: admin,
@@ -1761,6 +1786,7 @@ test.describe('runAgentTurn', () => {
     const clientId = crypto.randomUUID()
 
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([textMessage('All done.')]),
       supabase: admin,
@@ -1782,6 +1808,7 @@ test.describe('runAgentTurn', () => {
     const shot = await readShot(shotId)
 
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shot.order_index + 1, voice_over: 'Changed by the agent.' }, 'update_shot'),
@@ -1811,6 +1838,7 @@ test.describe('runAgentTurn', () => {
     const shot = await readShot(shotId)
 
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shot.order_index + 1, visual_description: '' }, 'update_shot'),
@@ -1837,6 +1865,7 @@ test.describe('runAgentTurn', () => {
     const events: AgentStreamEvent[] = []
 
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shotNumber, voice_over: 'Changed by the agent.' }, 'update_shot'),
@@ -1862,6 +1891,7 @@ test.describe('runAgentTurn', () => {
     const events: AgentStreamEvent[] = []
 
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([]),
       supabase: admin,
@@ -1882,6 +1912,7 @@ test.describe('runAgentTurn', () => {
     const shotNumber = (await readShot(shotId)).order_index + 1
 
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: scriptedGateway([
         successMessage({ shot_number: shotNumber, voice_over: 'Changed by the agent.' }, 'update_shot'),
@@ -1903,6 +1934,7 @@ test.describe('runAgentTurn', () => {
     }
 
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: capturingGateway,
       supabase: admin,
@@ -1929,6 +1961,7 @@ test.describe('runAgentTurn', () => {
     ])
 
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: turn1Gateway,
       supabase: admin,
@@ -1948,6 +1981,7 @@ test.describe('runAgentTurn', () => {
 
     const turn2Gateway = scriptedGateway([textMessage('Sure, on it.')])
     await runAgentTurn({
+      config: getAgentStepConfig('workbench'),
       ...noopLedgerParams(),
       gateway: turn2Gateway,
       supabase: admin,

@@ -144,6 +144,31 @@ test.describe('runAdvanceToImagePrompts', () => {
     }
   })
 
+  test('an already-advanced project is never refused on balance: it owns the step, and getting there spends nothing', async () => {
+    const { user } = await createTestSession()
+    try {
+      const projectId = await seedProject(user.id, { furthest_step: stepIndex('image_prompts') })
+      await seedShots(projectId, 3)
+
+      // No grant, so the balance reads 0 - the same call for a project still at the
+      // Workbench is the 402 above.
+      const result = await runAdvanceToImagePrompts({
+        supabase: admin,
+        projectId,
+        userId: user.id,
+        getBalance: realGetBalance,
+        ensureSignupGrant: noopEnsureSignupGrant,
+      })
+
+      expect(result.ok).toBe(true)
+      const project = await readProject(projectId)
+      expect(project.current_step).toBe('image_prompts')
+      expect(project.furthest_step).toBe(stepIndex('image_prompts'))
+    } finally {
+      await deleteTestUser(user.id)
+    }
+  })
+
   test('requiredCredits scales with the project\'s persisted shot count', async () => {
     const { user } = await createTestSession()
     try {

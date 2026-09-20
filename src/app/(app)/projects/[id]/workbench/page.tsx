@@ -9,7 +9,7 @@ import { ShotsTab } from './_components/shots-tab'
 import { AssetsTab } from './_components/assets-tab'
 import { ScriptTab } from './_components/script-tab'
 import { WorkbenchFooter } from './_components/workbench-footer'
-import { buildAgentMessages } from './_components/build-agent-messages'
+import { buildAgentMessages } from '@/lib/build-agent-messages'
 import { getElementGenerateAffordability } from './actions'
 import { getProjectElementsForUser, type ElementGroup } from '@/lib/elements/read'
 import type { DisplayDialogueLine, DisplayShot } from './_components/types'
@@ -215,9 +215,10 @@ export default async function WorkbenchPage({
       >
         <WorkbenchShell
           project={project}
+          agentStep="workbench"
           agentMessages={agentMessages}
           header={<WorkbenchHeader project={project} />}
-          footer={<WorkbenchFooter />}
+          footer={<WorkbenchFooter projectId={projectId} furthestStep={project.furthest_step} />}
         >
           <WorkbenchTabs projectId={projectId} activeTab={activeTab}>
             {activeTab === 'shots' && <ShotsTab />}

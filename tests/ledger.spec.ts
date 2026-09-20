@@ -376,12 +376,14 @@ test.describe('module hygiene', () => {
     expect(contents).not.toMatch(/\.delete\(/)
   })
 
-  test('exactly the agent/shots/camera/elements spend wiring imports this module - nothing else', async () => {
+  test('exactly the agent/shots/camera/elements/image-prompts spend wiring imports this module - nothing else', async () => {
     // Task 5 (wire agent_turn to the ledger) was this module's first legitimate
     // caller; Task 6 (wire generate_shots and derive_camera) added two more of the
     // same shape, plus a fourth (generate_element_reference, the first non-Claude
-    // paid call). Each route (agent/route.ts, shots/route.ts, camera/route.ts,
-    // elements/.../generate/route.ts) imports mintAttemptId/recordDynamicSpend/
+    // paid call); C6 Task 3 (image-prompts, the first route with a real balance gate
+    // and a partial-persistence-aware charge) added a fifth. Each route (agent/route.ts,
+    // shots/route.ts, camera/route.ts, elements/.../generate/route.ts,
+    // image-prompts/route.ts) imports mintAttemptId/recordDynamicSpend/
     // recordFixedSpend for real (it runs inside Next's server bundle, so the
     // service-role.ts -> 'server-only' chain this module pulls in is safe there), and
     // each corresponding logic.ts carries only a **type-only** `import type` for its
@@ -399,8 +401,10 @@ test.describe('module hygiene', () => {
     // "react-server" condition, which broke the instant this module gained a real
     // caller outside a route. getBalance now lives in credits/balance.ts (ordinary
     // client, no service-role in its import graph at all), so actions.ts no longer
-    // has any reason to reference this module. Any importer beyond these eight means
-    // a second, unreviewed call site.
+    // has any reason to reference this module. video-prompts is also deliberately NOT
+    // in this list - that route has no ledger wiring; if it ever imports this module,
+    // this test should catch it. Any importer beyond these ten means a second,
+    // unreviewed call site.
     const srcDir = path.resolve(__dirname, '../src')
     const ownFile = path.resolve(__dirname, '../src/lib/credits/ledger.ts')
     const expectedImporters = [
@@ -418,6 +422,8 @@ test.describe('module hygiene', () => {
         __dirname,
         '../src/app/api/projects/[id]/elements/[elementId]/reference/generate/route.ts'
       ),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/image-prompts/logic.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/image-prompts/route.ts'),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []

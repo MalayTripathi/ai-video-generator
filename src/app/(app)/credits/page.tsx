@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { TopBar } from '../dashboard/top-bar'
 import { parsePeriod } from '../usage/period'
 import { getLedgerRows } from './data'
@@ -22,6 +23,12 @@ export default async function CreditsPage({ searchParams }: { searchParams: Prom
   if (!user) {
     redirect('/login')
   }
+
+  // The layout grants a new user their signup credits too, but a layout and its page render
+  // in parallel, so without this the ledger read below can land before that grant does - and
+  // a brand-new user's first visit would show "No credit activity yet" or their balance
+  // depending only on which query was faster. Idempotent (one existence check once granted).
+  await ensureSignupGrant(user.id)
 
   // Balance is deliberately all-time regardless of the active tab - a balance is a
   // present-moment fact, not a periodic one (see credits-summary.tsx's sublabel). This

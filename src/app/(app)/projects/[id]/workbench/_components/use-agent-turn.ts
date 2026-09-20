@@ -5,9 +5,12 @@ import { useCallback, useRef, useState } from 'react'
 // @/lib/supabase/server, the Claude gateway, etc.) reaches the client bundle. The same
 // pattern tests/agent-turn.spec.ts already uses to import this exact type.
 import type { AgentStreamEvent } from '@/app/api/projects/[id]/agent/logic'
+import type { AgentStep } from '@/lib/config/pipeline'
 
 export type AgentTurnHandlers = {
   onTurnStarted?: () => void
+  // Only steps whose tools lock cards for their duration ever send this (see logic.ts).
+  onToolStarted?: (scope: { shotNumber: number } | 'all') => void
   onTextDelta: (text: string) => void
   onToolCompleted: (label: string, toolName: string, shotKey?: string) => void
   onRefusal: (label: string, shotKey?: string) => void
@@ -29,10 +32,18 @@ export type AgentTurnHandlers = {
 
 const DROPPED_STREAM_MESSAGE = "The connection dropped before this finished. Nothing further was changed - try again."
 
+// The agent route refuses (400/409) a request whose step it does not recognise or that the
+// project has not reached - which is exactly what a page opened before an update sends, since
+// its script predates the `step` field. Retrying re-sends the same request and fails the same
+// way, so saying "the connection dropped" would send the person round in circles: name the
+// real cause and the one thing that fixes it. Nothing was written (the route refuses first).
+const OUT_OF_DATE_PAGE_MESSAGE = "This page is out of date, so that request couldn't be sent. Reload the page and try again."
+const OUT_OF_DATE_STATUSES = [400, 409]
+
 // No EventSource here: this is a POST with a JSON body, which EventSource can't send.
 // Reads the response body directly and parses the `event:`/`data:`/`\n\n` SSE framing by
 // hand. Not an EventSource polyfill - only the one shape this route actually emits.
-export function useAgentTurn(projectId: string) {
+export function useAgentTurn(projectId: string, step: AgentStep) {
   const [isRunning, setIsRunning] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -42,15 +53,18 @@ export function useAgentTurn(projectId: string) {
       const controller = new AbortController()
       abortRef.current = controller
       let sawSettled = false
+      // Set when the route itself refused the request; replaces the generic dropped-stream text.
+      let failureMessage: string | null = null
 
       try {
         const response = await fetch(`/api/projects/${projectId}/agent`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, clientId }),
+          body: JSON.stringify({ content, clientId, step }),
           signal: controller.signal,
         })
         if (!response.ok || !response.body) {
+          if (OUT_OF_DATE_STATUSES.includes(response.status)) failureMessage = OUT_OF_DATE_PAGE_MESSAGE
           throw new Error(`Request failed (${response.status})`)
         }
 
@@ -91,6 +105,9 @@ export function useAgentTurn(projectId: string) {
               case 'turn_started':
                 handlers.onTurnStarted?.()
                 break
+              case 'tool_started':
+                handlers.onToolStarted?.(event.scope)
+                break
               case 'text_delta':
                 handlers.onTextDelta(event.text)
                 break
@@ -114,12 +131,12 @@ export function useAgentTurn(projectId: string) {
         // A throw here (network failure, non-OK response, an aborted Stop) never carries
         // useful server content - the dropped-stream case below covers it uniformly.
       } finally {
-        if (!sawSettled) handlers.onSettled(DROPPED_STREAM_MESSAGE, true, null, null)
+        if (!sawSettled) handlers.onSettled(failureMessage ?? DROPPED_STREAM_MESSAGE, true, null, null)
         abortRef.current = null
         setIsRunning(false)
       }
     },
-    [projectId]
+    [projectId, step]
   )
 
   const stop = useCallback(() => {

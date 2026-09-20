@@ -56,6 +56,68 @@ export function quoteClaudeCall(params: {
   return { estimatedCost: estimatedCost ?? 0, quotedBreakdown }
 }
 
+// Calibration of the turn-level balance gate's figure. quoteClaudeCall above reserves the
+// full max_tokens ceiling - right for a spend-cap reservation, which must never be overrun,
+// but ~11x what an agent call really emits, so as a balance gate it refused turns the user
+// could easily afford. These constants describe a REAL agent turn instead, from 17 turns of
+// development usage (Haiku; tests/fixtures/agent-turn-calibration.json, guarded by
+// tests/agent-turn-estimate.spec.ts):
+// - calls per turn: 1 (x3), 2 (x7), 3 (x7). The gate can't know in advance which, so it
+//   assumes the maximum seen: a one-call turn (a question back to the user) is over-
+//   estimated, never under.
+// - output per agent call: p50 81, p90 312, max 905 (one call authoring shot text, which
+//   Step 3's tools never do). 512 covers all but that one.
+// - first-call input: estimateInputTokens ran 0.85-0.94 of the measured figure (it ignores
+//   the tokenizer and JSON density), so it is scaled up by 1.25.
+// - later calls carry the earlier calls' tool results: +58..+1179 input tokens per call
+//   (p50 332, p90 501), estimated at +800.
+// Measured on Haiku only; a model that is more verbose (Sonnet in production) would need
+// these re-cut from its own usage rows - see docs/decisions.md.
+export const AGENT_TURN_ESTIMATE = {
+  maxCalls: 3,
+  outputTokensPerCall: 512,
+  inputUndercountFactor: 1.25,
+  inputGrowthPerCallTokens: 800,
+} as const
+
+/**
+ * The estimated cost of ONE Claude call at an expected (not ceiling) output size. Input is
+ * scaled by the same undercount factor as the turn estimate; output is capped at the call's
+ * own max_tokens, which it can never exceed. Still goes through quoteClaudeCall/computeCost,
+ * so there is no second cost calculation.
+ */
+export function estimateExpectedCallCost(params: {
+  model: string
+  estimatedInputTokens: number
+  expectedOutputTokens: number
+  maxTokens: number
+}): number {
+  return quoteClaudeCall({
+    model: params.model,
+    estimatedInputTokens: Math.ceil(params.estimatedInputTokens * AGENT_TURN_ESTIMATE.inputUndercountFactor),
+    maxTokens: Math.min(params.expectedOutputTokens, params.maxTokens),
+  }).estimatedCost
+}
+
+/**
+ * What a whole agent turn is expected to cost, before its first call: up to
+ * AGENT_TURN_ESTIMATE.maxCalls agent calls (each at expected output, input growing as tool
+ * results accumulate). The figure a step's balance gate compares against; a tool's own paid
+ * call is estimated separately by the step and added by the caller.
+ */
+export function estimateAgentTurnCost(params: { model: string; estimatedInputTokens: number }): { estimatedCost: number } {
+  const { maxCalls, outputTokensPerCall, inputUndercountFactor, inputGrowthPerCallTokens } = AGENT_TURN_ESTIMATE
+  let total = 0
+  for (let call = 0; call < maxCalls; call++) {
+    total += quoteClaudeCall({
+      model: params.model,
+      estimatedInputTokens: Math.ceil(params.estimatedInputTokens * inputUndercountFactor + call * inputGrowthPerCallTokens),
+      maxTokens: outputTokensPerCall,
+    }).estimatedCost
+  }
+  return { estimatedCost: total }
+}
+
 /**
  * The pre-flight quote for an OpenAI image call. Unlike quoteClaudeCall, the output
  * half is EXACT, not worst-case: OpenAI meters image generation at a fixed

@@ -2,11 +2,20 @@
 
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { InsufficientCreditsBanner } from '@/components/insufficient-credits-banner'
 
-export function ImagePromptsConfirmModal({
+// The one confirmation dialog for a footer button that advances the project to the next
+// step: the Workbench's "Generate image prompts" and Step 3's "Continue to storyboard".
+// Copy is the caller's; the insufficient-balance state (Confirm disabled, Cancel enabled)
+// is shared - a second copy would drift, same as InsufficientCreditsBanner.
+export function AdvanceConfirmModal({
   open,
   phase,
   submitting,
+  title,
+  body,
+  bannerTitle,
+  confirmLabel,
   requiredCredits,
   balanceCredits,
   onConfirm,
@@ -15,6 +24,10 @@ export function ImagePromptsConfirmModal({
   open: boolean
   phase: 'confirm' | 'insufficient'
   submitting: boolean
+  title: string
+  body: string
+  bannerTitle: string
+  confirmLabel: string
   requiredCredits: number
   balanceCredits: number | null
   onConfirm: () => void
@@ -35,7 +48,7 @@ export function ImagePromptsConfirmModal({
 
   if (!open) return null
 
-  const generateDisabled = phase === 'insufficient' || submitting
+  const confirmDisabled = phase === 'insufficient' || submitting
 
   return createPortal(
     <div
@@ -45,36 +58,22 @@ export function ImagePromptsConfirmModal({
       <div
         role="dialog"
         aria-modal="true"
-        aria-labelledby="image-prompts-confirm-title"
+        aria-labelledby="advance-confirm-title"
         onClick={(e) => e.stopPropagation()}
         className="flex w-full max-w-[400px] flex-col gap-rc-sm rounded-frame border border-border-subtle bg-bg-surface p-rc-lg shadow-card-hover"
       >
-        <span id="image-prompts-confirm-title" className="text-section font-medium text-text-primary">
-          Generate image prompts?
+        <span id="advance-confirm-title" className="text-section font-medium text-text-primary">
+          {title}
         </span>
 
-        <span className="text-small leading-[1.5] text-text-secondary">
-          This starts writing image prompts for every shot and uses {requiredCredits} credits.
-        </span>
+        <span className="text-small leading-[1.5] text-text-secondary">{body}</span>
 
         {phase === 'insufficient' && (
-          <div className="flex items-start gap-rc-sm rounded-control border-l-2 border-status-active-fg bg-status-active-bg p-[14px_16px]">
-            <div className="flex flex-1 flex-col gap-[3px]">
-              <span className="text-control font-medium text-banner-active-title">
-                Not enough credits for image prompts
-              </span>
-              <span className="text-small leading-[1.5] text-banner-active-body">
-                This step needs {requiredCredits} credits. You have {balanceCredits ?? 0} credits available.
-              </span>
-            </div>
-            <button
-              type="button"
-              disabled
-              className="flex h-8 flex-none cursor-not-allowed items-center rounded-control border border-accent bg-bg-surface px-rc-sm text-small font-medium text-accent opacity-60 hover:bg-status-active-bg-hover"
-            >
-              Add credits
-            </button>
-          </div>
+          <InsufficientCreditsBanner
+            title={bannerTitle}
+            requiredCredits={requiredCredits}
+            balanceCredits={balanceCredits}
+          />
         )}
 
         <div className="mt-rc-2xs flex justify-end gap-rc-xs">
@@ -89,11 +88,11 @@ export function ImagePromptsConfirmModal({
             ref={confirmRef}
             type="button"
             onClick={onConfirm}
-            disabled={generateDisabled}
+            disabled={confirmDisabled}
             aria-busy={submitting}
             className="flex h-9 cursor-pointer items-center rounded-control border border-accent bg-accent px-rc-sm text-small font-medium text-white outline-none hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:bg-accent-active disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Generate
+            {confirmLabel}
           </button>
         </div>
       </div>

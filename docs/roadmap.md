@@ -82,6 +82,15 @@ are not lost.
 
 ## Unbuilt product surface
 
+- **Video-prompt generation (`write_video_prompts`, `step: 'video_prompts'`) has no
+  route at all.** The old combined `/api/projects/[id]/prompts` route (which
+  incorrectly generated both `image_prompt` and `video_prompt` in one call,
+  attributed entirely to `image_prompts`) was removed outright rather than carried
+  forward as a rename, since Step 5 has no UI yet and the right request shape isn't
+  decided. A real `POST /api/projects/[id]/video-prompts` route needs to be built
+  from scratch when Step 5 is designed, following `image-prompts`' pattern
+  (client-supplied shot scope, balance-gated, ledger-wired, persisted-count-based
+  charge) rather than the old route's design.
 - Agent chat UI on the workbench; the composer is rendered but disabled. The server-side
   turn (C4) is built (`POST /api/projects/[id]/agent`, `runAgentTurn`) — this item is now
   purely the chat panel wiring: sending a message, rendering the SSE stream's events onto
@@ -95,14 +104,14 @@ are not lost.
 - The "Add credits" button shown on insufficient-balance (workbench Step 2's Generate
   Image Prompts confirm modal) is a non-functional placeholder — no credit-purchase flow
   exists yet.
-- **Credit gating is not implemented.** No balance check refuses any operation today —
-  every priced call fires regardless of the caller's balance, and `getBalance()` has no
-  caller outside `/credits`. Deferred by explicit instruction; lands with Step 4.
-  **Per-iteration balance re-checking** for a multi-iteration action (an agent turn can
-  make up to 8 Claude calls per user action) is part of the same deferred work — Step 4
-  is the first *action* built on this pipeline whose single user action fires many paid
-  calls in sequence, so it's the first place a gate checked once at the start of the
-  action, rather than before every call inside it, would actually leave a real gap.
+- **Credit gating is partial.** A balance check refuses the operation before any spend for
+  element reference generation, the Step 2 -> 3 advance, `/image-prompts`, and Step 3 agent
+  turns (an estimate, not a fixed price - see `docs/decisions.md`, "Step 3 agent"). Not
+  gated: `generate_shots` (the button and the agent's `regenerate_all_shots`),
+  `derive_camera`, and every Workbench agent turn. **Per-iteration balance re-checking**
+  is still open: a turn (up to 8 agent calls plus a nested call) is checked once at its
+  start, never before each call inside it, so a balance that covers the estimate but not
+  the actual cost can still go negative.
 - **The dollar Usage page has no admin gate yet.** Dollars are development
   instrumentation; the page will eventually move behind an admin-only check. The credits
   page was deliberately built as a separate route (`/credits` vs `/usage`) specifically
@@ -117,8 +126,20 @@ are not lost.
   `{ costPerUnit, … }`. The duration-bounds half is closed (`VIDEO_MODELS` carries a real
   `kind: 'continuous' | 'discrete'` union). Still open: the per-step provider model map
   itself, and per-model cost config.
-- **Project-lifecycle `status` design.** `projects.status` is unconstrained text and
-  `/prompts` no longer writes `'in_progress'`; no substitute vocabulary has been chosen.
+- **Project-lifecycle `status` design.** `projects.status` is unconstrained text; the only
+  writes are `draft` (creation) and `draft` → `in_progress` (leaving the workbench, in
+  `advanceStep`). `completed`/`failed` have no writer, and projects that passed Step 2
+  before that write existed are still `draft`.
+- **Identity-token retrofit.** The Assets tab still reads `--accent` / `--status-done-fg` /
+  `--status-active-fg` / `--accent-quiet` for its four type dots (`ELEMENT_TYPE_DOT_CLASSNAME`);
+  the Shots tab, the element picker and Step 3 read `--ident-*`. Until Assets is swapped
+  (a mechanical change, canvas section 13), the same element has two dot colours.
+- **Balance gate still follows the claim on other claimed routes.** `image-prompts` now runs
+  its balance check before `claimGeneration` (a refused request leaves no generations,
+  usage or ledger row). `elements/.../reference/generate` and the workbench routes still
+  gate after the claim, so a 402 there settles a `failed` row naming a call that never
+  reached a provider. `assertWithinAllowance` (spend cap, off by default) is also still
+  after the claim on `image-prompts` itself.
 - **Failed-call credit charge policy is undecided.** Today a failed call writes no
   `credit_ledger` row even when real provider cost was already incurred (see
   docs/decisions.md). Whether that stays the permanent policy, or failed calls should be
@@ -164,13 +185,6 @@ are not lost.
   question is resolved — both write paths already set
   `image_prompt_stale`/`video_prompt_stale`, now consolidated in
   `src/lib/shot-staleness.ts`.)
-- **Before Step 3:** split `/api/projects/[id]/prompts` into separate
-  image-prompts and video-prompts routes, each with its own claim. The route's
-  original defect — video prompts written before images existed or retiming
-  happened — is fixed by the new step order (images at Step 3, video prompts
-  at Step 5, after storyboard). The remaining reasons for the split are
-  per-route claims (one `generations` row per operation, not a shared one)
-  and correct step attribution — see the attribution constraint in CLAUDE.md.
 - **Before C5:** add the missing DB CHECK constraint on `elements.type` if
   verification shows it absent (CLAUDE.md's own claim about this has been
   wrong in both directions historically — verify against the migration, do
@@ -224,3 +238,46 @@ are not lost.
     preview.
   - Whether Step 3's N per-shot image calls need the async submit-and-poll
     architecture already flagged for Step 6.
+
+- **Agent-turn cost estimate is calibrated on Haiku only.** `AGENT_TURN_ESTIMATE`
+  (`src/lib/usage/quote.ts`) was cut from 17 development turns. Production Sonnet may emit
+  more tokens per call. Re-cut `tests/fixtures/agent-turn-calibration.json` from production
+  `usage` rows once they exist and adjust the constants; the procedure is in
+  `docs/decisions.md`. The gate still asks for roughly 3-10x a typical Step 3 turn
+  (three assumed calls plus a regenerate-all); a mid-turn re-check before the paid tool
+  call would tighten that at the cost of a turn that has already spent being refused.
+- **Whether an earlier request leaks into a later one on Step 3 is unverified.** The guard
+  is system-prompt wording only (an accepted gap, like the bare-prose decline). Needs a live
+  Step 3 conversation with the production model: ask for a tone change on one shot, then a
+  plain redo on another, and check the second carries no instruction.
+- **An out-of-date open tab still needs a manual reload.** The agent route refuses a request
+  with no recognised `step` (400/409); the panel now says the page is out of date, but does
+  not reload it, and its Retry button re-sends the same request and fails again.
+- **Step 3 cards stay in the writing state until the turn settles when a tool ends without
+  writing** (a refusal, or the stored-result question). A few seconds at most.
+- **`quoted_cost` is not a strict upper bound on the input side.** `estimateInputTokens`
+  ran 6-36% below measured input on agent calls; the 8192-token output ceiling absorbs it
+  there. Worth checking for calls with a small `max_tokens` (camera derivation, 128), where
+  it would not.
+- **`agent_turn`'s 180s stale window against a large regenerate-all.** The nested
+  `write_image_prompts` call (up to 8192 output tokens, route `maxDuration` 300s) runs
+  inside the turn; on a very large project it could outlast the window and let a second turn
+  reclaim the mutex. Same exposure `regenerate_all_shots` already has. Not measured.
+- **A layout and its page render in parallel,** so a page that reads the ledger can land
+  before the layout's `ensureSignupGrant` on a brand-new user's very first request. `/credits`
+  now grants first; no other page was audited for the same ordering.
+- **`gateImagePromptsBalance` treats any stored payload that covers the scope as
+  recoverable,** including one a run still in flight is about to apply, and so skips the
+  balance check; the claim then refuses the request as already in progress. Harmless (no
+  spend), but the peek now reports `heldByLiveRun` and the gate does not use it.
+- **Test gaps in the agent wiring.**
+  - The agent route's `step` validation (400 for a missing or unknown step, 409 for one the
+    project has not reached) has no test; only the client sending `step` is covered.
+  - The `settled` emit on `runAgentTurn`'s claim-`error` branch has no test (the blocked
+    branch does).
+  - "One reusable `write_image_prompts` generations row across turns" was checked once by a
+    throwaway probe and is not asserted by any test.
+  - The `insert_shot` panel test failed twice alongside the Workbench lock test before that
+    test was hardened, and never on its own; its cause is unexplained. Other
+    `agent-chat-panel` tests still assert transient state from a single mocked response and
+    could be hardened with `tests/helpers/agent-stream.ts`.

@@ -6,6 +6,7 @@ import { useAssets } from './assets-context'
 import { unbindElementFromShot } from '../actions'
 import { ElementBindPicker } from './element-bind-picker'
 import { ElementImage } from './element-image'
+import { identDotClassName } from '@/lib/element-type-labels'
 
 function RemoveIcon() {
   return (
@@ -24,13 +25,6 @@ function PlusIcon() {
   )
 }
 
-function elementDotClassName(el: DisplayElement) {
-  if (el.reference_image_path) return 'bg-status-done-fg'
-  if (el.status === 'generating') return 'bg-status-active-fg'
-  if (el.status === 'failed') return 'bg-status-failed-fg'
-  return 'bg-border-strong' // pending / no reference - the only state reachable this task
-}
-
 // Canvas: "Bound element tiles" close-up. reference_image_path is checked first and wins
 // regardless of status - a 'failed' status can still carry a path left over from an
 // earlier successful generation (e.g. a failed regenerate attempt), and that saved image
@@ -40,7 +34,7 @@ function elementDotClassName(el: DisplayElement) {
 // AssetsProvider's already-loaded groups - the same signing/re-signing path the Assets
 // tab uses, never a second one, and never persisted (ElementImage re-signs on error and
 // keeps the result only in that context's in-memory state).
-function ElementTile({ el, imageUrl }: { el: DisplayElement; imageUrl: string | null }) {
+export function ElementTile({ el, imageUrl }: { el: DisplayElement; imageUrl: string | null }) {
   if (el.reference_image_path) {
     return (
       <div className="h-[60px] w-[60px] flex-none overflow-hidden rounded-badge border border-border-subtle">
@@ -134,7 +128,7 @@ export const BoundElements = memo(function BoundElements({
               )}
             </div>
             <span className="flex max-w-full items-center gap-[5px] text-meta text-text-secondary">
-              <span className={`h-[5px] w-[5px] flex-none rounded-full ${elementDotClassName(el)}`} aria-hidden />
+              <span className={`h-[5px] w-[5px] flex-none rounded-full ${identDotClassName(el.type)}`} aria-hidden />
               <span className="truncate">{el.name}</span>
             </span>
           </div>

@@ -35,3 +35,19 @@ export const ELEMENT_TYPE_DOT_CLASSNAME: Record<ElementType, string> = {
   prop: 'bg-status-active-fg',
   style: 'bg-accent-quiet',
 }
+
+// Identity-family classes (canvas section 13): the 5px dot and the chip tint for an
+// element's type. Literal class strings so Tailwind can see them. The Assets tab still
+// reads ELEMENT_TYPE_DOT_CLASSNAME above until the separate retrofit pass.
+export const ELEMENT_TYPE_IDENT_CLASSNAMES: Record<ElementType, { dot: string; chip: string }> = {
+  character: { dot: 'bg-ident-character-fg', chip: 'bg-ident-character-bg text-ident-character-fg' },
+  location: { dot: 'bg-ident-location-fg', chip: 'bg-ident-location-bg text-ident-location-fg' },
+  prop: { dot: 'bg-ident-prop-fg', chip: 'bg-ident-prop-bg text-ident-prop-fg' },
+  style: { dot: 'bg-ident-style-fg', chip: 'bg-ident-style-bg text-ident-style-fg' },
+}
+
+// elements.type has no DB CHECK yet (see docs/roadmap.md), so an unrecognised value falls
+// back to the neutral dot rather than crashing a render.
+export function identDotClassName(type: string): string {
+  return ELEMENT_TYPE_IDENT_CLASSNAMES[type as ElementType]?.dot ?? 'bg-border-strong'
+}

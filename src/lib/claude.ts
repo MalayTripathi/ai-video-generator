@@ -69,7 +69,10 @@ export function createClaudeGateway(): ClaudeGateway {
       // generation can exceed any sane non-streaming timeout. hooks.onTextDelta, when
       // given, forwards the SDK's own token-by-token 'text' event - additive, every
       // existing caller passes no hooks and is unaffected.
-      const stream = client.messages.stream(params)
+      // A step with no tools (Storyboard's agent) sends an empty list; omit it rather than
+      // rely on the API accepting `tools: []`.
+      const request = params.tools?.length === 0 ? { ...params, tools: undefined } : params
+      const stream = client.messages.stream(request)
       if (hooks?.onTextDelta) {
         stream.on('text', (textDelta) => hooks.onTextDelta!(textDelta))
       }

@@ -1,4 +1,4 @@
-import { test, expect, type Page, type Locator } from '@playwright/test'
+import { test, expect, type Page, type Locator, type Request } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
@@ -549,8 +549,10 @@ test.describe('shot card editing', () => {
     }).toBe(1)
     expect(rows?.[0].line).toBe('Let it be built of light.')
 
-    const shotRow = await readShot(shotId)
-    expect(shotRow?.video_prompt_stale).toBe(true)
+    // The action inserts the row and THEN marks the video prompt stale, as a separate write -
+    // so the flag is set a moment after the row is visible. Wait for it; reading it the
+    // instant the row appears races that second write.
+    await expect.poll(async () => (await readShot(shotId))?.video_prompt_stale).toBe(true)
   })
 
   // Regression coverage for a real bug: shot-card.tsx's per-field status map was
@@ -625,6 +627,106 @@ test.describe('shot card editing', () => {
         timeout: 15000,
       })
       .toBe(0)
+  })
+
+  // A new line is a local draft until its first save returns the row's id. Removing it in
+  // that window used to delete only the draft: the save still landed, and the line came back
+  // (in the database, and in the list once the response arrived). The window is a few
+  // hundred ms in real life, so these tests HOLD the save request to make it deterministic.
+  //
+  // `failFollowUps` makes every server action other than the held save fail, which is what
+  // the follow-up delete is. `deleteAttempts` counts them, so a test can assert the app
+  // actually tried to delete rather than inferring it from the end state.
+  async function holdDialogueSave(page: Page, lineText: string, opts: { failFollowUps?: boolean } = {}) {
+    let release: () => void = () => {}
+    const released = new Promise<void>((resolve) => (release = resolve))
+    let heldRequest: Request | null = null
+    let deleteAttempts = 0
+    await page.route('**/projects/*/workbench', async (route) => {
+      const request = route.request()
+      const isAction = request.method() === 'POST' && !!request.headers()['next-action']
+      if (isAction && (request.postData() ?? '').includes(lineText)) {
+        heldRequest = request
+        await released
+      } else if (isAction && heldRequest && opts.failFollowUps) {
+        deleteAttempts++
+        await route.abort()
+        return
+      } else if (isAction && heldRequest) {
+        deleteAttempts++
+      }
+      await route.continue()
+    })
+    return {
+      /** Lets the held save through and resolves once the server has answered it. */
+      async releaseAndAwaitSave() {
+        const answered = page.waitForResponse((response) => response.request() === heldRequest)
+        release()
+        await answered
+      },
+      wasHeld: () => heldRequest !== null,
+      deleteAttempts: () => deleteAttempts,
+    }
+  }
+
+  async function addLineAndHoldItsSave(page: Page, projectId: string, lineText: string) {
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+    await page.getByRole('button', { name: '+ Add line' }).click()
+    const row = page.getByTestId('dialogue-row')
+    await row.getByLabel('Line').fill(lineText)
+    await row.getByLabel('Line').blur()
+    await chooseOption(row, 'Speaker', 'Shah Jahan')
+    return row
+  }
+
+  test('removing a new line while its first save is still in flight removes it for good - it does not come back', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    const shotId = await seedShot(projectId)
+    await seedCharacter(projectId, shotId, 'Shah Jahan')
+    const LINE = 'Held in flight, then removed.'
+    const hold = await holdDialogueSave(page, LINE)
+    const row = await addLineAndHoldItsSave(page, projectId, LINE)
+    await expect.poll(() => hold.wasHeld()).toBe(true)
+
+    // The save is in flight and has not reached the server. Remove the still-draft row.
+    await row.getByRole('button', { name: 'Remove dialogue row' }).click()
+    await expect(page.getByTestId('dialogue-row')).toHaveCount(0)
+
+    // The save lands. The person already removed the line, so it must be deleted - and once
+    // the server has answered, the database is the judge: a stored row means it came back.
+    await hold.releaseAndAwaitSave()
+    await expect
+      .poll(async () => (await admin.from('shot_dialogue').select('id').eq('shot_id', shotId)).data?.length ?? 0, {
+        timeout: 15000,
+      })
+      .toBe(0)
+    await expect(page.getByTestId('dialogue-row')).toHaveCount(0)
+    await expect(page.getByTestId('card-save-rollup')).toHaveAttribute('data-rollup-kind', 'quiet')
+    expect(hold.deleteAttempts()).toBe(1)
+  })
+
+  test('if that delete cannot be completed, the line reappears so the list still matches what is stored', async ({
+    page,
+  }) => {
+    const projectId = await seedProject()
+    const shotId = await seedShot(projectId)
+    await seedCharacter(projectId, shotId, 'Shah Jahan')
+    const LINE = 'Held in flight, delete fails.'
+    const hold = await holdDialogueSave(page, LINE, { failFollowUps: true })
+    const row = await addLineAndHoldItsSave(page, projectId, LINE)
+    await expect.poll(() => hold.wasHeld()).toBe(true)
+    await row.getByRole('button', { name: 'Remove dialogue row' }).click()
+    await expect(page.getByTestId('dialogue-row')).toHaveCount(0)
+
+    await hold.releaseAndAwaitSave()
+    // The app tried to delete the stored row, could not, and shows it again rather than
+    // hiding a line that is still there.
+    await expect.poll(() => hold.deleteAttempts()).toBe(1)
+    await expect(page.getByTestId('dialogue-row')).toHaveCount(1, { timeout: 15000 })
+    expect(((await admin.from('shot_dialogue').select('id').eq('shot_id', shotId)).data ?? []).length).toBe(1)
   })
 
   test('a dialogue row with an unbound speaker renders read-only', async ({ page }) => {

@@ -620,6 +620,25 @@ export async function unbindElementFromShot(shotId: string, elementId: string): 
   return unbindElementFromShotForUser(supabase, shotId, elementId, user.id)
 }
 
+// The project's real furthest_step, for a page that may have been restored from the
+// router cache (Back) or advanced from another tab and so cannot trust the value it was
+// rendered with. Read-only; null when the project is missing or not the caller's.
+export async function getProjectFurthestStep(projectId: string): Promise<number | null> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return null
+
+  const { data } = await supabase
+    .from('projects')
+    .select('furthest_step')
+    .eq('id', projectId)
+    .eq('user_id', user.id)
+    .maybeSingle()
+  return data?.furthest_step ?? null
+}
+
 // Serves both the initial Assets-tab load and a client-driven refresh ahead of the
 // signed URLs' one-hour expiry - re-running the same one-query-plus-one-batch-sign path
 // is already cheap and correct, so there is no separate "refresh" function.

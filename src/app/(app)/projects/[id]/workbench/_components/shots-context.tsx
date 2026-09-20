@@ -51,7 +51,10 @@ type ShotsContextValue = {
   collapseShot: () => void
 }
 
-const ShotsContext = createContext<ShotsContextValue | null>(null)
+// Exported (not just the throwing useShots() hook below) so a shared shell
+// component like AgentPanel can read it optionally, without requiring a
+// ShotsProvider ancestor on every step's page - see agent-panel.tsx.
+export const ShotsContext = createContext<ShotsContextValue | null>(null)
 
 export function ShotsProvider({
   projectId,

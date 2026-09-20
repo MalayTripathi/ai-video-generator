@@ -32,9 +32,10 @@ export function successMessage(input: unknown, toolName = 'write_shots', usage: 
   }
 }
 
-/** Same shape, but stopped early - exercises the max_tokens truncation branch. */
-export function truncatedMessage(input: unknown, toolName = 'write_shots'): FakeResult {
-  return { ...successMessage(input, toolName), stopReason: 'max_tokens' }
+/** Same shape, but stopped early - exercises the max_tokens truncation branch. Pass
+ * `usage` to control the measured cost the truncated (still-billed) call settles at. */
+export function truncatedMessage(input: unknown, toolName = 'write_shots', usage: FakeUsage = DEFAULT_USAGE): FakeResult {
+  return { ...successMessage(input, toolName, usage), stopReason: 'max_tokens' }
 }
 
 /** A full gateway whose createMessage throws, simulating a hard API/network failure.

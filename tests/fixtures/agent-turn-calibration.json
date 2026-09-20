@@ -1,0 +1,248 @@
+{
+ "_about": "Real agent_turn usage from development (Haiku, 17 turns, 2026-09). baseInputEstimate is what estimateInputTokens produced for the turn's first call (backed out of usage.quoted_cost); calls are the measured input/output tokens of each agent call, in order. imagePromptsCalls are the two real write_image_prompts calls. Used to guard the AGENT_TURN_ESTIMATE constants; re-cut this file when production (Sonnet) rows exist.",
+ "turns": [
+  {
+   "baseInputEstimate": 1810,
+   "calls": [
+    {
+     "input": 2130,
+     "output": 81
+    },
+    {
+     "input": 2326,
+     "output": 60
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 2107,
+   "calls": [
+    {
+     "input": 2404,
+     "output": 82
+    },
+    {
+     "input": 2601,
+     "output": 138
+    },
+    {
+     "input": 2755,
+     "output": 35
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 2547,
+   "calls": [
+    {
+     "input": 2800,
+     "output": 56
+    },
+    {
+     "input": 3033,
+     "output": 200
+    },
+    {
+     "input": 3249,
+     "output": 78
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 2684,
+   "calls": [
+    {
+     "input": 2927,
+     "output": 129
+    },
+    {
+     "input": 3425,
+     "output": 261
+    },
+    {
+     "input": 3757,
+     "output": 58
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 2750,
+   "calls": [
+    {
+     "input": 2998,
+     "output": 77
+    },
+    {
+     "input": 3091,
+     "output": 18
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 2786,
+   "calls": [
+    {
+     "input": 3043,
+     "output": 79
+    },
+    {
+     "input": 3334,
+     "output": 216
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 2821,
+   "calls": [
+    {
+     "input": 3077,
+     "output": 31
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 2963,
+   "calls": [
+    {
+     "input": 3192,
+     "output": 111
+    },
+    {
+     "input": 3555,
+     "output": 208
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 3332,
+   "calls": [
+    {
+     "input": 3556,
+     "output": 99
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 3383,
+   "calls": [
+    {
+     "input": 3623,
+     "output": 87
+    },
+    {
+     "input": 3973,
+     "output": 140
+    },
+    {
+     "input": 4138,
+     "output": 106
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 2931,
+   "calls": [
+    {
+     "input": 3218,
+     "output": 75
+    },
+    {
+     "input": 3309,
+     "output": 16
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 2892,
+   "calls": [
+    {
+     "input": 3185,
+     "output": 56
+    },
+    {
+     "input": 3528,
+     "output": 90
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 2953,
+   "calls": [
+    {
+     "input": 3250,
+     "output": 335
+    },
+    {
+     "input": 3680,
+     "output": 41
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 3235,
+   "calls": [
+    {
+     "input": 3516,
+     "output": 286
+    },
+    {
+     "input": 3853,
+     "output": 905
+    },
+    {
+     "input": 5032,
+     "output": 37
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 3266,
+   "calls": [
+    {
+     "input": 3520,
+     "output": 68
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 3294,
+   "calls": [
+    {
+     "input": 3548,
+     "output": 312
+    },
+    {
+     "input": 3887,
+     "output": 342
+    },
+    {
+     "input": 4388,
+     "output": 63
+    }
+   ]
+  },
+  {
+   "baseInputEstimate": 3509,
+   "calls": [
+    {
+     "input": 3769,
+     "output": 40
+    },
+    {
+     "input": 3827,
+     "output": 28
+    }
+   ]
+  }
+ ],
+ "imagePromptsCalls": [
+  {
+   "shots": 4,
+   "output": 700
+  },
+  {
+   "shots": 1,
+   "output": 219
+  }
+ ]
+}

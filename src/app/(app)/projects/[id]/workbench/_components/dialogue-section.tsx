@@ -31,6 +31,11 @@ export function DialogueSection({
   const [drafts, setDrafts] = useState<{ key: string }[]>([])
   const [resyncNonce, setResyncNonce] = useState(0)
   const [focusedLineCount, setFocusedLineCount] = useState(0)
+  // Drafts the person removed. A draft's first save may still be in flight when it is
+  // removed; that save lands regardless (the removed row's own closure still reports back),
+  // so handleDraftSaved must know the line is no longer wanted. Holds a few short strings
+  // for the life of the card; an entry is dropped when its save reports back.
+  const removedDrafts = useRef<Set<string>>(new Set())
 
   // Sync this shot's dialogue back to the card-list-level ShotsProvider whenever it
   // changes locally, via an effect rather than inline inside a setRows updater -
@@ -69,21 +74,34 @@ export function DialogueSection({
     setDrafts((prev) => [...prev, { key: `draft-${draftKeySeq++}` }])
   }
 
+  function displayLine(value: { id: string; elementId: string; line: string }, orderIndex: number): DisplayDialogueLine {
+    const character = boundCharacters.find((el) => el.id === value.elementId)
+    return {
+      id: value.id,
+      order_index: orderIndex,
+      element_id: value.elementId,
+      element_name: character?.name ?? '',
+      line: value.line,
+    }
+  }
+
   function handleDraftSaved(draftKey: string, value: { id: string; elementId: string; line: string }) {
+    if (removedDrafts.current.delete(draftKey)) {
+      // The person removed this line while its first save was still in flight, and the save
+      // has now landed: the row exists server-side. Delete it - never show it. If that delete
+      // cannot be completed the line is still stored, so show it again rather than hide a
+      // line that is still there (same rollback as removing a saved row).
+      onFieldStatusClear(`dialogue:${draftKey}`)
+      void deleteDialogueLine(value.id, shotId)
+        .then((result) => result.success)
+        .catch(() => false)
+        .then((deleted) => {
+          if (!deleted) setRows((prev) => [...prev, displayLine(value, prev.length)])
+        })
+      return
+    }
     setDrafts((prev) => prev.filter((d) => d.key !== draftKey))
-    setRows((prev) => {
-      const character = boundCharacters.find((el) => el.id === value.elementId)
-      return [
-        ...prev,
-        {
-          id: value.id,
-          order_index: prev.length,
-          element_id: value.elementId,
-          element_name: character?.name ?? '',
-          line: value.line,
-        },
-      ]
-    })
+    setRows((prev) => [...prev, displayLine(value, prev.length)])
     // This is the actual root cause of the stuck-spinner bug, not just row removal: a
     // saved draft is promoted from the `drafts` array (key `dialogue:${draftKey}`) to
     // the `rows` array (key `dialogue:${value.id}`) - a different React key, which
@@ -128,6 +146,7 @@ export function DialogueSection({
   }
 
   function handleRemoveDraft(draftKey: string) {
+    removedDrafts.current.add(draftKey)
     setDrafts((prev) => prev.filter((d) => d.key !== draftKey))
     onFieldStatusClear(`dialogue:${draftKey}`)
   }

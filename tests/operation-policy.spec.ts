@@ -5,7 +5,6 @@ import { OPERATION_POLICY, getOperationPolicy, STALE_AFTER_MS } from '../src/lib
 const DEFAULT_POLICY_OPS: Operation[] = [
   'voiceover',
   'background_music',
-  'write_image_prompts',
   'write_video_prompts',
   'generate_image',
   'generate_clip',
@@ -27,6 +26,17 @@ test.describe('OPERATION_POLICY', () => {
 
   test('generate_shots: default window, claimable from succeeded only with retry (regenerate-all)', () => {
     const policy = getOperationPolicy('generate_shots')
+    expect(policy.staleAfterMs).toBe(STALE_AFTER_MS)
+    expect(policy.claimableFrom.succeeded).toBe('retry')
+    expect(policy.claimableFrom.failed).toBe('retry')
+  })
+
+  // Regenerate All / Regenerate Stale / a single row are normal, repeatable actions against a
+  // project whose prompts already exist, not exceptional retries - so, like generate_shots, a
+  // succeeded row is reclaimable behind the same retry flag a failed one needs (see the
+  // write_image_prompts entry in operation-policy.ts). A request without retry is still refused.
+  test('write_image_prompts: default window, claimable from succeeded only with retry (regenerate)', () => {
+    const policy = getOperationPolicy('write_image_prompts')
     expect(policy.staleAfterMs).toBe(STALE_AFTER_MS)
     expect(policy.claimableFrom.succeeded).toBe('retry')
     expect(policy.claimableFrom.failed).toBe('retry')
