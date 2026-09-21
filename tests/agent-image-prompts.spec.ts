@@ -579,18 +579,20 @@ test.describe('runAgentTurn - Step 3 balance gate', () => {
     expect(result.ok).toBe(true)
   })
 
-  test('a project past the storyboard is read-only for Step 3 too, before any balance check or call', async () => {
+  test('a project past the storyboard still runs Step 3 turns: no lock, the model is called, the balance gate applies', async () => {
     const projectId = await seedProject({ furthest_step: 4 })
     await seedShots(projectId, 1)
-    const gateway = scriptedGateway([])
-    const result = await turn(projectId, gateway, 'redo shot 1', {
-      getBalance: async () => {
-        throw new Error('a locked project must not reach the balance check')
-      },
-    })
+    expect(getAgentStepConfig('image_prompts').lock).toBeUndefined()
+
+    const gateway = scriptedGateway([textMessage('Which shot did you mean?')])
+    const result = await turn(projectId, gateway, 'make it colder')
     expect(result.ok).toBe(true)
-    expect(gateway.getCallCount()).toBe(0)
-    expect(await ledgerRows(projectId)).toEqual([])
+    expect(gateway.getCallCount()).toBe(1)
+    const reply = (await messageRows(projectId)).find((m) => m.role === 'assistant')!
+    expect(reply.content).not.toMatch(/locked/i)
+
+    const refused = await turn(projectId, scriptedGateway([]), 'make it colder', { getBalance: async () => 0 })
+    expect(refused.ok).toBe(false)
   })
 })
 

@@ -59,7 +59,7 @@ test.describe('bind an element to a shot', () => {
     const elementId = await seedElement(projectId, { name: 'Hero' })
     const shotId = await seedShot(projectId)
 
-    const result = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id)
+    const result = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id, 'workbench')
 
     expect(result.success).toBe(true)
     const { data: shotElement } = await admin
@@ -92,7 +92,7 @@ test.describe('bind an element to a shot', () => {
       video_prompt_stale: false,
     })
 
-    const result = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id)
+    const result = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id, 'workbench')
 
     expect(result.success).toBe(true)
     const { data: shot } = await admin
@@ -110,7 +110,7 @@ test.describe('bind an element to a shot', () => {
     const styleId = await seedElement(projectId, { name: 'Project Style', type: 'style' })
     const shotId = await seedShot(projectId)
 
-    const result = await bindElementToShotForUser(admin, shotId, styleId, primary.user.id)
+    const result = await bindElementToShotForUser(admin, shotId, styleId, primary.user.id, 'workbench')
 
     expect(result.success).toBe(false)
     if (result.success) return
@@ -130,7 +130,7 @@ test.describe('bind an element to a shot', () => {
     const shotId = await seedShot(projectA)
     const elementId = await seedElement(projectB, { name: 'Wrong Project Element' })
 
-    const result = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id)
+    const result = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id, 'workbench')
 
     expect(result.success).toBe(false)
   })
@@ -140,7 +140,7 @@ test.describe('bind an element to a shot', () => {
     const elementId = await seedElement(projectId, { name: 'Gone', deleted_at: new Date().toISOString() })
     const shotId = await seedShot(projectId)
 
-    const result = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id)
+    const result = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id, 'workbench')
 
     expect(result.success).toBe(false)
   })
@@ -150,8 +150,8 @@ test.describe('bind an element to a shot', () => {
     const elementId = await seedElement(projectId, { name: 'Hero' })
     const shotId = await seedShot(projectId)
 
-    const first = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id)
-    const second = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id)
+    const first = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id, 'workbench')
+    const second = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id, 'workbench')
 
     expect(first.success).toBe(true)
     expect(second.success).toBe(true)
@@ -170,7 +170,7 @@ test.describe('bind an element to a shot', () => {
     const elementId = await seedElement(projectId, { name: 'Hero' })
     const shotId = await seedShot(projectId)
 
-    const result = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id)
+    const result = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id, 'workbench')
 
     expect(result.success).toBe(false)
     const { data: shotElement } = await admin
@@ -182,12 +182,31 @@ test.describe('bind an element to a shot', () => {
     expect(shotElement).toBeNull()
   })
 
+  test('the image-prompts surface still binds past storyboard, and flags the prompt stale', async () => {
+    const projectId = await seedProject({ furthest_step: stepIndex('storyboard') })
+    const elementId = await seedElement(projectId, { name: 'Hero' })
+    const shotId = await seedShot(projectId)
+
+    const result = await bindElementToShotForUser(admin, shotId, elementId, primary.user.id, 'image_prompts')
+
+    expect(result.success).toBe(true)
+    const { data: shotElement } = await admin
+      .from('shot_elements')
+      .select('shot_id')
+      .eq('shot_id', shotId)
+      .eq('element_id', elementId)
+      .maybeSingle()
+    expect(shotElement).not.toBeNull()
+    const { data: shot } = await admin.from('shots').select('image_prompt_stale').eq('id', shotId).single()
+    expect(shot!.image_prompt_stale).toBe(true)
+  })
+
   test('a user cannot bind an element in another user\'s project', async () => {
     const projectId = await seedProject()
     const elementId = await seedElement(projectId, { name: 'Hero' })
     const shotId = await seedShot(projectId)
 
-    const result = await bindElementToShotForUser(admin, shotId, elementId, secondary.user.id)
+    const result = await bindElementToShotForUser(admin, shotId, elementId, secondary.user.id, 'workbench')
 
     expect(result.success).toBe(false)
     const { data: shotElement } = await admin
@@ -209,7 +228,7 @@ test.describe('unbind an element from a shot', () => {
 
     const before = await admin.from('elements').select('name, reference_image_path, status').eq('id', elementId).single()
 
-    const result = await unbindElementFromShotForUser(admin, shotId, elementId, primary.user.id)
+    const result = await unbindElementFromShotForUser(admin, shotId, elementId, primary.user.id, 'workbench')
 
     expect(result.success).toBe(true)
     const { data: shotElement } = await admin
@@ -238,7 +257,7 @@ test.describe('unbind an element from a shot', () => {
     })
     await admin.from('shot_elements').insert({ shot_id: shotId, element_id: elementId })
 
-    const result = await unbindElementFromShotForUser(admin, shotId, elementId, primary.user.id)
+    const result = await unbindElementFromShotForUser(admin, shotId, elementId, primary.user.id, 'workbench')
 
     expect(result.success).toBe(true)
     const { data: shot } = await admin
@@ -258,7 +277,7 @@ test.describe('unbind an element from a shot', () => {
     await admin.from('shot_elements').insert({ shot_id: shotId, element_id: elementId })
     await admin.from('projects').update({ furthest_step: stepIndex('storyboard') }).eq('id', projectId)
 
-    const result = await unbindElementFromShotForUser(admin, shotId, elementId, primary.user.id)
+    const result = await unbindElementFromShotForUser(admin, shotId, elementId, primary.user.id, 'workbench')
 
     expect(result.success).toBe(false)
     const { data: shotElement } = await admin
@@ -270,13 +289,32 @@ test.describe('unbind an element from a shot', () => {
     expect(shotElement).not.toBeNull()
   })
 
+  test('the image-prompts surface still unbinds past storyboard', async () => {
+    const projectId = await seedProject()
+    const elementId = await seedElement(projectId, { name: 'Hero' })
+    const shotId = await seedShot(projectId)
+    await admin.from('shot_elements').insert({ shot_id: shotId, element_id: elementId })
+    await admin.from('projects').update({ furthest_step: stepIndex('storyboard') }).eq('id', projectId)
+
+    const result = await unbindElementFromShotForUser(admin, shotId, elementId, primary.user.id, 'image_prompts')
+
+    expect(result.success).toBe(true)
+    const { data: shotElement } = await admin
+      .from('shot_elements')
+      .select('shot_id')
+      .eq('shot_id', shotId)
+      .eq('element_id', elementId)
+      .maybeSingle()
+    expect(shotElement).toBeNull()
+  })
+
   test('a user cannot unbind an element in another user\'s project', async () => {
     const projectId = await seedProject()
     const elementId = await seedElement(projectId, { name: 'Hero' })
     const shotId = await seedShot(projectId)
     await admin.from('shot_elements').insert({ shot_id: shotId, element_id: elementId })
 
-    const result = await unbindElementFromShotForUser(admin, shotId, elementId, secondary.user.id)
+    const result = await unbindElementFromShotForUser(admin, shotId, elementId, secondary.user.id, 'workbench')
 
     expect(result.success).toBe(false)
     const { data: shotElement } = await admin
@@ -297,7 +335,7 @@ test.describe('unbind an element from a shot', () => {
     const blockedDelete = await deleteElementForUser(admin, elementId, primary.user.id)
     expect(blockedDelete.success).toBe(false)
 
-    const unbindResult = await unbindElementFromShotForUser(admin, shotId, elementId, primary.user.id)
+    const unbindResult = await unbindElementFromShotForUser(admin, shotId, elementId, primary.user.id, 'workbench')
     expect(unbindResult.success).toBe(true)
 
     const allowedDelete = await deleteElementForUser(admin, elementId, primary.user.id)

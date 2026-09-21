@@ -10,7 +10,6 @@ import { useImagePrompts } from './image-prompts-context'
 export function BatchBar() {
   const {
     shots,
-    readOnly,
     staleCount,
     busyIds,
     externalGenerating,
@@ -41,35 +40,33 @@ export function BatchBar() {
   return (
     <div className="flex flex-none items-center justify-between gap-rc-md">
       <span className="text-meta text-text-tertiary">{note}</span>
-      {!readOnly && (
-        <div className="flex flex-none items-center gap-[10px]">
-          <button
-            type="button"
-            onClick={regenerateAll}
-            disabled={regenerateLocked}
-            className="flex h-[34px] cursor-pointer items-center gap-[7px] whitespace-nowrap rounded-control border border-border-subtle bg-transparent px-rc-sm text-control text-text-secondary outline-none hover:border-border-strong hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Regenerate All
-            <span className="font-mono text-mono text-text-quiet">{formatCredits(costFor(shots.length))} cr</span>
-          </button>
-          <button
-            type="button"
-            title={staleTitle}
-            onClick={regenerateStale}
-            disabled={!staleEnabled}
-            className={`flex h-[34px] items-center gap-[7px] whitespace-nowrap rounded-control border px-rc-md text-control outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
-              staleEnabled
-                ? 'cursor-pointer border-border-strong bg-bg-inset font-medium text-text-primary hover:border-border-strong-hover'
-                : 'cursor-not-allowed border-border-muted bg-transparent text-text-quiet'
-            }`}
-          >
-            Regenerate Stale
-            <span className={`font-mono text-mono ${staleEnabled ? 'text-text-tertiary' : 'text-text-quiet'}`}>
-              {running ? 'running' : staleEnabled ? `${formatCredits(costFor(staleCount))} cr` : '—'}
-            </span>
-          </button>
-        </div>
-      )}
+      <div className="flex flex-none items-center gap-[10px]">
+        <button
+          type="button"
+          onClick={regenerateAll}
+          disabled={regenerateLocked}
+          className="flex h-[34px] cursor-pointer items-center gap-[7px] whitespace-nowrap rounded-control border border-border-subtle bg-transparent px-rc-sm text-control text-text-secondary outline-none hover:border-border-strong hover:bg-bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Regenerate All
+          <span className="font-mono text-mono text-text-quiet">{formatCredits(costFor(shots.length))} cr</span>
+        </button>
+        <button
+          type="button"
+          title={staleTitle}
+          onClick={regenerateStale}
+          disabled={!staleEnabled}
+          className={`flex h-[34px] items-center gap-[7px] whitespace-nowrap rounded-control border px-rc-md text-control outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+            staleEnabled
+              ? 'cursor-pointer border-border-strong bg-bg-inset font-medium text-text-primary hover:border-border-strong-hover'
+              : 'cursor-not-allowed border-border-muted bg-transparent text-text-quiet'
+          }`}
+        >
+          Regenerate Stale
+          <span className={`font-mono text-mono ${staleEnabled ? 'text-text-tertiary' : 'text-text-quiet'}`}>
+            {running ? 'running' : staleEnabled ? `${formatCredits(costFor(staleCount))} cr` : '—'}
+          </span>
+        </button>
+      </div>
     </div>
   )
 }

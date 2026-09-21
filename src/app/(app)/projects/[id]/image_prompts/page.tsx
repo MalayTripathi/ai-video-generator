@@ -45,10 +45,8 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
     notFound()
   }
 
-  // View-gate, not an edit-lock: a user whose furthest_step hasn't reached this page
-  // yet must not see it. This is the opposite direction of the three existing
-  // furthest_step >= stepIndex('storyboard') checks elsewhere (those lock editing on
-  // a step already passed) - deliberately not unified with them.
+  // View-gate only: a user whose furthest_step hasn't reached this page yet must not see
+  // it. Nothing here locks editing once the project has moved on - Step 3 stays live.
   if (project.furthest_step < stepIndex('image_prompts')) {
     redirect(`/projects/${projectId}/${project.current_step}`)
   }
@@ -125,13 +123,11 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
     ? (project.aspect_ratio as AspectRatio)
     : '9:16'
 
-  const readOnly = project.furthest_step >= stepIndex('storyboard')
-
   // First arrival with nothing ever attempted generates once - but only if the balance
   // covers it. Decided here, on the server, so the page never renders a "writing" state
   // for a run that would be refused; a short balance shows the banner instead.
   const generationState = generation?.state ?? null
-  let autoGenerate = shouldAutoGenerate({ generationState, shots: promptShots, readOnly })
+  let autoGenerate = shouldAutoGenerate({ generationState, shots: promptShots })
   let initialInsufficient: { required: number; balance: number } | null = null
   if (autoGenerate) {
     const required = creditsFor({
@@ -167,7 +163,6 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
       autoGenerate={autoGenerate}
       initialInsufficient={initialInsufficient}
       aspectRatio={aspectRatio}
-      readOnly={readOnly}
     >
       <AssetsProvider
         projectId={projectId}
@@ -180,7 +175,6 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
           project={project}
           agentStep="image_prompts"
           agentMessages={agentMessages}
-          readOnly={readOnly}
           shots={shots}
           header={<ProjectHeader project={project} shots={shots} />}
           footer={<ImagePromptsFooter furthestStep={project.furthest_step} />}

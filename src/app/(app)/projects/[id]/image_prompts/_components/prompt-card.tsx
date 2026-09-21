@@ -22,7 +22,6 @@ function CheckIcon() {
 export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot }) {
   const {
     aspectRatio,
-    readOnly,
     busyIds,
     regenerateLocked,
     checking,
@@ -98,15 +97,13 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
               {ungenerated ? 'Writing…' : 'Regenerating…'}
             </span>
           ) : (
-            !readOnly && (
-              <RegenerateButton
-                variant={ungenerated ? 'generate' : stale ? 'stale' : 'quiet'}
-                credits={costFor(1)}
-                disabled={regenerateLocked}
-                disabledReason={disabledReason}
-                onClick={() => regenerateOne(shot.id)}
-              />
-            )
+            <RegenerateButton
+              variant={ungenerated ? 'generate' : stale ? 'stale' : 'quiet'}
+              credits={costFor(1)}
+              disabled={regenerateLocked}
+              disabledReason={disabledReason}
+              onClick={() => regenerateOne(shot.id)}
+            />
           )}
         </div>
 
@@ -130,14 +127,14 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
           </div>
         ) : (
           <div className="flex flex-col gap-[5px]">
-            <PromptEditor shotId={shot.id} value={shot.image_prompt ?? ''} readOnly={readOnly} run={save.run} />
+            <PromptEditor shotId={shot.id} value={shot.image_prompt ?? ''} run={save.run} />
             {save.status === 'failed' && save.error && (
               <span className="text-meta text-status-failed-fg">{save.error}</span>
             )}
           </div>
         )}
 
-        <PromptReferences shotId={shot.id} elements={shot.elements} readOnly={readOnly} />
+        <PromptReferences shotId={shot.id} elements={shot.elements} />
       </div>
     </div>
   )

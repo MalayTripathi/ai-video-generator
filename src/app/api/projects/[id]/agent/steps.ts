@@ -41,9 +41,14 @@ export type AgentStepConfig = {
   tools: Anthropic.Tool[]
   dispatch: (name: string, input: unknown, ctx: AgentToolContext) => Promise<AgentToolOutcome>
   buildContextBlock: (supabase: SupabaseServerClient, projectId: string) => Promise<string>
-  // Already the 1-7 index (CLAUDE.md), never a step name.
-  isLocked: (furthestStepIndex: number) => boolean
-  lockedReply: string
+  // Present only for a step that closes to edits once the project moves past it: the rule
+  // (already the 1-7 index per CLAUDE.md, never a step name) and the reply a locked turn
+  // gets. Absent means the step never locks (Image Prompts, whose agent stays live however
+  // far the project has advanced).
+  lock?: {
+    isLocked: (furthestStepIndex: number) => boolean
+    reply: string
+  }
   // Present only for a step whose tools write to cards the person could also be editing:
   // maps a tool call to the cards it is about to write, or null when it writes none.
   // Absent means the step's turns announce no tool starts (the Workbench, which locks a
@@ -76,9 +81,11 @@ const WORKBENCH_CONFIG: AgentStepConfig = {
       .order('order_index', { ascending: true })
     return buildShotIndexBlock(data ?? [])
   },
-  isLocked: (furthestStepIndex) => furthestStepIndex >= stepIndex('storyboard'),
-  lockedReply:
-    "This project's workbench is locked because later steps have already started, so I can no longer change shots here.",
+  lock: {
+    isLocked: (furthestStepIndex) => furthestStepIndex >= stepIndex('storyboard'),
+    reply:
+      "This project's workbench is locked because later steps have already started, so I can no longer change shots here.",
+  },
 }
 
 const IMAGE_PROMPTS_CONFIG: AgentStepConfig = {
@@ -102,9 +109,6 @@ const IMAGE_PROMPTS_CONFIG: AgentStepConfig = {
     }
     return null
   },
-  isLocked: (furthestStepIndex) => furthestStepIndex >= stepIndex('storyboard'),
-  lockedReply:
-    "This project's image prompts are locked because the storyboard has already started, so I can no longer change them here.",
   async toolEstimateUsd({ supabase, projectId, history }) {
     const { data } = await supabase
       .from('shots')
@@ -148,9 +152,11 @@ const STORYBOARD_CONFIG: AgentStepConfig = {
   async buildContextBlock() {
     return buildStoryboardContextBlock()
   },
-  isLocked: (furthestStepIndex) => furthestStepIndex >= stepIndex('video_prompts'),
-  lockedReply:
-    "This project's storyboard is locked because video prompts have already started, so I can no longer change anything here.",
+  lock: {
+    isLocked: (furthestStepIndex) => furthestStepIndex >= stepIndex('video_prompts'),
+    reply:
+      "This project's storyboard is locked because video prompts have already started, so I can no longer change anything here.",
+  },
 }
 
 const CONFIGS: Record<AgentStep, AgentStepConfig> = {

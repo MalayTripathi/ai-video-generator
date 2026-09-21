@@ -45,20 +45,19 @@ test.describe('shouldAutoGenerate', () => {
   const none = [shot(null), shot(null, true)]
 
   test('fires once for a never-attempted project with no prompts at all', () => {
-    expect(shouldAutoGenerate({ generationState: null, shots: none, readOnly: false })).toBe(true)
-    expect(shouldAutoGenerate({ generationState: 'pending', shots: none, readOnly: false })).toBe(true)
+    expect(shouldAutoGenerate({ generationState: null, shots: none })).toBe(true)
+    expect(shouldAutoGenerate({ generationState: 'pending', shots: none })).toBe(true)
   })
 
   test('never re-fires once any attempt exists, whatever its state', () => {
     for (const state of ['generating', 'succeeded', 'failed']) {
-      expect(shouldAutoGenerate({ generationState: state, shots: none, readOnly: false })).toBe(false)
+      expect(shouldAutoGenerate({ generationState: state, shots: none })).toBe(false)
     }
   })
 
-  test('never fires when any shot already has a prompt, or there are no shots, or it is read-only', () => {
-    expect(shouldAutoGenerate({ generationState: null, shots: [shot(null), shot('a prompt')], readOnly: false })).toBe(false)
-    expect(shouldAutoGenerate({ generationState: null, shots: [], readOnly: false })).toBe(false)
-    expect(shouldAutoGenerate({ generationState: null, shots: none, readOnly: true })).toBe(false)
+  test('never fires when any shot already has a prompt, or there are no shots', () => {
+    expect(shouldAutoGenerate({ generationState: null, shots: [shot(null), shot('a prompt')] })).toBe(false)
+    expect(shouldAutoGenerate({ generationState: null, shots: [] })).toBe(false)
   })
 })
 

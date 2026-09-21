@@ -8,7 +8,7 @@ import { ELEMENT_TYPE_SINGULAR_LABELS, identDotClassName } from '@/lib/element-t
 import type { ProjectElement } from '@/lib/elements/read'
 import type { DisplayElement } from './types'
 import { useAssets } from './assets-context'
-import { bindElementToShot } from '../actions'
+import { bindElementToShot, type ShotBindingSurface } from '../actions'
 import { ElementImage } from './element-image'
 
 // ELEMENT_TYPE_SINGULAR_LABELS stores the raw enum value ('character', 'location',
@@ -35,12 +35,15 @@ type Position = { top?: number; bottom?: number; left: number }
 // content still below them.
 export function ElementBindPicker({
   shotId,
+  surface,
   excludeIds,
   anchorRef,
   onBind,
   onClose,
 }: {
   shotId: string
+  // Which screen is binding - decides whether the Workbench freeze applies.
+  surface: ShotBindingSurface
   excludeIds: Set<string>
   anchorRef: RefObject<HTMLButtonElement | null>
   onBind: (element: DisplayElement) => void
@@ -103,7 +106,7 @@ export function ElementBindPicker({
   async function handlePick(el: ProjectElement) {
     setPendingId(el.id)
     setError(null)
-    const result = await bindElementToShot(shotId, el.id)
+    const result = await bindElementToShot(shotId, el.id, surface)
     setPendingId(null)
     if (!result.success) {
       setError(result.error)

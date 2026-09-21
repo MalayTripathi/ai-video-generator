@@ -32,11 +32,9 @@ function PlusIcon() {
 export const PromptReferences = memo(function PromptReferences({
   shotId,
   elements,
-  readOnly,
 }: {
   shotId: string
   elements: DisplayElement[]
-  readOnly: boolean
 }) {
   const { updateShotLocal } = useImagePrompts()
   const { groups } = useAssets()
@@ -48,7 +46,7 @@ export const PromptReferences = memo(function PromptReferences({
   async function handleRemove(el: DisplayElement) {
     setRemovingId(el.id)
     setRemoveError(null)
-    const result = await unbindElementFromShot(shotId, el.id)
+    const result = await unbindElementFromShot(shotId, el.id, 'image_prompts')
     setRemovingId(null)
     if (!result.success) {
       setRemoveError(result.error)
@@ -75,18 +73,16 @@ export const PromptReferences = memo(function PromptReferences({
           <div key={el.id} className="flex w-[60px] flex-col gap-[5px]">
             <div className="group relative">
               <ElementTile el={el} imageUrl={findImageUrl(el.id)} />
-              {!readOnly && (
-                <button
-                  type="button"
-                  aria-label={`Remove ${el.name}`}
-                  title={`Remove ${el.name}`}
-                  onClick={() => handleRemove(el)}
-                  disabled={removingId === el.id}
-                  className="absolute -right-1 -top-1 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border border-bg-surface bg-status-failed-bg text-status-failed-fg opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-100"
-                >
-                  <RemoveIcon />
-                </button>
-              )}
+              <button
+                type="button"
+                aria-label={`Remove ${el.name}`}
+                title={`Remove ${el.name}`}
+                onClick={() => handleRemove(el)}
+                disabled={removingId === el.id}
+                className="absolute -right-1 -top-1 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full border border-bg-surface bg-status-failed-bg text-status-failed-fg opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-100"
+              >
+                <RemoveIcon />
+              </button>
             </div>
             <span className="flex max-w-full items-center gap-[4px] text-meta text-text-secondary">
               <span
@@ -97,22 +93,21 @@ export const PromptReferences = memo(function PromptReferences({
             </span>
           </div>
         ))}
-        {!readOnly && (
-          <button
-            ref={triggerRef}
-            type="button"
-            aria-label="Attach an element to this frame"
-            onClick={() => setPickerOpen((open) => !open)}
-            className="flex h-[60px] w-[60px] flex-none cursor-pointer items-center justify-center rounded-badge border border-dashed border-border-strong text-text-tertiary outline-none hover:border-accent hover:bg-accent-wash hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
-          >
-            <PlusIcon />
-          </button>
-        )}
+        <button
+          ref={triggerRef}
+          type="button"
+          aria-label="Attach an element to this frame"
+          onClick={() => setPickerOpen((open) => !open)}
+          className="flex h-[60px] w-[60px] flex-none cursor-pointer items-center justify-center rounded-badge border border-dashed border-border-strong text-text-tertiary outline-none hover:border-accent hover:bg-accent-wash hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:border-accent-active active:bg-accent-wash-strong active:text-accent-active"
+        >
+          <PlusIcon />
+        </button>
       </div>
       {removeError && <span className="text-meta text-status-failed-fg">{removeError}</span>}
       {pickerOpen && (
         <ElementBindPicker
           shotId={shotId}
+          surface="image_prompts"
           excludeIds={new Set(elements.map((e) => e.id))}
           anchorRef={triggerRef}
           onBind={(element) => {

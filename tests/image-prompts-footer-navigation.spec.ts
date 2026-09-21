@@ -205,6 +205,57 @@ test.describe('Step 3 footer button', () => {
     expect(await ledgerRowsFor(projectId)).toBe(0)
   })
 
+  test('Step 3 stays fully live once the project has reached the storyboard, and going back to it writes nothing', async ({
+    page,
+  }) => {
+    const projectId = await seed(primary.user.id, { furthestStep: STORYBOARD, shots: 2 })
+    const advanceCalls: string[] = []
+    await page.route('**/api/projects/*/*/advance', async (route) => {
+      advanceCalls.push(route.request().url())
+      await route.continue()
+    })
+
+    // Step 4 first: its own panel is usable (no tools is not the same as disabled).
+    await page.goto(`/projects/${projectId}/storyboard`)
+    await expect(page.getByLabel('Ask for a change')).toBeEnabled(NAVIGATION)
+    await expect(page.getByText('Editing closed at the storyboard step')).toHaveCount(0)
+
+    // Back to Step 3 through the indicator - a client-side Link, not a page load.
+    await page
+      .getByTestId('step-indicator')
+      .locator(`a[href="/projects/${projectId}/image_prompts"]`)
+      .click()
+    await expect(page).toHaveURL(`/projects/${projectId}/image_prompts`, NAVIGATION)
+
+    // The agent panel, the editor and every Regenerate control are live.
+    await expect(page.getByLabel('Ask for a change')).toBeEnabled(NAVIGATION)
+    await expect(page.getByText('Editing closed at the storyboard step')).toHaveCount(0)
+    await expect(page.getByLabel('Image prompt').first()).toBeEditable()
+    await expect(page.getByRole('button', { name: /Regenerate All/ })).toBeEnabled()
+    await expect(page.getByRole('button', { name: /^Regenerate · .* credits$/ }).first()).toBeEnabled()
+
+    // A hand edit saves: the server no longer refuses it at this furthest_step.
+    const editor = page.getByLabel('Image prompt').first()
+    await editor.fill('A hand-edited prompt that still saves after the storyboard began.')
+    await editor.blur()
+    await expect
+      .poll(async () => {
+        const { data } = await admin
+          .from('shots')
+          .select('image_prompt')
+          .eq('project_id', projectId)
+          .eq('order_index', 0)
+          .single()
+        return data!.image_prompt
+      })
+      .toBe('A hand-edited prompt that still saves after the storyboard began.')
+
+    // Navigation and saving never advance: no advance route was hit, neither step
+    // column moved, and furthest_step did not regress.
+    expect(advanceCalls).toEqual([])
+    expect(await readProject(projectId)).toMatchObject({ current_step: 'image_prompts', furthest_step: STORYBOARD })
+  })
+
   test('an advanced project with a short balance still just navigates - the user is returning to a page they own', async ({
     page,
     context,

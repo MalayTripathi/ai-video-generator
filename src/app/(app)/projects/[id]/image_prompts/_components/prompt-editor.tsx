@@ -12,12 +12,10 @@ import { useImagePrompts } from './image-prompts-context'
 export const PromptEditor = memo(function PromptEditor({
   shotId,
   value,
-  readOnly,
   run,
 }: {
   shotId: string
   value: string
-  readOnly: boolean
   run: ReturnType<typeof useFieldSave>['run']
 }) {
   const { updateShotLocal } = useImagePrompts()
@@ -58,7 +56,7 @@ export const PromptEditor = memo(function PromptEditor({
 
   function handleBlur() {
     setFocused(false)
-    if (readOnly || draft === value) return
+    if (draft === value) return
     const submitted = draft
     void run(async () => {
       const result = await updateShotImagePrompt(shotId, submitted)
@@ -73,12 +71,11 @@ export const PromptEditor = memo(function PromptEditor({
       ref={textareaRef}
       aria-label="Image prompt"
       value={draft}
-      readOnly={readOnly}
       onChange={(event) => setDraft(event.target.value)}
       onFocus={() => setFocused(true)}
       onBlur={handleBlur}
       rows={1}
-      className="block min-h-[40px] w-full resize-none overflow-hidden rounded-control border border-border-strong bg-bg-surface px-rc-sm py-[9px] text-small leading-[1.5] text-text-secondary outline-none read-only:cursor-default hover:border-border-strong-hover focus-visible:border-accent focus-visible:text-text-primary focus-visible:shadow-focus-halo"
+      className="block min-h-[40px] w-full resize-none overflow-hidden rounded-control border border-border-strong bg-bg-surface px-rc-sm py-[9px] text-small leading-[1.5] text-text-secondary outline-none hover:border-border-strong-hover focus-visible:border-accent focus-visible:text-text-primary focus-visible:shadow-focus-halo"
     />
   )
 })
