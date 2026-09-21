@@ -216,11 +216,11 @@ export async function runAgentTurn(params: {
 
   // Read-only lock: top-level short-circuit, before any claim and before ever calling
   // Claude - no cost, no mutex row, for a request that can't do anything anyway.
-  if (config.isLocked(furthestStepIndex)) {
-    const assistantRow = await insertAssistantReply(supabase, projectId, clientId, config.lockedReply)
+  if (config.lock?.isLocked(furthestStepIndex)) {
+    const assistantRow = await insertAssistantReply(supabase, projectId, clientId, config.lock.reply)
     // No reserveUsage call has happened yet at this short-circuit - sumTurnCost is 0.
     // Claude was never called, so nothing streamed live.
-    emit({ type: 'settled', content: config.lockedReply, cost: 0, messageId: userMessage.id })
+    emit({ type: 'settled', content: config.lock.reply, cost: 0, messageId: userMessage.id })
     return { ok: true, status: 200, message: assistantRow }
   }
 

@@ -103,12 +103,15 @@ test.describe('updateShotImagePromptForUser', () => {
     expect((await readShot(shotId)).image_prompt).toBe('The persisted prompt.')
   })
 
-  test('is refused once later steps have started', async () => {
-    const shotId = await seedShot(await seedProject({ furthest_step: 4 }))
+  test('still saves once later steps have started, and leaves furthest_step alone', async () => {
+    const projectId = await seedProject({ furthest_step: 4 })
+    const shotId = await seedShot(projectId)
 
-    const result = await updateShotImagePromptForUser(admin, shotId, 'Too late.', primary.user.id)
-    expect(result.success).toBe(false)
-    expect((await readShot(shotId)).image_prompt).toBe('The persisted prompt.')
+    const result = await updateShotImagePromptForUser(admin, shotId, 'Still editable.', primary.user.id)
+    expect(result.success).toBe(true)
+    expect((await readShot(shotId)).image_prompt).toBe('Still editable.')
+    const { data } = await admin.from('projects').select('furthest_step').eq('id', projectId).single()
+    expect(data!.furthest_step).toBe(4)
   })
 
   test('saving is not advancing: current_step and furthest_step are untouched', async () => {

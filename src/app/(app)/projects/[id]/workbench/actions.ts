@@ -519,15 +519,22 @@ async function markImagePromptStale(supabase: SupabaseServerClient, shotId: stri
   }
 }
 
+// Binding is shared by two screens, and only the Workbench freezes once the storyboard
+// starts - Step 3 keeps its references editable. The caller names its screen explicitly:
+// required, never defaulted, so a new caller cannot silently pick up either behaviour.
+// It only ever relaxes the lock; ownership is verified regardless.
+export type ShotBindingSurface = 'workbench' | 'image_prompts'
+
 export async function bindElementToShotForUser(
   supabase: SupabaseServerClient,
   shotId: string,
   elementId: string,
-  userId: string
+  userId: string,
+  surface: ShotBindingSurface
 ): Promise<ElementBindResult> {
   const shot = await loadOwnedShot(supabase, shotId, userId)
   if (!shot) return { success: false, error: 'Shot not found', reason: 'not_found' }
-  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+  if (surface === 'workbench' && (await isWorkbenchLockedForProject(supabase, shot.project_id))) {
     return { success: false, error: SHOTS_LOCKED_MESSAGE }
   }
 
@@ -576,11 +583,12 @@ export async function unbindElementFromShotForUser(
   supabase: SupabaseServerClient,
   shotId: string,
   elementId: string,
-  userId: string
+  userId: string,
+  surface: ShotBindingSurface
 ): Promise<ElementUnbindResult> {
   const shot = await loadOwnedShot(supabase, shotId, userId)
   if (!shot) return { success: false, error: 'Shot not found' }
-  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
+  if (surface === 'workbench' && (await isWorkbenchLockedForProject(supabase, shot.project_id))) {
     return { success: false, error: SHOTS_LOCKED_MESSAGE }
   }
 
@@ -600,24 +608,32 @@ export async function unbindElementFromShotForUser(
   return { success: true }
 }
 
-export async function bindElementToShot(shotId: string, elementId: string): Promise<ElementBindResult> {
+export async function bindElementToShot(
+  shotId: string,
+  elementId: string,
+  surface: ShotBindingSurface
+): Promise<ElementBindResult> {
   const supabase = await createClient()
   const {
     data: { user },
   } = await supabase.auth.getUser()
   if (!user) return { success: false, error: 'Not authenticated' }
 
-  return bindElementToShotForUser(supabase, shotId, elementId, user.id)
+  return bindElementToShotForUser(supabase, shotId, elementId, user.id, surface)
 }
 
-export async function unbindElementFromShot(shotId: string, elementId: string): Promise<ElementUnbindResult> {
+export async function unbindElementFromShot(
+  shotId: string,
+  elementId: string,
+  surface: ShotBindingSurface
+): Promise<ElementUnbindResult> {
   const supabase = await createClient()
   const {
     data: { user },
   } = await supabase.auth.getUser()
   if (!user) return { success: false, error: 'Not authenticated' }
 
-  return unbindElementFromShotForUser(supabase, shotId, elementId, user.id)
+  return unbindElementFromShotForUser(supabase, shotId, elementId, user.id, surface)
 }
 
 // The project's real furthest_step, for a page that may have been restored from the

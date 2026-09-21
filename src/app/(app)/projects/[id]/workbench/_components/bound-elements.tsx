@@ -89,7 +89,7 @@ export const BoundElements = memo(function BoundElements({
   async function handleRemove(el: DisplayElement) {
     setRemovingId(el.id)
     setRemoveError(null)
-    const result = await unbindElementFromShot(shotId, el.id)
+    const result = await unbindElementFromShot(shotId, el.id, 'workbench')
     setRemovingId(null)
     if (!result.success) {
       setRemoveError(result.error)
@@ -149,6 +149,7 @@ export const BoundElements = memo(function BoundElements({
       {pickerOpen && !readOnly && (
         <ElementBindPicker
           shotId={shotId}
+          surface="workbench"
           excludeIds={new Set(elements.map((el) => el.id))}
           anchorRef={triggerRef}
           onBind={(el) => updateShotLocal(shotId, { elements: [...elements, el] })}

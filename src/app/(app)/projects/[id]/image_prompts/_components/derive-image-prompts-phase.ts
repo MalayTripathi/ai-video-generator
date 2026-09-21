@@ -27,13 +27,10 @@ export function isEdited(shot: PromptState): boolean {
 export function shouldAutoGenerate({
   generationState,
   shots,
-  readOnly,
 }: {
   generationState: string | null
   shots: Pick<PromptShot, 'image_prompt'>[]
-  readOnly: boolean
 }): boolean {
-  if (readOnly) return false
   if (generationState !== null && generationState !== 'pending') return false
   return shots.length > 0 && shots.every(isUngenerated)
 }

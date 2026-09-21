@@ -28,13 +28,12 @@ export type PromptModal = { kind: 'overwrite'; shotId: string } | { kind: 'all' 
 type ImagePromptsContextValue = {
   projectId: string
   aspectRatio: AspectRatio
-  readOnly: boolean
   shots: PromptShot[]
   // One request at a time: the generation claim is project-level, so a second concurrent
   // call would only be refused. Editing stays available throughout.
   requestInFlight: boolean
-  // Regenerate controls are unavailable: read-only, our own request running, or another
-  // window's generation running.
+  // Regenerate controls are unavailable: our own request running, or another window's
+  // generation running.
   regenerateLocked: boolean
   // The balance preflight is running (nothing is being written yet).
   checking: boolean
@@ -88,7 +87,6 @@ export function ImagePromptsProvider({
   autoGenerate,
   initialInsufficient,
   aspectRatio,
-  readOnly,
   children,
 }: {
   projectId: string
@@ -100,7 +98,6 @@ export function ImagePromptsProvider({
   // The first run was not started because the balance is short.
   initialInsufficient: { required: number; balance: number } | null
   aspectRatio: AspectRatio
-  readOnly: boolean
   children: ReactNode
 }) {
   const router = useRouter()
@@ -330,7 +327,7 @@ export function ImagePromptsProvider({
 
   function regenerateOne(shotId: string) {
     const shot = shotsRef.current.find((s) => s.id === shotId)
-    if (!shot || readOnly || inflightRef.current || externalGenerating) return
+    if (!shot || inflightRef.current || externalGenerating) return
     // Only a hand-written prompt is worth a dialog: it protects handwriting, it does not
     // gate spending.
     if (isEdited(shot)) {
@@ -341,12 +338,12 @@ export function ImagePromptsProvider({
   }
 
   function regenerateAll() {
-    if (readOnly || inflightRef.current || externalGenerating) return
+    if (inflightRef.current || externalGenerating) return
     setModal({ kind: 'all' })
   }
 
   function regenerateStale() {
-    if (readOnly || staleIds.length === 0) return
+    if (staleIds.length === 0) return
     void run(staleIds, true)
   }
 
@@ -368,11 +365,10 @@ export function ImagePromptsProvider({
   const value: ImagePromptsContextValue = {
     projectId,
     aspectRatio,
-    readOnly,
     shots,
     requestInFlight: busyIds.size > 0,
     checking,
-    regenerateLocked: readOnly || checking || busyIds.size > 0 || externalGenerating,
+    regenerateLocked: checking || busyIds.size > 0 || externalGenerating,
     busyIds,
     externalGenerating,
     outcome,

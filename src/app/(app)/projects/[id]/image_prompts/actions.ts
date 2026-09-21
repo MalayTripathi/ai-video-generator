@@ -1,7 +1,6 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { stepIndex } from '@/lib/config/pipeline'
 import { EMPTY_IMAGE_PROMPT_MESSAGE, imagePromptIsValid } from '@/lib/image-prompt-edit'
 import { getBalance } from '@/lib/credits/balance'
 import { gateImagePromptsBalance } from '@/app/api/projects/[id]/image-prompts/logic'
@@ -13,9 +12,6 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 export type ImagePromptSaveResult =
   | { field: 'image_prompt'; success: true; unchanged?: true }
   | { field: 'image_prompt'; success: false; error: string; reason?: 'invalid' }
-
-const PROMPTS_LOCKED_MESSAGE =
-  "This project's image prompts are locked - later steps have already started, so they can no longer be changed here."
 
 // Saves a hand edit. Deliberately does NOT touch image_prompt_stale: an edit is not a
 // judgement that the prompt now matches its shot, so a stale prompt stays stale (a
@@ -32,17 +28,11 @@ export async function updateShotImagePromptForUser(
   // backstop.
   const { data: shot } = await supabase
     .from('shots')
-    .select('id, project_id, image_prompt, projects!inner(user_id)')
+    .select('id, image_prompt, projects!inner(user_id)')
     .eq('id', shotId)
     .eq('projects.user_id', userId)
     .maybeSingle()
   if (!shot) return { field, success: false, error: 'Shot not found' }
-  // The read-only lock is the same boundary the Workbench's field saves enforce (a
-  // separate query, mirroring its isWorkbenchLockedForProject).
-  const { data: project } = await supabase.from('projects').select('furthest_step').eq('id', shot.project_id).single()
-  if (project && project.furthest_step >= stepIndex('storyboard')) {
-    return { field, success: false, error: PROMPTS_LOCKED_MESSAGE }
-  }
 
   // Never nulled: a blank prompt would render identically to a shot that was never
   // generated and throw away paid output. Checked before the diff, unconditionally.
