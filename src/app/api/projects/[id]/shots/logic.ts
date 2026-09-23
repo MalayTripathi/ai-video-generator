@@ -585,6 +585,7 @@ export async function runShotGeneration(params: {
     supabase,
     identity: { projectId, step: 'workbench', operation: 'generate_shots', shotId: null, elementId: null },
     retry,
+    queued: false,
   })
 
   if (claim.outcome === 'error') {

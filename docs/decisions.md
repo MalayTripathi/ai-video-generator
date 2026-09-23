@@ -1314,3 +1314,46 @@ the identical request. `use-agent-turn.ts` now maps those two statuses to "This 
 of date... Reload the page and try again". Nothing reloads automatically. Defaulting a
 missing `step` to the Workbench was rejected: the committed Step 3 page talked to this same
 route, so an old Step 3 tab would silently get the Workbench's tools.
+
+## Storyboard images: per-shot claims, the queued marker, and self-continuation
+
+**One claim, one reservation, one attempt id per shot.** Every other paid call claims once
+per request. Images claim once per shot because a shot is the unit a user retries, regenerates
+or is charged for, and one shot's failure must never hold another. The `generations`
+identity index already includes `shot_id`, so per-shot claims needed no schema change.
+
+**The gate subtracts in-flight claims.** The balance only drops when an image succeeds, so
+a batch that has been claimed but not yet charged is invisible to a plain balance read. The
+gate counts the user's live `storyboard/generate_image` claims (across projects) at the
+price and subtracts them before deciding how many shots it can claim. Shots are claimed in
+request order until that runs out; the rest stay unclaimed and read as "not generated", so
+a partial afford is an ordinary outcome rather than an error.
+
+**Why `generations.queued_at`.** A batch waits behind a small concurrency pool, and one
+stale window cannot serve both a waiting claim and a running one. Sized for a running call
+(SDK timeout plus a minute), it would expire claims still legitimately queued; sized for a
+queue, a hung call would read "generating" for hours. The marker lets each claim age
+against the window that fits it. It is set at claim, cleared (with `started_at` re-stamped)
+by `markGenerationStarted`, and that update is conditional on the exact `queued_at` the
+worker was handed - the ownership check that keeps a stale reclaim and a slow worker from
+both running the same shot.
+
+**Why the run continues itself.** A background run lives inside one route invocation and so
+is bounded by `maxDuration` (800s); a 75-shot project at three in parallel cannot finish in
+one. Each run stops starting shots at its time budget, drains what is in flight, and posts
+the unreached claims back to the same route. The continuation carries no user session, so
+its credential is the `IMAGES_INTERNAL_SECRET` header. It resumes only claims that are
+still queued in the named project of the named user, and never re-runs the gate - those
+shots were already paid for in the sense that matters, the in-flight count. A chain limit
+bounds the whole thing; shots left at the limit settle failed and uncharged.
+
+**RECOVER charges under the stored attempt id.** The payload is `{ path, attemptId }`.
+Recovery relinks the stored object and writes the ledger row with the original attempt id,
+so the `dedupe_key` makes it idempotent: a crash between PERSIST and the ledger write is
+charged exactly once, whether or not the first write landed.
+
+**Why native sizes, not a crop.** The gpt-image-2.5 models accept any WxH in multiples of 16
+within documented pixel and ratio bounds, so each aspect ratio gets an exact size
+(1008x1792, 1792x1008, 1088x1088) and the stored image is already Step 6's first-frame
+shape. `gpt-image-1-mini`'s fixed 2:3 portrait would have needed a crop that throws away
+the edges of every frame.

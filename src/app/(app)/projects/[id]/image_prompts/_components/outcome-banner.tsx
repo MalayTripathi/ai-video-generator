@@ -76,3 +76,43 @@ export function OutcomeBanner() {
     </div>
   )
 }
+
+// Shots with no image prompt can't be drawn, so they block Continue to storyboard. No
+// canvas frame of its own: built in 14E's banner structure (2px failed rule, title, body,
+// one action), without a code or timestamp since nothing failed at a moment in time.
+// Only once the list has settled, and never alongside another outcome banner.
+export function MissingPromptsBanner() {
+  const { shots, missingIds, settled, outcome, regenerateLocked, costFor, generateMissing } = useImagePrompts()
+  if (!settled || outcome || missingIds.length === 0) return null
+
+  const numberById = new Map(shots.map((s) => [s.id, s.order_index + 1]))
+  const numbers = missingIds.map((id) => numberById.get(id) ?? 0).filter((n) => n > 0)
+  const count = missingIds.length
+  const one = count === 1
+
+  return (
+    <div
+      role="alert"
+      className="relative flex flex-none items-center gap-rc-sm overflow-hidden rounded-control bg-status-failed-bg p-[13px_15px]"
+    >
+      <span className="absolute inset-y-0 left-0 w-[2px] bg-status-failed-fg" aria-hidden />
+      <div className="flex flex-1 flex-col gap-1 pl-rc-2xs">
+        <span className="text-ui font-medium text-banner-failed-title">
+          {one ? '1 shot has no image prompt' : `${count} shots have no image prompt`}
+        </span>
+        <span className="text-small text-banner-failed-body">
+          {describeShotNumbers(numbers)} can&apos;t be drawn without one. Generate {one ? 'it' : 'them'} or write your
+          own, then continue.
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={generateMissing}
+        disabled={regenerateLocked}
+        className="flex h-8 flex-none cursor-pointer items-center whitespace-nowrap rounded-control border border-accent bg-transparent px-rc-sm text-small font-medium text-accent outline-none hover:bg-status-failed-bg-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {one ? 'Generate that one' : `Generate those ${count}`} · {creditsLabel(costFor(count))}
+      </button>
+    </div>
+  )
+}

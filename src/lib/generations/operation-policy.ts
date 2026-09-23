@@ -1,4 +1,5 @@
 import type { Operation } from '@/lib/config/pipeline'
+import { IMAGE_QUEUE_STALE_AFTER_MS, IMAGE_STALE_AFTER_MS } from '@/lib/config/storyboard'
 
 // Per-operation claim policy - replaces a single global STALE_AFTER_MS, which was
 // correct for a long paid shot-generation job and would be catastrophic for a chat
@@ -8,6 +9,9 @@ import type { Operation } from '@/lib/config/pipeline'
 export interface OperationPolicy {
   /** How old `started_at` must be before a 'generating' row is stale-reclaimable. */
   staleAfterMs: number
+  /** For an operation whose claims can wait queued behind a pool: how old `queued_at` must
+   * be before a still-queued row is stale. Absent for operations that never queue. */
+  queuedStaleAfterMs?: number
   claimableFrom: {
     /** 'never': blocked always. 'retry': blocked unless retry:true. 'always': reclaimed unconditionally. */
     succeeded: 'never' | 'retry' | 'always'
@@ -46,7 +50,16 @@ export const OPERATION_POLICY: Record<Operation, OperationPolicy> = {
   // from 'succeeded' is allowed behind the same retry flag 'failed' already requires.
   write_image_prompts: { ...DEFAULT_POLICY, claimableFrom: { succeeded: 'retry', failed: 'retry' } },
   write_video_prompts: DEFAULT_POLICY,
-  generate_image: DEFAULT_POLICY,
+  // One claim per shot (storyboard's Step 4 image). Generate, Retry and Regenerate are all
+  // ordinary repeatable actions on the same slot, so reclaim needs no retry flag from
+  // either terminal state. Claims queue behind a concurrency pool, so a queued row ages
+  // against its own, longer window; a started one against the per-call window - the same
+  // threshold the status endpoint uses to show "failed".
+  generate_image: {
+    staleAfterMs: IMAGE_STALE_AFTER_MS,
+    queuedStaleAfterMs: IMAGE_QUEUE_STALE_AFTER_MS,
+    claimableFrom: { succeeded: 'always', failed: 'always' },
+  },
   // A reusable per-element claim slot, not a one-shot job record: regenerating a
   // reference is a legitimate, repeatable user action (the Generate button), and must
   // never be blocked by a prior claim in either terminal state. No retry flag needed -

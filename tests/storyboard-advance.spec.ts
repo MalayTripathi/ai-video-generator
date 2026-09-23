@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { SIGNUP_GRANT_CREDITS, PRICE_TABLE } from '../src/lib/config/credits'
 import { runAdvanceToStoryboard } from '../src/app/api/projects/[id]/storyboard/advance/logic'
@@ -61,12 +62,13 @@ async function seedProject(userId: string, overrides: Record<string, unknown> = 
   return data!.id as string
 }
 
-async function seedShots(projectId: string, count: number) {
+async function seedShots(projectId: string, count: number, imagePrompt: string | null = 'A lighthouse at dusk.') {
   const rows = Array.from({ length: count }, (_, i) => ({
     project_id: projectId,
     order_index: i,
     shot_key: `t${String(i).padStart(4, '0')}`,
     voice_over: 'Placeholder voice-over.',
+    image_prompt: imagePrompt,
   }))
   const { error } = await admin.from('shots').insert(rows)
   expect(error).toBeNull()
@@ -199,6 +201,57 @@ test.describe('runAdvanceToStoryboard', () => {
     } finally {
       await deleteTestUser(user.id)
     }
+  })
+
+  // A shot with no image prompt can't be drawn: the first advance (the one that starts
+  // image generation) refuses it before any balance read or step change.
+  test('a shot with no image prompt is refused with 422 and the step does not move', async () => {
+    const projectId = await seedProject(primary.user.id)
+    await seedShots(projectId, 1)
+    const { data: blank } = await admin
+      .from('shots')
+      .insert({ project_id: projectId, order_index: 1, shot_key: 't9999', voice_over: 'x', image_prompt: null })
+      .select('id')
+      .single()
+
+    const result = await runAdvanceToStoryboard({
+      supabase: admin,
+      projectId,
+      userId: primary.user.id,
+      getBalance: realGetBalance,
+      ensureSignupGrant: realEnsureSignupGrant,
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('unreachable')
+    expect(result.status).toBe(422)
+    if (result.status === 422) expect(result.shotIds).toEqual([blank!.id])
+    const project = await readProject(projectId)
+    expect(project.current_step).toBe('image_prompts')
+    expect(project.furthest_step).toBe(stepIndex('image_prompts'))
+  })
+
+  // The second Continue is plain navigation: advancing an already-advanced project writes no
+  // ledger row and starts no image generation, however many times it happens.
+  test('continuing a second time charges nothing and claims nothing', async () => {
+    const projectId = await seedProject(primary.user.id)
+    await seedShots(projectId, 2)
+    for (let i = 0; i < 2; i++) {
+      const result = await runAdvanceToStoryboard({
+        supabase: admin,
+        projectId,
+        userId: primary.user.id,
+        getBalance: realGetBalance,
+        ensureSignupGrant: realEnsureSignupGrant,
+      })
+      expect(result.ok).toBe(true)
+    }
+    expect(await ledgerRowsFor(projectId)).toBe(0)
+    const { count } = await admin
+      .from('generations')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+    expect(count).toBe(0)
   })
 
   test('missing or unowned project returns 404', async () => {

@@ -22,6 +22,26 @@ export type ClaimResult =
   | { outcome: 'blocked'; reason: BlockedReason }
   | { outcome: 'error'; message: string }
 
+type ClaimTiming = Pick<GenerationRow, 'state' | 'started_at' | 'queued_at'>
+
+/**
+ * Whether a row belongs to a run that is still going: 'generating' and younger than its
+ * window. A queued row (queued_at set - waiting behind a pool, not yet started) ages
+ * against the policy's queuedStaleAfterMs from queued_at; a started row against
+ * staleAfterMs from started_at. The one staleness rule for the claim, the peek, the
+ * storyboard gate's in-flight count and the image status display.
+ */
+export function isLiveClaim(row: ClaimTiming, operation: Operation, now: number = Date.now()): boolean {
+  if (row.state !== 'generating') return false
+  const policy = getOperationPolicy(operation)
+  if (row.queued_at !== null) {
+    const window = policy.queuedStaleAfterMs ?? policy.staleAfterMs
+    return new Date(row.queued_at).getTime() > now - window
+  }
+  if (row.started_at === null) return true
+  return new Date(row.started_at).getTime() > now - policy.staleAfterMs
+}
+
 /**
  * Reclaims an existing row via a CONDITIONAL UPDATE filtered on the state it expects
  * (plus a staleness bound for a 'generating' reclaim). Zero rows affected means
@@ -35,16 +55,28 @@ export type ClaimResult =
 async function reclaim(
   supabase: SupabaseServerClient,
   existing: GenerationRow,
-  opts: { expectedState: string; staleBefore?: string }
+  opts: { expectedState: string; queued: boolean; staleGuard?: boolean }
 ): Promise<ClaimResult> {
   const now = new Date().toISOString()
   const base = supabase
     .from('generations')
-    .update({ state: 'generating', started_at: now, updated_at: now })
+    .update({ state: 'generating', started_at: now, queued_at: opts.queued ? now : null, updated_at: now })
     .eq('id', existing.id)
     .eq('state', opts.expectedState)
 
-  const { data, error } = await (opts.staleBefore ? base.lt('started_at', opts.staleBefore) : base).select('*')
+  // A stale 'generating' reclaim is additionally filtered on the exact timestamps it
+  // judged stale, so a row that was re-stamped in the meantime (a worker starting it, or
+  // another reclaim) is refused rather than stolen.
+  const withStarted =
+    opts.staleGuard && existing.started_at !== null ? base.eq('started_at', existing.started_at) : base
+  const guarded =
+    opts.staleGuard
+      ? existing.queued_at === null
+        ? withStarted.is('queued_at', null)
+        : withStarted.eq('queued_at', existing.queued_at)
+      : withStarted
+
+  const { data, error } = await guarded.select('*')
 
   if (error) {
     return { outcome: 'error', message: error.message }
@@ -66,8 +98,12 @@ export async function claimGeneration(params: {
   supabase: SupabaseServerClient
   identity: GenerationIdentity
   retry: boolean
+  /** true only for a claim that will wait behind a pool before its work starts (storyboard
+   * images) - it stamps queued_at, which markGenerationStarted clears. Required, never
+   * defaulted, so a new caller has to decide. */
+  queued: boolean
 }): Promise<ClaimResult> {
-  const { supabase, identity, retry } = params
+  const { supabase, identity, retry, queued } = params
   const { projectId, step, operation, shotId, elementId } = identity
   const now = new Date().toISOString()
 
@@ -82,6 +118,7 @@ export async function claimGeneration(params: {
       state: 'generating',
       payload: null,
       started_at: now,
+      queued_at: queued ? now : null,
       updated_at: now,
     })
     .select('*')
@@ -125,7 +162,7 @@ export async function claimGeneration(params: {
     if (policy.claimableFrom.succeeded === 'retry' && !retry) {
       return { outcome: 'blocked', reason: 'retry_required' }
     }
-    return reclaim(supabase, existing, { expectedState: 'succeeded' })
+    return reclaim(supabase, existing, { expectedState: 'succeeded', queued })
   }
 
   if (existing.state === 'failed' && policy.claimableFrom.failed === 'retry' && !retry) {
@@ -133,23 +170,22 @@ export async function claimGeneration(params: {
   }
 
   if (existing.state === 'generating') {
-    const staleBefore = new Date(Date.now() - policy.staleAfterMs).toISOString()
-    if (existing.started_at === null || existing.started_at >= staleBefore) {
+    if (isLiveClaim(existing, operation)) {
       return { outcome: 'blocked', reason: 'already_generating' }
     }
-    return reclaim(supabase, existing, { expectedState: 'generating', staleBefore })
+    return reclaim(supabase, existing, { expectedState: 'generating', queued, staleGuard: true })
   }
 
   if (existing.state === 'failed') {
     // Either retry === true, or policy.claimableFrom.failed === 'always' (the !retry
     // case for a 'retry' policy already returned above).
-    return reclaim(supabase, existing, { expectedState: 'failed' })
+    return reclaim(supabase, existing, { expectedState: 'failed', queued })
   }
 
   // 'pending' - only reachable via a historical backfilled row for a project that was
   // never attempted. Always reclaimable, no staleness check (nothing was ever
   // claimed), matching the old shots_generation.eq.pending OR-branch.
-  return reclaim(supabase, existing, { expectedState: 'pending' })
+  return reclaim(supabase, existing, { expectedState: 'pending', queued })
 }
 
 /**
@@ -166,7 +202,7 @@ export async function peekGenerationPayload(
   const { projectId, step, operation, shotId, elementId } = identity
   const base = supabase
     .from('generations')
-    .select('payload, state, started_at')
+    .select('payload, state, started_at, queued_at')
     .eq('project_id', projectId)
     .eq('step', step)
     .eq('operation', operation)
@@ -182,9 +218,57 @@ export async function peekGenerationPayload(
   // writes finish, so it is present but not "unapplied" - the run is about to apply it).
   // The claim will refuse a request against it; a caller acting on the payload before the
   // claim must not answer as though nobody holds the slot.
-  const staleBefore = new Date(Date.now() - getOperationPolicy(operation).staleAfterMs).toISOString()
-  const heldByLiveRun = data?.state === 'generating' && (data.started_at === null || data.started_at >= staleBefore)
+  const heldByLiveRun = data ? isLiveClaim(data, operation) : false
   return { payload: data?.payload ?? null, heldByLiveRun, error: null }
+}
+
+/**
+ * A queued claim's work is starting: clears queued_at and re-stamps started_at, so from
+ * here it ages against the per-call window. Conditional on the row still being exactly the
+ * queued claim the caller was handed - false means someone else owns it now (a stale
+ * reclaim, or an earlier run already started it) and the caller must not touch it.
+ */
+export async function markGenerationStarted(
+  supabase: SupabaseServerClient,
+  generationId: string,
+  expectedQueuedAt: string
+): Promise<{ started: boolean; generation: GenerationRow | null; error: string | null }> {
+  const now = new Date().toISOString()
+  const { data, error } = await supabase
+    .from('generations')
+    .update({ queued_at: null, started_at: now, updated_at: now })
+    .eq('id', generationId)
+    .eq('state', 'generating')
+    .eq('queued_at', expectedQueuedAt)
+    .select('*')
+
+  if (error) return { started: false, generation: null, error: error.message }
+  if (!data || data.length === 0) return { started: false, generation: null, error: null }
+  return { started: true, generation: data[0], error: null }
+}
+
+/**
+ * The still-queued claims among `generationIds`, scoped to one project and one
+ * (step, operation). Read-only - used to validate a continuation run's hand-off, which
+ * resumes existing claims and never claims anything itself.
+ */
+export async function listQueuedGenerations(
+  supabase: SupabaseServerClient,
+  params: { projectId: string; step: Step; operation: Operation; generationIds: string[] }
+): Promise<{ generations: GenerationRow[]; error: string | null }> {
+  if (params.generationIds.length === 0) return { generations: [], error: null }
+  const { data, error } = await supabase
+    .from('generations')
+    .select('*')
+    .eq('project_id', params.projectId)
+    .eq('step', params.step)
+    .eq('operation', params.operation)
+    .eq('state', 'generating')
+    .not('queued_at', 'is', null)
+    .in('id', params.generationIds)
+
+  if (error) return { generations: [], error: error.message }
+  return { generations: data ?? [], error: null }
 }
 
 export async function persistGenerationPayload(
@@ -208,10 +292,12 @@ export async function settleGeneration(
   const update: {
     state: string
     error: string | null
+    queued_at: null
     updated_at: string
     payload?: null
   } = {
     state: params.success ? 'succeeded' : 'failed',
+    queued_at: null,
     error: params.success ? null : (params.error ?? null),
     updated_at: new Date().toISOString(),
   }

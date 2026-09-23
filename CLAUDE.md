@@ -410,7 +410,7 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
 | `src/lib/config/enums.ts` | Shot-attribute and project-setting enums, and their model-reportable subsets |
 | `src/lib/config/pipeline.ts` | Step / operation / provider vocabulary, `STEP_OPERATIONS`, `stepOperationLabel`, `stepIndex` |
 | `src/lib/config/models.ts` | Per-call model + `maxTokens` config, `VIDEO_MODELS` duration registry, `resolveVideoModel`, `isDurationAllowed` |
-| `src/lib/generations/claim.ts` | The only reader/writer of `state`/`payload`/`started_at`/`error`; claim, persist, settle |
+| `src/lib/generations/claim.ts` | The only reader/writer of `state`/`payload`/`started_at`/`queued_at`/`error`; claim, persist, settle |
 | `src/lib/usage/reserve-settle.ts` | `reserveUsage` / `settleUsage` and the throw/never-throw asymmetry |
 | `src/lib/usage/quote.ts` | `estimateInputTokens` / `quoteClaudeCall` (the worst-case reservation quote) and `estimateAgentTurnCost` / `estimateExpectedCallCost` (the calibrated turn estimate a balance gate uses) |
 | `src/lib/usage/allowance.ts` | `assertWithinAllowance`, the monthly spend ceiling, `AllowanceExceededError` |
@@ -601,26 +601,24 @@ evidence," not "revert," and changes nothing. This is the
 description-wins-over-a-prior-manual-choice rule. `'override'` is
 unreachable from the model by schema, not by validation.
 
-**Staleness is set by user edits only, never by a pipeline.**
-`shots.image_prompt_stale` / `shots.video_prompt_stale` and
+**Staleness is set by edits upstream of an output, never by the pipeline that made it.**
+`shots.image_prompt_stale` / `shots.video_prompt_stale` / `shots.image_stale` and
 `projects.voiceover_stale` mark a downstream output invalidated by a later
 edit. **`runVoiceoverPipeline` must never write `voiceover_stale`**: Step 4
 writes `duration_sec` back onto every unlocked shot, so a pipeline that
 also set the flag would invalidate its own output on every successful run —
 an unbounded loop, every cycle a paid ElevenLabs call. Which edit sets
-what: **voiceover text** → `projects.voiceover_stale` (one continuous
-narration file per project, so any narration edit invalidates the whole
-render) plus that shot's two prompt flags; **visual description** → that
-shot's two prompt flags; **a camera field** (dropdown or AI re-derivation)
-→ that shot's two prompt flags, a framing change being exactly as visually
-invalidating; **dialogue** → that shot's `video_prompt_stale` only
-(on-camera speech, not narration); **duration** → nothing (audio derives
-from narration text; a locked-duration mismatch is resolved for free at
-Step 4 by retiming); **deleting a shot** → `projects.voiceover_stale` only
-(the same one-continuous-file reasoning as a voiceover-text edit — the
-shot's own flags go with the deleted row); **an image-prompt edit** →
-`shots.image_prompt_edited` only, never `image_prompt_stale` (a
-regeneration clears it). Staleness is a flag, never a null.
+what: **voiceover text** → `projects.voiceover_stale` (one narration file per
+project) plus that shot's two prompt flags; **visual description** or **a
+camera field** (dropdown or AI re-derivation) → that shot's two prompt flags;
+**dialogue** → that shot's `video_prompt_stale` only (on-camera speech);
+**duration** → nothing (a locked-duration mismatch is retimed free at Step 4);
+**deleting a shot** → `projects.voiceover_stale` only; **image-prompt text**
+(hand edit or the Step 3 route) → `image_stale`, plus `image_prompt_edited` for
+a hand edit, never `image_prompt_stale`; **an element's reference image, or
+binding/unbinding it** → `image_prompt_stale` and `image_stale` on its shots.
+`image_stale` clears only in the write that stores a new image; readers check
+"has an image AND stale". Staleness is a flag, never a null.
 
 Every field write above is preceded by a diff against the persisted
 value: an edit that resolves to the same value performs no write and
@@ -697,7 +695,7 @@ for the same `(step, operation)` would both succeed instead of the second
 being rejected by the index.
 
 `src/lib/generations/claim.ts` is the one module that reads or writes
-`state`/`payload`/`started_at`/`error` — every claimant goes through
+`state`/`payload`/`started_at`/`queued_at`/`error` — every claimant goes through
 `claimGeneration`/`persistGenerationPayload`/`settleGeneration`, and
 nothing writes those columns inline. The claim is a plain `INSERT`; a
 `23505` unique violation is detected by **Postgres error code**
@@ -712,13 +710,12 @@ recovery aid for an in-flight or failed attempt), and clears it on failure
 only when the caller explicitly asks — the `max_tokens` truncation case.
 Otherwise a failed row's payload survives for RECOVER.
 
-`generations` is used by `/shots` (`step: 'workbench'`, `operation:
-'generate_shots'`, `shot_id: null`), `/image-prompts` (`step:
-'image_prompts'`, `operation: 'write_image_prompts'`, `shot_id: null`), and
-element-reference generation (`step: 'workbench'`, `operation:
-'generate_element_reference'`, scoped by `element_id`).
-`claimGeneration`/`persistGenerationPayload`/`settleGeneration` are the
-only locking mechanism in the codebase.
+`generations` is used by `/shots` (`workbench`/`generate_shots`) and
+`/image-prompts` (`image_prompts`/`write_image_prompts`), both `shot_id: null`;
+element references (`workbench`/`generate_element_reference`, per `element_id`);
+and storyboard images (`storyboard`/`generate_image`, per `shot_id`, `queued_at`
+set while waiting). `claimGeneration`/`persistGenerationPayload`/
+`settleGeneration` are the only locking mechanism in the codebase.
 
 **`derive_camera` writes a `usage` row but never a `generations` row** —
 the only paid call in the repo with no claim, because `'succeeded'` is
@@ -861,9 +858,10 @@ policy.
 Every claimed route runs one strict order — **CLAIM → RECOVER → PERSIST →
 SETTLE** — and it must not be rearranged.
 **Claim**: `claimGeneration` is both lock and idempotency guard; a refused
-claim is a 409, never a partial attempt. The project's own fields are
-loaded in a separate `SELECT` *before* the claim, so a vanished or unowned
-project returns 404 without interpreting an RLS/FK error off the INSERT.
+claim is a 409 (per-shot images: reported in flight), never a partial
+attempt. The project's own fields are loaded in a separate `SELECT` *before*
+the claim, so a vanished or unowned project returns 404 without
+interpreting an RLS/FK error off the INSERT.
 **Recover**: a claimed row carrying a non-null `payload` that answers every
 requested shot never calls the gateway — the stored payload is replayed
 through the same pipeline; a payload that doesn't cover the request is not.

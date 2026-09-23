@@ -144,6 +144,7 @@ export type Database = {
           operation: string
           payload: Json | null
           project_id: string
+          queued_at: string | null
           shot_id: string | null
           started_at: string | null
           state: string
@@ -159,6 +160,7 @@ export type Database = {
           operation: string
           payload?: Json | null
           project_id: string
+          queued_at?: string | null
           shot_id?: string | null
           started_at?: string | null
           state?: string
@@ -174,6 +176,7 @@ export type Database = {
           operation?: string
           payload?: Json | null
           project_id?: string
+          queued_at?: string | null
           shot_id?: string | null
           started_at?: string | null
           state?: string
@@ -424,7 +427,7 @@ export type Database = {
           image_prompt: string | null
           image_prompt_edited: boolean
           image_prompt_stale: boolean
-          image_status: string
+          image_stale: boolean
           order_index: number
           project_id: string
           section_label: string | null
@@ -452,7 +455,7 @@ export type Database = {
           image_prompt?: string | null
           image_prompt_edited?: boolean
           image_prompt_stale?: boolean
-          image_status?: string
+          image_stale?: boolean
           order_index: number
           project_id: string
           section_label?: string | null
@@ -480,7 +483,7 @@ export type Database = {
           image_prompt?: string | null
           image_prompt_edited?: boolean
           image_prompt_stale?: boolean
-          image_status?: string
+          image_stale?: boolean
           order_index?: number
           project_id?: string
           section_label?: string | null

@@ -132,11 +132,16 @@ export function quoteOpenAiImageCall(params: {
   size: string
   quality: string
   estimatedInputTokens: number
+  /** Reference images passed as edit-endpoint input. 0 for a text-only generation. */
+  referenceCount: number
 }): { estimatedCost: number; quotedBreakdown: UsageBreakdown } {
-  const outputTokens = OPENAI_RATES.images[params.model]?.outputTokensBySize[params.size]?.[params.quality] ?? 0
+  const rates = OPENAI_RATES.images[params.model]
+  const outputTokens = rates?.outputTokensBySize[params.size]?.[params.quality] ?? 0
+  const imageInputTokens = (rates?.imageInputTokensPerReference ?? 0) * params.referenceCount
 
   const quotedBreakdown: UsageBreakdown = {
-    input_tokens: params.estimatedInputTokens,
+    input_tokens: params.estimatedInputTokens + imageInputTokens,
+    image_input_tokens: imageInputTokens,
     output_tokens: outputTokens,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,

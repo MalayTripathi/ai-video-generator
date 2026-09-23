@@ -231,13 +231,10 @@ are not lost.
   - Whether timeline retiming writes back to `shots.duration_sec` or to a
     separate offset column.
   - Whether retiming sets `video_prompt_stale`.
-  - Whether a flag is needed for a stale generated image.
   - Whether Storyboard's three generations (image, voiceover, background
     music) are one claimed action or three independent ones.
   - Whether the still-frame video is server-rendered or a client-side
     preview.
-  - Whether Step 3's N per-shot image calls need the async submit-and-poll
-    architecture already flagged for Step 6.
 
 - **Agent-turn cost estimate is calibrated on Haiku only.** `AGENT_TURN_ESTIMATE`
   (`src/lib/usage/quote.ts`) was cut from 17 development turns. Production Sonnet may emit
@@ -281,3 +278,27 @@ are not lost.
     test was hardened, and never on its own; its cause is unexplained. Other
     `agent-chat-panel` tests still assert transient state from a single mocked response and
     could be hardened with `tests/helpers/agent-stream.ts`.
+- **Batch API (-50%) as a possible slow, cheap generation mode** for storyboard images.
+  Not used today: a batch can take up to 24h, and the storyboard reports arrival live.
+- **A fal image adapter.** `ELEMENT_IMAGE_PROVIDER=fal` and `STORYBOARD_IMAGE_PROVIDER=fal`
+  are config-only: no fal branch exists in `ImageGateway`. The images route refuses fal
+  before any claim; element generation ignores the setting and always calls OpenAI.
+- **`gpt-image-1-mini` shuts down on 1 Dec 2026** (OpenAI deprecations page; replacement
+  `gpt-image-2`). Element references use it by default - migrate the model, re-price
+  `generate_element_reference`, and lift the element quality guard's calibration.
+- **Production quality for storyboard images.** Low in every environment today, enforced
+  by a startup guard because the placeholder price is calibrated for low.
+- **Storyboard image quote ceilings are guesses.** OpenAI publishes no tokens-by-size
+  figure for the gpt-image-2.5 family, so `pricing.ts`'s output and per-reference input
+  ceilings are deliberately high placeholders. Recalibrate from measured `usage` rows; until
+  then a reservation is not guaranteed to be an upper bound.
+- **Two simultaneous image requests can both pass the gate.** Each reads balance minus
+  in-flight claims before claiming, so two tabs submitting in the same instant can commit
+  more than the balance. The ledger then goes negative by at most one batch; nothing else
+  breaks.
+- **An image finished after its stale window is kept, not linked.** It stays in storage
+  with its payload, uncharged, until the next Generate or Retry on that shot recovers it
+  (and charges it then). Unreachable unless upload plus writes take over a minute.
+- **Storyboard image production-bypass fix (Perf 2).** `assertLiveImageCallsAllowed()`
+  returns early under `NODE_ENV=production`, so a route test run against a production
+  server would reach OpenAI. Logic tests inject fakes and are unaffected.

@@ -27,6 +27,7 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
     checking,
     externalGenerating,
     outcome,
+    settled,
     costFor,
     regenerateOne,
   } = useImagePrompts()
@@ -40,7 +41,14 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
   const kept = outcome?.kind === 'partial' && outcome.keptIds.includes(shot.id)
   const plate = PLATE_SIZE[aspectRatio]
 
-  const borderClass = busy ? 'border-status-active-line' : kept ? 'border-status-failed-line' : 'border-border-subtle'
+  // A shot with no prompt blocks the storyboard; once the list has settled it takes the
+  // failed treatment (14E's card border), with its text box open to write one.
+  const missing = ungenerated && settled
+  const borderClass = busy
+    ? 'border-status-active-line'
+    : kept || missing
+      ? 'border-status-failed-line'
+      : 'border-border-subtle'
   const disabledReason = externalGenerating
     ? 'Prompts are being written in another window'
     : busyIds.size > 0
@@ -121,13 +129,9 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
               </span>
             )}
           </div>
-        ) : ungenerated ? (
-          <div className="flex min-h-[58px] items-center rounded-control border border-dashed border-border-strong px-rc-sm py-[10px] text-small text-text-tertiary">
-            No prompt yet
-          </div>
         ) : (
           <div className="flex flex-col gap-[5px]">
-            <PromptEditor shotId={shot.id} value={shot.image_prompt ?? ''} run={save.run} />
+            <PromptEditor shotId={shot.id} value={shot.image_prompt ?? ''} run={save.run} missing={missing} />
             {save.status === 'failed' && save.error && (
               <span className="text-meta text-status-failed-fg">{save.error}</span>
             )}

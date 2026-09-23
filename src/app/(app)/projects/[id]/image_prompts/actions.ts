@@ -43,9 +43,11 @@ export async function updateShotImagePromptForUser(
   const trimmed = value.trim()
   if (trimmed === shot.image_prompt) return { field, success: true, unchanged: true }
 
+  // A real text change (the diff above) also marks the shot's storyboard image stale, in
+  // the same write.
   const { error } = await supabase
     .from('shots')
-    .update({ image_prompt: trimmed, image_prompt_edited: true, updated_at: new Date().toISOString() })
+    .update({ image_prompt: trimmed, image_prompt_edited: true, image_stale: true, updated_at: new Date().toISOString() })
     .eq('id', shotId)
   if (error) return { field, success: false, error: error.message }
 

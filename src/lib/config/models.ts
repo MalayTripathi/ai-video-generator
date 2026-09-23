@@ -6,6 +6,13 @@ const isProduction = process.env.NODE_ENV === 'production'
 const elementImageProvider: 'openai' | 'fal' =
   process.env.ELEMENT_IMAGE_PROVIDER === 'fal' ? 'fal' : 'openai'
 
+// Provider selection for Step 4 storyboard images - same shape as the element selector
+// above, and deliberately independent of it: the two may differ in model and quality
+// from day one. fal has no image gateway yet, so selecting it is refused by the images
+// route before any claim (see runImagesRequest).
+const storyboardImageProvider: 'openai' | 'fal' =
+  process.env.STORYBOARD_IMAGE_PROVIDER === 'fal' ? 'fal' : 'openai'
+
 // Video-model registry: duration bounds per model, for the Step 2 duration stepper to
 // clamp against once it's built. This registry will grow - adding a model is one entry
 // here, not edits scattered across several places. Seconds are fractional (real clip
@@ -97,6 +104,13 @@ export type ModelsConfig = {
     quality: string
     size: '1024x1024'
   }
+  // Size is not here: it follows the project's aspect ratio, from
+  // STORYBOARD_IMAGE_SIZES (src/lib/config/storyboard.ts).
+  storyboardImages: {
+    provider: 'openai' | 'fal'
+    model: string
+    quality: string
+  }
   imagePrompts: {
     provider: 'anthropic'
     model: string
@@ -106,7 +120,7 @@ export type ModelsConfig = {
     provider: 'fal'
     model: string
   }
-  // Future steps (storyboard) each get their own section here as they're
+  // Future steps (voiceover, video prompts) each get their own section here as they're
   // implemented - keep this type and the object below in sync.
 }
 
@@ -161,6 +175,16 @@ export const modelsConfig: ModelsConfig = {
     quality: process.env.OPENAI_ELEMENT_IMAGE_QUALITY ?? 'low',
     size: '1024x1024',
   },
+  storyboardImages: {
+    provider: storyboardImageProvider,
+    // Same provider-decides-the-env-var rule as elements. fal is config-only until a fal
+    // ImageGateway branch exists.
+    model:
+      storyboardImageProvider === 'openai'
+        ? (process.env.OPENAI_STORYBOARD_IMAGE_MODEL ?? 'gpt-image-2.5-flare')
+        : (process.env.FALAI_STORYBOARD_IMAGE_MODEL ?? ''),
+    quality: process.env.OPENAI_STORYBOARD_IMAGE_QUALITY ?? 'low',
+  },
   imagePrompts: {
     provider: 'anthropic',
     model:
@@ -184,5 +208,15 @@ if (modelsConfig.elements.quality !== 'low') {
     `OPENAI_ELEMENT_IMAGE_QUALITY is "${modelsConfig.elements.quality}", but the ` +
       `generate_element_reference credit price is calibrated for "low" only. Update ` +
       `PRICE_TABLE (src/lib/config/credits.ts) before changing element image quality.`
+  )
+}
+
+// Same guard, for storyboard/generate_image: its PRICE_TABLE entry is calibrated for
+// 'low' quality only, and the price can't see quality.
+if (modelsConfig.storyboardImages.quality !== 'low') {
+  throw new Error(
+    `OPENAI_STORYBOARD_IMAGE_QUALITY is "${modelsConfig.storyboardImages.quality}", but the ` +
+      `storyboard generate_image credit price is calibrated for "low" only. Update ` +
+      `PRICE_TABLE (src/lib/config/credits.ts) before changing storyboard image quality.`
   )
 }

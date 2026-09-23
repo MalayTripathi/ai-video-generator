@@ -1,12 +1,12 @@
 import { test, expect } from '@playwright/test'
 import { OPERATIONS, type Operation } from '../src/lib/config/pipeline'
 import { OPERATION_POLICY, getOperationPolicy, STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
+import { IMAGE_QUEUE_STALE_AFTER_MS, IMAGE_STALE_AFTER_MS } from '../src/lib/config/storyboard'
 
 const DEFAULT_POLICY_OPS: Operation[] = [
   'voiceover',
   'background_music',
   'write_video_prompts',
-  'generate_image',
   'generate_clip',
   'merge',
   'derive_camera',
@@ -40,6 +40,18 @@ test.describe('OPERATION_POLICY', () => {
     expect(policy.staleAfterMs).toBe(STALE_AFTER_MS)
     expect(policy.claimableFrom.succeeded).toBe('retry')
     expect(policy.claimableFrom.failed).toBe('retry')
+  })
+
+  // One claim per shot for the Step 4 image. Generate/Retry/Regenerate are ordinary
+  // repeatable actions, so no retry flag from either terminal state; the per-call window
+  // comes from storyboard.ts, and a queued claim has its own, longer one.
+  test('generate_image: storyboard windows, claimable unconditionally from succeeded or failed', () => {
+    const policy = getOperationPolicy('generate_image')
+    expect(policy.staleAfterMs).toBe(IMAGE_STALE_AFTER_MS)
+    expect(policy.queuedStaleAfterMs).toBe(IMAGE_QUEUE_STALE_AFTER_MS)
+    expect(policy.queuedStaleAfterMs!).toBeGreaterThan(policy.staleAfterMs)
+    expect(policy.claimableFrom.succeeded).toBe('always')
+    expect(policy.claimableFrom.failed).toBe('always')
   })
 
   test('every other operation is identical to pre-change behaviour: default window, never/retry', () => {

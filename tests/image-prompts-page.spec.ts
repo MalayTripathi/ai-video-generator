@@ -250,7 +250,8 @@ test.describe('Step 3 image prompts', () => {
       await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
     })
     await page.goto(`/projects/${failed.projectId}/image_prompts`)
-    await expect(page.getByText('No prompt yet', { exact: true })).toBeVisible()
+    // A shot with no prompt shows the empty, writable text box (and blocks Continue).
+    await expect(page.getByPlaceholder('Write a prompt, or generate one.')).toBeVisible()
     await page.waitForTimeout(1000)
     expect(failedBodies.length).toBe(0)
   })

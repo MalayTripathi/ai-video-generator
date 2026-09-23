@@ -43,12 +43,17 @@ type ImagePromptsContextValue = {
   outcome: Outcome | null
   modal: PromptModal
   staleCount: number
+  // Nothing is being written or checked anywhere - the list shows its final state.
+  settled: boolean
+  // Shots with no image prompt, in list order. They block Continue to storyboard.
+  missingIds: string[]
   costFor: (shotCount: number) => number
   updateShotLocal: (shotId: string, patch: Partial<PromptShot>) => void
   regenerateOne: (shotId: string) => void
   regenerateAll: () => void
   regenerateStale: () => void
   retryOutcome: () => void
+  generateMissing: () => void
   confirmModal: () => void
   cancelModal: () => void
   dismissOutcome: () => void
@@ -347,6 +352,13 @@ export function ImagePromptsProvider({
     void run(staleIds, true)
   }
 
+  const missingIds = shots.filter(isUngenerated).map((s) => s.id)
+
+  function generateMissing() {
+    if (missingIds.length === 0) return
+    void run(missingIds, true)
+  }
+
   function retryOutcome() {
     if (!outcome) return
     if (outcome.kind === 'partial') {
@@ -374,12 +386,15 @@ export function ImagePromptsProvider({
     outcome,
     modal,
     staleCount: staleIds.length,
+    settled: !checking && busyIds.size === 0 && !externalGenerating,
+    missingIds,
     costFor,
     updateShotLocal,
     regenerateOne,
     regenerateAll,
     regenerateStale,
     retryOutcome,
+    generateMissing,
     confirmModal,
     cancelModal: () => setModal(null),
     dismissOutcome: () => setOutcome(null),

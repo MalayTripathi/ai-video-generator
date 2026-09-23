@@ -304,6 +304,7 @@ export async function runAgentTurn(params: {
     // there is no "job" to protect from re-attempt, only a lock to release, so this is
     // always true and the policy is what actually gates reclaiming, not this flag.
     retry: true,
+    queued: false,
   })
 
   if (claim.outcome === 'error') {

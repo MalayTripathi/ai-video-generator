@@ -73,6 +73,25 @@ test.describe('computeCost', () => {
     expect(result.appliedRates).not.toBeNull()
   })
 
+  // Reference images passed to the edit endpoint arrive inside input_tokens; their share
+  // (image_input_tokens) is billed at the image-input rate, the rest at the text rate.
+  test('openai: image input is split out and billed at the image-input rate', () => {
+    // gpt-image-2.5-flare: text 5.0, image input 8.0, output 30.0 per 1M
+    const result = computeCost('openai', 'gpt-image-2.5-flare', {
+      input_tokens: 3_000_000,
+      image_input_tokens: 2_000_000,
+      output_tokens: 1_000_000,
+    })
+    expect(result.estimatedCost).toBeCloseTo(1 * 5.0 + 2 * 8.0 + 1 * 30.0, 6)
+  })
+
+  test('openai: flare and sunburst are both priced, so the model can be swapped by env', () => {
+    for (const model of ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst']) {
+      const result = computeCost('openai', model, { input_tokens: 1_000_000, output_tokens: 1_000_000 })
+      expect(result.estimatedCost).toBeCloseTo(5.0 + 30.0, 6)
+    }
+  })
+
   test('an unrecognized openai model returns a null cost, never a guess', () => {
     // gpt-image-1 (the non-mini model) deliberately has no OPENAI_RATES entry - this
     // repo never calls it, so it must behave as "unrecognized," not silently price at

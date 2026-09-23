@@ -57,7 +57,7 @@ export type Provider = (typeof PROVIDERS)[number]
 
 export const STEP_OPERATIONS: Record<Step, readonly Operation[]> = {
   workbench: ['generate_shots', 'agent_turn', 'derive_camera', 'generate_element_reference'],
-  image_prompts: ['write_image_prompts', 'generate_image', 'agent_turn'],
+  image_prompts: ['write_image_prompts', 'agent_turn'],
   storyboard: ['generate_image', 'voiceover', 'background_music', 'agent_turn'],
   video_prompts: ['write_video_prompts'],
   generation: ['generate_clip'],
@@ -83,7 +83,7 @@ const OPERATION_LABELS: Record<Step, Partial<Record<Operation, string>>> = {
     derive_camera: 'Camera framing',
     generate_element_reference: 'Element reference image',
   },
-  image_prompts: { write_image_prompts: 'Prompt writing', generate_image: 'Image generation', agent_turn: 'Agent turn' },
+  image_prompts: { write_image_prompts: 'Prompt writing', agent_turn: 'Agent turn' },
   storyboard: {
     generate_image: 'Image generation',
     voiceover: 'Voiceover',

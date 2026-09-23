@@ -39,7 +39,11 @@ export async function markImagePromptsStaleForElementReference(
   const shotIds = await findAffectedShotIds(supabase, projectId, elementId, elementType)
   if (shotIds.length === 0) return
 
-  const { error } = await supabase.from('shots').update({ image_prompt_stale: true }).in('id', shotIds)
+  // The storyboard image drew from this reference too, so it goes stale in the same write.
+  const { error } = await supabase
+    .from('shots')
+    .update({ image_prompt_stale: true, image_stale: true })
+    .in('id', shotIds)
   if (error) {
     console.error(
       `[elements] Failed to mark image prompts stale for element ${elementId}:`,

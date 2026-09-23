@@ -1,0 +1,54 @@
+import type { AspectRatio } from './enums'
+
+// Step 4 storyboard image generation: every size, timing and encoding number lives here,
+// never at a call site and never in env. Model/provider/quality are env-driven and live
+// in models.ts (modelsConfig.storyboardImages) instead.
+
+// Native generation sizes, one per project aspect ratio - generated at exactly the
+// ratio, so no crop is needed before the image becomes Step 6's first frame. Each is a
+// multiple of 16 on both edges, within the 1:3-3:1 ratio range, under the 3840px edge
+// cap and inside the 655,360-8,294,400 pixel budget OpenAI documents for the
+// gpt-image-2.5 family.
+export const STORYBOARD_IMAGE_SIZES: Record<AspectRatio, string> = {
+  '9:16': '1008x1792',
+  '16:9': '1792x1008',
+  '1:1': '1088x1088',
+}
+
+// The provider SDK's own request timeout for one image call.
+export const IMAGE_SDK_TIMEOUT_MS = 120_000
+
+// How long a started image claim may run before it reads as failed (and becomes
+// reclaimable). Must exceed the SDK timeout plus reference download, encode, upload and
+// the row writes, with margin - the worker also refuses to link or charge a shot past
+// this point, so the display and the charge can never disagree.
+export const IMAGE_STALE_AFTER_MS = IMAGE_SDK_TIMEOUT_MS + 60_000
+
+// Route maxDuration for /api/projects/[id]/images, in seconds (Next's segment config
+// must be a literal in the route file itself - this is the value it mirrors, checked by
+// a test).
+export const IMAGES_ROUTE_MAX_DURATION_S = 800
+
+// One background run stops starting new shots after this, then drains what's in flight
+// and hands the rest to a continuation. Budget + one full stale window stays under the
+// route's maxDuration, so a shot started at the last moment still finishes in-run.
+export const RUN_TIME_BUDGET_MS = 600_000
+
+// How many times a batch may hand itself to a continuation run. Shots still queued when
+// this is reached are settled failed, uncharged.
+export const CONTINUATION_CHAIN_LIMIT = 8
+
+// The longest a claim can legitimately sit queued: every run in the chain spending its
+// full budget plus a stale window. Past this, a queued claim reads as failed.
+export const IMAGE_QUEUE_STALE_AFTER_MS = (CONTINUATION_CHAIN_LIMIT + 1) * (RUN_TIME_BUDGET_MS + IMAGE_STALE_AFTER_MS)
+
+// Parallel provider calls per run. Kept low: a low-tier OpenAI account's images-per-
+// minute limit is small, and a 429 settles the shot failed and uncharged.
+export const IMAGE_CONCURRENCY = 3
+
+// How often the Storyboard page's status poll should run (consumer built in A2).
+export const STATUS_POLL_INTERVAL_MS = 3000
+
+// sharp WebP quality for stored storyboard images - high, since these become video
+// first frames.
+export const STORYBOARD_WEBP_QUALITY = 90

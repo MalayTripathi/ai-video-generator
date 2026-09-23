@@ -513,7 +513,9 @@ function toDisplayElement(element: {
 // deleteShotForUser's comment above) - binding is shot content, not element content, so it
 // does not get the Assets tab's exemption from the lock.
 async function markImagePromptStale(supabase: SupabaseServerClient, shotId: string) {
-  const { error } = await supabase.from('shots').update({ image_prompt_stale: true }).eq('id', shotId)
+  // A binding change alters which references the storyboard image is drawn with, so the
+  // image goes stale in the same write as the prompt.
+  const { error } = await supabase.from('shots').update({ image_prompt_stale: true, image_stale: true }).eq('id', shotId)
   if (error) {
     console.error(`[workbench] Failed to set image_prompt_stale for shot ${shotId}:`, error.message)
   }

@@ -13,10 +13,14 @@ export const PromptEditor = memo(function PromptEditor({
   shotId,
   value,
   run,
+  missing,
 }: {
   shotId: string
   value: string
   run: ReturnType<typeof useFieldSave>['run']
+  // The shot has no prompt and blocks the storyboard: failed border, and a placeholder
+  // saying how to fix it. Still an ordinary field - it saves on blur like any other.
+  missing: boolean
 }) {
   const { updateShotLocal } = useImagePrompts()
   const [draft, setDraft] = useState(value)
@@ -75,7 +79,8 @@ export const PromptEditor = memo(function PromptEditor({
       onFocus={() => setFocused(true)}
       onBlur={handleBlur}
       rows={1}
-      className="block min-h-[40px] w-full resize-none overflow-hidden rounded-control border border-border-strong bg-bg-surface px-rc-sm py-[9px] text-small leading-[1.5] text-text-secondary outline-none hover:border-border-strong-hover focus-visible:border-accent focus-visible:text-text-primary focus-visible:shadow-focus-halo"
+      placeholder={missing ? 'Write a prompt, or generate one.' : undefined}
+      className={`block min-h-[40px] w-full resize-none overflow-hidden rounded-control border ${missing ? 'border-status-failed-line' : 'border-border-strong'} bg-bg-surface px-rc-sm py-[9px] text-small leading-[1.5] text-text-secondary outline-none hover:border-border-strong-hover focus-visible:border-accent focus-visible:text-text-primary focus-visible:shadow-focus-halo placeholder:text-text-tertiary`}
     />
   )
 })

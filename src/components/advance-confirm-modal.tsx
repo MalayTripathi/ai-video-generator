@@ -14,6 +14,7 @@ export function AdvanceConfirmModal({
   submitting,
   title,
   body,
+  warning,
   bannerTitle,
   confirmLabel,
   requiredCredits,
@@ -26,6 +27,9 @@ export function AdvanceConfirmModal({
   submitting: boolean
   title: string
   body: string
+  // A non-blocking caution shown under the body (Step 3: stale prompts that will be drawn
+  // as they are). It never disables Confirm.
+  warning?: string
   bannerTitle: string
   confirmLabel: string
   requiredCredits: number
@@ -67,6 +71,16 @@ export function AdvanceConfirmModal({
         </span>
 
         <span className="text-small leading-[1.5] text-text-secondary">{body}</span>
+
+        {warning && (
+          // Canvas 14F's quoted block (2px left rule on a tinted well), in the stale family.
+          <div
+            role="note"
+            className="rounded-control border-l-2 border-status-stale-fg bg-status-stale-bg px-[12px] py-[10px] text-small leading-[1.45] text-status-stale-fg"
+          >
+            {warning}
+          </div>
+        )}
 
         {phase === 'insufficient' && (
           <InsufficientCreditsBanner

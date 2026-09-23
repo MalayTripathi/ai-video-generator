@@ -49,7 +49,7 @@ function ContinueToStoryboardButton({
   onAdvancedSince: () => void
 }) {
   const router = useRouter()
-  const { projectId, shots } = useImagePrompts()
+  const { projectId, shots, staleCount, missingIds } = useImagePrompts()
 
   // The furthest_step this page was rendered with can be stale (Back restores it from the
   // router cache with no request; another tab may have advanced the project). While showing
@@ -93,6 +93,22 @@ function ContinueToStoryboardButton({
       const body = await res.json()
 
       if (res.ok && body.ok) {
+        // Advanced: start every shot's image. The images route is the authority - it
+        // gates each image on balance and claims what's affordable; anything it didn't
+        // claim reads as "not generated" on the storyboard, so its answer never holds
+        // up the navigation.
+        try {
+          const imagesRes = await fetch(`/api/projects/${projectId}/images`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ shotIds: shots.map((s) => s.id) }),
+          })
+          if (imagesRes.status !== 202) {
+            console.error('[image-prompts] storyboard images request was not accepted', imagesRes.status)
+          }
+        } catch (err) {
+          console.error('[image-prompts] storyboard images request failed', err)
+        }
         router.push(`/projects/${projectId}/storyboard`)
         return
       }
@@ -116,7 +132,8 @@ function ContinueToStoryboardButton({
       <button
         type="button"
         onClick={openModal}
-        disabled={generating || modalPhase === 'submitting'}
+        // A shot with no prompt can't be drawn - the footer note names which.
+        disabled={generating || missingIds.length > 0 || modalPhase === 'submitting'}
         className={PRIMARY_BUTTON_CLASSNAME}
       >
         Create Storyboard — {requiredCredits} Credits
@@ -127,7 +144,12 @@ function ContinueToStoryboardButton({
         phase={modalPhase === 'insufficient' ? 'insufficient' : 'confirm'}
         submitting={modalPhase === 'submitting'}
         title="Continue to storyboard?"
-        body={`Generating the storyboard images uses ${requiredCredits} credits, charged when you generate them. Once you continue, your shots and image prompts become read-only.`}
+        body={`Generating the storyboard images uses ${requiredCredits} credits, charged when you generate them. Workbench shots become read-only. Image prompts stay editable.`}
+        warning={
+          staleCount > 0
+            ? `${staleCount} image ${staleCount === 1 ? 'prompt is' : 'prompts are'} stale — ${staleCount === 1 ? "it'll" : "they'll"} be drawn as ${staleCount === 1 ? 'it is' : 'they are'}.`
+            : undefined
+        }
         bannerTitle="Not enough credits for the storyboard"
         confirmLabel="Continue"
         requiredCredits={insufficient?.required ?? requiredCredits}

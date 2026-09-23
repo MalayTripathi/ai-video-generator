@@ -186,7 +186,8 @@ type PipelineOutcome = {
  * tool input. Called from both the fresh-Claude-call path and the RECOVER path -
  * rawInput is either the live toolUseBlock.input or a stored generations.payload,
  * identical shape either way. Each shot's image_prompt, image_prompt_stale and
- * image_prompt_edited are written together in one .update() (a regeneration overwrites
+ * image_prompt_edited (plus image_stale, only when the text differs from what's stored)
+ * are written together in one .update() (a regeneration overwrites
  * any hand edit, so the edited flag always clears with it) - a shot Claude never returned (missingShotKeys)
  * or whose own .update() errors (failedShotKeys, tracked independently) never has
  * either column touched, so it keeps its prior value and stale flag exactly as before.
@@ -202,12 +203,29 @@ async function runImagePromptsPipeline(
   const targetShotKeys = scopedShots.map((s) => s.shot_key)
   const { validEntries, missingShotKeys } = resolveImagePromptResults(input.prompts, targetShotKeys)
 
+  // The stored text, read at write time (a hand edit may have landed while Claude was
+  // writing): a storyboard image is only marked stale by a prompt that actually changed.
+  const { data: storedRows, error: storedError } = await supabase
+    .from('shots')
+    .select('id, image_prompt')
+    .in('id', scopedShots.map((s) => s.id))
+  const storedById = new Map((storedRows ?? []).map((row) => [row.id, row.image_prompt]))
+
   const updateResults = await Promise.all(
     validEntries.map(async (entry) => {
+      const shotId = idByKey.get(entry.shot_key)!
+      // An unreadable stored value counts as changed - over-flagging only offers a
+      // regenerate; under-flagging would hide an out-of-date image.
+      const changed = storedError !== null || storedById.get(shotId) !== entry.image_prompt
       const { error } = await supabase
         .from('shots')
-        .update({ image_prompt: entry.image_prompt, image_prompt_stale: false, image_prompt_edited: false })
-        .eq('id', idByKey.get(entry.shot_key)!)
+        .update({
+          image_prompt: entry.image_prompt,
+          image_prompt_stale: false,
+          image_prompt_edited: false,
+          ...(changed ? { image_stale: true } : {}),
+        })
+        .eq('id', shotId)
       return { shotKey: entry.shot_key, error }
     })
   )
@@ -409,6 +427,7 @@ export async function runImagePromptGeneration(
     supabase,
     identity: IMAGE_PROMPTS_IDENTITY(projectId),
     retry,
+    queued: false,
   })
 
   if (claim.outcome === 'error') {

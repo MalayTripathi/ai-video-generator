@@ -34,5 +34,9 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     )
   }
 
+  if (result.status === 422) {
+    return NextResponse.json({ ok: false, error: result.error, shotIds: result.shotIds }, { status: 422 })
+  }
+
   return NextResponse.json({ ok: false, error: result.error }, { status: result.status })
 }
