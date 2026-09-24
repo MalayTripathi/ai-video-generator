@@ -124,3 +124,12 @@ export function stepLabel(step: Step): string {
 export function stepIndex(step: Step): number {
   return STEPS.indexOf(step) + 2
 }
+
+// Length of the stepIndex scale: intake plus every Step (7).
+export const PROGRESS_STEP_COUNT = STEPS.length + 1
+
+// Inverse of stepIndex as a label, for a position on the 1..PROGRESS_STEP_COUNT scale.
+// Position 1 is intake, which has no Step and so no STEP_LABELS entry.
+export function progressStepLabel(position: number): string {
+  return position <= 1 ? 'Intake' : stepLabel(STEPS[Math.min(position, PROGRESS_STEP_COUNT) - 2])
+}
