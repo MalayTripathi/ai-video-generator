@@ -1,5 +1,6 @@
 'use client'
 
+import { formatClockTime } from '@/lib/format-clock-time'
 import { formatCredits } from '@/lib/format-credits'
 import { useImagePrompts } from './image-prompts-context'
 import { describeShotNumbers } from './derive-image-prompts-phase'
@@ -59,7 +60,7 @@ export function OutcomeBanner() {
       <div className="flex flex-1 flex-col gap-1 pl-rc-2xs">
         <span className="text-ui font-medium text-banner-failed-title">{title}</span>
         <span className="text-small text-banner-failed-body">
-          {body} <span className="font-mono text-label">{outcome.code} · {outcome.at}</span>
+          {body} <span className="font-mono text-label">{outcome.code} · {formatClockTime(outcome.at)}</span>
         </span>
       </div>
       {retryCount > 0 && (

@@ -4,12 +4,19 @@ import { WorkbenchShell } from '@/components/workbench-shell'
 import { ProjectHeader } from '@/components/workbench/project-header'
 import { loadAgentMessages } from '@/lib/load-agent-messages'
 import { stepIndex } from '@/lib/config/pipeline'
-import { StoryboardPlaceholder } from './_components/storyboard-placeholder'
+import { ASPECT_RATIOS, type AspectRatio } from '@/lib/config/enums'
+import { getBalance } from '@/lib/credits/balance'
+import { loadImageStatuses } from '@/app/api/projects/[id]/images/status/logic'
+import { StoryboardProvider } from './_components/storyboard-context'
+import { StoryboardMain } from './_components/storyboard-main'
+import { InspectPanel } from './_components/inspect-panel'
 import { StoryboardFooter } from './_components/storyboard-footer'
+import { STORYBOARD_SHOT_COLUMNS } from './_components/types'
 
-// Step 4 placeholder: the shell, header, agent panel and footer are the real ones; the
-// content area is an empty state until the storyboard itself is built. Nothing here reads
-// or generates storyboard data.
+// Step 4: the timeline with live images (canvas 15). The picture lane and inspect panel
+// read real data; the audio lanes, preview and export are drawn static until built. The
+// first paint reads image state here, server-side, with the same function the status
+// endpoint polls - so nothing flashes and nothing is fetched on load.
 export default async function StoryboardPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: projectId } = await params
 
@@ -43,10 +50,16 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
 
   const { data: shotsRows } = await supabase
     .from('shots')
-    .select('shot_key, order_index, duration_sec, duration_locked')
+    .select(STORYBOARD_SHOT_COLUMNS)
     .eq('project_id', projectId)
     .order('order_index', { ascending: true })
   const shots = shotsRows ?? []
+
+  const status = await loadImageStatuses({ supabase, projectId, userId: user.id, getBalance })
+  if (!status.ok) {
+    if (status.status === 404) notFound()
+    throw new Error(status.error)
+  }
 
   const agentMessages = await loadAgentMessages(supabase, projectId, shots)
 
@@ -54,17 +67,30 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
   // storyboard.
   const readOnly = project.furthest_step >= stepIndex('video_prompts')
 
+  const aspectRatio: AspectRatio = (ASPECT_RATIOS as readonly string[]).includes(project.aspect_ratio)
+    ? (project.aspect_ratio as AspectRatio)
+    : '9:16'
+
   return (
-    <WorkbenchShell
-      project={project}
-      agentStep="storyboard"
-      agentMessages={agentMessages}
+    <StoryboardProvider
+      projectId={projectId}
+      aspectRatio={aspectRatio}
       readOnly={readOnly}
-      shots={shots}
-      header={<ProjectHeader project={project} shots={shots} />}
-      footer={<StoryboardFooter />}
+      initialShots={shots}
+      initialStatus={status.data}
     >
-      <StoryboardPlaceholder />
-    </WorkbenchShell>
+      <WorkbenchShell
+        project={project}
+        agentStep="storyboard"
+        agentMessages={agentMessages}
+        readOnly={readOnly}
+        shots={shots}
+        header={<ProjectHeader project={project} shots={shots} />}
+        footer={<StoryboardFooter />}
+        sideColumn={<InspectPanel />}
+      >
+        <StoryboardMain language={project.language} />
+      </WorkbenchShell>
+    </StoryboardProvider>
   )
 }

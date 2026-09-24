@@ -163,7 +163,9 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   toggles `disabled`.
 - `workbench-shell.tsx` (`src/components/workbench-shell.tsx`) is the
   shared chrome for Steps 2–7: a `header` slot, the 7-step indicator, the
-  agent panel, a `children` content slot, and an optional `footer` slot.
+  agent panel, a `children` content slot, an optional `footer` slot, and an
+  optional `sideColumn` that takes the agent's column while the step's
+  provider sets `SideColumnOverrideContext` — the agent stays mounted, hidden.
   The rail is present on these routes but comes from the `(app)` route
   group's layout, not from the shell — the shell renders no `Rail` of its
   own. Project routes have no top bar at all; the user menu lives in the
@@ -716,6 +718,11 @@ element references (`workbench`/`generate_element_reference`, per `element_id`);
 and storyboard images (`storyboard`/`generate_image`, per `shot_id`, `queued_at`
 set while waiting). `claimGeneration`/`persistGenerationPayload`/
 `settleGeneration` are the only locking mechanism in the codebase.
+
+The Storyboard page reads image state only from `loadImageStatuses` (server first
+paint, then the status endpoint, polled only while a frame is in flight) — the one
+place storyboard images are signed; it never calls `router.refresh()`. Each image has
+a best-effort `{attemptId}_thumb.webp` beside it; readers fall back to the full image.
 
 **`derive_camera` writes a `usage` row but never a `generations` row** —
 the only paid call in the repo with no claim, because `'succeeded'` is

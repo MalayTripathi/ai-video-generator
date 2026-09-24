@@ -163,7 +163,7 @@ test.describe('Step 3 footer button', () => {
     await page.getByRole('dialog').getByRole('button', { name: 'Continue' }).click()
 
     await expect(page).toHaveURL(`/projects/${projectId}/storyboard`, NAVIGATION)
-    await expect(page.getByTestId('storyboard-placeholder')).toBeVisible(NAVIGATION)
+    await expect(page.getByTestId('storyboard-main')).toBeVisible(NAVIGATION)
     expect(await readProject(projectId)).toMatchObject({ current_step: 'storyboard', furthest_step: STORYBOARD })
     expect(await ledgerRowsFor(projectId)).toBe(0)
 
@@ -354,9 +354,12 @@ test.describe('Step 3 footer button', () => {
       await page.getByRole('link', { name: 'Go to Storyboard' }).click()
 
       await expect(page).toHaveURL(`/projects/${projectId}/storyboard`, NAVIGATION)
-      await expect(page.getByTestId('storyboard-placeholder')).toBeVisible(NAVIGATION)
-      await expect(page.getByText('Not enough credits')).toHaveCount(0)
+      await expect(page.getByTestId('storyboard-main')).toBeVisible(NAVIGATION)
+      // Navigating raised no gate of its own: no confirm dialog, no refusal banner. The
+      // storyboard's own case-2 banner (frames it can't afford to finish) is expected here.
       await expect(page.getByRole('dialog')).toHaveCount(0)
+      await expect(page.getByText(/^Not enough credits to /)).toHaveCount(0)
+      await expect(page.getByText('Not enough credits for the last two frames')).toBeVisible()
       expect(advanceCalls).toBe(0)
     } finally {
       await deleteTestUser(user.id)

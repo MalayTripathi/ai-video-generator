@@ -1,12 +1,13 @@
 'use client'
 
 import { memo, useLayoutEffect, useRef, useState } from 'react'
-import type { useFieldSave } from '../../workbench/_components/use-field-save'
-import { updateShotImagePrompt } from '../actions'
-import { useImagePrompts } from './image-prompts-context'
+import type { useFieldSave } from '@/app/(app)/projects/[id]/workbench/_components/use-field-save'
+import { updateShotImagePrompt } from '@/app/(app)/projects/[id]/image_prompts/actions'
 
-// Saves on blur, no Save button, no dirty state: same per-field model as the Workbench.
-// A no-op edit performs no request. The field is never disabled while saving. Its save
+// The image-prompt field, shared by Step 3's card and the Storyboard inspect panel. Saves
+// on blur through the one manual-edit action (which validates, diffs, and marks the image
+// stale and the prompt edited), no Save button, no dirty state: same per-field model as
+// the Workbench. A no-op edit performs no request. The field is never disabled while saving. Its save
 // status lives in the card header (the card owns useFieldSave), so the textarea itself
 // carries nothing but the text and can size purely to it.
 export const PromptEditor = memo(function PromptEditor({
@@ -14,15 +15,19 @@ export const PromptEditor = memo(function PromptEditor({
   value,
   run,
   missing,
+  onSaved,
+  readOnly = false,
 }: {
   shotId: string
   value: string
   run: ReturnType<typeof useFieldSave>['run']
+  // Applies a real (non-no-op) save to the caller's local state.
+  onSaved: (shotId: string, patch: { image_prompt: string; image_prompt_edited: true }) => void
+  readOnly?: boolean
   // The shot has no prompt and blocks the storyboard: failed border, and a placeholder
   // saying how to fix it. Still an ordinary field - it saves on blur like any other.
   missing: boolean
 }) {
-  const { updateShotLocal } = useImagePrompts()
   const [draft, setDraft] = useState(value)
   const [focused, setFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -60,12 +65,12 @@ export const PromptEditor = memo(function PromptEditor({
 
   function handleBlur() {
     setFocused(false)
-    if (draft === value) return
+    if (readOnly || draft === value) return
     const submitted = draft
     void run(async () => {
       const result = await updateShotImagePrompt(shotId, submitted)
       if (!result.success) return { success: false, error: result.error }
-      if (!result.unchanged) updateShotLocal(shotId, { image_prompt: submitted.trim(), image_prompt_edited: true })
+      if (!result.unchanged) onSaved(shotId, { image_prompt: submitted.trim(), image_prompt_edited: true })
       return { success: true, unchanged: result.unchanged }
     })
   }
@@ -79,6 +84,7 @@ export const PromptEditor = memo(function PromptEditor({
       onFocus={() => setFocused(true)}
       onBlur={handleBlur}
       rows={1}
+      readOnly={readOnly}
       placeholder={missing ? 'Write a prompt, or generate one.' : undefined}
       className={`block min-h-[40px] w-full resize-none overflow-hidden rounded-control border ${missing ? 'border-status-failed-line' : 'border-border-strong'} bg-bg-surface px-rc-sm py-[9px] text-small leading-[1.5] text-text-secondary outline-none hover:border-border-strong-hover focus-visible:border-accent focus-visible:text-text-primary focus-visible:shadow-focus-halo placeholder:text-text-tertiary`}
     />

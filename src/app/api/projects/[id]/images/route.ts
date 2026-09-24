@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto'
 import { NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { tryLoadRailFigures } from '@/app/(app)/rail-figures'
 import { createServiceRoleClient } from '@/lib/supabase/service-role'
 import { createImageGateway } from '@/lib/images/gateway'
 import { mintAttemptId, recordFixedSpend } from '@/lib/credits/ledger'
@@ -149,5 +150,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (generationIds.length > 0) {
     scheduleWorker(origin, { userId: user.id, projectId, generationIds, chainDepth: 0 })
   }
-  return NextResponse.json({ ok: true, claimed, notGenerated, inFlight }, { status: 202 })
+  // The charge itself lands when each shot settles (the status poll carries it); the rail
+  // pair rides here too so every paid action answers with current figures.
+  const rail = await tryLoadRailFigures(user.id)
+  return NextResponse.json({ ok: true, claimed, notGenerated, inFlight, rail }, { status: 202 })
 }

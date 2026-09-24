@@ -57,7 +57,10 @@ test.describe('GET /api/projects/[id]/agent/turn-credits', () => {
 
     const response = await page.request.get(`/api/projects/${projectId}/agent/turn-credits?messageId=${messageId}`)
     expect(response.ok()).toBe(true)
-    expect(await response.json()).toEqual({ credits: 17 })
+    const body = await response.json()
+    expect(body.credits).toBe(17)
+    // The rail's fresh figures ride along for pages that don't router.refresh().
+    expect(body.rail).toEqual({ spendThisMonth: expect.any(Number), creditsSpentThisMonth: expect.any(Number) })
   })
 
   test('returns credits: null for a message with no matching spend row - never 0', async ({ page }) => {
@@ -66,7 +69,10 @@ test.describe('GET /api/projects/[id]/agent/turn-credits', () => {
 
     const response = await page.request.get(`/api/projects/${projectId}/agent/turn-credits?messageId=${messageId}`)
     expect(response.ok()).toBe(true)
-    expect(await response.json()).toEqual({ credits: null })
+    const body = await response.json()
+    expect(body.credits).toBe(null)
+    // The rail's fresh figures ride along for pages that don't router.refresh().
+    expect(body.rail).toEqual({ spendThisMonth: expect.any(Number), creditsSpentThisMonth: expect.any(Number) })
   })
 
   test('a user cannot read another user\'s turn credits - 404, not their data', async ({ page }) => {

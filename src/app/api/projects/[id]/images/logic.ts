@@ -16,6 +16,7 @@ import {
   IMAGE_STALE_AFTER_MS,
   RUN_TIME_BUDGET_MS,
   STORYBOARD_IMAGE_SIZES,
+  STORYBOARD_THUMB_WIDTH,
   STORYBOARD_WEBP_QUALITY,
 } from '@/lib/config/storyboard'
 import {
@@ -66,7 +67,7 @@ function hasPrompt(value: string | null): boolean {
  * committed to images that haven't settled yet. Counting them is what stops one batch
  * (or a second tab) spending the same balance twice.
  */
-async function countLiveImageClaims(supabase: SupabaseServerClient, userId: string): Promise<number> {
+export async function countLiveImageClaims(supabase: SupabaseServerClient, userId: string): Promise<number> {
   const { data, error } = await supabase
     .from('generations')
     .select('state, started_at, queued_at, projects!inner(user_id)')
@@ -288,6 +289,11 @@ export function storyboardImagePath(userId: string, projectId: string, shotId: s
   return `${userId}/${projectId}/images/${shotId}/${attemptId}.webp`
 }
 
+// The lane thumbnail sits beside its full image: `{attemptId}.webp` -> `{attemptId}_thumb.webp`.
+export function storyboardThumbPath(imagePath: string): string {
+  return imagePath.replace(/\.webp$/, '_thumb.webp')
+}
+
 /**
  * The bound elements' reference images, as input to the edit endpoint. Style is never
  * shot-bound, so it's never here. A reference whose object can't be downloaded is left
@@ -448,6 +454,21 @@ async function processShot(
     if (uploadError) {
       outcome = { ok: false, error: uploadError.message }
       return 'failed'
+    }
+
+    // The lane thumbnail. Best-effort: a missing thumbnail falls back to the full image on
+    // the page, so its failure is logged and never fails (or un-charges) a drawn frame.
+    try {
+      const thumb = await sharp(imageBuffer)
+        .resize({ width: STORYBOARD_THUMB_WIDTH })
+        .webp({ quality: STORYBOARD_WEBP_QUALITY })
+        .toBuffer()
+      const { error: thumbError } = await supabase.storage
+        .from('artifacts')
+        .upload(storyboardThumbPath(path), thumb, { contentType: 'image/webp', upsert: false })
+      if (thumbError) console.error(`[images] thumbnail upload failed for shot ${shotId}:`, thumbError.message)
+    } catch (err) {
+      console.error(`[images] thumbnail encode failed for shot ${shotId}:`, err)
     }
 
     // PERSIST before the derived write, so a crash from here on is recovered for free.

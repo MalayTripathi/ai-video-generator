@@ -120,6 +120,12 @@
   --status-stale-fg: #9a5312;
   --status-stale-bg: #fceada;
   --status-stale-line: #edc79b;
+  /* Storyboard in-flight family (canvas 15): queued and generating frames, never amber -
+     amber is reserved for the warnings. */
+  --sb-active-fg: #2f4fa8;
+  --sb-active-bg: #e6ecf9;
+  --sb-active-bg-hover: #dbe4f5;
+  --sb-active-line: #c3d0ec;
   --status-edited-fg: #495271;
   --status-edited-bg: #e7e9f3;
 
@@ -217,6 +223,10 @@
   --status-stale-fg: #eda668;
   --status-stale-bg: #45280f;
   --status-stale-line: #5c3a18;
+  --sb-active-fg: #8fb0ee;
+  --sb-active-bg: #16213c;
+  --sb-active-bg-hover: #1d2a49;
+  --sb-active-line: #2c3d63;
   --status-edited-fg: #a9b2cc;
   --status-edited-bg: #262a3c;
 
@@ -303,6 +313,10 @@
   --color-status-stale-fg: var(--status-stale-fg);
   --color-status-stale-bg: var(--status-stale-bg);
   --color-status-stale-line: var(--status-stale-line);
+  --color-sb-active-fg: var(--sb-active-fg);
+  --color-sb-active-bg: var(--sb-active-bg);
+  --color-sb-active-bg-hover: var(--sb-active-bg-hover);
+  --color-sb-active-line: var(--sb-active-line);
   --color-status-edited-fg: var(--status-edited-fg);
   --color-status-edited-bg: var(--status-edited-bg);
 

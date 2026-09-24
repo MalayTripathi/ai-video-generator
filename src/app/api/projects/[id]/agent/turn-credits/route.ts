@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { tryLoadRailFigures } from '@/app/(app)/rail-figures'
 
 // Read-only lookup of one agent turn's real credit spend, keyed on the triggering user
 // message's id - the same anchor the ledger write itself uses (see logic.ts's
@@ -47,5 +48,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     .limit(1)
 
   const credits = rows && rows.length > 0 ? -rows[0].delta : null
-  return NextResponse.json({ credits })
+  // Fresh rail figures too, so a page that doesn't router.refresh() after a turn (the
+  // storyboard) still updates the rail.
+  return NextResponse.json({ credits, rail: await tryLoadRailFigures(user.id) })
 }

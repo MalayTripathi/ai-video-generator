@@ -2,10 +2,8 @@ import type { ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/server'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { Rail } from './dashboard/rail'
-import { getUsageRows } from './usage/data'
-import { aggregateUsage } from './usage/aggregate'
-import { getLedgerRows } from './credits/data'
-import { aggregateCreditsPeriod } from './credits/aggregate'
+import { RailFiguresProvider } from '@/components/rail-figures-context'
+import { loadRailFigures } from './rail-figures'
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const supabase = await createClient()
@@ -19,22 +17,16 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   // one itself. Never throws, so a transient failure here never breaks a page load.
   if (user) await ensureSignupGrant(user.id)
 
-  // Reuses the same aggregation path /usage itself uses, rather than a second query
-  // shape - just with an empty projects list, since the rail only needs settledTotal,
-  // not byProject. getUsageRows is request-memoized (React cache()), so a visit to
-  // /usage this same request doesn't re-run this query.
-  const rows = user ? await getUsageRows(user.id, 'this_month') : []
-  const spendThisMonth = aggregateUsage(rows, []).settledTotal
-
-  // Same pattern, against credit_ledger instead of usage - request-memoized via
-  // getLedgerRows, so a visit to /credits this same request reuses it too.
-  const creditsRows = user ? await getLedgerRows(user.id, 'this_month') : []
-  const creditsSpentThisMonth = aggregateCreditsPeriod(creditsRows, []).spentThisPeriod
+  // The same aggregation /usage and /credits use (request-memoized, so a visit to either
+  // page this request reuses the query). Seeds the client store the rail reads from.
+  const railFigures = user ? await loadRailFigures(user.id) : { spendThisMonth: 0, creditsSpentThisMonth: 0 }
 
   return (
-    <div className="flex h-screen">
-      <Rail user={user ?? undefined} spendThisMonth={spendThisMonth} creditsSpentThisMonth={creditsSpentThisMonth} />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
-    </div>
+    <RailFiguresProvider initial={railFigures}>
+      <div className="flex h-screen">
+        <Rail user={user ?? undefined} />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
+      </div>
+    </RailFiguresProvider>
   )
 }

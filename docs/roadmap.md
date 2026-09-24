@@ -302,3 +302,17 @@ are not lost.
 - **Storyboard image production-bypass fix (Perf 2).** `assertLiveImageCallsAllowed()`
   returns early under `NODE_ENV=production`, so a route test run against a production
   server would reach OpenAI. Logic tests inject fakes and are unaffected.
+- **Move the other steps' rail updates to the rail store (with the Perf slice).** The
+  Workbench (`shots-context`, `shot-card`, `element-card`), Step 3
+  (`image-prompts-context`) and the agent panel off the Storyboard still refresh the rail
+  through `router.refresh()`. Push the figures into `rail-figures-context` from each paid
+  response instead, as the Storyboard does.
+- **Storyboard static controls to wire:** Retime (drag, reorder, Bin, Fit to voiceover),
+  Motion & transitions, zoom, the voiceover and music lanes, Preview & mix, and Export. Each
+  carries a `// static until <feature>` comment at its component.
+- **The storyboard agent's context block still says "coming soon"**
+  (`src/lib/prompts/agent-storyboard.ts`). Rewrite (and bump its version) when the step
+  gets agent tools.
+- **15e's stale sub-line wants "prompt changed HH:MM",** but nothing records when a prompt
+  changed. The panel shows the drawn time and size instead. Shots also have no title, so the
+  lane's block name is the visual description.

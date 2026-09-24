@@ -5,18 +5,12 @@ import { usePathname } from 'next/navigation'
 import type { User } from '@supabase/supabase-js'
 import { formatCost } from '@/lib/format-cost'
 import { formatCredits } from '@/lib/format-credits'
+import { useRailFigures } from '@/components/rail-figures-context'
 import { UserMenu } from './user-menu'
 
-export function Rail({
-  user,
-  spendThisMonth,
-  creditsSpentThisMonth,
-}: {
-  user?: User
-  spendThisMonth: number
-  creditsSpentThisMonth: number
-}) {
+export function Rail({ user }: { user?: User }) {
   const pathname = usePathname()
+  const { spendThisMonth, creditsSpentThisMonth } = useRailFigures().figures
   const active = pathname === '/dashboard'
   const usageActive = pathname === '/usage'
   const name = (user?.user_metadata?.full_name as string | undefined)?.trim() || user?.email || 'Account'

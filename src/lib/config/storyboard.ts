@@ -52,3 +52,20 @@ export const STATUS_POLL_INTERVAL_MS = 3000
 // sharp WebP quality for stored storyboard images - high, since these become video
 // first frames.
 export const STORYBOARD_WEBP_QUALITY = 90
+
+// The widest a picture-lane block may draw. The lane fits its width by default, so a short
+// project on a wide screen would otherwise produce giant blocks; past this cap the whole
+// timeline keeps its proportions and leaves the rest of the lane empty.
+export const STORYBOARD_MAX_BLOCK_PX = 360
+
+// Width of the lane thumbnail written beside each stored image (`{attemptId}_thumb.webp`).
+// The picture lane draws at most ~30px wide, so this is generous for any DPR.
+export const STORYBOARD_THUMB_WIDTH = 240
+
+// Lifetime of the signed image URLs the status endpoint returns. Comfortably longer than a
+// poll cycle; every poll re-signs, and an idle page re-signs shortly before expiry.
+export const STORYBOARD_SIGNED_URL_EXPIRES_S = 3600
+
+// Estimate of one image call, for the generating block's progress rule and ETA only. It is
+// a display figure - nothing times out or settles on it.
+export const IMAGE_ETA_ESTIMATE_MS = 45_000

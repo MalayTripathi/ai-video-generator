@@ -14,6 +14,8 @@ import {
   IMAGE_STALE_AFTER_MS,
   RUN_TIME_BUDGET_MS,
   STORYBOARD_IMAGE_SIZES,
+  STORYBOARD_SIGNED_URL_EXPIRES_S,
+  STORYBOARD_THUMB_WIDTH,
 } from '../src/lib/config/storyboard'
 import { claimGeneration } from '../src/lib/generations/claim'
 import { deriveImageState } from '../src/lib/storyboard/image-state'
@@ -23,6 +25,7 @@ import {
   runImagesContinuation,
   runImagesRequest,
   storyboardImagePath,
+  storyboardThumbPath,
   type ContinuationPayload,
   type ImageWorkerDeps,
 } from '../src/app/api/projects/[id]/images/logic'
@@ -452,8 +455,9 @@ test.describe('storyboard images - worker', () => {
     const { data: objects } = await admin.storage
       .from('artifacts')
       .list(`${primary.user.id}/${projectId}/images/${shotId}`)
+    // Each attempt is its image plus its lane thumbnail.
     expect((objects ?? []).map((o) => o.name).sort()).toEqual(
-      [path.basename(firstPath!), path.basename(secondPath!)].sort()
+      [firstPath!, secondPath!].flatMap((p) => [path.basename(p), path.basename(storyboardThumbPath(p))]).sort()
     )
     expect(await ledgerRows(projectId)).toHaveLength(2)
   })
@@ -665,8 +669,10 @@ test.describe('storyboard images - status and staleness', () => {
       updated_at: stuck,
     })
 
-    const status = await loadImageStatuses({ supabase: admin, projectId, userId: primary.user.id })
-    expect(status.ok && status.data.shots).toEqual([{ shotId, state: 'failed', imagePath: null }])
+    const status = await loadImageStatuses({ supabase: admin, projectId, userId: primary.user.id, getBalance: realGetBalance })
+    expect(status.ok && status.data.shots).toEqual([
+      expect.objectContaining({ shotId, state: 'failed', imagePath: null, imageUrl: null, thumbUrl: null, drawnAt: null }),
+    ])
     expect(await ledgerRows(projectId)).toHaveLength(0)
 
     const reclaim = await claimGeneration({
@@ -677,5 +683,98 @@ test.describe('storyboard images - status and staleness', () => {
     })
     expect(reclaim.outcome).toBe('claimed')
     await releaseClaims(projectId)
+  })
+})
+
+test.describe('storyboard images - thumbnails and signed status', () => {
+  function status(projectId: string) {
+    return loadImageStatuses({ supabase: admin, projectId, userId: primary.user.id, getBalance: realGetBalance })
+  }
+
+  test('a drawn image gets a lane thumbnail beside it, at the configured width', async () => {
+    const projectId = await seedProject(primary.user.id, '9:16')
+    const [shotId] = await seedShots(projectId, 1)
+    await generate(primary.user.id, projectId, [shotId], successImageGateway())
+
+    const { image_path } = await shotRow(shotId)
+    const thumbPath = storyboardThumbPath(image_path!)
+    expect(thumbPath).toBe(image_path!.replace(/\.webp$/, '_thumb.webp'))
+    const { data: blob, error } = await admin.storage.from('artifacts').download(thumbPath)
+    expect(error).toBeNull()
+    const meta = await sharp(Buffer.from(await blob!.arrayBuffer())).metadata()
+    expect(meta.format).toBe('webp')
+    expect(meta.width).toBe(STORYBOARD_THUMB_WIDTH)
+    // Same ratio as the full image: 1008x1792 scaled to the thumbnail width.
+    expect(meta.height).toBe(Math.round((1792 * STORYBOARD_THUMB_WIDTH) / 1008))
+  })
+
+  test('status signs the full image and thumbnail in one read, with drawnAt, expiry and balance', async () => {
+    const projectId = await seedProject(primary.user.id)
+    const [shotId] = await seedShots(projectId, 1)
+    await generate(primary.user.id, projectId, [shotId], successImageGateway())
+    const { image_path } = await shotRow(shotId)
+
+    const before = Date.now()
+    const result = await status(projectId)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const [shot] = result.data.shots
+    expect(shot).toMatchObject({ shotId, state: 'ready', imagePath: image_path })
+    expect(shot.imageUrl).toContain(encodeURI(image_path!).split('/').pop()!)
+    expect(shot.thumbUrl).toContain('_thumb.webp')
+    // Both URLs actually resolve.
+    expect((await fetch(shot.imageUrl!)).status).toBe(200)
+    expect((await fetch(shot.thumbUrl!)).status).toBe(200)
+
+    const { data: claim } = await admin
+      .from('generations')
+      .select('updated_at')
+      .eq('project_id', projectId)
+      .eq('shot_id', shotId)
+      .single()
+    expect(shot.drawnAt).toBe(claim!.updated_at)
+    const expiresIn = new Date(result.data.expiresAt).getTime() - before
+    expect(expiresIn).toBeGreaterThan((STORYBOARD_SIGNED_URL_EXPIRES_S - 5) * 1000)
+    expect(expiresIn).toBeGreaterThan(result.data.pollIntervalMs * 100)
+    // primary is shared across parallel specs, whose live claims lower this figure - so it
+    // is bounded by the ledger, never asserted exactly.
+    expect(typeof result.data.balanceCredits).toBe('number')
+    expect(result.data.balanceCredits!).toBeGreaterThanOrEqual(0)
+    expect(result.data.balanceCredits!).toBeLessThanOrEqual(await realGetBalance(primary.user.id))
+  })
+
+  test('an image with no thumbnail still signs the full image, and thumbUrl is null', async () => {
+    const projectId = await seedProject(primary.user.id)
+    const [shotId] = await seedShots(projectId, 1)
+    await generate(primary.user.id, projectId, [shotId], successImageGateway())
+    const { image_path } = await shotRow(shotId)
+    await admin.storage.from('artifacts').remove([storyboardThumbPath(image_path!)])
+
+    const result = await status(projectId)
+    expect(result.ok && result.data.shots[0]).toMatchObject({ state: 'ready', thumbUrl: null })
+    expect(result.ok && result.data.shots[0].imageUrl).toBeTruthy()
+  })
+
+  test('an in-flight claim reports its timestamps and counts against the balance', async () => {
+    const projectId = await seedProject(primary.user.id)
+    const [queuedShot, startedShot] = await seedShots(projectId, 2)
+    const now = new Date().toISOString()
+    await admin.from('generations').insert([
+      { project_id: projectId, step: 'storyboard', operation: 'generate_image', shot_id: queuedShot, element_id: null, state: 'generating', started_at: now, queued_at: now },
+      { project_id: projectId, step: 'storyboard', operation: 'generate_image', shot_id: startedShot, element_id: null, state: 'generating', started_at: now, queued_at: null },
+    ])
+    try {
+      const result = await status(projectId)
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const byId = new Map(result.data.shots.map((s) => [s.shotId, s]))
+      expect(byId.get(queuedShot)).toMatchObject({ state: 'queued', queuedAt: expect.any(String), startedAt: expect.any(String) })
+      expect(byId.get(startedShot)).toMatchObject({ state: 'generating', queuedAt: null, startedAt: expect.any(String) })
+      const ledger = await realGetBalance(primary.user.id)
+      // Other specs may hold live claims of their own, so the figure is at most ledger - 2 x price.
+      expect(result.data.balanceCredits!).toBeLessThanOrEqual(Math.max(0, ledger - 2 * PRICE))
+    } finally {
+      await releaseClaims(projectId)
+    }
   })
 })

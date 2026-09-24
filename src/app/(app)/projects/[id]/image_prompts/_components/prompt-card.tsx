@@ -6,7 +6,8 @@ import { useImagePrompts } from './image-prompts-context'
 import { isEdited, isStale, isUngenerated } from './derive-image-prompts-phase'
 import { useFieldSave } from '../../workbench/_components/use-field-save'
 import { SaveStatusIndicator } from '../../workbench/_components/save-status-indicator'
-import { PromptEditor } from './prompt-editor'
+import { EditedChip } from '@/components/edited-chip'
+import { PromptEditor } from '@/components/prompt-editor'
 import { PromptReferences } from './prompt-references'
 import { RegenerateButton } from './regenerate-button'
 import type { PromptShot } from './types'
@@ -30,6 +31,7 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
     settled,
     costFor,
     regenerateOne,
+    updateShotLocal,
   } = useImagePrompts()
 
   const save = useFieldSave()
@@ -79,11 +81,7 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
               Stale
             </span>
           )}
-          {edited && (
-            <span className="flex-none rounded-badge bg-status-edited-bg px-2 py-[3px] text-chip font-medium text-status-edited-fg">
-              Edited by you
-            </span>
-          )}
+          {edited && <EditedChip />}
           {updated && (
             <span className="flex flex-none items-center gap-[5px] text-meta text-status-done-fg">
               <CheckIcon />
@@ -131,7 +129,7 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
           </div>
         ) : (
           <div className="flex flex-col gap-[5px]">
-            <PromptEditor shotId={shot.id} value={shot.image_prompt ?? ''} run={save.run} missing={missing} />
+            <PromptEditor shotId={shot.id} value={shot.image_prompt ?? ''} run={save.run} missing={missing} onSaved={updateShotLocal} />
             {save.status === 'failed' && save.error && (
               <span className="text-meta text-status-failed-fg">{save.error}</span>
             )}

@@ -6,8 +6,8 @@ import { runAgentTurn } from '../src/app/api/projects/[id]/agent/logic'
 import { getAgentStepConfig } from '../src/app/api/projects/[id]/agent/steps'
 import { scriptedGateway, textMessage } from './helpers/claude-fakes'
 
-// Step 4 placeholder: access rules, the shell around an empty state, and an agent panel
-// that runs with no tools. Every agent call here is a hand-written fake or a mocked route.
+// Step 4: access rules, the real shell around the storyboard, and an agent panel that
+// runs with no tools. Every agent call here is a hand-written fake or a mocked route.
 
 const NAVIGATION = { timeout: 45000 }
 
@@ -39,7 +39,7 @@ async function seed(opts: { furthestStep: number; currentStep?: string }) {
   return projectId
 }
 
-test.describe('storyboard placeholder page', () => {
+test.describe('storyboard page access and shell', () => {
   test.setTimeout(120000)
 
   test('a project that has not reached the storyboard is sent back to its current step', async ({ page }) => {
@@ -53,14 +53,15 @@ test.describe('storyboard placeholder page', () => {
 
     await page.goto(`/projects/${projectId}/storyboard`)
     await expect(page).toHaveURL(`/projects/${projectId}/image_prompts`, NAVIGATION)
-    await expect(page.getByTestId('storyboard-placeholder')).toHaveCount(0)
+    await expect(page.getByTestId('storyboard-main')).toHaveCount(0)
   })
 
-  test('once reached it shows the coming-soon empty state inside the real shell', async ({ page }) => {
+  test('once reached it shows the storyboard timeline inside the real shell', async ({ page }) => {
     const projectId = await seed({ furthestStep: stepIndex('storyboard'), currentStep: 'storyboard' })
 
     await page.goto(`/projects/${projectId}/storyboard`)
-    await expect(page.getByRole('heading', { name: 'Storyboard is coming soon' })).toBeVisible(NAVIGATION)
+    await expect(page.getByTestId('storyboard-main')).toBeVisible(NAVIGATION)
+    await expect(page.getByTestId('frames-ready')).toHaveText('0 of 1 frames ready')
 
     // The shell's own pieces, not copies: step indicator with Storyboard current, agent
     // panel, and an inert footer button.
@@ -93,7 +94,7 @@ test.describe('storyboard placeholder page', () => {
 
       await page.goto(`/projects/${projectId}/storyboard`)
       await expect(page.getByText('This page could not be found.')).toBeVisible(NAVIGATION)
-      await expect(page.getByTestId('storyboard-placeholder')).toHaveCount(0)
+      await expect(page.getByTestId('storyboard-main')).toHaveCount(0)
     })
   })
 })

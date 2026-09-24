@@ -13,7 +13,7 @@ function ArrowIcon() {
 export function StoryboardFooter() {
   return (
     <>
-      <span className="text-small leading-[1.5] text-text-secondary">The storyboard step is coming soon.</span>
+      <span className="text-small leading-[1.5] text-text-secondary">Motion prompts are written after frames exist.</span>
       <button
         type="button"
         disabled
