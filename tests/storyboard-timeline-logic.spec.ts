@@ -1,10 +1,19 @@
 import { test, expect } from '@playwright/test'
-import { IMAGE_ETA_ESTIMATE_MS } from '../src/lib/config/storyboard'
+import { IMAGE_ETA_ESTIMATE_MS, RETIME_SNAP_SEC, STORYBOARD_MIN_SHOT_SEC } from '../src/lib/config/storyboard'
+import { VIDEO_MODELS, videoModelMaxSeconds } from '../src/lib/config/models'
 import {
   blockTier,
   caseTwo,
   etaFor,
+  filmOrdered,
+  filmSeconds,
   groupBands,
+  isRetimeAllowed,
+  laneShots,
+  orderDiffersFromScript,
+  reorderWrites,
+  retimeBounds,
+  snapRetime,
   LANE_GUTTER_PX,
   laneLayout,
   laneTotalSeconds,
@@ -169,5 +178,117 @@ test.describe('case 2 - not enough credits for the last N', () => {
       requiredCredits: 30,
       shotCount: 2,
     })
+  })
+})
+
+// Storyboard B2: film order and length sit beside the script's, and win when set.
+type LaneShot = {
+  id: string
+  order_index: number
+  film_order: number | null
+  duration_sec: number | null
+  film_duration_sec: number | null
+  binned_at: string | null
+}
+
+function laneFixture(n: number): LaneShot[] {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `s${i}`,
+    order_index: i,
+    film_order: null,
+    duration_sec: 5,
+    film_duration_sec: null,
+    binned_at: null,
+  }))
+}
+
+function applyWrites(shots: LaneShot[], writes: { id: string; film_order: number }[]): LaneShot[] {
+  const byId = new Map(writes.map((w) => [w.id, w.film_order]))
+  return shots.map((s) => (byId.has(s.id) ? { ...s, film_order: byId.get(s.id)! } : s))
+}
+
+test.describe('retime bounds and snap', () => {
+  test('the floor is STORYBOARD_MIN_SHOT_SEC and the ceiling is the model maximum', () => {
+    const bounds = retimeBounds(5.4, 3)!
+    expect(bounds).toEqual({ min: STORYBOARD_MIN_SHOT_SEC, max: 5.4 })
+    expect(STORYBOARD_MIN_SHOT_SEC).toBe(1)
+    expect(snapRetime(0.2, bounds)).toBe(1)
+    expect(snapRetime(9, bounds)).toBe(5.4)
+  })
+
+  test('a discrete model caps at its longest allowed value; a continuous one at durationMax', () => {
+    expect(videoModelMaxSeconds(VIDEO_MODELS['Kling 2.1'])).toBe(10)
+    expect(videoModelMaxSeconds(VIDEO_MODELS['mochi-1'])).toBe(5.4)
+  })
+
+  test('a shot already past the ceiling (or under the floor) is never forced back by the bounds', () => {
+    expect(retimeBounds(5.4, 6)).toEqual({ min: 1, max: 6 })
+    expect(retimeBounds(5.4, 0.8)).toEqual({ min: 0.8, max: 5.4 })
+    // A shot with no length yet gets the plain bounds.
+    expect(retimeBounds(10, null)).toEqual({ min: 1, max: 10 })
+  })
+
+  test('an unknown model leaves retime unavailable', () => {
+    expect(retimeBounds(null, 5)).toBeNull()
+  })
+
+  test('snaps to 0.1s', () => {
+    const bounds = retimeBounds(10, 5)!
+    expect(snapRetime(4.5321, bounds)).toBe(4.5)
+    expect(snapRetime(5.26, bounds)).toBe(5.3)
+    expect(snapRetime(4.5 + RETIME_SNAP_SEC, bounds)).toBe(4.6)
+    expect(isRetimeAllowed(5.2, bounds)).toBe(true)
+    expect(isRetimeAllowed(5.25, bounds)).toBe(false)
+    expect(isRetimeAllowed(0.9, bounds)).toBe(false)
+    expect(isRetimeAllowed(10.1, bounds)).toBe(false)
+  })
+})
+
+test.describe('film order and the bin', () => {
+  test('coalesce: film_order wins over order_index, and film_duration_sec over duration_sec', () => {
+    const shots = laneFixture(3)
+    shots[2].film_order = 0
+    shots[0].film_order = 2
+    expect(filmOrdered(shots).map((s) => s.id)).toEqual(['s2', 's1', 's0'])
+    shots[1].film_duration_sec = 7.5
+    expect(filmSeconds(shots[1])).toBe(7.5)
+    expect(filmSeconds(shots[0])).toBe(5)
+  })
+
+  test('reorderWrites writes only the shots whose position changes, and the result reads back in order', () => {
+    const shots = laneFixture(5)
+    const writes = reorderWrites(shots, 's3', 1)
+    expect(writes).toEqual([
+      { id: 's3', film_order: 1 },
+      { id: 's1', film_order: 2 },
+      { id: 's2', film_order: 3 },
+    ])
+    const moved = applyWrites(shots, writes)
+    expect(laneShots(moved).map((s) => s.id)).toEqual(['s0', 's3', 's1', 's2', 's4'])
+    expect(orderDiffersFromScript(moved)).toBe(true)
+    // Moving it back restores script order.
+    const back = applyWrites(moved, reorderWrites(moved, 's3', 3))
+    expect(laneShots(back).map((s) => s.id)).toEqual(['s0', 's1', 's2', 's3', 's4'])
+    expect(orderDiffersFromScript(back)).toBe(false)
+    expect(reorderWrites(shots, 's2', 2)).toEqual([])
+  })
+
+  test('a binned shot keeps its slot: reordering around it and restoring puts it back where it was', () => {
+    let shots = laneFixture(4)
+    shots[1].binned_at = '2026-09-24T10:00:00Z'
+    expect(laneShots(shots).map((s) => s.id)).toEqual(['s0', 's2', 's3'])
+    // Move s3 to lane position 0.
+    shots = applyWrites(shots, reorderWrites(shots, 's3', 0))
+    expect(laneShots(shots).map((s) => s.id)).toEqual(['s3', 's0', 's2'])
+    shots = shots.map((s) => (s.id === 's1' ? { ...s, binned_at: null } : s))
+    // s1 returns right after s0, the shot it followed when it was removed.
+    expect(laneShots(shots).map((s) => s.id)).toEqual(['s3', 's0', 's1', 's2'])
+  })
+
+  test('the total excludes binned shots and uses the film length', () => {
+    const shots = laneFixture(3)
+    shots[0].film_duration_sec = 7
+    shots[2].binned_at = '2026-09-24T10:00:00Z'
+    expect(laneTotalSeconds(shots)).toBe(12)
   })
 })

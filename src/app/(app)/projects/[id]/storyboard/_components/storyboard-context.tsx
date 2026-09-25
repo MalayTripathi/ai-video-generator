@@ -1,11 +1,18 @@
 'use client'
 
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { SideColumnOverrideContext } from '@/components/side-column-switch'
 import { overwritePromptContent, PromptConfirmModal } from '@/components/prompt-confirm-modal'
 import { parseRailFigures, useRailFigures } from '@/components/rail-figures-context'
 import { creditsFor } from '@/lib/config/credits'
 import type { AspectRatio } from '@/lib/config/enums'
+import { filmDuration, laneShots as orderLane, reorderWrites } from '@/lib/storyboard/timeline'
+import {
+  restoreScriptOrder as restoreScriptOrderAction,
+  saveFilmDuration,
+  saveFilmOrder,
+  setShotBinned,
+} from '../actions'
 import { useImageStatusPoll } from './use-image-status-poll'
 import type { ImageStatusData, ShotImageStatus, StoryboardShot } from './types'
 
@@ -40,6 +47,17 @@ type StoryboardContextValue = {
   generate: (shotIds: string[], source: ActionSource) => Promise<void>
   regeneratePrompt: (shotId: string) => void
   onPromptSaved: (shotId: string, patch: Partial<StoryboardShot>) => void
+  // Timeline editing (B2). laneShots is picture order with the bin excluded - what the
+  // lane, the counters, the total and Continue all read. binnedShots is the bin, oldest first.
+  laneShots: StoryboardShot[]
+  binnedShots: StoryboardShot[]
+  retimeMaxSec: number | null
+  zoomIndex: number
+  setZoomIndex: (index: number) => void
+  retime: (shotId: string, seconds: number) => void
+  reorder: (shotId: string, toLaneIndex: number) => void
+  setBinned: (shotId: string, binned: boolean) => void
+  restoreScriptOrder: () => void
 }
 
 const StoryboardContext = createContext<StoryboardContextValue | null>(null)
@@ -73,6 +91,7 @@ export function StoryboardProvider({
   projectId,
   aspectRatio,
   readOnly,
+  retimeMaxSec,
   initialShots,
   initialStatus,
   children,
@@ -80,6 +99,7 @@ export function StoryboardProvider({
   projectId: string
   aspectRatio: AspectRatio
   readOnly: boolean
+  retimeMaxSec: number | null
   initialShots: StoryboardShot[]
   initialStatus: ImageStatusData
   children: ReactNode
@@ -92,6 +112,95 @@ export function StoryboardProvider({
   const [actionError, setActionError] = useState<ActionError | null>(null)
   const [overwriteShotId, setOverwriteShotId] = useState<string | null>(null)
   const { setFigures } = useRailFigures()
+  const [zoomIndex, setZoomIndex] = useState(0)
+
+  // The latest shots, for the timeline mutators: they read current values without being
+  // rebuilt (and re-rendering every memo'd block) on each change.
+  const shotsRef = useRef(shots)
+  useLayoutEffect(() => {
+    shotsRef.current = shots
+  }, [shots])
+
+  const patchShots = useCallback((patches: Map<string, Partial<StoryboardShot>>) => {
+    setShots((prev) => prev.map((shot) => (patches.has(shot.id) ? { ...shot, ...patches.get(shot.id) } : shot)))
+  }, [])
+
+  // Optimistic: the edit applies at once, the save runs behind it, and nothing is re-read
+  // afterwards. A failed save rolls back only the fields that still hold this edit's value -
+  // a later edit to the same shot has already superseded it (last write wins).
+  const commitEdit = useCallback(
+    async <K extends keyof StoryboardShot>(
+      field: K,
+      next: Map<string, StoryboardShot[K]>,
+      save: () => Promise<{ success: boolean }>
+    ) => {
+      const before = new Map(shotsRef.current.filter((s) => next.has(s.id)).map((s) => [s.id, s[field]]))
+      patchShots(new Map([...next].map(([id, value]) => [id, { [field]: value } as Partial<StoryboardShot>])))
+      setActionError((prev) => (prev?.source === 'lane' && prev.kind === 'error' ? null : prev))
+      const ok = await save().then(
+        (r) => r.success,
+        () => false
+      )
+      if (ok) return
+      setShots((prev) =>
+        prev.map((shot) =>
+          next.has(shot.id) && before.has(shot.id) && shot[field] === next.get(shot.id)
+            ? { ...shot, [field]: before.get(shot.id) }
+            : shot
+        )
+      )
+      setActionError({ source: 'lane', kind: 'error', message: "That change couldn't be saved, so it was undone. Try again." })
+    },
+    [patchShots]
+  )
+
+  const retime = useCallback(
+    (shotId: string, seconds: number) => {
+      const shot = shotsRef.current.find((s) => s.id === shotId)
+      if (readOnly || !shot || filmDuration(shot) === seconds) return
+      void commitEdit('film_duration_sec', new Map([[shotId, seconds]]), () =>
+        saveFilmDuration(projectId, shotId, seconds)
+      )
+    },
+    [projectId, readOnly, commitEdit]
+  )
+
+  const reorder = useCallback(
+    (shotId: string, toLaneIndex: number) => {
+      if (readOnly) return
+      const writes = reorderWrites(shotsRef.current, shotId, toLaneIndex)
+      if (writes.length === 0) return
+      void commitEdit('film_order', new Map(writes.map((w) => [w.id, w.film_order])), () =>
+        saveFilmOrder(projectId, writes)
+      )
+    },
+    [projectId, readOnly, commitEdit]
+  )
+
+  const setBinned = useCallback(
+    (shotId: string, binned: boolean) => {
+      const shot = shotsRef.current.find((s) => s.id === shotId)
+      if (readOnly || !shot || (shot.binned_at !== null) === binned) return
+      if (binned) setSelectedShotId((prev) => (prev === shotId ? null : prev))
+      void commitEdit('binned_at', new Map([[shotId, binned ? new Date().toISOString() : null]]), () =>
+        setShotBinned(projectId, shotId, binned)
+      )
+    },
+    [projectId, readOnly, commitEdit]
+  )
+
+  const restoreScriptOrder = useCallback(() => {
+    if (readOnly) return
+    const reset = new Map(shotsRef.current.filter((s) => s.film_order !== null).map((s) => [s.id, null]))
+    if (reset.size === 0) return
+    void commitEdit('film_order', reset, () => restoreScriptOrderAction(projectId))
+  }, [projectId, readOnly, commitEdit])
+
+  const laneShots = useMemo(() => orderLane(shots), [shots])
+  const binnedShots = useMemo(
+    () => shots.filter((s) => s.binned_at !== null).sort((a, b) => a.binned_at!.localeCompare(b.binned_at!)),
+    [shots]
+  )
 
   const statusById = useMemo(() => new Map(data.shots.map((s) => [s.shotId, s])), [data.shots])
   const statusFor = useCallback((shotId: string) => statusById.get(shotId) ?? emptyStatus(shotId), [statusById])
@@ -242,6 +351,15 @@ export function StoryboardProvider({
       generate,
       regeneratePrompt,
       onPromptSaved,
+      laneShots,
+      binnedShots,
+      retimeMaxSec,
+      zoomIndex,
+      setZoomIndex,
+      retime,
+      reorder,
+      setBinned,
+      restoreScriptOrder,
     }),
     [
       projectId,
@@ -259,6 +377,14 @@ export function StoryboardProvider({
       generate,
       regeneratePrompt,
       onPromptSaved,
+      laneShots,
+      binnedShots,
+      retimeMaxSec,
+      zoomIndex,
+      retime,
+      reorder,
+      setBinned,
+      restoreScriptOrder,
     ]
   )
 

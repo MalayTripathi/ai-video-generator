@@ -69,3 +69,23 @@ export const STORYBOARD_SIGNED_URL_EXPIRES_S = 3600
 // Estimate of one image call, for the generating block's progress rule and ETA only. It is
 // a display figure - nothing times out or settles on it.
 export const IMAGE_ETA_ESTIMATE_MS = 45_000
+
+// Retime (Storyboard B2). The shortest a boundary drag can make a shot; the longest comes
+// from the project's video model (videoModelMaxSeconds in models.ts), never a constant.
+export const STORYBOARD_MIN_SHOT_SEC = 1.0
+
+// Retimed lengths snap to this step, on drag and on each keyboard nudge.
+export const RETIME_SNAP_SEC = 0.1
+
+// Zoom levels for the timeline's −/Fit/+, as multiples of the Fit scale. Index 0 is Fit,
+// the default; past Fit the lane scrolls horizontally.
+export const STORYBOARD_ZOOM_STEPS = [1, 1.5, 2, 3, 4] as const
+
+// While a drag is within this many pixels of the lane's edge, the zoomed lane scrolls.
+export const LANE_AUTOSCROLL_EDGE_PX = 48
+
+// Fastest auto-scroll, in pixels per animation frame, reached at the very edge.
+export const LANE_AUTOSCROLL_MAX_PX = 14
+
+// A press that moves less than this is a click (it selects the shot), never a drag.
+export const DRAG_THRESHOLD_PX = 4

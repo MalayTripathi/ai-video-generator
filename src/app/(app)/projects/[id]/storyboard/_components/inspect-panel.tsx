@@ -6,7 +6,7 @@ import { PromptEditor } from '@/components/prompt-editor'
 import { STORYBOARD_IMAGE_SIZES } from '@/lib/config/storyboard'
 import { formatClockTime } from '@/lib/format-clock-time'
 import { formatCredits } from '@/lib/format-credits'
-import { etaFor, isInFlight } from '@/lib/storyboard/timeline'
+import { etaFor, filmDuration, isInFlight } from '@/lib/storyboard/timeline'
 import { imagePrice, promptPrice, useStoryboard } from './storyboard-context'
 import { formatSeconds } from './shot-block'
 import { useNow } from './use-now'
@@ -58,6 +58,7 @@ function InspectBody() {
     generate,
     regeneratePrompt,
     onPromptSaved,
+    setBinned,
   } = useStoryboard()
 
   const shot = shots.find((s) => s.id === selectedShotId)
@@ -220,12 +221,23 @@ function InspectBody() {
           <div className="flex items-baseline gap-[10px]">
             <span className="w-[64px] flex-none text-small text-text-tertiary">Duration</span>
             <span data-testid="inspect-duration" className="flex-1 text-small font-medium">
-              {formatSeconds(shot.duration_sec)}
+              {formatSeconds(filmDuration(shot))}
             </span>
             <span className="text-meta text-text-quiet">set in Retime</span>
           </div>
           <MotionRow />
         </div>
+
+        <button
+          type="button"
+          data-testid="inspect-remove"
+          disabled={readOnly}
+          onClick={() => setBinned(shot.id, true)}
+          className="flex h-[32px] cursor-pointer items-center justify-center gap-[8px] rounded-control border border-border-subtle text-small text-text-secondary hover:border-border-strong hover:bg-bg-inset hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Remove to bin
+          <span className="font-mono text-mono text-text-tertiary">free</span>
+        </button>
       </div>
     </aside>
   )

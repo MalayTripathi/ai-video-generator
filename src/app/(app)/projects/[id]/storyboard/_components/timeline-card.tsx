@@ -1,20 +1,26 @@
 'use client'
 
-import { useCallback, useLayoutEffect, useRef, useState } from 'react'
-import { STORYBOARD_MAX_BLOCK_PX } from '@/lib/config/storyboard'
+import { memo, useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
+import { RETIME_SNAP_SEC, STORYBOARD_MAX_BLOCK_PX, STORYBOARD_ZOOM_STEPS } from '@/lib/config/storyboard'
 import {
   blockTier,
+  filmDuration,
+  filmSeconds,
   formatTimecode,
   groupBands,
   LANE_GUTTER_PX,
   laneLayout,
   laneTotalSeconds,
+  retimeBounds,
   rulerTicks,
-  shotSeconds,
+  snapRetime,
   ZERO_BLOCK_PX,
 } from '@/lib/storyboard/timeline'
 import { imagePrice, useStoryboard } from './storyboard-context'
 import { ShotBlock } from './shot-block'
+import { BinControl } from './bin-control'
+import { Playhead, type PlayheadHandle } from './playhead'
+import { useLaneDrag } from './use-lane-drag'
 import { useNow } from './use-now'
 
 function useElementWidth<T extends HTMLElement>() {
@@ -23,50 +29,84 @@ function useElementWidth<T extends HTMLElement>() {
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    setWidth(el.getBoundingClientRect().width)
-    const observer = new ResizeObserver((entries) => setWidth(entries[0].contentRect.width))
+    setWidth(el.clientWidth)
+    const observer = new ResizeObserver(() => setWidth(el.clientWidth))
     observer.observe(el)
     return () => observer.disconnect()
   }, [])
   return { ref, width }
 }
 
-// static until retime - the drag handle is drawn, never wired
-function Grip() {
+// A boundary between two shots, or the end handle after the last. Dragging it (use-lane-
+// drag) or pressing ←/→ while it has focus sets the length of the shot on its left.
+const Grip = memo(function Grip({
+  shotId,
+  number,
+  seconds,
+  min,
+  max,
+  end,
+  onNudge,
+}: {
+  shotId: string
+  number: number
+  seconds: number
+  min: number | null
+  max: number | null
+  end: boolean
+  onNudge: (shotId: string, direction: 1 | -1) => void
+}) {
+  const enabled = min !== null && max !== null
+  function onKeyDown(e: KeyboardEvent) {
+    if (!enabled || e.altKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
+    e.preventDefault()
+    onNudge(shotId, e.key === 'ArrowRight' ? 1 : -1)
+  }
   return (
-    <span className="flex w-[34px] flex-none items-center justify-center" aria-hidden>
-      <span className="flex gap-[2px]">
-        <span className="block h-[26px] w-px bg-border-strong" />
-        <span className="block h-[26px] w-px bg-border-strong" />
-      </span>
+    <span
+      data-grip
+      data-testid="shot-grip"
+      data-shot-id={shotId}
+      role="slider"
+      tabIndex={enabled ? 0 : -1}
+      aria-label={`Length of shot ${number}`}
+      aria-orientation="horizontal"
+      aria-valuenow={seconds}
+      aria-valuemin={min ?? undefined}
+      aria-valuemax={max ?? undefined}
+      aria-valuetext={`${seconds.toFixed(1)}s`}
+      aria-disabled={!enabled}
+      title={enabled ? 'Drag to hold this shot longer or shorter' : undefined}
+      onKeyDown={onKeyDown}
+      className={`group flex flex-none touch-none items-center justify-center rounded-badge outline-offset-[-2px] focus-visible:outline-2 focus-visible:outline-text-primary focus-visible:[outline-style:solid] ${
+        enabled ? 'cursor-col-resize hover:bg-bg-inset' : ''
+      } ${end ? 'absolute bottom-0 right-0 top-0 z-[5] w-[8px]' : 'w-[34px]'}`}
+    >
+      {!end && (
+        <span className="flex gap-[2px] group-hover:gap-[3px]" aria-hidden>
+          <span className="block h-[26px] w-px bg-border-strong" />
+          <span className="block h-[26px] w-px bg-border-strong" />
+        </span>
+      )}
     </span>
   )
+})
+
+function LaneLabel({ children, className = '' }: { children?: string; className?: string }) {
+  return <span className={`flex w-[44px] flex-none items-center text-meta text-text-tertiary ${className}`}>{children}</span>
 }
 
-// static until preview - the shared playhead, parked at zero
-function Playhead() {
-  return (
-    <span className="absolute bottom-[14px] left-[68px] top-[42px] block w-px bg-text-primary" aria-hidden>
-      <span className="absolute left-[-4px] top-[-5px] block h-[9px] w-[9px] rounded-[2px] bg-text-primary" />
-    </span>
-  )
-}
-
-function LaneLabel({ children }: { children?: string }) {
-  return <span className="flex w-[44px] flex-none items-center text-meta text-text-tertiary">{children}</span>
-}
-
-// static until retime - the mode control, Retime shown active
+// static until motion - the mode control, Retime shown active
 function ModeToggle() {
   return (
     <div className="flex h-[30px] flex-none items-center overflow-hidden rounded-control border border-border-strong">
-      <span className="flex h-[30px] cursor-pointer items-center gap-[7px] whitespace-nowrap bg-bg-inset px-[12px] text-small font-medium text-text-primary">
+      <span className="flex h-[30px] items-center gap-[7px] whitespace-nowrap bg-bg-inset px-[12px] text-small font-medium text-text-primary">
         <svg width="12" height="10" viewBox="0 0 12 10" fill="none" aria-hidden="true">
           <path d="M1 1v8M11 1v8M3 5h6M4.6 3.4 3 5l1.6 1.6M7.4 3.4 9 5 7.4 6.6" stroke="currentColor" strokeWidth="1.2" />
         </svg>
         Retime
       </span>
-      <span className="flex h-[30px] cursor-pointer items-center gap-[7px] whitespace-nowrap border-l border-border-subtle px-[12px] text-small text-text-secondary">
+      <span className="flex h-[30px] items-center gap-[7px] whitespace-nowrap border-l border-border-subtle px-[12px] text-small text-text-secondary">
         <svg width="12" height="10" viewBox="0 0 12 10" fill="none" aria-hidden="true">
           <rect x="0.6" y="1.6" width="5" height="6.8" rx="1" stroke="currentColor" strokeWidth="1.2" />
           <path d="M7.4 5h4M9.8 3.2 11.6 5 9.8 6.8" stroke="currentColor" strokeWidth="1.2" />
@@ -77,162 +117,303 @@ function ModeToggle() {
   )
 }
 
-// static until zoom - −/Fit/+ drawn as designed
+const ZOOM_BUTTON =
+  'flex h-[28px] cursor-pointer items-center justify-center text-text-secondary hover:bg-bg-inset hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent'
+
 function ZoomControls() {
+  const { zoomIndex, setZoomIndex } = useStoryboard()
+  const last = STORYBOARD_ZOOM_STEPS.length - 1
   return (
-    <div className="flex h-[28px] flex-none items-center overflow-hidden rounded-control border border-border-subtle">
-      <span className="flex h-[28px] w-[28px] cursor-pointer items-center justify-center text-text-secondary hover:bg-bg-inset hover:text-text-primary">
+    <div
+      data-testid="zoom-controls"
+      className="flex h-[28px] flex-none items-center overflow-hidden rounded-control border border-border-subtle"
+    >
+      <button
+        type="button"
+        aria-label="Zoom out"
+        disabled={zoomIndex === 0}
+        onClick={() => setZoomIndex(Math.max(0, zoomIndex - 1))}
+        className={`${ZOOM_BUTTON} w-[28px]`}
+      >
         <svg width="10" height="2" viewBox="0 0 10 2" fill="none" aria-hidden="true">
           <rect width="10" height="1.4" fill="currentColor" />
         </svg>
-      </span>
-      <span className="flex h-[28px] cursor-pointer items-center border-x border-border-subtle px-[9px] text-small text-text-primary hover:bg-bg-inset">
+      </button>
+      <button
+        type="button"
+        aria-label="Fit"
+        aria-pressed={zoomIndex === 0}
+        onClick={() => setZoomIndex(0)}
+        className={`${ZOOM_BUTTON} border-x border-border-subtle px-[9px] text-small ${
+          zoomIndex === 0 ? 'text-text-primary' : ''
+        }`}
+      >
         Fit
-      </span>
-      <span className="flex h-[28px] w-[28px] cursor-pointer items-center justify-center text-text-secondary hover:bg-bg-inset hover:text-text-primary">
+      </button>
+      <button
+        type="button"
+        aria-label="Zoom in"
+        disabled={zoomIndex === last}
+        onClick={() => setZoomIndex(Math.min(last, zoomIndex + 1))}
+        className={`${ZOOM_BUTTON} w-[28px]`}
+      >
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
           <rect x="4.3" width="1.4" height="10" fill="currentColor" />
           <rect y="4.3" width="10" height="1.4" fill="currentColor" />
         </svg>
-      </span>
+      </button>
     </div>
   )
 }
 
-function TimelineHeader({ totalSeconds }: { totalSeconds: number }) {
+// The committed Total is React's; while a boundary is dragged the drag hides it and writes
+// the pending length into the second span directly (canvas: primary ink + a pending mark).
+function TimelineHeader({
+  totalSeconds,
+  totalRef,
+  pendingRef,
+}: {
+  totalSeconds: number
+  totalRef: RefObject<HTMLSpanElement | null>
+  pendingRef: RefObject<HTMLSpanElement | null>
+}) {
   return (
     <div className="flex items-center gap-[12px] border-b border-border-subtle p-[11px_14px]">
       <ModeToggle />
       <ZoomControls />
 
-      <span data-testid="timeline-total" className="font-mono text-mono text-text-tertiary">
+      <span ref={totalRef} data-testid="timeline-total" className="font-mono text-mono text-text-tertiary">
         Total {formatTimecode(totalSeconds)} · provisional
       </span>
+      <span ref={pendingRef} hidden data-testid="timeline-total-pending" className="items-center gap-[8px]">
+        <span className="font-mono text-mono text-text-primary">
+          Total <span data-pending-total />
+        </span>
+        <span className="ml-[8px] rounded-badge bg-bg-inset px-[6px] text-chip uppercase tracking-label text-text-tertiary">
+          pending
+        </span>
+      </span>
       <span className="flex-1" />
+      {/* The right-aligned end cluster: Bin sits left of Fit to voiceover (when that lands),
+          so appearing grows leftwards into free space and moves no other control. */}
+      <BinControl />
     </div>
   )
 }
 
-// The timeline card (canvas 15a): static header, scene bands, ruler, the live picture lane,
-// and the two audio lanes in their empty states. Shots are as wide as they are long.
+// The timeline card (canvas 15a/15b/15c): header, scene bands, ruler, the editable picture
+// lane, the two audio lanes and the playhead. Shots are as wide as they are long; bands,
+// ruler, lane and playhead scroll together when zoomed past Fit.
 export function TimelineCard() {
-  const { shots, statusFor, selectedShotId, select, busyShotIds, readOnly, polling, generate, aspectRatio } =
-    useStoryboard()
+  const {
+    laneShots,
+    statusFor,
+    selectedShotId,
+    select,
+    busyShotIds,
+    readOnly,
+    polling,
+    generate,
+    aspectRatio,
+    zoomIndex,
+    retimeMaxSec,
+    retime,
+    reorder,
+    setBinned,
+  } = useStoryboard()
   const now = useNow(polling)
-  const { ref: laneRef, width: laneWidth } = useElementWidth<HTMLDivElement>()
+  const { ref: scrollerRef, width: laneWidth } = useElementWidth<HTMLDivElement>()
+  const tooltipRef = useRef<HTMLSpanElement>(null)
+  const totalRef = useRef<HTMLSpanElement>(null)
+  const pendingRef = useRef<HTMLSpanElement>(null)
+  const playheadRef = useRef<PlayheadHandle>(null)
 
-  const total = laneTotalSeconds(shots)
-  const bands = groupBands(shots)
+  const total = laneTotalSeconds(laneShots)
+  const bands = groupBands(laneShots)
   const ticks = rulerTicks(total)
   const price = imagePrice(1)
-  const onGenerate = useCallback((shotId: string) => void generate([shotId], 'lane'), [generate])
+  const zoom = STORYBOARD_ZOOM_STEPS[zoomIndex] ?? 1
+  const zoomed = zoomIndex > 0
 
-  // Fit by default, capped per block. Before the lane is measured (first paint) there is no
-  // layout: slots flex by duration and every block draws at full size rather than guess.
-  const layout = laneWidth === null ? null : laneLayout(laneWidth, shots.map((s) => shotSeconds(s.duration_sec)), STORYBOARD_MAX_BLOCK_PX)
-  // Bands and ruler span exactly what the blocks occupy, so all three stay aligned when the
-  // cap leaves part of the lane empty.
+  // Fit by default, capped per block; zoom scales the Fit scale up. Before the lane is
+  // measured (first paint) there is no layout: slots flex by duration rather than guess.
+  const layout =
+    laneWidth === null ? null : laneLayout(laneWidth, laneShots.map(filmSeconds), STORYBOARD_MAX_BLOCK_PX, zoom)
   const spanStyle = layout ? { flex: 'none', width: layout.contentWidth } : undefined
+
+  const { onPointerDown, consumeClick } = useLaneDrag({
+    inputs: { layout, laneShots, totalSeconds: total, retimeMaxSec, readOnly, retime, reorder },
+    scrollerRef,
+    tooltipRef,
+    totalRef,
+    pendingRef,
+  })
+
+  // Stable handlers for the memo'd blocks and grips; they read the lane through a ref.
+  const laneRef = useRef(laneShots)
+  useLayoutEffect(() => {
+    laneRef.current = laneShots
+  }, [laneShots])
+
+  const onGenerate = useCallback((shotId: string) => void generate([shotId], 'lane'), [generate])
+  const onSelect = useCallback(
+    (shotId: string) => {
+      if (!consumeClick()) select(shotId)
+    },
+    [consumeClick, select]
+  )
+  const onMove = useCallback(
+    (shotId: string, direction: 1 | -1) => {
+      const index = laneRef.current.findIndex((s) => s.id === shotId)
+      if (index >= 0) reorder(shotId, index + direction)
+    },
+    [reorder]
+  )
+  const onRemove = useCallback((shotId: string) => setBinned(shotId, true), [setBinned])
+  const onNudge = useCallback(
+    (shotId: string, direction: 1 | -1) => {
+      const shot = laneRef.current.find((s) => s.id === shotId)
+      if (!shot) return
+      const committed = filmDuration(shot)
+      const bounds = retimeBounds(retimeMaxSec, committed)
+      if (!bounds) return
+      retime(shotId, snapRetime((committed ?? 0) + direction * RETIME_SNAP_SEC, bounds))
+    },
+    [retime, retimeMaxSec]
+  )
 
   return (
     <div className="flex flex-col rounded-frame border border-border-strong bg-bg-canvas shadow-card">
-      <TimelineHeader totalSeconds={total} />
+      <TimelineHeader totalSeconds={total} totalRef={totalRef} pendingRef={pendingRef} />
 
-      <div className="relative flex flex-col gap-[7px] p-[12px_14px_14px]">
-        <div className="flex items-center gap-[10px]">
-          <LaneLabel />
-          <div className="flex flex-1 gap-[3px]" data-testid="scene-bands" style={spanStyle}>
-            {bands.map((band) => (
-              <div
-                key={band.firstIndex}
-                data-testid="scene-band"
-                style={{ flex: `${band.seconds} 1 0` }}
-                className="flex h-[18px] min-w-0 items-center overflow-hidden whitespace-nowrap rounded-badge bg-bg-inset px-[8px] text-label uppercase tracking-label text-text-tertiary"
-              >
-                {band.name}
-              </div>
-            ))}
-          </div>
+      <div className="flex gap-[10px] p-[12px_14px_14px]">
+        <div className="flex flex-none flex-col gap-[7px]" aria-hidden>
+          <LaneLabel className="h-[18px]" />
+          <LaneLabel className="h-[18px]" />
+          <LaneLabel className="h-[62px]">Picture</LaneLabel>
+          <LaneLabel className="h-[30px]">Voice</LaneLabel>
+          <LaneLabel className="h-[30px]">Music</LaneLabel>
         </div>
 
-        <div className="flex items-end gap-[10px]">
-          <LaneLabel />
-          <div className="relative h-[18px] flex-1 border-b border-border-subtle" data-testid="ruler" style={spanStyle}>
-            {ticks.map((tick, i) => (
-              <span
-                key={tick.label + i}
-                className="absolute bottom-[3px] font-mono text-mono text-text-quiet"
-                style={
-                  i === ticks.length - 1
-                    ? { right: 0 }
-                    : i === 0
-                      ? { left: 0 }
-                      : { left: `${tick.pct}%`, transform: 'translateX(-50%)' }
-                }
-              >
-                {tick.label}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex items-stretch gap-[10px]">
-          <LaneLabel>Picture</LaneLabel>
+        <div
+          ref={scrollerRef}
+          data-testid="lane-scroller"
+          className={`relative min-w-0 flex-1 ${zoomed ? 'overflow-x-auto' : 'overflow-x-hidden'}`}
+        >
           <div
-            ref={laneRef}
-            className="flex min-w-0 flex-1 items-stretch"
-            data-testid="picture-lane"
-            data-layout={layout ? 'measured' : 'pending'}
+            className="relative flex flex-col gap-[7px]"
+            style={zoomed && layout ? { width: Math.max(layout.contentWidth, laneWidth ?? 0) } : undefined}
           >
-            {shots.map((shot, i) => {
-              const last = i === shots.length - 1
-              const seconds = shotSeconds(shot.duration_sec)
-              return (
+            <div className="flex h-[18px] gap-[3px]" data-testid="scene-bands" style={spanStyle}>
+              {bands.map((band) => (
                 <div
-                  key={shot.id}
-                  data-testid="shot-slot"
-                  className="flex min-w-0 items-stretch"
+                  key={band.firstIndex}
+                  data-testid="scene-band"
+                  style={{ flex: `${band.seconds} 1 0` }}
+                  className="flex h-[18px] min-w-0 items-center overflow-hidden whitespace-nowrap rounded-badge bg-bg-inset px-[8px] text-label uppercase tracking-label text-text-tertiary"
+                >
+                  {band.name}
+                </div>
+              ))}
+            </div>
+
+            <div
+              className="relative h-[18px] cursor-pointer border-b border-border-subtle"
+              data-testid="ruler"
+              style={spanStyle}
+              onPointerDown={(e) => playheadRef.current?.startScrub(e, true)}
+            >
+              {ticks.map((tick, i) => (
+                <span
+                  key={tick.label + i}
+                  className="pointer-events-none absolute bottom-[3px] select-none font-mono text-mono text-text-quiet"
                   style={
-                    layout
-                      ? { flex: 'none', width: layout.blocks[i] + (last ? 0 : LANE_GUTTER_PX) }
-                      : { flex: `${seconds} 1 0`, minWidth: seconds === 0 ? ZERO_BLOCK_PX + (last ? 0 : LANE_GUTTER_PX) : 0 }
+                    i === ticks.length - 1
+                      ? { right: 0 }
+                      : i === 0
+                        ? { left: 0 }
+                        : { left: `${tick.pct}%`, transform: 'translateX(-50%)' }
                   }
                 >
-                  <ShotBlock
-                    shot={shot}
-                    status={statusFor(shot.id)}
-                    tier={seconds === 0 ? 'fill' : layout ? blockTier(layout.blocks[i]) : 'wide'}
-                    selected={selectedShotId === shot.id}
-                    busy={busyShotIds.has(shot.id)}
-                    readOnly={readOnly}
-                    price={price}
-                    now={now}
-                    aspectRatio={aspectRatio}
-                    onSelect={select}
-                    onGenerate={onGenerate}
+                  {tick.label}
+                </span>
+              ))}
+            </div>
+
+            <div
+              className="relative flex h-[62px] select-none items-stretch"
+              data-testid="picture-lane"
+              data-layout={layout ? 'measured' : 'pending'}
+              onPointerDown={onPointerDown}
+            >
+              {laneShots.map((shot, i) => {
+                const last = i === laneShots.length - 1
+                const seconds = filmSeconds(shot)
+                const bounds = retimeBounds(retimeMaxSec, filmDuration(shot))
+                const grip = (
+                  <Grip
+                    shotId={shot.id}
+                    number={shot.order_index + 1}
+                    seconds={seconds}
+                    min={readOnly ? null : (bounds?.min ?? null)}
+                    max={readOnly ? null : (bounds?.max ?? null)}
+                    end={last}
+                    onNudge={onNudge}
                   />
-                  {!last && <Grip />}
-                </div>
-              )
-            })}
+                )
+                return (
+                  <div
+                    key={shot.id}
+                    data-testid="shot-slot"
+                    data-shot-id={shot.id}
+                    className="relative flex min-w-0 items-stretch will-change-transform"
+                    style={
+                      layout
+                        ? { flex: 'none', width: layout.blocks[i] + (last ? 0 : LANE_GUTTER_PX) }
+                        : {
+                            flex: `${seconds} 1 0`,
+                            minWidth: seconds === 0 ? ZERO_BLOCK_PX + (last ? 0 : LANE_GUTTER_PX) : 0,
+                          }
+                    }
+                  >
+                    <ShotBlock
+                      shot={shot}
+                      status={statusFor(shot.id)}
+                      tier={seconds === 0 ? 'fill' : layout ? blockTier(layout.blocks[i]) : 'wide'}
+                      selected={selectedShotId === shot.id}
+                      busy={busyShotIds.has(shot.id)}
+                      readOnly={readOnly}
+                      price={price}
+                      now={now}
+                      aspectRatio={aspectRatio}
+                      onSelect={onSelect}
+                      onGenerate={onGenerate}
+                      onMove={onMove}
+                      onRemove={onRemove}
+                    />
+                    {grip}
+                  </div>
+                )
+              })}
+              <span
+                ref={tooltipRef}
+                hidden
+                data-testid="retime-tooltip"
+                className="pointer-events-none absolute top-[-30px] z-20 -translate-x-1/2 whitespace-nowrap rounded-badge bg-text-primary px-[6px] py-[2px] font-mono text-mono text-bg-canvas"
+              />
+            </div>
+
+            <span className="flex h-[30px] items-center overflow-hidden rounded-badge border border-border-muted bg-bg-well px-[6px]">
+              <span className="pl-[4px] text-meta text-text-quiet">No voiceover yet</span>
+            </span>
+
+            <span className="flex h-[30px] items-center overflow-hidden rounded-badge bg-bg-inset px-[6px]">
+              <span className="pl-[4px] text-meta text-text-quiet">No music yet</span>
+            </span>
+
+            <Playhead ref={playheadRef} totalSeconds={total} contentWidth={layout?.contentWidth ?? null} />
           </div>
         </div>
-
-        <div className="flex items-center gap-[10px]">
-          <LaneLabel>Voice</LaneLabel>
-          <span className="flex h-[30px] flex-1 items-center overflow-hidden rounded-badge border border-border-muted bg-bg-well px-[6px]">
-            <span className="pl-[4px] text-meta text-text-quiet">No voiceover yet</span>
-          </span>
-        </div>
-
-        <div className="flex items-center gap-[10px]">
-          <LaneLabel>Music</LaneLabel>
-          <span className="flex h-[30px] flex-1 items-center overflow-hidden rounded-badge bg-bg-inset px-[6px]">
-            <span className="pl-[4px] text-meta text-text-quiet">No music yet</span>
-          </span>
-        </div>
-
-        <Playhead />
       </div>
 
       <div className="flex items-center gap-[10px] border-t border-border-subtle p-[10px_14px]">

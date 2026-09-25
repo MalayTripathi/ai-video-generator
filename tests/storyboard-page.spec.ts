@@ -378,6 +378,8 @@ test.describe('storyboard page - actions', () => {
     await button.click()
     await expect.poll(() => captured.length).toBe(1)
     expect(captured[0].body).toEqual({ shotIds: [ids[2], ids[3]] })
+    // Shot 2 is in flight, so a status poll can still be mid-route when the test ends.
+    await page.unrouteAll({ behavior: 'ignoreErrors' })
   })
 
   test('a 402 from the images route shows the insufficient-credits banner', async ({ page }) => {

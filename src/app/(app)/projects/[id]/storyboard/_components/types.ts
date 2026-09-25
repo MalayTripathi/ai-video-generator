@@ -17,7 +17,10 @@ export type StoryboardShot = Pick<
   | 'image_prompt_edited'
   | 'image_prompt_stale'
   | 'image_stale'
+  | 'film_order'
+  | 'film_duration_sec'
+  | 'binned_at'
 >
 
 export const STORYBOARD_SHOT_COLUMNS =
-  'id, shot_key, order_index, duration_sec, duration_locked, section_label, visual_description, image_prompt, image_prompt_edited, image_prompt_stale, image_stale' as const
+  'id, shot_key, order_index, duration_sec, duration_locked, section_label, visual_description, image_prompt, image_prompt_edited, image_prompt_stale, image_stale, film_order, film_duration_sec, binned_at' as const

@@ -1,4 +1,7 @@
+'use client'
+
 import { stepLabel } from '@/lib/config/pipeline'
+import { useStoryboard } from './storyboard-context'
 
 function ArrowIcon() {
   return (
@@ -9,8 +12,11 @@ function ArrowIcon() {
 }
 
 // Continue stays inert: there is no Video Prompts route or advance endpoint to send it to
-// yet, so it is deliberately not offered as an enabled control.
+// yet, so it is deliberately not offered as an enabled control. The clip count is the lane's:
+// a binned shot is not a clip.
 export function StoryboardFooter() {
+  const { laneShots } = useStoryboard()
+  const clips = laneShots.length
   return (
     <>
       <span className="text-small leading-[1.5] text-text-secondary">Motion prompts are written after frames exist.</span>
@@ -19,7 +25,9 @@ export function StoryboardFooter() {
         disabled
         className="flex h-9 flex-none cursor-pointer items-center gap-rc-xs rounded-control border border-accent px-rc-md text-control font-medium text-accent disabled:cursor-not-allowed disabled:opacity-60"
       >
-        Continue to {stepLabel('video_prompts')}
+        <span data-testid="continue-label">
+          Continue to {stepLabel('video_prompts')} ({clips} {clips === 1 ? 'clip' : 'clips'})
+        </span>
         <ArrowIcon />
       </button>
     </>

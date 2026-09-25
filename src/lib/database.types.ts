@@ -415,6 +415,7 @@ export type Database = {
       }
       shots: {
         Row: {
+          binned_at: string | null
           camera_angle: string | null
           camera_angle_origin: string
           camera_movement: string | null
@@ -422,6 +423,8 @@ export type Database = {
           created_at: string
           duration_locked: boolean
           duration_sec: number | null
+          film_duration_sec: number | null
+          film_order: number | null
           id: string
           image_path: string | null
           image_prompt: string | null
@@ -443,6 +446,7 @@ export type Database = {
           voice_over: string
         }
         Insert: {
+          binned_at?: string | null
           camera_angle?: string | null
           camera_angle_origin?: string
           camera_movement?: string | null
@@ -450,6 +454,8 @@ export type Database = {
           created_at?: string
           duration_locked?: boolean
           duration_sec?: number | null
+          film_duration_sec?: number | null
+          film_order?: number | null
           id?: string
           image_path?: string | null
           image_prompt?: string | null
@@ -471,6 +477,7 @@ export type Database = {
           voice_over: string
         }
         Update: {
+          binned_at?: string | null
           camera_angle?: string | null
           camera_angle_origin?: string
           camera_movement?: string | null
@@ -478,6 +485,8 @@ export type Database = {
           created_at?: string
           duration_locked?: boolean
           duration_sec?: number | null
+          film_duration_sec?: number | null
+          film_order?: number | null
           id?: string
           image_path?: string | null
           image_prompt?: string | null

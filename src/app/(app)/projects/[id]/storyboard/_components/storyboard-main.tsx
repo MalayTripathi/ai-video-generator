@@ -1,19 +1,27 @@
 'use client'
 
 import { InsufficientCreditsBanner } from '@/components/insufficient-credits-banner'
-import { caseTwo, readiness } from '@/lib/storyboard/timeline'
+import { caseTwo, orderDiffersFromScript, readiness } from '@/lib/storyboard/timeline'
 import { imagePrice, useStoryboard } from './storyboard-context'
 import { TimelineCard } from './timeline-card'
 import { MusicSection, VoiceoverSection } from './audio-sections'
 import { ExportLocked, PreviewLocked } from './locked-sections'
+import { OrderDiffersBanner } from './order-differs-banner'
+
+// No voiceover exists until the voiceover slice lands; the order-differs banner (15c c) is
+// built and waits on this.
+const HAS_VOICEOVER = false
 
 // The Storyboard main column (canvas 15a): Timeline, the two audio lane controls, then
 // Preview & mix and Export. Its width never changes - the inspect panel takes the agent's
 // column instead.
 export function StoryboardMain({ language }: { language: string | null }) {
-  const { shots, statusFor, balanceCredits, polling, actionError, readOnly, busyShotIds, generate } = useStoryboard()
+  const { shots, laneShots, statusFor, balanceCredits, polling, actionError, readOnly, busyShotIds, generate } =
+    useStoryboard()
 
-  const statuses = shots.map((s) => statusFor(s.id))
+  // Binned shots are off the film: the counter, Preview lock, Export and Generate remaining
+  // all read the lane alone.
+  const statuses = laneShots.map((s) => statusFor(s.id))
   const r = readiness(statuses.map((s) => s.state))
   const notGeneratedIds = statuses.filter((s) => s.state === 'not_generated').map((s) => s.shotId)
   const banner = caseTwo(r, balanceCredits, imagePrice(1))
@@ -41,6 +49,8 @@ export function StoryboardMain({ language }: { language: string | null }) {
         </div>
 
         <TimelineCard />
+
+        {HAS_VOICEOVER && orderDiffersFromScript(shots) && <OrderDiffersBanner />}
 
         {banner && (
           <InsufficientCreditsBanner

@@ -82,6 +82,12 @@ export function isDurationAllowed(config: VideoModelConfig, seconds: number): bo
     : config.allowedDurations.includes(seconds)
 }
 
+// The longest clip a model can render - a continuous model's upper bound, a discrete
+// model's longest allowed value. The Storyboard's retime ceiling reads this.
+export function videoModelMaxSeconds(config: VideoModelConfig): number {
+  return config.kind === 'continuous' ? config.durationMax : Math.max(...config.allowedDurations)
+}
+
 export type ModelsConfig = {
   shots: {
     provider: 'anthropic'

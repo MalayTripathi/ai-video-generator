@@ -307,9 +307,12 @@ are not lost.
   (`image-prompts-context`) and the agent panel off the Storyboard still refresh the rail
   through `router.refresh()`. Push the figures into `rail-figures-context` from each paid
   response instead, as the Storyboard does.
-- **Storyboard static controls to wire:** Retime (drag, reorder, Bin, Fit to voiceover),
-  Motion & transitions, zoom, the voiceover and music lanes, Preview & mix, and Export. Each
-  carries a `// static until <feature>` comment at its component.
+- **Storyboard static controls to wire:** Fit to voiceover, Motion & transitions, the
+  voiceover and music lanes, Preview & mix, and Export. Each carries a `// static until
+  <feature>` comment at its component. The voiceover slice also flips `HAS_VOICEOVER` in
+  `storyboard-main.tsx` (the order-differs banner waits on it), and must decide how its
+  `duration_sec` write-back meets a shot's `film_duration_sec`, which wins on every
+  Storyboard read.
 - **The storyboard agent's context block still says "coming soon"**
   (`src/lib/prompts/agent-storyboard.ts`). Rewrite (and bump its version) when the step
   gets agent tools.

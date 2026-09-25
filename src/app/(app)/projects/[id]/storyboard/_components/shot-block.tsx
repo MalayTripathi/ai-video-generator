@@ -3,7 +3,7 @@
 import { memo, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react'
 import { formatCredits } from '@/lib/format-credits'
 import type { AspectRatio } from '@/lib/config/enums'
-import { etaFor, THUMB_EDGE_NARROW_PX, THUMB_EDGE_WIDE_PX, thumbBox, type BlockTier } from '@/lib/storyboard/timeline'
+import { etaFor, filmDuration, THUMB_EDGE_NARROW_PX, THUMB_EDGE_WIDE_PX, thumbBox, type BlockTier } from '@/lib/storyboard/timeline'
 import type { ShotImageStatus, StoryboardShot } from './types'
 
 // Visual state of one block (canvas 15c a). "generating" covers queued too - both are the
@@ -105,6 +105,8 @@ function stop(e: MouseEvent | KeyboardEvent) {
 // One shot in the picture lane. Width comes from its duration (the caller sizes the slot); the
 // tier decides how much it can say without truncating anything essential. Below 112px the
 // name lives in the tooltip and the inspect panel; action prices move into the tooltip too.
+// Focused, Alt+←/→ moves it one place and Delete/Backspace removes it to the bin; dragging
+// it is handled by the lane (use-lane-drag).
 export const ShotBlock = memo(function ShotBlock({
   shot,
   status,
@@ -117,6 +119,8 @@ export const ShotBlock = memo(function ShotBlock({
   aspectRatio,
   onSelect,
   onGenerate,
+  onMove,
+  onRemove,
 }: {
   shot: StoryboardShot
   status: ShotImageStatus
@@ -129,11 +133,13 @@ export const ShotBlock = memo(function ShotBlock({
   aspectRatio: AspectRatio
   onSelect: (shotId: string) => void
   onGenerate: (shotId: string) => void
+  onMove: (shotId: string, direction: 1 | -1) => void
+  onRemove: (shotId: string) => void
 }) {
   const look = lookFor(status.state)
   const number = shot.order_index + 1
   const name = shotName(shot)
-  const duration = formatSeconds(shot.duration_sec)
+  const duration = formatSeconds(filmDuration(shot))
   const eta = look === 'generating' ? etaFor(status.startedAt, status.queuedAt, now) : null
   const url = status.thumbUrl ?? status.imageUrl
   const fill = tier === 'fill'
@@ -218,6 +224,12 @@ export const ShotBlock = memo(function ShotBlock({
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           onSelect(shot.id)
+        } else if (!readOnly && e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+          e.preventDefault()
+          onMove(shot.id, e.key === 'ArrowRight' ? 1 : -1)
+        } else if (!readOnly && (e.key === 'Delete' || e.key === 'Backspace')) {
+          e.preventDefault()
+          onRemove(shot.id)
         }
       }}
       className={`relative flex h-[62px] min-w-0 flex-1 cursor-pointer items-stretch gap-[7px] overflow-hidden rounded-badge border p-[5px_7px_5px_5px] outline-offset-2 hover:border-border-strong-hover ${

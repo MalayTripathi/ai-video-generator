@@ -1,6 +1,6 @@
 import type { ImageState } from './image-state'
 import type { AspectRatio } from '@/lib/config/enums'
-import { IMAGE_ETA_ESTIMATE_MS, STORYBOARD_IMAGE_SIZES } from '@/lib/config/storyboard'
+import { IMAGE_ETA_ESTIMATE_MS, RETIME_SNAP_SEC, STORYBOARD_IMAGE_SIZES, STORYBOARD_MIN_SHOT_SEC } from '@/lib/config/storyboard'
 
 // Pure geometry and copy rules for the Storyboard timeline (canvas 15a/15c). No React, so
 // every rule here is testable on its own.
@@ -23,26 +23,122 @@ export function shotSeconds(durationSec: number | null): number {
   return durationSec !== null && durationSec > 0 ? durationSec : 0
 }
 
-export function laneTotalSeconds(shots: { duration_sec: number | null }[]): number {
-  return shots.reduce((sum, s) => sum + shotSeconds(s.duration_sec), 0)
+// The Storyboard's own length and order sit beside the script's and win when set:
+// coalesce(film_duration_sec, duration_sec) and coalesce(film_order, order_index). The
+// Storyboard never writes the script values.
+type FilmTimed = { duration_sec: number | null; film_duration_sec?: number | null }
+type FilmOrdered = { order_index: number; film_order?: number | null }
+type Binnable = { binned_at?: string | null }
+
+export function filmDuration(shot: FilmTimed): number | null {
+  return shot.film_duration_sec ?? shot.duration_sec
 }
 
-export type LaneLayout = { blocks: number[]; contentWidth: number }
+export function filmSeconds(shot: FilmTimed): number {
+  return shotSeconds(filmDuration(shot))
+}
+
+export function filmPosition(shot: FilmOrdered): number {
+  return shot.film_order ?? shot.order_index
+}
+
+// Every shot, binned ones included, in picture order. A tie (possible only if the script
+// was re-sequenced after a reorder) falls back to script order, so the result is stable.
+export function filmOrdered<T extends FilmOrdered>(shots: readonly T[]): T[] {
+  return [...shots].sort((a, b) => filmPosition(a) - filmPosition(b) || a.order_index - b.order_index)
+}
+
+// What the timeline draws: picture order, bin excluded. Binned shots keep their film_order,
+// so Restore returns one to the slot it left.
+export function laneShots<T extends FilmOrdered & Binnable>(shots: readonly T[]): T[] {
+  return filmOrdered(shots).filter((s) => !s.binned_at)
+}
+
+export function laneTotalSeconds(shots: (FilmTimed & Binnable)[]): number {
+  return shots.reduce((sum, s) => sum + (s.binned_at ? 0 : filmSeconds(s)), 0)
+}
+
+// The film_order writes that move one lane shot to a new lane position. Positions are
+// indices into the full picture order (bin included), which is the same index space as
+// order_index - so an unwritten shot's coalesce never collides with a written one. Only
+// shots whose position actually changes are written.
+export function reorderWrites<T extends FilmOrdered & Binnable & { id: string }>(
+  shots: readonly T[],
+  shotId: string,
+  toLaneIndex: number
+): { id: string; film_order: number }[] {
+  const all = filmOrdered(shots)
+  const lane = all.filter((s) => !s.binned_at)
+  const from = lane.findIndex((s) => s.id === shotId)
+  if (from < 0) return []
+  const to = Math.max(0, Math.min(lane.length - 1, toLaneIndex))
+  if (to === from) return []
+  const moved = lane[from]
+  const rest = all.filter((s) => s.id !== shotId)
+  const restLane = lane.filter((s) => s.id !== shotId)
+  // Insert before the lane shot now at `to`, or after the last lane shot when moving to the end.
+  const anchor = restLane[to]
+  const at = anchor ? rest.indexOf(anchor) : rest.indexOf(restLane[restLane.length - 1]) + 1
+  const next = [...rest.slice(0, at), moved, ...rest.slice(at)]
+  return next.flatMap((s, i) => (filmPosition(s) === i ? [] : [{ id: s.id, film_order: i }]))
+}
+
+// True when the lane no longer plays in script order - the order-differs banner's test.
+export function orderDiffersFromScript<T extends FilmOrdered & Binnable & { id: string }>(shots: readonly T[]): boolean {
+  const film = laneShots(shots).map((s) => s.id)
+  const script = [...shots]
+    .filter((s) => !s.binned_at)
+    .sort((a, b) => a.order_index - b.order_index)
+    .map((s) => s.id)
+  return film.some((id, i) => id !== script[i])
+}
+
+export type RetimeBounds = { min: number; max: number }
+
+// The range a retime may set. The floor is STORYBOARD_MIN_SHOT_SEC and the ceiling the
+// video model's longest clip, each widened to the shot's committed length when that
+// already sits outside - a nudge never forces a shot shorter (or longer) than it is. Null
+// when the model is unknown: retime is then unavailable rather than bounded by a guess.
+export function retimeBounds(modelMaxSec: number | null, committedSec: number | null): RetimeBounds | null {
+  if (modelMaxSec === null) return null
+  const committed = committedSec !== null && committedSec > 0 ? committedSec : null
+  return {
+    min: committed === null ? STORYBOARD_MIN_SHOT_SEC : Math.min(STORYBOARD_MIN_SHOT_SEC, committed),
+    max: committed === null ? modelMaxSec : Math.max(modelMaxSec, committed),
+  }
+}
+
+// Snapped to 0.1s, then clamped - so a bound that is itself off-grid is still reachable.
+export function snapRetime(seconds: number, bounds: RetimeBounds): number {
+  const steps = Math.round(seconds / RETIME_SNAP_SEC)
+  const snapped = Math.round(steps * RETIME_SNAP_SEC * 10) / 10
+  return Math.min(bounds.max, Math.max(bounds.min, snapped))
+}
+
+// A value a retime save may hold: inside the bounds, and on the 0.1s grid or exactly a bound.
+export function isRetimeAllowed(seconds: number, bounds: RetimeBounds): boolean {
+  if (!Number.isFinite(seconds) || seconds < bounds.min || seconds > bounds.max) return false
+  const onGrid = Math.abs(seconds / RETIME_SNAP_SEC - Math.round(seconds / RETIME_SNAP_SEC)) < 1e-6
+  return onGrid || seconds === bounds.min || seconds === bounds.max
+}
+
+export type LaneLayout = { blocks: number[]; contentWidth: number; pxPerSecond: number }
 
 // Every block's drawn width, proportional to its duration. Fit is the default: the blocks
 // share whatever the lane has left after the gutters and any zero-length blocks. The scale
 // is then capped so the longest block never exceeds maxBlockPx - past the cap the timeline
 // keeps its proportions and the lane is left partly empty. contentWidth is what the blocks
-// and gutters actually occupy, so the ruler and bands can match it.
-export function laneLayout(laneWidth: number, seconds: number[], maxBlockPx: number): LaneLayout {
+// and gutters actually occupy, so the ruler and bands can match it. A zoom past 1 scales the
+// Fit scale up; the lane then scrolls.
+export function laneLayout(laneWidth: number, seconds: number[], maxBlockPx: number, zoom = 1): LaneLayout {
   const gutters = Math.max(0, seconds.length - 1) * LANE_GUTTER_PX
   const zeroCount = seconds.filter((s) => s <= 0).length
   const total = seconds.reduce((sum, s) => sum + Math.max(0, s), 0)
   const longest = Math.max(0, ...seconds)
   const available = Math.max(0, laneWidth - gutters - zeroCount * ZERO_BLOCK_PX)
-  const pxPerSecond = total > 0 ? Math.min(available / total, maxBlockPx / longest) : 0
+  const pxPerSecond = total > 0 ? Math.min(available / total, maxBlockPx / longest) * zoom : 0
   const blocks = seconds.map((s) => (s > 0 ? s * pxPerSecond : ZERO_BLOCK_PX))
-  return { blocks, contentWidth: blocks.reduce((sum, w) => sum + w, 0) + gutters }
+  return { blocks, contentWidth: blocks.reduce((sum, w) => sum + w, 0) + gutters, pxPerSecond }
 }
 
 // A thumbnail's box: the project's aspect ratio fitted inside an edge-by-edge square, so a
@@ -62,15 +158,15 @@ export type Band = { name: string | null; seconds: number; firstIndex: number }
 
 // Consecutive shots sharing a section_label form one band; a label that recurs after a
 // different one starts a new band. Unlabelled shots group the same way, as a nameless band.
-export function groupBands(shots: { section_label: string | null; duration_sec: number | null }[]): Band[] {
+export function groupBands(shots: ({ section_label: string | null } & FilmTimed)[]): Band[] {
   const bands: Band[] = []
   shots.forEach((shot, i) => {
     const name = shot.section_label?.trim() ? shot.section_label.trim() : null
     const prev = bands[bands.length - 1]
     if (prev && prev.name === name) {
-      prev.seconds += shotSeconds(shot.duration_sec)
+      prev.seconds += filmSeconds(shot)
     } else {
-      bands.push({ name, seconds: shotSeconds(shot.duration_sec), firstIndex: i })
+      bands.push({ name, seconds: filmSeconds(shot), firstIndex: i })
     }
   })
   return bands
