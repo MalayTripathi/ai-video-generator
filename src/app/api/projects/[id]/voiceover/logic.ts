@@ -25,6 +25,7 @@ import { assertWithinAllowance, reserveUsage, settleUsage } from '@/lib/usage'
 import { quoteElevenLabsCall } from '@/lib/usage/quote'
 import { liveVoiceoverCommittedCredits } from '@/lib/voiceover/committed'
 import { concatMp3, measureDurationSec } from '@/lib/voiceover/audio'
+import { wordBoundaries, wordsFromStoredAlignment } from '@/lib/storyboard/motion'
 import {
   alignmentFromForced,
   buildScript,
@@ -153,6 +154,8 @@ async function linkVoiceover(
     durationSec: number
     source: 'generated' | 'uploaded'
     spans: VoiceoverSpan[]
+    /** Spoken-word boundaries for the Storyboard's forced-cut rule; null if unreadable. */
+    words: [number, number][] | null
   }
 ): Promise<string | null> {
   const now = new Date().toISOString()
@@ -169,6 +172,7 @@ async function linkVoiceover(
       voiceover_generated_at: now,
       voiceover_muted: false,
       voiceover_spans: fields.spans as unknown as Json,
+      voiceover_words: fields.words,
       updated_at: now,
     })
     .eq('id', projectId)
@@ -476,6 +480,7 @@ export async function runVoiceoverWorker(
       durationSec: totalSec,
       source: 'generated',
       spans,
+      words: wordBoundaries(merged),
     })
     if (linkError) return (outcome = { ok: false, error: linkError })
     return (outcome = { ok: true })
@@ -674,6 +679,7 @@ export async function runAlignWorker(
 
     let spans = payload.spans ?? null
     let alignmentPath = payload.alignmentPath ?? null
+    let words: [number, number][] | null = null
 
     // RECOVER: an alignment already paid for and stored is relinked, never re-called.
     if (!spans || !alignmentPath) {
@@ -727,6 +733,7 @@ export async function runAlignWorker(
 
       const alignment = alignmentFromForced(script.text, characters)
       spans = buildSpans(script, alignment)
+      words = wordBoundaries(alignment)
       alignmentPath = `${voiceoverDir(userId, projectId)}/${payload.attemptId}.alignment.json`
       const alignmentError = await putObject(
         supabase,
@@ -746,6 +753,14 @@ export async function runAlignWorker(
       if (persistError) return (outcome = { ok: false, error: `Aligned but could not be recorded safely (${persistError})` })
     }
 
+    // RECOVER: the alignment was paid for and stored by an earlier run; its words come from
+    // the stored file, never a new call.
+    if (!words) {
+      const stored = await getObject(supabase, alignmentPath)
+      words = stored ? wordsFromStoredAlignment(stored.toString('utf8')) : null
+      if (!words) console.error(`[voiceover] stored alignment for ${generationId} is unreadable; linking without word boundaries`)
+    }
+
     if (Date.now() - startedAt > VOICEOVER_ALIGN_STALE_AFTER_MS) {
       return (outcome = { ok: false, error: 'Finished after the stale window' })
     }
@@ -758,6 +773,7 @@ export async function runAlignWorker(
       ttsModel: null,
       durationSec: payload.durationSec,
       source: 'uploaded',
+      words,
       spans,
     })
     if (linkError) return (outcome = { ok: false, error: linkError })

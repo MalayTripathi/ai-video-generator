@@ -9,6 +9,8 @@ import {
   CAMERA_MOVEMENTS,
   CAMERA_ORIGINS,
   ELEMENT_TYPES,
+  MOTIONS,
+  TRANSITIONS,
   VOICEOVER_SOURCES,
 } from '../src/lib/config/enums'
 import { STEPS, OPERATIONS, PROVIDERS } from '../src/lib/config/pipeline'
@@ -412,6 +414,37 @@ test.describe('enum drift - shots columns', () => {
       shot_size_origin: 'not_a_real_origin',
     })
     expect(badError).not.toBeNull()
+  })
+
+  // Storyboard motion & transitions (B3): MOTIONS / TRANSITIONS mirror these CHECKs by hand.
+  for (const [column, values] of [
+    ['motion', MOTIONS],
+    ['split_motion', MOTIONS],
+    ['transition_out', TRANSITIONS],
+  ] as const) {
+    test(`accepts every ${column} member and rejects a bogus value`, async () => {
+      const projectId = await insertProject()
+      const insert = (value: string) => {
+        const { orderIndex, shotKey } = nextShotIdentity()
+        return admin
+          .from('shots')
+          .insert({ project_id: projectId, order_index: orderIndex, shot_key: shotKey, voice_over: 'x', [column]: value })
+      }
+      await assertEnumDrift(values, insert, () => insert(`not_a_real_${column}`))
+    })
+  }
+
+  test('split_at accepts a fraction strictly between 0 and 1 and rejects the ends', async () => {
+    const projectId = await insertProject()
+    const insert = (value: number) => {
+      const { orderIndex, shotKey } = nextShotIdentity()
+      return admin
+        .from('shots')
+        .insert({ project_id: projectId, order_index: orderIndex, shot_key: shotKey, voice_over: 'x', split_at: value })
+    }
+    expect((await insert(0.5)).error).toBeNull()
+    expect((await insert(0)).error).not.toBeNull()
+    expect((await insert(1)).error).not.toBeNull()
   })
 })
 

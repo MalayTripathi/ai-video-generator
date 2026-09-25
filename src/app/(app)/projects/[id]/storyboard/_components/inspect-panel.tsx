@@ -6,6 +6,8 @@ import { PromptEditor } from '@/components/prompt-editor'
 import { STORYBOARD_IMAGE_SIZES } from '@/lib/config/storyboard'
 import { formatClockTime } from '@/lib/format-clock-time'
 import { formatCredits } from '@/lib/format-credits'
+import { MOTION_LABELS } from '@/lib/motion-labels'
+import { motionSummary } from '@/lib/storyboard/motion'
 import { etaFor, filmDuration, isInFlight } from '@/lib/storyboard/timeline'
 import { imagePrice, promptPrice, useStoryboard } from './storyboard-context'
 import { formatSeconds } from './shot-block'
@@ -24,12 +26,15 @@ function RegenerateIcon() {
   )
 }
 
-// static until motion - the film-wide default, read-only here (canvas 15e/15g)
-function MotionRow() {
+// The shot's resolved motion, read-only here: it is set in Motion & transitions (canvas 15e).
+function MotionRow({ shotId }: { shotId: string }) {
+  const { motions } = useStoryboard()
   return (
     <div className="flex items-baseline gap-[10px]">
       <span className="w-[64px] flex-none text-small text-text-tertiary">Motion</span>
-      <span className="flex-1 text-small font-medium">Alternate</span>
+      <span data-testid="inspect-motion" className="flex-1 text-small font-medium">
+        {motionSummary(motions.get(shotId), MOTION_LABELS)}
+      </span>
       <span className="text-meta text-text-quiet">set in Motion &amp; transitions</span>
     </div>
   )
@@ -225,7 +230,7 @@ function InspectBody() {
             </span>
             <span className="text-meta text-text-quiet">set in Retime</span>
           </div>
-          <MotionRow />
+          <MotionRow shotId={shot.id} />
         </div>
 
         <button

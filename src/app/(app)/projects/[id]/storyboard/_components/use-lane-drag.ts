@@ -57,6 +57,18 @@ type MoveDrag = {
 
 type Drag = RetimeDrag | MoveDrag
 
+// One animation frame of edge auto-scroll for any drag across the zoomed lane (a block, a
+// boundary, the playhead): within LANE_AUTOSCROLL_EDGE_PX of an edge the lane scrolls,
+// faster the nearer the pointer is, up to LANE_AUTOSCROLL_MAX_PX per frame.
+export function edgeAutoscroll(scroller: HTMLElement | null, clientX: number) {
+  if (!scroller || scroller.scrollWidth <= scroller.clientWidth) return
+  const rect = scroller.getBoundingClientRect()
+  let v = 0
+  if (clientX < rect.left + LANE_AUTOSCROLL_EDGE_PX) v = -(rect.left + LANE_AUTOSCROLL_EDGE_PX - clientX) / LANE_AUTOSCROLL_EDGE_PX
+  else if (clientX > rect.right - LANE_AUTOSCROLL_EDGE_PX) v = (clientX - (rect.right - LANE_AUTOSCROLL_EDGE_PX)) / LANE_AUTOSCROLL_EDGE_PX
+  if (v !== 0) scroller.scrollLeft += Math.max(-1, Math.min(1, v)) * LANE_AUTOSCROLL_MAX_PX
+}
+
 function formatLength(seconds: number): string {
   return `${seconds.toFixed(1)}s`
 }
@@ -112,16 +124,7 @@ export function useLaneDrag({
     [totalRef, pendingRef]
   )
 
-  const autoscroll = useCallback(() => {
-    const scroller = scrollerRef.current
-    if (!scroller || scroller.scrollWidth <= scroller.clientWidth) return
-    const rect = scroller.getBoundingClientRect()
-    const x = pointerX.current
-    let v = 0
-    if (x < rect.left + LANE_AUTOSCROLL_EDGE_PX) v = -(rect.left + LANE_AUTOSCROLL_EDGE_PX - x) / LANE_AUTOSCROLL_EDGE_PX
-    else if (x > rect.right - LANE_AUTOSCROLL_EDGE_PX) v = (x - (rect.right - LANE_AUTOSCROLL_EDGE_PX)) / LANE_AUTOSCROLL_EDGE_PX
-    if (v !== 0) scroller.scrollLeft += Math.max(-1, Math.min(1, v)) * LANE_AUTOSCROLL_MAX_PX
-  }, [scrollerRef])
+  const autoscroll = useCallback(() => edgeAutoscroll(scrollerRef.current, pointerX.current), [scrollerRef])
 
   // The frame loop re-schedules itself through a ref, so each frame runs the latest tick.
   const tickRef = useRef<() => void>(() => {})

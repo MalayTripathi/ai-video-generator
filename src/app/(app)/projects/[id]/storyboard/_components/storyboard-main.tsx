@@ -4,6 +4,7 @@ import { InsufficientCreditsBanner } from '@/components/insufficient-credits-ban
 import { caseTwo, readiness } from '@/lib/storyboard/timeline'
 import { imagePrice, useStoryboard } from './storyboard-context'
 import { TimelineCard } from './timeline-card'
+import { MotionPanels } from './motion-panels'
 import { MusicSection } from './audio-sections'
 import { VoiceoverCard } from './voiceover-card'
 import { ExportLocked, PreviewLocked } from './locked-sections'
@@ -57,6 +58,8 @@ export function StoryboardMain({ language }: { language: string | null }) {
         </div>
 
         <TimelineCard />
+
+        <MotionPanels />
 
         {fitClamped && (
           <span data-testid="fit-note" className="text-meta text-text-tertiary">

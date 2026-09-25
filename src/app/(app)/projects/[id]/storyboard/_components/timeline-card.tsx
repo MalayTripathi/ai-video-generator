@@ -4,7 +4,6 @@ import { memo, useCallback, useLayoutEffect, useRef, useState, type KeyboardEven
 import {
   FIT_COLLAPSE_BREAKPOINT_PX,
   RETIME_SNAP_SEC,
-  STORYBOARD_MAX_BLOCK_PX,
   STORYBOARD_ZOOM_STEPS,
 } from '@/lib/config/storyboard'
 import { speechBars } from '@/lib/storyboard/voiceover'
@@ -22,8 +21,11 @@ import {
   snapRetime,
   ZERO_BLOCK_PX,
 } from '@/lib/storyboard/timeline'
-import { imagePrice, useStoryboard } from './storyboard-context'
+import { FORCED_CUT_REASON, type ResolvedJoin } from '@/lib/storyboard/motion'
+import { imagePrice, useStoryboard, type TimelineMode } from './storyboard-context'
 import { ShotBlock } from './shot-block'
+import { MotionBlock } from './motion-block'
+import type { MotionSegment } from '../actions'
 import { BinControl } from './bin-control'
 import { FitButton } from './fit-button'
 import { Playhead, type PlayheadHandle } from './playhead'
@@ -103,23 +105,80 @@ function LaneLabel({ children, className = '' }: { children?: string; className?
   return <span className={`flex w-[44px] flex-none items-center text-meta text-text-tertiary ${className}`}>{children}</span>
 }
 
-// static until motion - the mode control, Retime shown active
-function ModeToggle() {
+// In Motion & transitions mode the boundary gutter holds the join's transition chip instead
+// of a grip - same 34px, so switching modes never moves a shot. "Cut" fits the gutter;
+// "Dissolve" does not, so it shows its glyph. A forced cut reads Cut and says why.
+const JoinChip = memo(function JoinChip({
+  join,
+  from,
+  to,
+  selected,
+  onSelect,
+}: {
+  join: ResolvedJoin
+  from: number
+  to: number
+  selected: boolean
+  onSelect: (shotId: string) => void
+}) {
+  const dissolve = join.transition === 'dissolve'
+  const label = dissolve ? 'Dissolve' : 'Cut'
   return (
-    <div className="flex h-[30px] flex-none items-center overflow-hidden rounded-control border border-border-strong">
-      <span className="flex h-[30px] items-center gap-[7px] whitespace-nowrap bg-bg-inset px-[12px] text-small font-medium text-text-primary">
+    <span className="flex w-[34px] flex-none items-center justify-center">
+      <button
+        type="button"
+        data-testid="join-chip"
+        data-shot-id={join.shotId}
+        data-transition={join.transition}
+        data-forced={join.forced ? 'true' : undefined}
+        aria-pressed={selected}
+        aria-label={`Join ${from} to ${to}: ${label}`}
+        title={join.forced ? `Cut · ${FORCED_CUT_REASON}` : label}
+        onClick={(e) => {
+          e.stopPropagation()
+          onSelect(join.shotId)
+        }}
+        className={`cursor-pointer whitespace-nowrap rounded-badge border px-[5px] py-px text-chip outline-offset-2 ${
+          dissolve ? 'border-text-primary bg-bg-canvas text-text-primary' : 'border-border-subtle bg-bg-inset text-text-tertiary'
+        } ${selected ? 'outline-2 outline-text-primary [outline-style:solid]' : ''}`}
+      >
+        {dissolve ? '◇' : 'Cut'}
+      </button>
+    </span>
+  )
+})
+
+// The mode control (canvas 15b / 15d): two ways of touching one strip.
+function ModeToggle() {
+  const { mode, setMode } = useStoryboard()
+  const item = (value: TimelineMode) =>
+    `flex h-[30px] cursor-pointer items-center gap-[7px] whitespace-nowrap px-[12px] text-small ${
+      mode === value ? 'bg-bg-inset font-medium text-text-primary' : 'text-text-secondary hover:bg-bg-inset'
+    }`
+  return (
+    <div
+      role="group"
+      aria-label="Timeline mode"
+      className="flex h-[30px] flex-none items-center overflow-hidden rounded-control border border-border-strong"
+    >
+      <button type="button" aria-pressed={mode === 'retime'} onClick={() => setMode('retime')} className={item('retime')}>
         <svg width="12" height="10" viewBox="0 0 12 10" fill="none" aria-hidden="true">
           <path d="M1 1v8M11 1v8M3 5h6M4.6 3.4 3 5l1.6 1.6M7.4 3.4 9 5 7.4 6.6" stroke="currentColor" strokeWidth="1.2" />
         </svg>
         Retime
-      </span>
-      <span className="flex h-[30px] items-center gap-[7px] whitespace-nowrap border-l border-border-subtle px-[12px] text-small text-text-secondary">
+      </button>
+      <button
+        type="button"
+        aria-pressed={mode === 'motion'}
+        onClick={() => setMode('motion')}
+        className={`${item('motion')} border-l border-border-subtle`}
+      >
         <svg width="12" height="10" viewBox="0 0 12 10" fill="none" aria-hidden="true">
           <rect x="0.6" y="1.6" width="5" height="6.8" rx="1" stroke="currentColor" strokeWidth="1.2" />
           <path d="M7.4 5h4M9.8 3.2 11.6 5 9.8 6.8" stroke="currentColor" strokeWidth="1.2" />
         </svg>
         Motion &amp; transitions
-      </span>
+      </button>
     </div>
   )
 }
@@ -262,7 +321,16 @@ export function TimelineCard() {
     retime,
     reorder,
     setBinned,
+    mode,
+    motions,
+    joins,
+    selectedSegment,
+    selectSegment,
+    selectedJoinShotId,
+    selectJoin,
+    setSplit,
   } = useStoryboard()
+  const motionMode = mode === 'motion'
   const now = useNow(polling)
   const { ref: scrollerRef, width: laneWidth } = useElementWidth<HTMLDivElement>()
   const tooltipRef = useRef<HTMLSpanElement>(null)
@@ -277,14 +345,15 @@ export function TimelineCard() {
   const zoom = STORYBOARD_ZOOM_STEPS[zoomIndex] ?? 1
   const zoomed = zoomIndex > 0
 
-  // Fit by default, capped per block; zoom scales the Fit scale up. Before the lane is
+  // Fit by default, filling the lane; zoom scales the Fit scale up. Before the lane is
   // measured (first paint) there is no layout: slots flex by duration rather than guess.
   const layout =
-    laneWidth === null ? null : laneLayout(laneWidth, laneShots.map(filmSeconds), STORYBOARD_MAX_BLOCK_PX, zoom)
+    laneWidth === null ? null : laneLayout(laneWidth, laneShots.map(filmSeconds), zoom)
   const spanStyle = layout ? { flex: 'none', width: layout.contentWidth } : undefined
 
   const { onPointerDown, consumeClick } = useLaneDrag({
-    inputs: { layout, laneShots, totalSeconds: total, retimeMaxSec, readOnly, retime, reorder },
+    // Boundary drags and reordering belong to Retime; Motion mode starts neither.
+    inputs: { layout, laneShots, totalSeconds: total, retimeMaxSec, readOnly: readOnly || motionMode, retime, reorder },
     scrollerRef,
     tooltipRef,
     totalRef,
@@ -312,6 +381,12 @@ export function TimelineCard() {
     [reorder]
   )
   const onRemove = useCallback((shotId: string) => setBinned(shotId, true), [setBinned])
+  const onSelectSegment = useCallback(
+    (shotId: string, segment: MotionSegment) => selectSegment({ shotId, segment }),
+    [selectSegment]
+  )
+  const onMoveSplit = useCallback((shotId: string, at: number) => setSplit(shotId, at), [setSplit])
+  const joinByShot = new Map(joins.map((j) => [j.shotId, j]))
   const onNudge = useCallback(
     (shotId: string, direction: 1 | -1) => {
       const shot = laneRef.current.find((s) => s.id === shotId)
@@ -392,7 +467,18 @@ export function TimelineCard() {
                 const last = i === laneShots.length - 1
                 const seconds = filmSeconds(shot)
                 const bounds = retimeBounds(retimeMaxSec, filmDuration(shot))
-                const grip = (
+                const join = joinByShot.get(shot.id)
+                const grip = motionMode ? (
+                  join ? (
+                    <JoinChip
+                      join={join}
+                      from={shot.order_index + 1}
+                      to={laneShots[i + 1].order_index + 1}
+                      selected={selectedJoinShotId === shot.id}
+                      onSelect={selectJoin}
+                    />
+                  ) : null
+                ) : (
                   <Grip
                     shotId={shot.id}
                     number={shot.order_index + 1}
@@ -418,21 +504,36 @@ export function TimelineCard() {
                           }
                     }
                   >
-                    <ShotBlock
-                      shot={shot}
-                      status={statusFor(shot.id)}
-                      tier={seconds === 0 ? 'fill' : layout ? blockTier(layout.blocks[i]) : 'wide'}
-                      selected={selectedShotId === shot.id}
-                      busy={busyShotIds.has(shot.id)}
-                      readOnly={readOnly}
-                      price={price}
-                      now={now}
-                      aspectRatio={aspectRatio}
-                      onSelect={onSelect}
-                      onGenerate={onGenerate}
-                      onMove={onMove}
-                      onRemove={onRemove}
-                    />
+                    {motionMode ? (
+                      <MotionBlock
+                        shot={shot}
+                        status={statusFor(shot.id)}
+                        resolved={motions.get(shot.id)}
+                        blockPx={seconds === 0 ? ZERO_BLOCK_PX : layout ? layout.blocks[i] : null}
+                        selectedSegment={selectedSegment?.shotId === shot.id ? selectedSegment.segment : null}
+                        readOnly={readOnly}
+                        aspectRatio={aspectRatio}
+                        onSelect={onSelectSegment}
+                        onRemove={onRemove}
+                        onMoveSplit={onMoveSplit}
+                      />
+                    ) : (
+                      <ShotBlock
+                        shot={shot}
+                        status={statusFor(shot.id)}
+                        tier={seconds === 0 ? 'fill' : layout ? blockTier(layout.blocks[i]) : 'wide'}
+                        selected={selectedShotId === shot.id}
+                        busy={busyShotIds.has(shot.id)}
+                        readOnly={readOnly}
+                        price={price}
+                        now={now}
+                        aspectRatio={aspectRatio}
+                        onSelect={onSelect}
+                        onGenerate={onGenerate}
+                        onMove={onMove}
+                        onRemove={onRemove}
+                      />
+                    )}
                     {grip}
                   </div>
                 )
@@ -451,17 +552,29 @@ export function TimelineCard() {
               <span className="pl-[4px] text-meta text-text-quiet">No music yet</span>
             </span>
 
-            <Playhead ref={playheadRef} totalSeconds={total} contentWidth={layout?.contentWidth ?? null} />
+            <Playhead ref={playheadRef} totalSeconds={total} contentWidth={layout?.contentWidth ?? null} scrollerRef={scrollerRef} />
           </div>
         </div>
       </div>
 
       <div className="flex items-center gap-[10px] border-t border-border-subtle p-[10px_14px]">
-        <span className="flex-1 text-meta text-text-tertiary">
-          Drag a boundary to hold a shot longer. Drag a shot to reorder it. Remove sends a shot to the bin, where Restore puts
-          it back in its original position.
-        </span>
-        <span className="text-meta text-text-quiet">Retiming, reordering and removing are free and mark nothing stale.</span>
+        {motionMode ? (
+          <>
+            <span className="flex-1 text-meta text-text-tertiary">
+              Click a shot for its motion, a join for its transition. Split divides one shot into two motion segments of the
+              same image; Delete sends a shot to the bin.
+            </span>
+            <span className="text-meta text-text-quiet">Motion and transitions are free and mark nothing stale.</span>
+          </>
+        ) : (
+          <>
+            <span className="flex-1 text-meta text-text-tertiary">
+              Drag a boundary to hold a shot longer. Drag a shot to reorder it. Remove sends a shot to the bin, where Restore
+              puts it back in its original position.
+            </span>
+            <span className="text-meta text-text-quiet">Retiming, reordering and removing are free and mark nothing stale.</span>
+          </>
+        )}
       </div>
     </div>
   )

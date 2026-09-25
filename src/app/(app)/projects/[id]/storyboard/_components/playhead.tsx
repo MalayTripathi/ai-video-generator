@@ -1,25 +1,39 @@
 'use client'
 
-import { useCallback, useImperativeHandle, useRef, useState, type PointerEvent as ReactPointerEvent, type Ref } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type Ref,
+  type RefObject,
+} from 'react'
 import { formatTimecode } from '@/lib/storyboard/timeline'
+import { edgeAutoscroll } from './use-lane-drag'
 
 export type PlayheadHandle = { startScrub: (e: ReactPointerEvent<HTMLElement>, jump: boolean) => void }
 
 // The shared playhead (canvas 15b/15h). There is no playback yet: it moves only by dragging
 // its handle or pressing on the ruler, and its position lives here, in client state alone.
-// Scrubbing re-renders this component only - never the lane.
+// Scrubbing re-renders this component only - never the lane. While zoomed, a scrub held near
+// the lane's edge scrolls it, exactly as a block drag does (edgeAutoscroll, once per frame).
 export function Playhead({
   ref,
   totalSeconds,
   contentWidth,
+  scrollerRef,
 }: {
   ref: Ref<PlayheadHandle>
   totalSeconds: number
   contentWidth: number | null
+  scrollerRef: RefObject<HTMLDivElement | null>
 }) {
   const [seconds, setSeconds] = useState(0)
   const [scrubFrom, setScrubFrom] = useState<number | null>(null)
   const self = useRef<HTMLSpanElement>(null)
+  const detach = useRef<(() => void) | null>(null)
   const t = Math.min(seconds, totalSeconds)
   const width = contentWidth ?? 0
 
@@ -37,21 +51,37 @@ export function Playhead({
       if (e.button !== 0 || width <= 0) return
       e.preventDefault()
       e.stopPropagation()
+      detach.current?.()
       setScrubFrom(t)
       if (jump) setSeconds(timeAt(e.clientX))
-      const move = (ev: PointerEvent) => setSeconds(timeAt(ev.clientX))
+      let pointerX = e.clientX
+      // Each frame scrolls the lane if the pointer is at its edge, then re-reads the time
+      // under the pointer - so a held pointer keeps advancing as the content slides under it.
+      let frame = requestAnimationFrame(function tick() {
+        edgeAutoscroll(scrollerRef.current, pointerX)
+        setSeconds(timeAt(pointerX))
+        frame = requestAnimationFrame(tick)
+      })
+      const move = (ev: PointerEvent) => {
+        pointerX = ev.clientX
+      }
       const up = () => {
+        cancelAnimationFrame(frame)
         window.removeEventListener('pointermove', move)
         window.removeEventListener('pointerup', up)
         window.removeEventListener('pointercancel', up)
+        detach.current = null
         setScrubFrom(null)
       }
       window.addEventListener('pointermove', move)
       window.addEventListener('pointerup', up)
       window.addEventListener('pointercancel', up)
+      detach.current = up
     },
-    [t, timeAt, width]
+    [t, timeAt, width, scrollerRef]
   )
+
+  useEffect(() => () => detach.current?.(), [])
 
   useImperativeHandle(ref, () => ({ startScrub }), [startScrub])
 

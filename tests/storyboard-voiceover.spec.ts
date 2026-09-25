@@ -4,7 +4,8 @@ import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { creditsFor } from '../src/lib/config/credits'
 import { VOICEOVER_VOICES } from '../src/lib/config/models'
-import { buildScript } from '../src/lib/storyboard/voiceover'
+import { buildScript, buildSpans } from '../src/lib/storyboard/voiceover'
+import { wordBoundaries } from '../src/lib/storyboard/motion'
 import {
   runAlignRequest,
   runAlignWorker,
@@ -84,7 +85,7 @@ async function projectVoiceover(projectId: string) {
   const { data } = await admin
     .from('projects')
     .select(
-      'audio_path, voiceover_alignment_path, voice_id, language_code, tts_model, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans'
+      'audio_path, voiceover_alignment_path, voice_id, language_code, tts_model, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words'
     )
     .eq('id', projectId)
     .single()
@@ -195,6 +196,13 @@ test.describe('voiceover - generate', () => {
       [shotIds[1], 'The city wakes.'],
     ])
     expect(spans[0].endSec).toBeLessThanOrEqual(spans[1].startSec)
+    // The word boundaries are computed once, here at settle: one pair per spoken word, in order.
+    const words = vo.voiceover_words as [number, number][]
+    expect(words).toHaveLength(script.text.split(' ').length)
+    words.forEach(([start, end], i) => {
+      expect(start).toBeLessThanOrEqual(end)
+      if (i > 0) expect(start).toBeGreaterThanOrEqual(words[i - 1][1])
+    })
 
     const files = await listVoiceoverFiles(primary.user.id, projectId)
     expect(files).toContain(`${attemptId}.mp3`)
@@ -260,6 +268,7 @@ test.describe('voiceover - generate', () => {
       voiceover_source: null,
       voiceover_generated_at: null,
       voiceover_spans: null,
+      voiceover_words: null,
     })
     expect(await listVoiceoverFiles(primary.user.id, projectId)).toEqual(before)
   })
@@ -318,6 +327,48 @@ test.describe('voiceover - upload and align', () => {
     expect(vo).toMatchObject({ voiceover_source: 'uploaded', voice_id: null, tts_model: null })
     expect(vo.audio_path).toBe(`${voiceoverDir(primary.user.id, projectId)}/${attemptId}.mp3`)
     expect((vo.voiceover_spans as unknown[]).length).toBe(2)
+    expect((vo.voiceover_words as unknown[]).length).toBe('The river rises. The city wakes.'.split(' ').length)
+  })
+
+  test('RECOVER: an alignment already stored relinks without a call and takes its word boundaries from the stored file', async () => {
+    const projectId = await seedProject(primary.user.id)
+    await seedShots(projectId, ['The river rises.', 'The city wakes.'])
+    const attemptId = await uploadSample(primary.user.id, projectId)
+    const price = creditsFor({ step: 'storyboard', operation: 'align_voiceover', quantity: SAMPLE_SECONDS })
+    const req = await requestAlign(primary.user.id, projectId, attemptId, price)
+    expect(req.ok).toBe(true)
+    if (!req.ok) return
+
+    // An earlier run was paid, stored its alignment and persisted it, then died before linking.
+    const script = await scriptFor(projectId)
+    const alignment = {
+      characters: script.text.split(''),
+      character_start_times_seconds: script.text.split('').map((_, i) => i * 0.1),
+      character_end_times_seconds: script.text.split('').map((_, i) => (i + 1) * 0.1),
+    }
+    const spans = buildSpans(script, alignment)
+    const alignmentPath = `${voiceoverDir(primary.user.id, projectId)}/${attemptId}.alignment.json`
+    await admin.storage
+      .from('artifacts')
+      .upload(alignmentPath, JSON.stringify({ text: script.text, alignment, spans }), { contentType: 'application/json' })
+    const { data: gen } = await admin.from('generations').select('payload').eq('id', req.generationId).single()
+    await admin
+      .from('generations')
+      .update({ payload: { ...(gen!.payload as Record<string, unknown>), alignmentPath, spans } })
+      .eq('id', req.generationId)
+
+    const gateway = throwingVoiceoverGateway()
+    const outcome = await runAlignWorker(deps(gateway), {
+      userId: primary.user.id,
+      projectId,
+      generationId: req.generationId,
+      audio: req.audio,
+    })
+    expect(outcome).toEqual({ ok: true })
+    expect(gateway.alignCalls).toHaveLength(0)
+    const vo = await projectVoiceover(projectId)
+    expect(vo.voiceover_alignment_path).toBe(alignmentPath)
+    expect(vo.voiceover_words).toEqual(wordBoundaries(alignment))
   })
 
   test('a failed alignment is not charged and keeps the uploaded file', async () => {

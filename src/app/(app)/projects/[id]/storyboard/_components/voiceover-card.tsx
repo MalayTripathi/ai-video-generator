@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { InsufficientCreditsBanner } from '@/components/insufficient-credits-banner'
 import { PromptConfirmModal, type PromptConfirmContent } from '@/components/prompt-confirm-modal'
 import { parseRailFigures, useRailFigures } from '@/components/rail-figures-context'
+import { Spinner } from '@/components/spinner'
 import { createClient as createBrowserSupabase } from '@/lib/supabase/client'
 import { creditsFor } from '@/lib/config/credits'
 import { voicesForLanguage, type VoiceoverVoice } from '@/lib/config/models'
@@ -28,7 +29,9 @@ import type { StoryboardShot } from './types'
 // The Voiceover card under the timeline (canvas 15f): five states - empty, generating,
 // failed, present, stale - each with a collapsed line of fixed height and an expanded
 // card. Generating and aligning are paid and run in the background; the lane learns the
-// outcome from the page's one status poll. Everything else here is free.
+// outcome from the page's one status poll. Everything else here is free. A paid click shows
+// only a pending control until the server accepts (202) - the balance gate answers first,
+// so a 402 leaves the card exactly as it was.
 
 export function voiceoverPrice(chars: number): number {
   return chars > 0 ? creditsFor({ step: 'storyboard', operation: 'voiceover', quantity: chars }) : 0
@@ -284,7 +287,10 @@ export function VoiceoverCard({ language }: { language: string | null }) {
   const chars = script.text.length
   const price = voiceoverPrice(chars)
 
+  // In flight to the server, not yet accepted: the clicked control shows a spinner, nothing
+  // else changes. Accepted (202): the card shows Generating until the status poll has it.
   const [submitting, setSubmitting] = useState<Submitting | null>(null)
+  const [accepted, setAccepted] = useState<Submitting | null>(null)
   const [choosing, setChoosing] = useState(false)
   const [pickedId, setPickedId] = useState<string | null>(null)
   const [error, setError] = useState<CardError | null>(null)
@@ -301,7 +307,7 @@ export function VoiceoverCard({ language }: { language: string | null }) {
   const muteKey = `${current?.generatedAt ?? ''}:${current?.muted ?? false}`
   const isMuted = mutedOverride?.key === muteKey ? mutedOverride.value : (current?.muted ?? false)
 
-  const inFlight = submitting !== null || voiceover.state === 'generating'
+  const inFlight = accepted !== null || voiceover.state === 'generating'
   const stale = !!current && !!voiceoverStaleness?.stale
   const view: CardView = inFlight
     ? 'generating'
@@ -364,10 +370,16 @@ export function VoiceoverCard({ language }: { language: string | null }) {
   useEffect(() => () => audioRef.current?.pause(), [])
 
   const handleResponse = useCallback(
-    async (res: Response, body: Record<string, unknown> | null, retry: (credits: number) => void) => {
+    async (
+      res: Response,
+      body: Record<string, unknown> | null,
+      attempt: Submitting,
+      retry: (credits: number) => void
+    ) => {
       const rail = parseRailFigures(body?.rail)
       if (rail) setFigures(rail)
       if (res.ok) {
+        setAccepted(attempt)
         setChoosing(false)
         return
       }
@@ -408,24 +420,26 @@ export function VoiceoverCard({ language }: { language: string | null }) {
 
   const startGenerate = useCallback(
     async (voiceId: string, credits: number) => {
-      if (readOnly) return
+      if (readOnly || submitting) return
       setError(null)
-      setSubmitting({ mode: 'generate', voiceId, chars })
+      const attempt: Submitting = { mode: 'generate', voiceId, chars }
+      setSubmitting(attempt)
       try {
         const res = await fetch(`/api/projects/${projectId}/voiceover`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ voiceId, expectedCredits: credits }),
         })
-        await handleResponse(res, await readJson(res), (next) => void startGenerateRef.current?.(voiceId, next))
+        await handleResponse(res, await readJson(res), attempt, (next) => void startGenerateRef.current?.(voiceId, next))
       } catch {
         setError({ kind: 'error', message: "The voiceover couldn't be started. Try again." })
       } finally {
         await refreshStatus()
         setSubmitting(null)
+        setAccepted(null)
       }
     },
-    [projectId, readOnly, chars, handleResponse, refreshStatus]
+    [projectId, readOnly, submitting, chars, handleResponse, refreshStatus]
   )
 
   useEffect(() => {
@@ -456,19 +470,21 @@ export function VoiceoverCard({ language }: { language: string | null }) {
 
   const align = useCallback(
     async (attemptId: string, ext: string, durationSec: number, credits: number) => {
-      setSubmitting({ mode: 'upload', durationSec })
+      const attempt: Submitting = { mode: 'upload', durationSec }
+      setSubmitting(attempt)
       try {
         const res = await fetch(`/api/projects/${projectId}/voiceover/align`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ attemptId, ext, expectedCredits: credits }),
         })
-        await handleResponse(res, await readJson(res), (next) => void alignRef.current?.(attemptId, ext, durationSec, next))
+        await handleResponse(res, await readJson(res), attempt, (next) => void alignRef.current?.(attemptId, ext, durationSec, next))
       } catch {
         setError({ kind: 'error', message: "The upload couldn't be aligned. Try again." })
       } finally {
         await refreshStatus()
         setSubmitting(null)
+        setAccepted(null)
       }
     },
     [projectId, handleResponse, refreshStatus]
@@ -561,10 +577,10 @@ export function VoiceoverCard({ language }: { language: string | null }) {
 
   // Generating: what's being made, and how long it should take (a display estimate).
   const now = useNow(view === 'generating')
-  const genMode = submitting?.mode ?? voiceover.mode ?? 'generate'
-  const genVoice = voiceName(submitting?.mode === 'generate' ? submitting.voiceId : voiceover.attemptVoiceId)
-  const genChars = submitting?.mode === 'generate' ? submitting.chars : (voiceover.attemptChars ?? chars)
-  const genDuration = submitting?.mode === 'upload' ? submitting.durationSec : (voiceover.attemptDurationSec ?? 0)
+  const genMode = accepted?.mode ?? voiceover.mode ?? 'generate'
+  const genVoice = voiceName(accepted?.mode === 'generate' ? accepted.voiceId : voiceover.attemptVoiceId)
+  const genChars = accepted?.mode === 'generate' ? accepted.chars : (voiceover.attemptChars ?? chars)
+  const genDuration = accepted?.mode === 'upload' ? accepted.durationSec : (voiceover.attemptDurationSec ?? 0)
   const genCredits = genMode === 'upload' ? alignPrice(genDuration) : voiceoverPrice(genChars)
   const etaMs = genMode === 'upload' ? VOICEOVER_ALIGN_ETA_MS : (genChars / VOICEOVER_ETA_CHARS_PER_SEC) * 1000
   const elapsed = voiceover.startedAt && now ? Math.max(0, now - new Date(voiceover.startedAt).getTime()) : 0
@@ -605,6 +621,12 @@ export function VoiceoverCard({ language }: { language: string | null }) {
       void startGenerate(retryVoice, price)
     }
   }
+
+  // The pending control: the button that was clicked spins; every paid control waits.
+  const pendingGenerate = submitting?.mode === 'generate'
+  const pendingUpload = submitting?.mode === 'upload'
+  const pending = submitting !== null
+  const pendingMark = <Spinner className="h-[11px] w-[11px]" thickness={1.3} />
 
   const collapsedNote: Record<CardView, ReactNode> = {
     empty: <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-meta text-text-tertiary">Optional · Not generated</span>,
@@ -663,10 +685,12 @@ export function VoiceoverCard({ language }: { language: string | null }) {
     <button
       type="button"
       data-testid="generate-voiceover"
-      disabled={readOnly || !voiceId || chars === 0}
+      disabled={readOnly || !voiceId || chars === 0 || pending}
+      aria-busy={pendingGenerate}
       onClick={() => voiceId && requestGenerate(voiceId)}
       className="flex h-[30px] flex-none cursor-pointer items-center gap-[8px] whitespace-nowrap rounded-control border border-border-strong bg-bg-inset px-[13px] text-small leading-none font-medium text-text-primary hover:border-border-strong-hover disabled:cursor-not-allowed disabled:opacity-60"
     >
+      {pendingGenerate && pendingMark}
       {current ? 'Regenerate voiceover' : 'Generate voiceover'}
       <Price credits={price} />
     </button>
@@ -676,7 +700,8 @@ export function VoiceoverCard({ language }: { language: string | null }) {
     <button
       type="button"
       data-testid="upload-voiceover"
-      disabled={readOnly}
+      disabled={readOnly || pending}
+      aria-busy={pendingUpload}
       onClick={openFilePicker}
       className={
         size === 'lg'
@@ -684,6 +709,7 @@ export function VoiceoverCard({ language }: { language: string | null }) {
           : SMALL_BUTTON
       }
     >
+      {pendingUpload && <span className="mr-[6px] flex">{pendingMark}</span>}
       Upload
     </button>
   )
@@ -775,10 +801,12 @@ export function VoiceoverCard({ language }: { language: string | null }) {
         <button
           type="button"
           data-testid="voiceover-try-again"
-          disabled={readOnly || (!failedUpload && chars === 0)}
+          disabled={readOnly || (!failedUpload && chars === 0) || pending}
+          aria-busy={pending}
           onClick={tryAgain}
           className="flex h-[30px] flex-none cursor-pointer items-center gap-[7px] rounded-control border border-status-failed-line px-[12px] text-small leading-none font-medium text-status-failed-fg hover:bg-status-failed-bg disabled:cursor-not-allowed disabled:opacity-60"
         >
+          {pending && pendingMark}
           Try again
           {retryCredits !== null && <span className="font-mono text-mono font-normal">{formatCredits(retryCredits)} cr</span>}
         </button>
@@ -823,10 +851,12 @@ export function VoiceoverCard({ language }: { language: string | null }) {
             <button
               type="button"
               data-testid="voiceover-regenerate-stale"
-              disabled={readOnly || chars === 0}
+              disabled={readOnly || chars === 0 || pending}
+              aria-busy={pendingGenerate}
               onClick={() => (current?.voiceId ? requestGenerate(current.voiceId) : setChoosing(true))}
               className="flex h-[28px] flex-none cursor-pointer items-center gap-[7px] whitespace-nowrap rounded-control border border-status-stale-line bg-bg-canvas px-[11px] text-small leading-none font-medium text-status-stale-fg hover:bg-status-stale-bg disabled:cursor-not-allowed disabled:opacity-60"
             >
+              {pendingGenerate && pendingMark}
               Regenerate voiceover <span className="font-mono text-mono font-normal">{formatCredits(price)} cr</span>
             </button>
           </div>

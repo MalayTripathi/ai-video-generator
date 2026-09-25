@@ -3,7 +3,9 @@
 import { createClient } from '@/lib/supabase/server'
 import { stepIndex } from '@/lib/config/pipeline'
 import { resolveVideoModel, videoModelMaxSeconds } from '@/lib/config/models'
-import { filmDuration, isRetimeAllowed, retimeBounds } from '@/lib/storyboard/timeline'
+import { filmDuration, filmSeconds, isRetimeAllowed, retimeBounds } from '@/lib/storyboard/timeline'
+import type { Motion, Transition } from '@/lib/config/enums'
+import { isSplitAllowed, parseMotion, parseTransition } from '@/lib/storyboard/motion'
 import {
   fitToVoiceover as fitLengths,
   fitUnavailableReason,
@@ -238,6 +240,7 @@ export async function removeVoiceoverForUser(
       voiceover_source: null,
       voiceover_generated_at: null,
       voiceover_spans: null,
+      voiceover_words: null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', projectId)
@@ -287,6 +290,114 @@ export async function setShotBinnedForUser(
   const { error } = await supabase.from('shots').update({ binned_at: binnedAt, updated_at: now }).eq('id', shotId)
   if (error) return { success: false, error: error.message }
   return { success: true, binnedAt }
+}
+
+// Motion & transitions (Storyboard B3). Render-only and free: each writes one shot's own
+// motion / split / transition_out columns, marks nothing stale, and diffs first.
+
+export type MotionSegment = 'a' | 'b'
+
+/** A shot's motion (segment a) or its split's second-segment motion (b). Null follows the film default. */
+export async function saveShotMotionForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string,
+  shotId: string,
+  segment: MotionSegment,
+  motion: Motion | null
+): Promise<TimelineEditResult> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error }
+  if (segment !== 'a' && segment !== 'b') return { success: false, error: 'Invalid segment' }
+  if (motion !== null && parseMotion(motion) === null) return { success: false, error: 'Invalid motion' }
+
+  const { data: shot } = await supabase
+    .from('shots')
+    .select('id, motion, split_at, split_motion')
+    .eq('id', shotId)
+    .eq('project_id', projectId)
+    .maybeSingle()
+  if (!shot) return { success: false, error: 'Shot not found' }
+  if (segment === 'b' && shot.split_at === null) return { success: false, error: 'This shot is not split' }
+
+  const column = segment === 'a' ? 'motion' : 'split_motion'
+  if (shot[column] === motion) return { success: true, unchanged: true }
+  const { error } = await supabase
+    .from('shots')
+    .update({ [column]: motion, updated_at: new Date().toISOString() })
+    .eq('id', shotId)
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+/**
+ * Sets a shot's one split, as a fraction of its current length - each segment at least the
+ * minimum shot length. Null deletes the split, clearing its second-segment motion with it.
+ */
+export async function saveShotSplitForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string,
+  shotId: string,
+  splitAt: number | null
+): Promise<TimelineEditResult> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error }
+
+  const { data: shot } = await supabase
+    .from('shots')
+    .select('id, duration_sec, film_duration_sec, split_at, split_motion')
+    .eq('id', shotId)
+    .eq('project_id', projectId)
+    .maybeSingle()
+  if (!shot) return { success: false, error: 'Shot not found' }
+
+  const updatedAt = new Date().toISOString()
+  if (splitAt === null) {
+    if (shot.split_at === null && shot.split_motion === null) return { success: true, unchanged: true }
+    const { error } = await supabase
+      .from('shots')
+      .update({ split_at: null, split_motion: null, updated_at: updatedAt })
+      .eq('id', shotId)
+    if (error) return { success: false, error: error.message }
+    return { success: true }
+  }
+
+  if (typeof splitAt !== 'number' || !isSplitAllowed(splitAt, filmSeconds(shot))) {
+    return { success: false, error: 'That split is outside what this shot allows' }
+  }
+  if (shot.split_at === splitAt) return { success: true, unchanged: true }
+  const { error } = await supabase.from('shots').update({ split_at: splitAt, updated_at: updatedAt }).eq('id', shotId)
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+/** The join after this shot. Null follows the film default. */
+export async function saveTransitionForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string,
+  shotId: string,
+  transition: Transition | null
+): Promise<TimelineEditResult> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error }
+  if (transition !== null && parseTransition(transition) === null) return { success: false, error: 'Invalid transition' }
+
+  const { data: shot } = await supabase
+    .from('shots')
+    .select('id, transition_out')
+    .eq('id', shotId)
+    .eq('project_id', projectId)
+    .maybeSingle()
+  if (!shot) return { success: false, error: 'Shot not found' }
+  if (shot.transition_out === transition) return { success: true, unchanged: true }
+  const { error } = await supabase
+    .from('shots')
+    .update({ transition_out: transition, updated_at: new Date().toISOString() })
+    .eq('id', shotId)
+  if (error) return { success: false, error: error.message }
+  return { success: true }
 }
 
 async function currentUser() {
@@ -346,4 +457,31 @@ export async function setVoiceoverMuted(projectId: string, muted: boolean): Prom
   const { supabase, user } = await currentUser()
   if (!user) return NOT_AUTHENTICATED
   return setVoiceoverMutedForUser(supabase, user.id, projectId, muted)
+}
+
+export async function saveShotMotion(
+  projectId: string,
+  shotId: string,
+  segment: MotionSegment,
+  motion: Motion | null
+): Promise<TimelineEditResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return NOT_AUTHENTICATED
+  return saveShotMotionForUser(supabase, user.id, projectId, shotId, segment, motion)
+}
+
+export async function saveShotSplit(projectId: string, shotId: string, splitAt: number | null): Promise<TimelineEditResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return NOT_AUTHENTICATED
+  return saveShotSplitForUser(supabase, user.id, projectId, shotId, splitAt)
+}
+
+export async function saveTransition(
+  projectId: string,
+  shotId: string,
+  transition: Transition | null
+): Promise<TimelineEditResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return NOT_AUTHENTICATED
+  return saveTransitionForUser(supabase, user.id, projectId, shotId, transition)
 }

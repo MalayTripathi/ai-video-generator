@@ -311,6 +311,9 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   `ClaudeGateway` is injected). A call whose cost is already billed by an enclosing
   action passes the `BILLED_BY_TURN` sentinel instead of omitting the parameter, so
   a forgotten wiring fails to compile rather than silently billing nothing.
+- Every paid action checks balance before any UI or data state that shows the process has
+  begun — client shows only a pending control until the server accepts; a 402 leaves the
+  prior state untouched.
 - **Provider calls.** See `## Provider calls` below for the gateway seam,
   the live-call guard, and the Playwright guard. Never set, export, or add
   `ALLOW_REAL_CLAUDE` anywhere in the repo — that decision belongs to the

@@ -548,4 +548,33 @@ test.describe('storyboard editing - zoom and playhead', () => {
     await page.mouse.up()
     expect(await laneOrder(page)).toEqual(ids)
   })
+
+  test('while zoomed in, dragging the playhead past the visible edge scrolls the lane and keeps scrubbing', async ({
+    page,
+  }) => {
+    const { projectId } = await seed(Array.from({ length: 8 }, () => ({ state: 'ready' as const })))
+    await open(page, projectId)
+    for (let i = 0; i < 4; i++) {
+      const zoomIn = page.getByRole('button', { name: 'Zoom in' })
+      if (await zoomIn.isEnabled()) await zoomIn.click()
+    }
+    const scroller = page.getByTestId('lane-scroller')
+    await expect.poll(() => scroller.evaluate((el) => el.scrollWidth > el.clientWidth + 10)).toBe(true)
+    expect(await scroller.evaluate((el) => el.scrollLeft)).toBe(0)
+
+    const playhead = page.getByTestId('playhead')
+    const box = (await scroller.boundingBox())!
+    const handle = await center(page, page.getByTestId('playhead-handle'))
+    await page.mouse.move(handle.x, handle.y)
+    await page.mouse.down()
+    // Past the right edge, then held still: the lane keeps scrolling under the pointer.
+    await page.mouse.move(box.x + box.width + 20, handle.y, { steps: 10 })
+    await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBeGreaterThan(50)
+    // The share of the timeline the unscrolled lane shows.
+    const firstScreen = await scroller.evaluate((el) => el.clientWidth / el.scrollWidth)
+    await page.mouse.up()
+    // The playhead went further than the first screen of the timeline could reach.
+    const seconds = Number(await playhead.getAttribute('data-seconds'))
+    expect(seconds / (8 * 5)).toBeGreaterThan(firstScreen)
+  })
 })

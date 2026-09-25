@@ -1,4 +1,4 @@
-import type { AspectRatio } from './enums'
+import type { AspectRatio, Motion, Transition } from './enums'
 
 // Step 4 storyboard image generation: every size, timing and encoding number lives here,
 // never at a call site and never in env. Model/provider/quality are env-driven and live
@@ -52,11 +52,6 @@ export const STATUS_POLL_INTERVAL_MS = 3000
 // sharp WebP quality for stored storyboard images - high, since these become video
 // first frames.
 export const STORYBOARD_WEBP_QUALITY = 90
-
-// The widest a picture-lane block may draw. The lane fits its width by default, so a short
-// project on a wide screen would otherwise produce giant blocks; past this cap the whole
-// timeline keeps its proportions and leaves the rest of the lane empty.
-export const STORYBOARD_MAX_BLOCK_PX = 360
 
 // Width of the lane thumbnail written beside each stored image (`{attemptId}_thumb.webp`).
 // The picture lane draws at most ~30px wide, so this is generous for any DPR.
@@ -139,3 +134,21 @@ export const VOICEOVER_ALIGN_ETA_MS = 20_000
 
 // Below this timeline-header width, Fit to voiceover collapses to its icon with a tooltip.
 export const FIT_COLLAPSE_BREAKPOINT_PX = 720
+
+// Motion & transitions (Storyboard B3): the tunables. The motion and transition lists are
+// enums (enums.ts); their display labels live in motion-labels.ts.
+
+// Alternate: every shot without its own motion takes this cycle by film position, skipping
+// any move equal to the previous shot's, so two consecutive shots never repeat a move.
+export const ALTERNATE_MOTION_CYCLE: readonly Motion[] = ['push_in', 'pan_left', 'pull_out', 'pan_right']
+
+// The film defaults a null motion / transition_out follows, until Export settings (#22)
+// makes them the project's own.
+export const FILM_DEFAULT_MOTION = 'alternate' as const
+export const FILM_DEFAULT_TRANSITION: Transition = 'dissolve'
+
+// A dissolve's length, centred on the join, capped at half the shorter neighbouring shot.
+export const DISSOLVE_SEC = 0.5
+
+// A new split lands here, as a fraction of the shot's length.
+export const DEFAULT_SPLIT_AT = 0.5

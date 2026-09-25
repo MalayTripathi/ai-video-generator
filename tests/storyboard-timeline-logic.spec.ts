@@ -34,36 +34,29 @@ test.describe('lane geometry', () => {
     const total = laneTotalSeconds(durations.map((d) => ({ duration_sec: d })))
     expect(total).toBe(34)
     const lane = 736
-    const { blocks, contentWidth } = laneLayout(lane, durations, 10_000)
+    const { blocks, contentWidth } = laneLayout(lane, durations)
     const gutters = (durations.length - 1) * LANE_GUTTER_PX
     blocks.forEach((w, i) => expect(w).toBeCloseTo(((lane - gutters) * durations[i]) / total, 6))
     expect(blocks[3] / blocks[2]).toBeCloseTo(7 / 4.5, 6)
     expect(contentWidth).toBeCloseTo(lane, 6)
   })
 
-  test('cap: a short project on a wide lane keeps its proportions and stops at the max block width', () => {
+  test('no cap: a short project on a wide lane still fills it exactly, in proportion', () => {
     const durations = [4, 8, 6]
-    const { blocks, contentWidth } = laneLayout(2400, durations, 360)
-    expect(Math.max(...blocks)).toBeCloseTo(360, 6)
+    const { blocks, contentWidth } = laneLayout(2400, durations)
     expect(blocks[0] / blocks[1]).toBeCloseTo(4 / 8, 6)
     expect(blocks[2] / blocks[1]).toBeCloseTo(6 / 8, 6)
-    expect(contentWidth).toBeLessThan(2400)
-    expect(contentWidth).toBeCloseTo(blocks.reduce((a, b) => a + b, 0) + 2 * LANE_GUTTER_PX, 6)
-  })
-
-  test('the cap does not bite when the fitted blocks are already under it', () => {
-    const { blocks, contentWidth } = laneLayout(800, [5, 5, 5, 5, 5, 5], 360)
-    expect(Math.max(...blocks)).toBeLessThan(360)
-    expect(contentWidth).toBeCloseTo(800, 6)
+    expect(Math.max(...blocks)).toBeGreaterThan(360)
+    expect(contentWidth).toBeCloseTo(2400, 6)
   })
 
   test('a null or zero duration contributes nothing to the total and draws a minimum block', () => {
     expect(laneTotalSeconds([{ duration_sec: 3 }, { duration_sec: null }, { duration_sec: 0 }])).toBe(3)
-    const { blocks, contentWidth } = laneLayout(500, [3, 0], 10_000)
+    const { blocks, contentWidth } = laneLayout(500, [3, 0])
     expect(blocks[1]).toBe(ZERO_BLOCK_PX)
     expect(blocks[0]).toBeCloseTo(500 - LANE_GUTTER_PX - ZERO_BLOCK_PX, 6)
     expect(contentWidth).toBeCloseTo(500, 6)
-    expect(laneLayout(500, [0, 0], 360).blocks).toEqual([ZERO_BLOCK_PX, ZERO_BLOCK_PX])
+    expect(laneLayout(500, [0, 0]).blocks).toEqual([ZERO_BLOCK_PX, ZERO_BLOCK_PX])
   })
 
   test('thumbnail box follows the aspect ratio inside the tier square', () => {

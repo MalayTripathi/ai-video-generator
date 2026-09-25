@@ -88,3 +88,15 @@ export const MODEL_REPORTABLE_CAMERA_ORIGINS = CAMERA_ORIGINS.filter(
 // projects.voiceover_source: how the current voiceover was made. Null when there is none.
 export const VOICEOVER_SOURCES = ['generated', 'uploaded'] as const
 export type VoiceoverSource = (typeof VOICEOVER_SOURCES)[number]
+
+// Storyboard motion & transitions (B3): render-only - the slideshow and preview play them;
+// they never feed Step 5 video prompts or any camera field. MOTIONS is the domain of
+// shots.motion and shots.split_motion, TRANSITIONS of shots.transition_out; each CHECK
+// is mirrored by hand and covered by tests/enums-drift.spec.ts.
+export const MOTIONS = ['push_in', 'pull_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'static'] as const
+
+export type Motion = (typeof MOTIONS)[number]
+
+export const TRANSITIONS = ['cut', 'dissolve'] as const
+
+export type Transition = (typeof TRANSITIONS)[number]

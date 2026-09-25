@@ -8,9 +8,9 @@ import type { ShotImageStatus, StoryboardShot } from './types'
 
 // Visual state of one block (canvas 15c a). "generating" covers queued too - both are the
 // in-flight token, never amber.
-type BlockLook = 'ready' | 'stale' | 'failed' | 'generating' | 'not_generated'
+export type BlockLook = 'ready' | 'stale' | 'failed' | 'generating' | 'not_generated'
 
-function lookFor(state: ShotImageStatus['state']): BlockLook {
+export function lookFor(state: ShotImageStatus['state']): BlockLook {
   if (state === 'queued' || state === 'generating') return 'generating'
   return state
 }
@@ -20,11 +20,18 @@ export function shotName(shot: Pick<StoryboardShot, 'visual_description' | 'orde
   return text ? text : `Shot ${shot.order_index + 1}`
 }
 
+// What a picture-lane block reads: the shot's narration, falling back to its visual
+// description only when the narration is empty. Truncated on the block, whole in its tooltip.
+export function blockText(shot: Pick<StoryboardShot, 'voice_over' | 'visual_description' | 'order_index'>): string {
+  const narration = shot.voice_over?.trim()
+  return narration ? narration : shotName(shot)
+}
+
 export function formatSeconds(durationSec: number | null): string {
   return durationSec !== null ? `${durationSec.toFixed(1)}s` : '—'
 }
 
-const CONTAINER: Record<BlockLook, string> = {
+export const CONTAINER: Record<BlockLook, string> = {
   ready: 'bg-bg-surface border-border-subtle border-solid',
   stale: 'bg-bg-surface border-status-stale-line border-solid',
   failed: 'bg-status-failed-bg border-status-failed-line border-solid',
@@ -32,7 +39,7 @@ const CONTAINER: Record<BlockLook, string> = {
   not_generated: 'bg-bg-well border-border-muted border-dashed',
 }
 
-const NUMBER_INK: Record<BlockLook, string> = {
+export const NUMBER_INK: Record<BlockLook, string> = {
   ready: 'text-text-tertiary',
   stale: 'text-text-tertiary',
   failed: 'text-status-failed-fg',
@@ -40,7 +47,7 @@ const NUMBER_INK: Record<BlockLook, string> = {
   not_generated: 'text-text-quiet',
 }
 
-const NAME_INK: Record<BlockLook, string> = {
+export const NAME_INK: Record<BlockLook, string> = {
   ready: 'text-text-secondary',
   stale: 'text-text-secondary',
   failed: 'text-banner-failed-body',
@@ -56,7 +63,7 @@ function ProgressRule({ pct, className }: { pct: number; className: string }) {
   )
 }
 
-function Thumb({
+export function Thumb({
   look,
   tier,
   url,
@@ -104,7 +111,7 @@ function stop(e: MouseEvent | KeyboardEvent) {
 
 // One shot in the picture lane. Width comes from its duration (the caller sizes the slot); the
 // tier decides how much it can say without truncating anything essential. Below 112px the
-// name lives in the tooltip and the inspect panel; action prices move into the tooltip too.
+// text lives in the tooltip and the inspect panel; action prices move into the tooltip too.
 // Focused, Alt+←/→ moves it one place and Delete/Backspace removes it to the bin; dragging
 // it is handled by the lane (use-lane-drag).
 export const ShotBlock = memo(function ShotBlock({
@@ -138,7 +145,7 @@ export const ShotBlock = memo(function ShotBlock({
 }) {
   const look = lookFor(status.state)
   const number = shot.order_index + 1
-  const name = shotName(shot)
+  const name = blockText(shot)
   const duration = formatSeconds(filmDuration(shot))
   const eta = look === 'generating' ? etaFor(status.startedAt, status.queuedAt, now) : null
   const url = status.thumbUrl ?? status.imageUrl
@@ -248,6 +255,7 @@ export const ShotBlock = memo(function ShotBlock({
           </span>
           {tier === 'wide' && (
             <span
+              data-testid="shot-block-text"
               className={`min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-meta ${
                 selected ? 'text-text-primary' : NAME_INK[look]
               }`}

@@ -5,8 +5,9 @@ import { SideColumnOverrideContext } from '@/components/side-column-switch'
 import { overwritePromptContent, PromptConfirmModal } from '@/components/prompt-confirm-modal'
 import { parseRailFigures, useRailFigures } from '@/components/rail-figures-context'
 import { creditsFor } from '@/lib/config/credits'
-import type { AspectRatio } from '@/lib/config/enums'
-import { filmDuration, laneShots as orderLane, reorderWrites } from '@/lib/storyboard/timeline'
+import type { AspectRatio, Motion, Transition } from '@/lib/config/enums'
+import { clampSplit, resolveJoins, resolveMotions, type ResolvedJoin, type ResolvedMotion } from '@/lib/storyboard/motion'
+import { filmDuration, filmSeconds, laneShots as orderLane, reorderWrites } from '@/lib/storyboard/timeline'
 import {
   fitToVoiceover as fitLengths,
   fitUnavailableReason,
@@ -20,12 +21,22 @@ import {
   restoreScriptOrder as restoreScriptOrderAction,
   saveFilmDuration,
   saveFilmOrder,
+  saveShotMotion,
+  saveShotSplit,
+  saveTransition,
   setShotBinned,
+  type MotionSegment,
 } from '../actions'
 import { useImageStatusPoll } from './use-image-status-poll'
 import type { ImageStatusData, ShotImageStatus, StoryboardShot, VoiceoverStatus } from './types'
 
 export type ActionSource = 'lane' | 'inspect'
+
+// The timeline's two modes (canvas 15b / 15d): one strip, the same geometry.
+export type TimelineMode = 'retime' | 'motion'
+
+/** A shot selected in Motion mode, and which of its segments (b only when split). */
+export type SegmentSelection = { shotId: string; segment: MotionSegment }
 
 export type ActionError =
   | { source: ActionSource; kind: 'credits'; title: string; requiredCredits: number; balanceCredits: number | null }
@@ -77,6 +88,19 @@ type StoryboardContextValue = {
   fitToVoiceover: () => void
   /** Shot numbers the last Fit held to the allowed range; null when nothing was clamped. */
   fitClamped: number[] | null
+  // Motion & transitions (B3). Resolved from the lane by the shared pure rules; edits are
+  // free, optimistic, and mark nothing stale.
+  mode: TimelineMode
+  setMode: (mode: TimelineMode) => void
+  motions: Map<string, ResolvedMotion>
+  joins: ResolvedJoin[]
+  selectedSegment: SegmentSelection | null
+  selectSegment: (selection: SegmentSelection | null) => void
+  selectedJoinShotId: string | null
+  selectJoin: (shotId: string | null) => void
+  setMotion: (shotId: string, segment: MotionSegment, motion: Motion | null) => void
+  setSplit: (shotId: string, splitAt: number | null) => void
+  setTransition: (shotId: string, transition: Transition | null) => void
 }
 
 const StoryboardContext = createContext<StoryboardContextValue | null>(null)
@@ -132,6 +156,9 @@ export function StoryboardProvider({
   const [overwriteShotId, setOverwriteShotId] = useState<string | null>(null)
   const { setFigures } = useRailFigures()
   const [zoomIndex, setZoomIndex] = useState(0)
+  const [mode, setModeState] = useState<TimelineMode>('retime')
+  const [selectedSegment, setSelectedSegment] = useState<SegmentSelection | null>(null)
+  const [selectedJoinShotId, setSelectedJoinShotId] = useState<string | null>(null)
 
   // The latest shots, for the timeline mutators: they read current values without being
   // rebuilt (and re-rendering every memo'd block) on each change.
@@ -147,14 +174,17 @@ export function StoryboardProvider({
   // Optimistic: the edit applies at once, the save runs behind it, and nothing is re-read
   // afterwards. A failed save rolls back only the fields that still hold this edit's value -
   // a later edit to the same shot has already superseded it (last write wins).
-  const commitEdit = useCallback(
-    async <K extends keyof StoryboardShot>(
-      field: K,
-      next: Map<string, StoryboardShot[K]>,
-      save: () => Promise<{ success: boolean }>
-    ) => {
-      const before = new Map(shotsRef.current.filter((s) => next.has(s.id)).map((s) => [s.id, s[field]]))
-      patchShots(new Map([...next].map(([id, value]) => [id, { [field]: value } as Partial<StoryboardShot>])))
+  const commitPatches = useCallback(
+    async (patches: Map<string, Partial<StoryboardShot>>, save: () => Promise<{ success: boolean }>) => {
+      const before = new Map(
+        shotsRef.current
+          .filter((s) => patches.has(s.id))
+          .map((s) => [
+            s.id,
+            Object.fromEntries(Object.keys(patches.get(s.id)!).map((k) => [k, s[k as keyof StoryboardShot]])) as Partial<StoryboardShot>,
+          ])
+      )
+      patchShots(patches)
       setActionError((prev) => (prev?.source === 'lane' && prev.kind === 'error' ? null : prev))
       const ok = await save().then(
         (r) => r.success,
@@ -162,15 +192,31 @@ export function StoryboardProvider({
       )
       if (ok) return
       setShots((prev) =>
-        prev.map((shot) =>
-          next.has(shot.id) && before.has(shot.id) && shot[field] === next.get(shot.id)
-            ? { ...shot, [field]: before.get(shot.id) }
-            : shot
-        )
+        prev.map((shot) => {
+          const patch = patches.get(shot.id)
+          const was = before.get(shot.id)
+          if (!patch || !was) return shot
+          const revert = Object.fromEntries(
+            Object.entries(patch)
+              .filter(([k, v]) => shot[k as keyof StoryboardShot] === v)
+              .map(([k]) => [k, was[k as keyof StoryboardShot]])
+          )
+          return Object.keys(revert).length > 0 ? { ...shot, ...revert } : shot
+        })
       )
       setActionError({ source: 'lane', kind: 'error', message: "That change couldn't be saved, so it was undone. Try again." })
     },
     [patchShots]
+  )
+
+  const commitEdit = useCallback(
+    <K extends keyof StoryboardShot>(
+      field: K,
+      next: Map<string, StoryboardShot[K]>,
+      save: () => Promise<{ success: boolean }>
+    ) =>
+      commitPatches(new Map([...next].map(([id, value]) => [id, { [field]: value } as Partial<StoryboardShot>])), save),
+    [commitPatches]
   )
 
   const retime = useCallback(
@@ -200,7 +246,10 @@ export function StoryboardProvider({
     (shotId: string, binned: boolean) => {
       const shot = shotsRef.current.find((s) => s.id === shotId)
       if (readOnly || !shot || (shot.binned_at !== null) === binned) return
-      if (binned) setSelectedShotId((prev) => (prev === shotId ? null : prev))
+      if (binned) {
+        setSelectedShotId((prev) => (prev === shotId ? null : prev))
+        setSelectedSegment((prev) => (prev?.shotId === shotId ? null : prev))
+      }
       void commitEdit('binned_at', new Map([[shotId, binned ? new Date().toISOString() : null]]), () =>
         setShotBinned(projectId, shotId, binned)
       )
@@ -257,6 +306,67 @@ export function StoryboardProvider({
   const binnedShots = useMemo(
     () => shots.filter((s) => s.binned_at !== null).sort((a, b) => a.binned_at!.localeCompare(b.binned_at!)),
     [shots]
+  )
+
+  // Motion & transitions (B3). The inspect panel stays a Retime-mode action, so entering
+  // Motion closes it; leaving Motion drops its selections.
+  const setMode = useCallback((next: TimelineMode) => {
+    setModeState(next)
+    if (next === 'motion') setSelectedShotId(null)
+    else {
+      setSelectedSegment(null)
+      setSelectedJoinShotId(null)
+    }
+  }, [])
+  const selectSegment = useCallback((selection: SegmentSelection | null) => setSelectedSegment(selection), [])
+  const selectJoin = useCallback((shotId: string | null) => setSelectedJoinShotId(shotId), [])
+
+  // Word boundaries for the forced-cut rule ride on the voiceover status (projects.
+  // voiceover_words, computed when the read settled). With no voiceover nothing is forced.
+  const liveWords = voiceover.current?.words ?? null
+  const motions = useMemo(() => resolveMotions(laneShots), [laneShots])
+  const joins = useMemo(() => resolveJoins(laneShots, liveWords), [laneShots, liveWords])
+
+  const setMotion = useCallback(
+    (shotId: string, segment: MotionSegment, motion: Motion | null) => {
+      const shot = shotsRef.current.find((s) => s.id === shotId)
+      if (readOnly || !shot) return
+      if (segment === 'b' && shot.split_at === null) return
+      const field = segment === 'a' ? 'motion' : 'split_motion'
+      if (shot[field] === motion) return
+      void commitEdit(field, new Map([[shotId, motion]]), () => saveShotMotion(projectId, shotId, segment, motion))
+    },
+    [projectId, readOnly, commitEdit]
+  )
+
+  // Deleting a split clears its second-segment motion with it. A new or moved split is
+  // clamped so each segment keeps the minimum shot length.
+  const setSplit = useCallback(
+    (shotId: string, splitAt: number | null) => {
+      const shot = shotsRef.current.find((s) => s.id === shotId)
+      if (readOnly || !shot) return
+      if (splitAt === null) {
+        if (shot.split_at === null && shot.split_motion === null) return
+        setSelectedSegment((prev) => (prev?.shotId === shotId ? { shotId, segment: 'a' } : prev))
+        void commitPatches(new Map([[shotId, { split_at: null, split_motion: null }]]), () =>
+          saveShotSplit(projectId, shotId, null)
+        )
+        return
+      }
+      const at = clampSplit(splitAt, filmSeconds(shot))
+      if (at === null || at === shot.split_at) return
+      void commitEdit('split_at', new Map([[shotId, at]]), () => saveShotSplit(projectId, shotId, at))
+    },
+    [projectId, readOnly, commitEdit, commitPatches]
+  )
+
+  const setTransition = useCallback(
+    (shotId: string, transition: Transition | null) => {
+      const shot = shotsRef.current.find((s) => s.id === shotId)
+      if (readOnly || !shot || shot.transition_out === transition) return
+      void commitEdit('transition_out', new Map([[shotId, transition]]), () => saveTransition(projectId, shotId, transition))
+    },
+    [projectId, readOnly, commitEdit]
   )
 
   const statusById = useMemo(() => new Map(data.shots.map((s) => [s.shotId, s])), [data.shots])
@@ -424,6 +534,17 @@ export function StoryboardProvider({
       fitReason,
       fitToVoiceover,
       fitClamped,
+      mode,
+      setMode,
+      motions,
+      joins,
+      selectedSegment,
+      selectSegment,
+      selectedJoinShotId,
+      selectJoin,
+      setMotion,
+      setSplit,
+      setTransition,
     }),
     [
       projectId,
@@ -456,6 +577,17 @@ export function StoryboardProvider({
       fitReason,
       fitToVoiceover,
       fitClamped,
+      mode,
+      setMode,
+      motions,
+      joins,
+      selectedSegment,
+      selectSegment,
+      selectedJoinShotId,
+      selectJoin,
+      setMotion,
+      setSplit,
+      setTransition,
     ]
   )
 

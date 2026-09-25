@@ -7,6 +7,7 @@ import { deriveImageState, type ImageState } from '@/lib/storyboard/image-state'
 import { countLiveImageClaims, storyboardThumbPath } from '../logic'
 import { isLiveClaim } from '@/lib/generations/claim'
 import { liveVoiceoverCommittedCredits } from '@/lib/voiceover/committed'
+import { parseWords, type WordBoundary } from '@/lib/storyboard/motion'
 import { parseSpans, type VoiceoverSpan } from '@/lib/storyboard/voiceover'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
@@ -35,6 +36,8 @@ export type CurrentVoiceover = {
   generatedAt: string
   muted: boolean
   spans: VoiceoverSpan[]
+  /** Spoken-word boundaries (projects.voiceover_words) for the forced-cut rule; null if absent. */
+  words: WordBoundary[] | null
 }
 
 export type VoiceoverStatus = {
@@ -86,7 +89,7 @@ export async function loadImageStatuses(params: {
   const { data: project } = await supabase
     .from('projects')
     .select(
-      'id, audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans'
+      'id, audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words'
     )
     .eq('id', projectId)
     .eq('user_id', userId)
@@ -193,6 +196,7 @@ type VoiceoverProjectRow = {
   voiceover_generated_at: string | null
   voiceover_muted: boolean
   voiceover_spans: unknown
+  voiceover_words?: unknown
 }
 
 type VoiceoverClaimRow = {
@@ -227,6 +231,7 @@ export function deriveVoiceoverStatus(
           generatedAt: project.voiceover_generated_at,
           muted: project.voiceover_muted,
           spans,
+          words: parseWords(project.voiceover_words),
         }
       : null
 

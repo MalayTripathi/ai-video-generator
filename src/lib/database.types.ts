@@ -279,6 +279,7 @@ export type Database = {
           voiceover_source: string | null
           voiceover_spans: Json | null
           voiceover_stale: boolean
+          voiceover_words: Json | null
         }
         Insert: {
           aspect_ratio?: string | null
@@ -307,6 +308,7 @@ export type Database = {
           voiceover_source?: string | null
           voiceover_spans?: Json | null
           voiceover_stale?: boolean
+          voiceover_words?: Json | null
         }
         Update: {
           aspect_ratio?: string | null
@@ -335,6 +337,7 @@ export type Database = {
           voiceover_source?: string | null
           voiceover_spans?: Json | null
           voiceover_stale?: boolean
+          voiceover_words?: Json | null
         }
         Relationships: [
           {
@@ -446,12 +449,16 @@ export type Database = {
           image_prompt_edited: boolean
           image_prompt_stale: boolean
           image_stale: boolean
+          motion: string | null
           order_index: number
           project_id: string
           section_label: string | null
           shot_key: string
           shot_size: string | null
           shot_size_origin: string
+          split_at: number | null
+          split_motion: string | null
+          transition_out: string | null
           updated_at: string
           video_path: string | null
           video_prompt: string | null
@@ -477,12 +484,16 @@ export type Database = {
           image_prompt_edited?: boolean
           image_prompt_stale?: boolean
           image_stale?: boolean
+          motion?: string | null
           order_index: number
           project_id: string
           section_label?: string | null
           shot_key: string
           shot_size?: string | null
           shot_size_origin?: string
+          split_at?: number | null
+          split_motion?: string | null
+          transition_out?: string | null
           updated_at?: string
           video_path?: string | null
           video_prompt?: string | null
@@ -508,12 +519,16 @@ export type Database = {
           image_prompt_edited?: boolean
           image_prompt_stale?: boolean
           image_stale?: boolean
+          motion?: string | null
           order_index?: number
           project_id?: string
           section_label?: string | null
           shot_key?: string
           shot_size?: string | null
           shot_size_origin?: string
+          split_at?: number | null
+          split_motion?: string | null
+          transition_out?: string | null
           updated_at?: string
           video_path?: string | null
           video_prompt?: string | null

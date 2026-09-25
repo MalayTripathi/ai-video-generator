@@ -307,15 +307,32 @@ are not lost.
   (`image-prompts-context`) and the agent panel off the Storyboard still refresh the rail
   through `router.refresh()`. Push the figures into `rail-figures-context` from each paid
   response instead, as the Storyboard does.
-- **Storyboard static controls to wire:** Fit to voiceover, Motion & transitions, the
-  voiceover and music lanes, Preview & mix, and Export. Each carries a `// static until
-  <feature>` comment at its component. The voiceover slice also flips `HAS_VOICEOVER` in
-  `storyboard-main.tsx` (the order-differs banner waits on it), and must decide how its
-  `duration_sec` write-back meets a shot's `film_duration_sec`, which wins on every
-  Storyboard read.
+- **Storyboard static controls to wire:** the music lane, Preview & mix, and Export. Each
+  carries a `// static until <feature>` comment at its component.
 - **The storyboard agent's context block still says "coming soon"**
   (`src/lib/prompts/agent-storyboard.ts`). Rewrite (and bump its version) when the step
   gets agent tools.
 - **15e's stale sub-line wants "prompt changed HH:MM",** but nothing records when a prompt
-  changed. The panel shows the drawn time and size instead. Shots also have no title, so the
-  lane's block name is the visual description.
+  changed. The panel shows the drawn time and size instead.
+- **Split-marker drag on touch devices is untested.** The Storyboard's Motion-mode split
+  marker drags on pointer events with capture and `touch-none`; only mouse and keyboard
+  are covered by tests.
+
+## Storyboard polish
+
+Paid actions whose UI shows the process has begun before the balance check answers (the
+rule: a pending control only until the server accepts; a 402 leaves the prior state
+untouched). The Storyboard voiceover already follows it.
+
+- **Workbench (Step 2) — element reference Generate.** `element-card.tsx` sets
+  `imageOp: 'generating'` before the POST to `.../reference/generate`, which can 402; a
+  refused request briefly shows the element generating.
+- **Workbench / Image prompts / Storyboard — agent turn.** `use-agent-turn.ts` sets
+  `isRunning` (composer reads "Agent is working", input cleared, user bubble appended)
+  before the POST to `/agent`, whose balance gate can 402.
+- **Workbench (Step 2) — shot generation.** `shots-context.tsx` flips `generationState` to
+  `'generating'` (the skeleton) before the POST to `/shots`, on both the first-load trigger
+  and a confirmed retry. Not credit-gated yet, but it can 402 on the spend cap.
+- **Workbench (Step 2) — camera derivation.** `use-camera-derivation.ts` sets
+  `status: 'running'` and the pending fields' spinners before the POST to `.../camera`.
+  Not credit-gated yet, but it can 402 on the spend cap.

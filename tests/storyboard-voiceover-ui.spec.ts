@@ -138,6 +138,92 @@ test('Generate sends the picked voice and the price shown, then reads the lane f
   expect(sent[0]).toEqual({ voiceId: VOICEOVER_VOICES.en[2].id, expectedCredits: price })
 })
 
+// Balance before progress: a paid click shows only a pending control until the server
+// answers. The POST is held open to observe that window, and a MutationObserver records
+// every state the card passes through, so a flash of Generating cannot slip between polls.
+async function recordCardStates(page: Page) {
+  await page.evaluate(() => {
+    const seen: string[] = []
+    ;(window as unknown as { __cardStates: string[] }).__cardStates = seen
+    const note = () => {
+      const el = document.querySelector('[data-testid="voiceover-section"]')
+      const state = el?.getAttribute('data-state')
+      if (state && seen[seen.length - 1] !== state) seen.push(state)
+    }
+    note()
+    new MutationObserver(note).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-state'] })
+  })
+}
+
+function cardStates(page: Page) {
+  return page.evaluate(() => (window as unknown as { __cardStates: string[] }).__cardStates)
+}
+
+async function holdVoiceoverPost(page: Page, projectId: string) {
+  let release: (res: { status: number; json: unknown }) => void = () => {}
+  const answer = new Promise<{ status: number; json: unknown }>((resolve) => (release = resolve))
+  let hits = 0
+  await page.route(`**/api/projects/${projectId}/voiceover`, async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback()
+    hits++
+    await route.fulfill(await answer)
+  })
+  return { release, hits: () => hits }
+}
+
+test('a 402 never shows Generating: the button only spins, then the banner shows and the card is unchanged', async ({ page }) => {
+  const { projectId } = await seed()
+  const post = await holdVoiceoverPost(page, projectId)
+  await open(page, projectId)
+  const card = page.getByTestId('voiceover-section')
+  await card.click()
+  await page.getByTestId('voice-card').nth(1).click()
+  await recordCardStates(page)
+
+  const button = page.getByTestId('generate-voiceover')
+  await button.click()
+  await expect.poll(post.hits).toBe(1)
+  // Pending: the clicked control spins and waits; the card itself has not moved.
+  await expect(button).toHaveAttribute('aria-busy', 'true')
+  await expect(button).toBeDisabled()
+  await expect(card).toHaveAttribute('data-state', 'empty')
+  await expect(card).not.toContainText('Reading')
+
+  const price = creditsFor({ step: 'storyboard', operation: 'voiceover', quantity: LINES.join(' ').length })
+  post.release({
+    status: 402,
+    json: { ok: false, error: 'Not enough credits', requiredCredits: price, balanceCredits: 0 },
+  })
+  await expect(page.getByRole('alert').filter({ hasText: 'Not enough credits for this voiceover' })).toBeVisible()
+  await expect(button).toHaveAttribute('aria-busy', 'false')
+  await expect(button).toBeEnabled()
+  // Exactly as it was: still open on the voice picker, the same voice picked.
+  await expect(card).toHaveAttribute('data-state', 'empty')
+  await expect(page.getByTestId('voice-card')).toHaveCount(4)
+  await expect(page.getByTestId('voice-card').nth(1)).toHaveAttribute('aria-checked', 'true')
+  expect(await cardStates(page)).toEqual(['empty'])
+})
+
+test('a 202 shows Generating only after the server accepts', async ({ page }) => {
+  const { projectId } = await seed()
+  const post = await holdVoiceoverPost(page, projectId)
+  await open(page, projectId)
+  const card = page.getByTestId('voiceover-section')
+  await card.click()
+  await recordCardStates(page)
+
+  const button = page.getByTestId('generate-voiceover')
+  await button.click()
+  await expect.poll(post.hits).toBe(1)
+  await expect(button).toHaveAttribute('aria-busy', 'true')
+  await expect(card).toHaveAttribute('data-state', 'empty')
+  expect(await cardStates(page)).toEqual(['empty'])
+
+  post.release({ status: 202, json: { ok: true, credits: 0 } })
+  await expect.poll(() => cardStates(page)).toContain('generating')
+  expect((await cardStates(page)).slice(0, 2)).toEqual(['empty', 'generating'])
+})
+
 test('present: the collapsed line names the voice; Mute saves; Fit tiles the read into film lengths', async ({ page }) => {
   const { projectId, ids } = await seed({ voiceover: true })
   await open(page, projectId)

@@ -125,18 +125,16 @@ export function isRetimeAllowed(seconds: number, bounds: RetimeBounds): boolean 
 export type LaneLayout = { blocks: number[]; contentWidth: number; pxPerSecond: number }
 
 // Every block's drawn width, proportional to its duration. Fit is the default: the blocks
-// share whatever the lane has left after the gutters and any zero-length blocks. The scale
-// is then capped so the longest block never exceeds maxBlockPx - past the cap the timeline
-// keeps its proportions and the lane is left partly empty. contentWidth is what the blocks
-// and gutters actually occupy, so the ruler and bands can match it. A zoom past 1 scales the
-// Fit scale up; the lane then scrolls.
-export function laneLayout(laneWidth: number, seconds: number[], maxBlockPx: number, zoom = 1): LaneLayout {
+// share whatever the lane has left after the gutters and any zero-length blocks, so at Fit
+// the timeline fills the lane exactly. contentWidth is what the blocks and gutters occupy,
+// so the ruler and bands can match it. A zoom past 1 scales the Fit scale up; the lane then
+// scrolls.
+export function laneLayout(laneWidth: number, seconds: number[], zoom = 1): LaneLayout {
   const gutters = Math.max(0, seconds.length - 1) * LANE_GUTTER_PX
   const zeroCount = seconds.filter((s) => s <= 0).length
   const total = seconds.reduce((sum, s) => sum + Math.max(0, s), 0)
-  const longest = Math.max(0, ...seconds)
   const available = Math.max(0, laneWidth - gutters - zeroCount * ZERO_BLOCK_PX)
-  const pxPerSecond = total > 0 ? Math.min(available / total, maxBlockPx / longest) * zoom : 0
+  const pxPerSecond = total > 0 ? (available / total) * zoom : 0
   const blocks = seconds.map((s) => (s > 0 ? s * pxPerSecond : ZERO_BLOCK_PX))
   return { blocks, contentWidth: blocks.reduce((sum, w) => sum + w, 0) + gutters, pxPerSecond }
 }

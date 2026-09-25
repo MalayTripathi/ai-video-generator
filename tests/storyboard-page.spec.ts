@@ -6,7 +6,7 @@ import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { creditsFor } from '../src/lib/config/credits'
-import { STORYBOARD_IMAGE_SIZES, STORYBOARD_MAX_BLOCK_PX } from '../src/lib/config/storyboard'
+import { STORYBOARD_IMAGE_SIZES } from '../src/lib/config/storyboard'
 import type { AspectRatio } from '../src/lib/config/enums'
 import { EMPTY_IMAGE_PROMPT_MESSAGE } from '../src/lib/image-prompt-edit'
 import { blockTier, LANE_GUTTER_PX, laneLayout } from '../src/lib/storyboard/timeline'
@@ -30,6 +30,7 @@ type ShotSpec = {
   section?: string | null
   edited?: boolean
   description?: string
+  narration?: string
 }
 
 const KEY_CHARS = '23456789bcdfghjkmnpqrstvwxz'
@@ -70,7 +71,7 @@ async function seed(specs: ShotSpec[], opts: { furthestStep?: number; aspectRati
     project_id: projectId,
     order_index: i,
     shot_key: shotKey(),
-    voice_over: `Line ${i + 1}.`,
+    voice_over: spec.narration ?? `Line ${i + 1}.`,
     visual_description: spec.description ?? `Shot description ${i + 1}`,
     duration_sec: spec.duration === undefined ? 5 : spec.duration,
     section_label: spec.section === undefined ? null : spec.section,
@@ -228,9 +229,7 @@ test.describe('storyboard page - picture lane', () => {
     const slots = page.getByTestId('shot-slot')
     await expect(slots).toHaveCount(durations.length)
     const laneWidth = (await page.getByTestId('picture-lane').boundingBox())!.width
-    const layout = laneLayout(laneWidth, durations, STORYBOARD_MAX_BLOCK_PX)
-    // At this width the cap does not bite: the blocks and gutters fill the lane.
-    expect(Math.max(...layout.blocks)).toBeLessThan(STORYBOARD_MAX_BLOCK_PX)
+    const layout = laneLayout(laneWidth, durations)
     const widths = await Promise.all(ids.map(async (_, i) => (await slots.nth(i).boundingBox())!.width))
     expect(widths.reduce((a, b) => a + b, 0)).toBeCloseTo(laneWidth, 0)
 
@@ -249,27 +248,56 @@ test.describe('storyboard page - picture lane', () => {
     await expect(narrowAction).toHaveAttribute('title', `Generate this frame · ${IMAGE_PRICE} credits`)
   })
 
-  test('cap: a short project on a wide screen stops at the max block width, and ruler and bands match the blocks', async ({
+  test('fit: a 4-shot project on a wide screen fills the lane exactly - no block-width cap - and ruler and bands match', async ({
     page,
   }) => {
     await page.setViewportSize({ width: 2400, height: 1200 })
-    const durations = [2, 4, 3]
+    const durations = [2, 4, 3, 5]
     const { projectId, ids } = await seed(durations.map((d) => ({ state: 'not_generated' as const, duration: d })))
     await open(page, projectId)
 
+    const slots = page.getByTestId('shot-slot')
+    await expect(slots).toHaveCount(durations.length)
     const laneWidth = (await page.getByTestId('picture-lane').boundingBox())!.width
-    const layout = laneLayout(laneWidth, durations, STORYBOARD_MAX_BLOCK_PX)
-    expect(layout.contentWidth).toBeLessThan(laneWidth)
+    const widths = await Promise.all(ids.map(async (_, i) => (await slots.nth(i).boundingBox())!.width))
+    expect(widths.reduce((a, b) => a + b, 0)).toBeCloseTo(laneWidth, 0)
 
     const blockWidths = await Promise.all(ids.map(async (id) => (await block(page, id).boundingBox())!.width))
-    expect(Math.max(...blockWidths)).toBeLessThanOrEqual(STORYBOARD_MAX_BLOCK_PX + 0.5)
-    expect(blockWidths[1]).toBeCloseTo(STORYBOARD_MAX_BLOCK_PX, 0)
+    // The old 360px cap would have stopped the 5s shot well short of this.
+    expect(blockWidths[3]).toBeGreaterThan(360)
     expect(blockWidths[0] / blockWidths[1]).toBeCloseTo(2 / 4, 2)
+    for (const [i] of durations.entries()) await expect(block(page, ids[i])).toHaveAttribute('data-tier', 'wide')
 
     const ruler = (await page.getByTestId('ruler').boundingBox())!.width
     const bands = (await page.getByTestId('scene-bands').boundingBox())!.width
-    expect(ruler).toBeCloseTo(layout.contentWidth, 0)
-    expect(bands).toBeCloseTo(layout.contentWidth, 0)
+    expect(ruler).toBeCloseTo(laneWidth, 0)
+    expect(bands).toBeCloseTo(laneWidth, 0)
+  })
+
+  test('block text: a block reads its narration, truncated with the whole line on hover; empty narration falls back to the visual description', async ({
+    page,
+  }) => {
+    const narration =
+      'The river rises at dawn and carries the whole city down to the sea, one boat at a time, until the harbour is full and quiet again.'
+    const { projectId, ids } = await seed([
+      { state: 'ready', duration: 6, narration, description: 'Wide shot of a river at dawn' },
+      { state: 'ready', duration: 6, narration: '   ', description: 'Boats crowd a quiet harbour' },
+    ])
+    await open(page, projectId)
+
+    const first = block(page, ids[0])
+    await expect(first).toHaveAttribute('data-tier', 'wide')
+    const text = first.getByTestId('shot-block-text')
+    await expect(text).toHaveText(narration)
+    await expect(first).not.toContainText('Wide shot of a river')
+    // Truncated on the block, whole in the tooltip.
+    expect(await text.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true)
+    await expect(text).toHaveCSS('text-overflow', 'ellipsis')
+    expect(await first.getAttribute('title')).toBe(`${narration} · 6.0s`)
+
+    const second = block(page, ids[1])
+    await expect(second.getByTestId('shot-block-text')).toHaveText('Boats crowd a quiet harbour')
+    await expect(second).toHaveAttribute('title', /^Boats crowd a quiet harbour · /)
   })
 
   for (const aspectRatio of ['16:9', '9:16', '1:1'] as const) {
