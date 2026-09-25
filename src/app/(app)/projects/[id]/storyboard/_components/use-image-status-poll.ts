@@ -6,40 +6,66 @@ import { isInFlight } from '@/lib/storyboard/timeline'
 import { useSignedUrlRefresh } from '../../workbench/_components/use-signed-url-refresh'
 import type { ImageStatusData } from './types'
 
-// Polls the images status endpoint while any frame is queued or generating, at the
+// Polls the images status endpoint while any frame is queued or generating (or the
+// voiceover is being made - its state rides on the same response, one poll for both), at the
 // interval the endpoint itself names, and stops the moment none is. `refresh()` fetches at
 // once - every action calls it, which also restarts the chain. Client state only: nothing
 // here touches the router. When a poll shows a shot that was in flight has settled, the
 // rail's spend figures (carried on every status response) are pushed to the rail store -
 // a settle is when an image's charge lands.
+// What the lane reads when a response carries no voiceover block at all.
+export const NO_VOICEOVER: ImageStatusData['voiceover'] = {
+  state: 'none',
+  mode: null,
+  startedAt: null,
+  failedAt: null,
+  attemptVoiceId: null,
+  attemptChars: null,
+  attemptDurationSec: null,
+  retryUpload: null,
+  current: null,
+}
+
 export function useImageStatusPoll(projectId: string, initial: ImageStatusData) {
   const [data, setData] = useState(initial)
   const { setFigures } = useRailFigures()
   const inFlightIds = useRef(new Set(initial.shots.filter((s) => isInFlight(s.state)).map((s) => s.shotId)))
+  const voiceoverInFlight = useRef(initial.voiceover.state === 'generating')
   // Bumped on a failed poll so the chain re-arms instead of silently stopping.
   const [failures, setFailures] = useState(0)
   const controllers = useRef(new Set<AbortController>())
 
+  // Responses can land out of order (a slow read started before an edit, a fast one after
+  // it); only the newest request's answer is ever applied.
+  const latestRequest = useRef(0)
+
   const refresh = useCallback(async () => {
     const controller = new AbortController()
     controllers.current.add(controller)
+    const requestNo = ++latestRequest.current
     try {
       const res = await fetch(`/api/projects/${projectId}/images/status`, {
         cache: 'no-store',
         signal: controller.signal,
       })
       const body = await res.json().catch(() => null)
+      if (requestNo !== latestRequest.current) return
       if (!res.ok || !body?.ok) {
         setFailures((n) => n + 1)
         return
       }
       const shots = body.shots as ImageStatusData['shots']
-      const settled = shots.some((s) => inFlightIds.current.has(s.shotId) && !isInFlight(s.state))
+      const voiceover = (body.voiceover as ImageStatusData['voiceover'] | undefined) ?? NO_VOICEOVER
+      const voiceoverSettled = voiceoverInFlight.current && voiceover.state !== 'generating'
+      const settled =
+        voiceoverSettled || shots.some((s) => inFlightIds.current.has(s.shotId) && !isInFlight(s.state))
       inFlightIds.current = new Set(shots.filter((s) => isInFlight(s.state)).map((s) => s.shotId))
+      voiceoverInFlight.current = voiceover.state === 'generating'
       const rail = parseRailFigures(body.rail)
       if (settled && rail) setFigures(rail)
       setData({
         shots,
+        voiceover,
         pollIntervalMs: body.pollIntervalMs,
         expiresAt: body.expiresAt,
         balanceCredits: body.balanceCredits,
@@ -51,7 +77,7 @@ export function useImageStatusPoll(projectId: string, initial: ImageStatusData) 
     }
   }, [projectId, setFigures])
 
-  const polling = data.shots.some((s) => isInFlight(s.state))
+  const polling = data.shots.some((s) => isInFlight(s.state)) || data.voiceover.state === 'generating'
 
   // One timer per response: each new `data` (or failure) re-arms it, so the chain runs
   // exactly as long as something is in flight.

@@ -172,7 +172,7 @@ export const ShotBlock = memo(function ShotBlock({
           onGenerate(shot.id)
         }}
         onKeyDown={stop}
-        className={`flex flex-none cursor-pointer items-center gap-[4px] whitespace-nowrap rounded-badge border px-[6px] text-chip font-medium disabled:cursor-not-allowed disabled:opacity-60 ${tone}`}
+        className={`flex h-[20px] flex-none cursor-pointer items-center gap-[4px] whitespace-nowrap rounded-badge border px-[6px] text-chip leading-none font-medium disabled:cursor-not-allowed disabled:opacity-60 ${tone}`}
       >
         {text}
         {showPrice && <span className="font-mono font-normal">{priceText}</span>}

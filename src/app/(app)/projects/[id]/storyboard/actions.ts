@@ -4,6 +4,14 @@ import { createClient } from '@/lib/supabase/server'
 import { stepIndex } from '@/lib/config/pipeline'
 import { resolveVideoModel, videoModelMaxSeconds } from '@/lib/config/models'
 import { filmDuration, isRetimeAllowed, retimeBounds } from '@/lib/storyboard/timeline'
+import {
+  fitToVoiceover as fitLengths,
+  fitUnavailableReason,
+  parseSpans,
+  restoreSpanOrderWrites,
+  voiceoverOrderDiffers,
+  voiceoverStaleness,
+} from '@/lib/storyboard/voiceover'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -120,11 +128,135 @@ export async function restoreScriptOrderForUser(
   const project = await editableProject(supabase, projectId, userId)
   if ('error' in project) return { success: false, error: project.error }
 
+  // With a voiceover, "script order" is the order it was read in: the read's shots go back
+  // to that order inside the slots they hold now. Without one, the Storyboard's own order
+  // is simply cleared back to the script's.
+  const { data: vo } = await supabase.from('projects').select('voiceover_spans').eq('id', projectId).maybeSingle()
+  const spans = parseSpans(vo?.voiceover_spans ?? null)
+  if (spans) {
+    const { data: shots, error: shotsError } = await supabase
+      .from('shots')
+      .select('id, voice_over, order_index, film_order, binned_at')
+      .eq('project_id', projectId)
+    if (shotsError) return { success: false, error: shotsError.message }
+    const writes = restoreSpanOrderWrites(spans, shots ?? [])
+    if (writes.length === 0) return { success: true, unchanged: true }
+    const updatedAt = new Date().toISOString()
+    for (const w of writes) {
+      const { error } = await supabase
+        .from('shots')
+        .update({ film_order: w.film_order, updated_at: updatedAt })
+        .eq('id', w.id)
+        .eq('project_id', projectId)
+      if (error) return { success: false, error: error.message }
+    }
+    return { success: true }
+  }
+
   const { error } = await supabase
     .from('shots')
     .update({ film_order: null, updated_at: new Date().toISOString() })
     .eq('project_id', projectId)
     .not('film_order', 'is', null)
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+// Voiceover edits (Storyboard C1). Free; plain result objects like every edit above.
+
+export type FitResultAction =
+  | { success: true; lengths: { id: string; seconds: number }[]; clamped: string[] }
+  | { success: false; error: string }
+
+/**
+ * Fit to voiceover: recomputed here from the stored spans and the shots as they stand -
+ * never from lengths the page sends - and refused with the same reasons the button shows.
+ * Writes film_duration_sec only, for each in-film shot whose length changes.
+ */
+export async function fitToVoiceoverForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string
+): Promise<FitResultAction> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error }
+
+  const { data: vo } = await supabase
+    .from('projects')
+    .select('audio_path, voiceover_spans, total_duration_sec')
+    .eq('id', projectId)
+    .maybeSingle()
+  const spans = parseSpans(vo?.voiceover_spans ?? null)
+  const { data: shots, error: shotsError } = await supabase
+    .from('shots')
+    .select('id, voice_over, order_index, film_order, binned_at, duration_sec, film_duration_sec')
+    .eq('project_id', projectId)
+  if (shotsError) return { success: false, error: shotsError.message }
+
+  const maxSec = modelMaxSeconds(project.video_model)
+  const hasVoiceover = !!vo?.audio_path && spans !== null
+  const reason = fitUnavailableReason({
+    hasVoiceover,
+    inFlight: false,
+    stale: hasVoiceover && voiceoverStaleness(spans!, shots ?? []).stale,
+    orderDiffers: hasVoiceover && voiceoverOrderDiffers(spans!, shots ?? []),
+    maxSec,
+  })
+  if (reason) return { success: false, error: reason }
+
+  const result = fitLengths(spans!, shots ?? [], vo!.total_duration_sec ?? 0, maxSec!)
+  const updatedAt = new Date().toISOString()
+  for (const w of result.writes) {
+    const { error } = await supabase
+      .from('shots')
+      .update({ film_duration_sec: w.film_duration_sec, updated_at: updatedAt })
+      .eq('id', w.id)
+      .eq('project_id', projectId)
+    if (error) return { success: false, error: error.message }
+  }
+  return { success: true, lengths: result.lengths, clamped: result.clamped }
+}
+
+// The project's current-voiceover columns, nulled. The files stay in storage - Remove
+// discards nothing that was paid for.
+export async function removeVoiceoverForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string
+): Promise<TimelineEditResult> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error }
+  const { error } = await supabase
+    .from('projects')
+    .update({
+      audio_path: null,
+      voiceover_alignment_path: null,
+      voice_id: null,
+      language_code: null,
+      tts_model: null,
+      total_duration_sec: null,
+      voiceover_source: null,
+      voiceover_generated_at: null,
+      voiceover_spans: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', projectId)
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+export async function setVoiceoverMutedForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string,
+  muted: boolean
+): Promise<TimelineEditResult> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error }
+  const { error } = await supabase
+    .from('projects')
+    .update({ voiceover_muted: muted, updated_at: new Date().toISOString() })
+    .eq('id', projectId)
   if (error) return { success: false, error: error.message }
   return { success: true }
 }
@@ -196,4 +328,22 @@ export async function setShotBinned(
   const { supabase, user } = await currentUser()
   if (!user) return NOT_AUTHENTICATED
   return setShotBinnedForUser(supabase, user.id, projectId, shotId, binned)
+}
+
+export async function fitToVoiceover(projectId: string): Promise<FitResultAction> {
+  const { supabase, user } = await currentUser()
+  if (!user) return NOT_AUTHENTICATED
+  return fitToVoiceoverForUser(supabase, user.id, projectId)
+}
+
+export async function removeVoiceover(projectId: string): Promise<TimelineEditResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return NOT_AUTHENTICATED
+  return removeVoiceoverForUser(supabase, user.id, projectId)
+}
+
+export async function setVoiceoverMuted(projectId: string, muted: boolean): Promise<TimelineEditResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return NOT_AUTHENTICATED
+  return setVoiceoverMutedForUser(supabase, user.id, projectId, muted)
 }

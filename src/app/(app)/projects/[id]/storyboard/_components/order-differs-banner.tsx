@@ -6,7 +6,7 @@ import { useStoryboard } from './storyboard-context'
 // from. Amber, one of the three warnings. Shown only once a voiceover exists; Fit to
 // voiceover is unavailable while the order differs, and Restore script order is free.
 export function OrderDiffersBanner() {
-  const { restoreScriptOrder, readOnly } = useStoryboard()
+  const { restoreScriptOrder, readOnly, fitReason } = useStoryboard()
   return (
     <div
       role="alert"
@@ -23,6 +23,7 @@ export function OrderDiffersBanner() {
       <button
         type="button"
         disabled
+        title={fitReason ?? undefined}
         className="flex h-8 flex-none cursor-not-allowed items-center whitespace-nowrap rounded-control border border-border-strong px-rc-sm text-small text-text-secondary opacity-60"
       >
         Fit to voiceover

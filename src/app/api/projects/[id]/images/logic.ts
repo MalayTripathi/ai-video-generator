@@ -29,6 +29,7 @@ import {
   settleGeneration,
 } from '@/lib/generations/claim'
 import { assertWithinAllowance, reserveUsage, settleUsage } from '@/lib/usage'
+import { liveVoiceoverCommittedCredits } from '@/lib/voiceover/committed'
 import { estimateInputTokens, quoteOpenAiImageCall } from '@/lib/usage/quote'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 
@@ -142,11 +143,12 @@ export async function runImagesRequest(params: {
   }
 
   // THE GATE - before any claim. Effective balance = ledger balance minus everything this
-  // user already has committed to in-flight images.
+  // user already has committed to in-flight images and voiceovers.
   const price = creditsFor({ step: STEP, operation: OPERATION, quantity: 1 })
   await ensureSignupGrant(userId)
   const balance = await getBalance(userId)
-  const committed = (await countLiveImageClaims(supabase, userId)) * price
+  const committed =
+    (await countLiveImageClaims(supabase, userId)) * price + (await liveVoiceoverCommittedCredits(supabase, userId))
   const effective = balance - committed
   const affordable = Math.max(0, Math.floor(effective / price))
 

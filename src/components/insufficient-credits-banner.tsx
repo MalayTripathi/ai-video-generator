@@ -46,7 +46,7 @@ export function InsufficientCreditsBanner({
           type="button"
           onClick={action.onClick}
           disabled={action.disabled}
-          className="flex h-8 flex-none cursor-pointer items-center gap-rc-xs whitespace-nowrap rounded-control border border-accent px-rc-sm text-small font-medium text-accent hover:bg-status-active-bg-hover disabled:cursor-not-allowed disabled:opacity-60"
+          className="flex h-8 flex-none cursor-pointer items-center gap-rc-xs whitespace-nowrap rounded-control border border-accent px-rc-sm text-small leading-none font-medium text-accent hover:bg-status-active-bg-hover disabled:cursor-not-allowed disabled:opacity-60"
         >
           {action.label}
           <span className="font-mono text-mono font-normal">{formatCredits(action.credits)} cr</span>

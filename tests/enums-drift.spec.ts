@@ -9,6 +9,7 @@ import {
   CAMERA_MOVEMENTS,
   CAMERA_ORIGINS,
   ELEMENT_TYPES,
+  VOICEOVER_SOURCES,
 } from '../src/lib/config/enums'
 import { STEPS, OPERATIONS, PROVIDERS } from '../src/lib/config/pipeline'
 import { MESSAGE_KINDS, TOOL_NAMES } from '../src/lib/config/messages'
@@ -102,6 +103,27 @@ test.describe('enum drift - projects columns', () => {
     expect(badError).not.toBeNull()
   })
 
+  test('accepts every VOICEOVER_SOURCES member (plus null) and rejects a bogus value', async () => {
+    await assertEnumDrift(
+      VOICEOVER_SOURCES,
+      (value) =>
+        admin
+          .from('projects')
+          .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: 'workbench', voiceover_source: value }),
+      () =>
+        admin.from('projects').insert({
+          user_id: primary.user.id,
+          title: 'Enum drift test',
+          current_step: 'workbench',
+          voiceover_source: 'not_a_real_source',
+        })
+    )
+    const { error: nullError } = await admin
+      .from('projects')
+      .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: 'workbench', voiceover_source: null })
+    expect(nullError).toBeNull()
+  })
+
   // current_step's vocabulary is STEPS exactly - intake is the pre-project screen and
   // never a stored value. This is the check that would have caught the 'script'
   // divergence, when the column had no CHECK constraint at all.
@@ -149,8 +171,8 @@ test.describe('enum drift - generations columns', () => {
   // derive_camera is deliberately excluded from generations_operation_check - no writer
   // ever claims a generations row for it (the terminal 'succeeded' state would block
   // every later description edit of the same shot - see CLAUDE.md), so widening the
-  // constraint to accept it would misleadingly imply a writer exists. OPERATIONS has 11
-  // members; this constraint only ever accepts 10 of them, by design. Accepting it here
+  // constraint to accept it would misleadingly imply a writer exists. OPERATIONS has 12
+  // members; this constraint only ever accepts 11 of them, by design. Accepting it here
   // would itself be the bug, so it's excluded from the accept-loop and asserted rejected
   // instead, turning that invariant into a regression test rather than silently
   // narrowing coverage.

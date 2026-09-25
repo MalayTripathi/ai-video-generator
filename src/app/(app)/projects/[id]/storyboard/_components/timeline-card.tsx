@@ -1,7 +1,13 @@
 'use client'
 
 import { memo, useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
-import { RETIME_SNAP_SEC, STORYBOARD_MAX_BLOCK_PX, STORYBOARD_ZOOM_STEPS } from '@/lib/config/storyboard'
+import {
+  FIT_COLLAPSE_BREAKPOINT_PX,
+  RETIME_SNAP_SEC,
+  STORYBOARD_MAX_BLOCK_PX,
+  STORYBOARD_ZOOM_STEPS,
+} from '@/lib/config/storyboard'
+import { speechBars } from '@/lib/storyboard/voiceover'
 import {
   blockTier,
   filmDuration,
@@ -19,6 +25,7 @@ import {
 import { imagePrice, useStoryboard } from './storyboard-context'
 import { ShotBlock } from './shot-block'
 import { BinControl } from './bin-control'
+import { FitButton } from './fit-button'
 import { Playhead, type PlayheadHandle } from './playhead'
 import { useLaneDrag } from './use-lane-drag'
 import { useNow } from './use-now'
@@ -177,8 +184,9 @@ function TimelineHeader({
   totalRef: RefObject<HTMLSpanElement | null>
   pendingRef: RefObject<HTMLSpanElement | null>
 }) {
+  const { ref, width } = useElementWidth<HTMLDivElement>()
   return (
-    <div className="flex items-center gap-[12px] border-b border-border-subtle p-[11px_14px]">
+    <div ref={ref} className="flex items-center gap-[12px] border-b border-border-subtle p-[11px_14px]">
       <ModeToggle />
       <ZoomControls />
 
@@ -194,10 +202,44 @@ function TimelineHeader({
         </span>
       </span>
       <span className="flex-1" />
-      {/* The right-aligned end cluster: Bin sits left of Fit to voiceover (when that lands),
-          so appearing grows leftwards into free space and moves no other control. */}
+      {/* The right-aligned end cluster: Bin sits left of Fit to voiceover, so appearing grows
+          leftwards into free space and moves no other control. */}
       <BinControl />
+      <FitButton compact={width !== null && width < FIT_COLLAPSE_BREAKPOINT_PX} />
     </div>
+  )
+}
+
+// The voice lane (canvas 15b): the read's waveform across the time it covers, drawn from
+// its spans; "No voiceover yet" until one lands. Muted reads draw faded.
+function VoiceLane({ totalSeconds }: { totalSeconds: number }) {
+  const { voiceover } = useStoryboard()
+  const current = voiceover.current
+  if (!current) {
+    return (
+      <span
+        data-testid="voice-lane"
+        className="flex h-[30px] items-center overflow-hidden rounded-badge border border-border-muted bg-bg-well px-[6px]"
+      >
+        <span className="pl-[4px] text-meta text-text-quiet">No voiceover yet</span>
+      </span>
+    )
+  }
+  const extent = Math.max(totalSeconds, current.durationSec)
+  const widthPct = extent > 0 ? (current.durationSec / extent) * 100 : 100
+  const bars = speechBars(current.spans, current.durationSec, 62)
+  return (
+    <span
+      data-testid="voice-lane"
+      data-muted={current.muted}
+      className="flex h-[30px] items-center overflow-hidden rounded-badge border border-transparent bg-ident-voiceover-bg px-[6px]"
+    >
+      <span className={`flex h-full items-center gap-[2px] ${current.muted ? 'opacity-40' : ''}`} style={{ width: `${widthPct}%` }}>
+        {bars.map((b, i) => (
+          <span key={i} className="flex-1 rounded-[1px] bg-ident-voiceover-fg opacity-60" style={{ height: b.h }} />
+        ))}
+      </span>
+    </span>
   )
 }
 
@@ -403,9 +445,7 @@ export function TimelineCard() {
               />
             </div>
 
-            <span className="flex h-[30px] items-center overflow-hidden rounded-badge border border-border-muted bg-bg-well px-[6px]">
-              <span className="pl-[4px] text-meta text-text-quiet">No voiceover yet</span>
-            </span>
+            <VoiceLane totalSeconds={total} />
 
             <span className="flex h-[30px] items-center overflow-hidden rounded-badge bg-bg-inset px-[6px]">
               <span className="pl-[4px] text-meta text-text-quiet">No music yet</span>

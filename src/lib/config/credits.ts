@@ -12,7 +12,7 @@ export const SIGNUP_GRANT_CREDITS = 5000
 
 // Stamped onto every credit_ledger row so a past row's price stays reconstructable
 // after this table changes later - same pattern as pricing.ts's RATE_VERSION.
-export const CREDIT_PRICE_VERSION = '2026-09-13'
+export const CREDIT_PRICE_VERSION = '2026-09-25'
 
 /**
  * Converts a measured USD cost into credits, rounding up. Used only for agent_turn,
@@ -24,7 +24,9 @@ export function usdToCredits(usd: number): number {
   return Math.max(1, Math.ceil(usd / USD_PER_CREDIT))
 }
 
-export type CreditUnit = 'per_shot' | 'per_element' | 'per_project'
+// per_1k_chars: quantity is a character count; per_minute: quantity is seconds. Both
+// round up once, on the whole quantity.
+export type CreditUnit = 'per_shot' | 'per_element' | 'per_project' | 'per_1k_chars' | 'per_minute'
 
 type PriceEntry = { credits: number; unit: CreditUnit }
 
@@ -53,7 +55,9 @@ export const PRICE_TABLE: Partial<Record<Step, Partial<Record<Operation, PriceEn
   },
   storyboard: {
     generate_image: { credits: 15, unit: 'per_shot' }, // placeholder
-    voiceover: { credits: 30, unit: 'per_project' }, // placeholder
+    // Generation is priced by the script's length; aligning an upload by the audio's.
+    voiceover: { credits: 8, unit: 'per_1k_chars' }, // placeholder
+    align_voiceover: { credits: 4, unit: 'per_minute' }, // placeholder
     background_music: { credits: 40, unit: 'per_project' }, // placeholder
   },
   video_prompts: {
@@ -103,7 +107,8 @@ export class InsufficientCreditsError extends Error {
  * Fixed-price lookup for a (step, operation) pair. Throws when no entry exists -
  * never falls back to zero. `quantity` must always be supplied by the caller and
  * always derived server-side (project's shot count, 1 for a single regeneration,
- * number of elements actually generated) - never from a client-supplied value.
+ * number of elements actually generated, the script's character count, the audio's
+ * seconds) - never from a client-supplied value.
  * Batch and single-regeneration share one price shape: quantity is just 8 vs 1.
  */
 export function creditsFor({
@@ -119,5 +124,14 @@ export function creditsFor({
   if (!entry) {
     throw new MissingCreditPriceError(step, operation)
   }
-  return entry.unit === 'per_project' ? entry.credits : entry.credits * quantity
+  switch (entry.unit) {
+    case 'per_project':
+      return entry.credits
+    case 'per_1k_chars':
+      return Math.ceil((entry.credits * quantity) / 1000)
+    case 'per_minute':
+      return Math.ceil((entry.credits * quantity) / 60)
+    default:
+      return entry.credits * quantity
+  }
 }

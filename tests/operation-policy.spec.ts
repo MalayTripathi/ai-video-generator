@@ -1,10 +1,15 @@
 import { test, expect } from '@playwright/test'
 import { OPERATIONS, type Operation } from '../src/lib/config/pipeline'
 import { OPERATION_POLICY, getOperationPolicy, STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
-import { IMAGE_QUEUE_STALE_AFTER_MS, IMAGE_STALE_AFTER_MS } from '../src/lib/config/storyboard'
+import {
+  IMAGE_QUEUE_STALE_AFTER_MS,
+  IMAGE_STALE_AFTER_MS,
+  VOICEOVER_ALIGN_STALE_AFTER_MS,
+  VOICEOVER_ROUTE_MAX_DURATION_S,
+  VOICEOVER_STALE_AFTER_MS,
+} from '../src/lib/config/storyboard'
 
 const DEFAULT_POLICY_OPS: Operation[] = [
-  'voiceover',
   'background_music',
   'write_video_prompts',
   'generate_clip',
@@ -15,6 +20,18 @@ const DEFAULT_POLICY_OPS: Operation[] = [
 test.describe('OPERATION_POLICY', () => {
   test('has an entry for every Operation - drift guard against pipeline.ts', () => {
     expect(Object.keys(OPERATION_POLICY).sort()).toEqual([...OPERATIONS].sort())
+  })
+
+  test('voiceover / align_voiceover: own windows, reclaimable from either terminal state (regenerate is a new attempt)', () => {
+    const vo = getOperationPolicy('voiceover')
+    expect(vo.staleAfterMs).toBe(VOICEOVER_STALE_AFTER_MS)
+    expect(vo.claimableFrom).toEqual({ succeeded: 'always', failed: 'always' })
+    const align = getOperationPolicy('align_voiceover')
+    expect(align.staleAfterMs).toBe(VOICEOVER_ALIGN_STALE_AFTER_MS)
+    expect(align.claimableFrom).toEqual({ succeeded: 'always', failed: 'always' })
+    // Both windows must fit inside the route's own maxDuration.
+    expect(vo.staleAfterMs).toBeLessThan(VOICEOVER_ROUTE_MAX_DURATION_S * 1000)
+    expect(align.staleAfterMs).toBeLessThan(VOICEOVER_ROUTE_MAX_DURATION_S * 1000)
   })
 
   test('agent_turn: 180s window, claimable unconditionally from succeeded or failed', () => {

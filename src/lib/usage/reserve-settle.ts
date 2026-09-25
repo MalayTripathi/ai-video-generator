@@ -6,6 +6,7 @@ import { computeCost, type UsageBreakdown } from '@/lib/config/pricing'
 import { RATE_VERSION } from '@/lib/config/pricing'
 import { LiveCallsBlockedError } from '@/lib/claude'
 import { ImageLiveCallsBlockedError } from '@/lib/images/gateway'
+import { VoiceoverLiveCallsBlockedError } from '@/lib/voiceover/gateway'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -120,9 +121,14 @@ export async function settleUsage(params: {
     update.quantity = quantity
     update.unit = unit
     update.raw_usage = { breakdown: params.breakdown, rates: appliedRates }
-  } else if (params.error instanceof LiveCallsBlockedError || params.error instanceof ImageLiveCallsBlockedError) {
-    // NARROW, DELIBERATE EXCEPTION: LiveCallsBlockedError/ImageLiveCallsBlockedError are
-    // thrown by assertLiveCallsAllowed()/assertLiveImageCallsAllowed() before any
+  } else if (
+    params.error instanceof LiveCallsBlockedError ||
+    params.error instanceof ImageLiveCallsBlockedError ||
+    params.error instanceof VoiceoverLiveCallsBlockedError
+  ) {
+    // NARROW, DELIBERATE EXCEPTION: the three *LiveCallsBlockedError classes are thrown
+    // by assertLiveCallsAllowed()/assertLiveImageCallsAllowed()/
+    // assertLiveVoiceoverCallsAllowed() before any
     // request reaches the provider, so unlike every other unmeasured throw in the
     // branch below, these are PROVABLY unbilled, not just probably unbilled. Settling
     // at the pre-flight quote would inflate real spend with calls that never happened.

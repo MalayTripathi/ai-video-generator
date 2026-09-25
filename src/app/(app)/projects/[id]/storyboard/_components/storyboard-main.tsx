@@ -1,23 +1,31 @@
 'use client'
 
 import { InsufficientCreditsBanner } from '@/components/insufficient-credits-banner'
-import { caseTwo, orderDiffersFromScript, readiness } from '@/lib/storyboard/timeline'
+import { caseTwo, readiness } from '@/lib/storyboard/timeline'
 import { imagePrice, useStoryboard } from './storyboard-context'
 import { TimelineCard } from './timeline-card'
-import { MusicSection, VoiceoverSection } from './audio-sections'
+import { MusicSection } from './audio-sections'
+import { VoiceoverCard } from './voiceover-card'
 import { ExportLocked, PreviewLocked } from './locked-sections'
 import { OrderDiffersBanner } from './order-differs-banner'
-
-// No voiceover exists until the voiceover slice lands; the order-differs banner (15c c) is
-// built and waits on this.
-const HAS_VOICEOVER = false
 
 // The Storyboard main column (canvas 15a): Timeline, the two audio lane controls, then
 // Preview & mix and Export. Its width never changes - the inspect panel takes the agent's
 // column instead.
 export function StoryboardMain({ language }: { language: string | null }) {
-  const { shots, laneShots, statusFor, balanceCredits, polling, actionError, readOnly, busyShotIds, generate } =
-    useStoryboard()
+  const {
+    laneShots,
+    statusFor,
+    balanceCredits,
+    polling,
+    actionError,
+    readOnly,
+    busyShotIds,
+    generate,
+    voiceover,
+    voiceoverOrderDiffers,
+    fitClamped,
+  } = useStoryboard()
 
   // Binned shots are off the film: the counter, Preview lock, Export and Generate remaining
   // all read the lane alone.
@@ -50,7 +58,14 @@ export function StoryboardMain({ language }: { language: string | null }) {
 
         <TimelineCard />
 
-        {HAS_VOICEOVER && orderDiffersFromScript(shots) && <OrderDiffersBanner />}
+        {fitClamped && (
+          <span data-testid="fit-note" className="text-meta text-text-tertiary">
+            {fitClamped.length === 1 ? `Shot ${fitClamped[0]} was` : `Shots ${fitClamped.join(', ')} were`} held to the
+            allowed length, so {fitClamped.length === 1 ? 'it doesn’t' : 'they don’t'} match the narration exactly.
+          </span>
+        )}
+
+        {voiceover.current && voiceoverOrderDiffers && <OrderDiffersBanner />}
 
         {banner && (
           <InsufficientCreditsBanner
@@ -81,7 +96,7 @@ export function StoryboardMain({ language }: { language: string | null }) {
         )}
 
         <div className="flex flex-col gap-[8px]">
-          <VoiceoverSection language={language} />
+          <VoiceoverCard language={language} />
           <MusicSection />
         </div>
       </div>

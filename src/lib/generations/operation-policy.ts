@@ -1,5 +1,10 @@
 import type { Operation } from '@/lib/config/pipeline'
-import { IMAGE_QUEUE_STALE_AFTER_MS, IMAGE_STALE_AFTER_MS } from '@/lib/config/storyboard'
+import {
+  IMAGE_QUEUE_STALE_AFTER_MS,
+  IMAGE_STALE_AFTER_MS,
+  VOICEOVER_ALIGN_STALE_AFTER_MS,
+  VOICEOVER_STALE_AFTER_MS,
+} from '@/lib/config/storyboard'
 
 // Per-operation claim policy - replaces a single global STALE_AFTER_MS, which was
 // correct for a long paid shot-generation job and would be catastrophic for a chat
@@ -43,7 +48,16 @@ export const OPERATION_POLICY: Record<Operation, OperationPolicy> = {
     staleAfterMs: AGENT_TURN_STALE_AFTER_MS,
     claimableFrom: { succeeded: 'always', failed: 'always' },
   },
-  voiceover: DEFAULT_POLICY,
+  // One claim per project. Regenerate is a new attempt, so both terminal states reclaim
+  // unconditionally; the window covers every chunk of a long read.
+  voiceover: {
+    staleAfterMs: VOICEOVER_STALE_AFTER_MS,
+    claimableFrom: { succeeded: 'always', failed: 'always' },
+  },
+  align_voiceover: {
+    staleAfterMs: VOICEOVER_ALIGN_STALE_AFTER_MS,
+    claimableFrom: { succeeded: 'always', failed: 'always' },
+  },
   background_music: DEFAULT_POLICY,
   // Like generate_shots: Regenerate All/Stale/single-row are normal, repeatable
   // actions against an already-succeeded project, not exceptional retries - reclaim

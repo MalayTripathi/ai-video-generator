@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { computeCost } from '../src/lib/config/pricing'
+import { computeCost, ELEVENLABS_ALIGNMENT_MODEL, ELEVENLABS_RATES } from '../src/lib/config/pricing'
 
 test.describe('computeCost', () => {
   test('anthropic: computes cost from input/output tokens at the model rate', () => {
@@ -51,14 +51,37 @@ test.describe('computeCost', () => {
     expect(result.quantity).toBe(200)
   })
 
-  test('a still-stub provider (elevenlabs/fal) returns a null cost, no values yet', () => {
-    const result = computeCost('elevenlabs', 'eleven_v3', {
+  test('a still-stub provider (fal) returns a null cost, no values yet', () => {
+    const result = computeCost('fal', 'Kling 2.1', {
       input_tokens: 100,
       output_tokens: 100,
     })
     expect(result.estimatedCost).toBeNull()
     expect(result.appliedRates).toBeNull()
     expect(result.unit).toBe('unknown')
+  })
+
+  test('elevenlabs text-to-speech: priced per character at the model rate', () => {
+    const result = computeCost('elevenlabs', 'eleven_v3', { input_tokens: 0, output_tokens: 0, characters: 2000 })
+    expect(result.estimatedCost).toBeCloseTo(2000 * ELEVENLABS_RATES.perCharacterUsd.eleven_v3, 9)
+    expect(result.quantity).toBe(2000)
+    expect(result.unit).toBe('characters')
+  })
+
+  test('elevenlabs forced alignment: priced per minute of audio', () => {
+    const result = computeCost('elevenlabs', ELEVENLABS_ALIGNMENT_MODEL, {
+      input_tokens: 0,
+      output_tokens: 0,
+      audio_seconds: 90,
+    })
+    expect(result.estimatedCost).toBeCloseTo(1.5 * ELEVENLABS_RATES.alignmentPerMinuteUsd, 9)
+    expect(result.quantity).toBe(90)
+    expect(result.unit).toBe('seconds')
+  })
+
+  test('elevenlabs: an unknown text-to-speech model returns a null cost', () => {
+    const result = computeCost('elevenlabs', 'not-a-model', { input_tokens: 0, output_tokens: 0, characters: 10 })
+    expect(result.estimatedCost).toBeNull()
   })
 
   test('openai: computes cost from input/output tokens at the model rate', () => {

@@ -5,6 +5,9 @@ import { creditsFor } from '@/lib/config/credits'
 import { STATUS_POLL_INTERVAL_MS, STORYBOARD_SIGNED_URL_EXPIRES_S } from '@/lib/config/storyboard'
 import { deriveImageState, type ImageState } from '@/lib/storyboard/image-state'
 import { countLiveImageClaims, storyboardThumbPath } from '../logic'
+import { isLiveClaim } from '@/lib/generations/claim'
+import { liveVoiceoverCommittedCredits } from '@/lib/voiceover/committed'
+import { parseSpans, type VoiceoverSpan } from '@/lib/storyboard/voiceover'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -22,12 +25,43 @@ export type ShotImageStatus = {
   drawnAt: string | null
 }
 
+/** The project's current voiceover, when there is one. */
+export type CurrentVoiceover = {
+  audioUrl: string | null
+  voiceId: string | null
+  languageCode: string | null
+  durationSec: number
+  source: 'generated' | 'uploaded'
+  generatedAt: string
+  muted: boolean
+  spans: VoiceoverSpan[]
+}
+
+export type VoiceoverStatus = {
+  /** none: nothing yet; generating: a read or alignment is in flight; failed: the latest attempt didn't land. */
+  state: 'none' | 'generating' | 'failed' | 'present'
+  /** Which way the in-flight or failed attempt was being made. */
+  mode: 'generate' | 'upload' | null
+  startedAt: string | null
+  failedAt: string | null
+  /** The in-flight or failed generate attempt's voice. */
+  attemptVoiceId: string | null
+  /** The in-flight generate attempt's script length, for the "reading N seconds" line. */
+  attemptChars: number | null
+  /** The in-flight or failed upload's measured length. */
+  attemptDurationSec: number | null
+  /** A failed upload whose file is still stored - Try again aligns it without re-uploading. */
+  retryUpload: { attemptId: string; ext: string; durationSec: number } | null
+  current: CurrentVoiceover | null
+}
+
 export type ImageStatusData = {
   shots: ShotImageStatus[]
+  voiceover: VoiceoverStatus
   pollIntervalMs: number
   /** When the signed URLs above expire - the page re-signs before this. */
   expiresAt: string
-  /** Credits available for new images: ledger balance minus live image claims. Null if unreadable. */
+  /** Credits available: ledger balance minus live image and voiceover claims. Null if unreadable. */
   balanceCredits: number | null
 }
 
@@ -51,13 +85,15 @@ export async function loadImageStatuses(params: {
 
   const { data: project } = await supabase
     .from('projects')
-    .select('id')
+    .select(
+      'id, audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans'
+    )
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
 
-  const [shotsResult, claimsResult] = await Promise.all([
+  const [shotsResult, claimsResult, voiceoverClaimsResult] = await Promise.all([
     supabase
       .from('shots')
       .select('id, image_path, image_stale')
@@ -69,12 +105,20 @@ export async function loadImageStatuses(params: {
       .eq('project_id', projectId)
       .eq('step', 'storyboard')
       .eq('operation', 'generate_image'),
+    supabase
+      .from('generations')
+      .select('operation, state, started_at, queued_at, updated_at, payload')
+      .eq('project_id', projectId)
+      .eq('step', 'storyboard')
+      .in('operation', ['voiceover', 'align_voiceover']),
   ])
   if (shotsResult.error) return { ok: false, status: 500, error: shotsResult.error.message }
   if (claimsResult.error) return { ok: false, status: 500, error: claimsResult.error.message }
+  if (voiceoverClaimsResult.error) return { ok: false, status: 500, error: voiceoverClaimsResult.error.message }
   const shotRows = shotsResult.data ?? []
 
   const paths: string[] = []
+  if (project.audio_path) paths.push(project.audio_path)
   for (const shot of shotRows) {
     if (shot.image_path) paths.push(shot.image_path, storyboardThumbPath(shot.image_path))
   }
@@ -111,10 +155,18 @@ export async function loadImageStatuses(params: {
     }
   })
 
+  const voiceover = deriveVoiceoverStatus(
+    project,
+    voiceoverClaimsResult.data ?? [],
+    project.audio_path ? (urlByPath.get(project.audio_path) ?? null) : null,
+    now
+  )
+
   let balanceCredits: number | null = null
   try {
     const price = creditsFor({ step: 'storyboard', operation: 'generate_image', quantity: 1 })
-    const committed = (await countLiveImageClaims(supabase, userId)) * price
+    const committed =
+      (await countLiveImageClaims(supabase, userId)) * price + (await liveVoiceoverCommittedCredits(supabase, userId))
     balanceCredits = Math.max(0, (await getBalance(userId)) - committed)
   } catch (err) {
     console.error(`[images/status] balance unreadable for project ${projectId}:`, err)
@@ -124,9 +176,103 @@ export async function loadImageStatuses(params: {
     ok: true,
     data: {
       shots,
+      voiceover,
       pollIntervalMs: STATUS_POLL_INTERVAL_MS,
       expiresAt: new Date(now + STORYBOARD_SIGNED_URL_EXPIRES_S * 1000).toISOString(),
       balanceCredits,
     },
   }
+}
+
+type VoiceoverProjectRow = {
+  audio_path: string | null
+  voice_id: string | null
+  language_code: string | null
+  total_duration_sec: number | null
+  voiceover_source: string | null
+  voiceover_generated_at: string | null
+  voiceover_muted: boolean
+  voiceover_spans: unknown
+}
+
+type VoiceoverClaimRow = {
+  operation: string
+  state: string
+  started_at: string | null
+  queued_at: string | null
+  updated_at: string
+  payload: unknown
+}
+
+/**
+ * The voiceover lane's state, from the project's current-voiceover columns plus its two
+ * claim rows (generate and align). In flight wins; then a failed latest attempt; then the
+ * read itself.
+ */
+export function deriveVoiceoverStatus(
+  project: VoiceoverProjectRow,
+  claims: VoiceoverClaimRow[],
+  audioUrl: string | null,
+  now: number
+): VoiceoverStatus {
+  const spans = parseSpans(project.voiceover_spans)
+  const current: CurrentVoiceover | null =
+    project.audio_path && project.voiceover_generated_at && spans && project.voiceover_source
+      ? {
+          audioUrl,
+          voiceId: project.voice_id,
+          languageCode: project.language_code,
+          durationSec: project.total_duration_sec ?? 0,
+          source: project.voiceover_source === 'uploaded' ? 'uploaded' : 'generated',
+          generatedAt: project.voiceover_generated_at,
+          muted: project.voiceover_muted,
+          spans,
+        }
+      : null
+
+  const base: VoiceoverStatus = {
+    state: current ? 'present' : 'none',
+    mode: null,
+    startedAt: null,
+    failedAt: null,
+    attemptVoiceId: null,
+    attemptChars: null,
+    attemptDurationSec: null,
+    retryUpload: null,
+    current,
+  }
+
+  const describe = (row: VoiceoverClaimRow) => {
+    const p = (row.payload ?? {}) as Record<string, unknown>
+    const upload = row.operation === 'align_voiceover'
+    const uploadPath = typeof p.uploadPath === 'string' ? p.uploadPath : null
+    const file = uploadPath?.split('/').pop() ?? null
+    const dot = file?.lastIndexOf('.') ?? -1
+    return {
+      mode: (upload ? 'upload' : 'generate') as 'upload' | 'generate',
+      attemptVoiceId: !upload && typeof p.voiceId === 'string' ? p.voiceId : null,
+      attemptChars: !upload && typeof p.chars === 'number' ? p.chars : null,
+      attemptDurationSec: upload && typeof p.durationSec === 'number' ? p.durationSec : null,
+      retryUpload:
+        upload && file && dot > 0 && typeof p.durationSec === 'number'
+          ? { attemptId: file.slice(0, dot), ext: file.slice(dot + 1), durationSec: p.durationSec }
+          : null,
+    }
+  }
+
+  const live = claims.find(
+    (row) => row.state === 'generating' && isLiveClaim(row, row.operation as 'voiceover' | 'align_voiceover', now)
+  )
+  if (live) {
+    const d = describe(live)
+    return { ...base, state: 'generating', ...d, retryUpload: null, startedAt: live.started_at }
+  }
+
+  // The latest attempt either way (each operation has one reusable claim row). If it failed
+  // - or went stale without settling - that is the lane's state, even over an older read.
+  const latest = [...claims].sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]
+  if (latest && (latest.state === 'failed' || latest.state === 'generating')) {
+    return { ...base, state: 'failed', ...describe(latest), failedAt: latest.updated_at }
+  }
+  return base
 }

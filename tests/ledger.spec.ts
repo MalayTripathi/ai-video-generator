@@ -404,8 +404,10 @@ test.describe('module hygiene', () => {
     // has any reason to reference this module. video-prompts is also deliberately NOT
     // in this list - that route has no ledger wiring; if it ever imports this module,
     // this test should catch it. The storyboard images route (route.ts real, logic.ts
-    // type-only, same shape) makes twelve. Any importer beyond these means a second,
-    // unreviewed call site.
+    // type-only, same shape) makes twelve. The voiceover routes make sixteen: generate
+    // and align each import the real writer (route.ts) with a type-only logic.ts, and
+    // upload-url imports only mintAttemptId - it names the attempt an upload's alignment
+    // is later charged under. Any importer beyond these means a second, unreviewed call site.
     const srcDir = path.resolve(__dirname, '../src')
     const ownFile = path.resolve(__dirname, '../src/lib/credits/ledger.ts')
     const expectedImporters = [
@@ -427,6 +429,10 @@ test.describe('module hygiene', () => {
       path.resolve(__dirname, '../src/app/api/projects/[id]/image-prompts/route.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/images/logic.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/images/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/logic.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/align/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/upload-url/route.ts'),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []

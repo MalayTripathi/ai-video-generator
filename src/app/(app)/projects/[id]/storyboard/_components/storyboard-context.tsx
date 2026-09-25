@@ -8,13 +8,22 @@ import { creditsFor } from '@/lib/config/credits'
 import type { AspectRatio } from '@/lib/config/enums'
 import { filmDuration, laneShots as orderLane, reorderWrites } from '@/lib/storyboard/timeline'
 import {
+  fitToVoiceover as fitLengths,
+  fitUnavailableReason,
+  restoreSpanOrderWrites,
+  voiceoverOrderDiffers,
+  voiceoverStaleness,
+  type VoiceoverStaleness,
+} from '@/lib/storyboard/voiceover'
+import {
+  fitToVoiceover as fitToVoiceoverAction,
   restoreScriptOrder as restoreScriptOrderAction,
   saveFilmDuration,
   saveFilmOrder,
   setShotBinned,
 } from '../actions'
 import { useImageStatusPoll } from './use-image-status-poll'
-import type { ImageStatusData, ShotImageStatus, StoryboardShot } from './types'
+import type { ImageStatusData, ShotImageStatus, StoryboardShot, VoiceoverStatus } from './types'
 
 export type ActionSource = 'lane' | 'inspect'
 
@@ -58,6 +67,16 @@ type StoryboardContextValue = {
   reorder: (shotId: string, toLaneIndex: number) => void
   setBinned: (shotId: string, binned: boolean) => void
   restoreScriptOrder: () => void
+  // Voiceover (C1). The lane's state rides on the images status poll; refreshStatus re-reads
+  // it at once. Staleness and order are computed from the read's spans against the shots.
+  voiceover: VoiceoverStatus
+  refreshStatus: () => Promise<void>
+  voiceoverStaleness: VoiceoverStaleness | null
+  voiceoverOrderDiffers: boolean
+  fitReason: string | null
+  fitToVoiceover: () => void
+  /** Shot numbers the last Fit held to the allowed range; null when nothing was clamped. */
+  fitClamped: number[] | null
 }
 
 const StoryboardContext = createContext<StoryboardContextValue | null>(null)
@@ -189,12 +208,50 @@ export function StoryboardProvider({
     [projectId, readOnly, commitEdit]
   )
 
+  const voiceover = data.voiceover
+  const spans = voiceover.current?.spans ?? null
+
+  // With a voiceover, script order is the order it was read in (the server recomputes the
+  // same writes); without one, the Storyboard's own order is cleared.
   const restoreScriptOrder = useCallback(() => {
     if (readOnly) return
+    if (spans) {
+      const writes = restoreSpanOrderWrites(spans, shotsRef.current)
+      if (writes.length === 0) return
+      void commitEdit('film_order', new Map(writes.map((w) => [w.id, w.film_order])), () =>
+        restoreScriptOrderAction(projectId)
+      )
+      return
+    }
     const reset = new Map(shotsRef.current.filter((s) => s.film_order !== null).map((s) => [s.id, null]))
     if (reset.size === 0) return
     void commitEdit('film_order', reset, () => restoreScriptOrderAction(projectId))
-  }, [projectId, readOnly, commitEdit])
+  }, [projectId, readOnly, commitEdit, spans])
+
+  const staleness = useMemo(() => (spans ? voiceoverStaleness(spans, shots) : null), [spans, shots])
+  const orderDiffers = useMemo(() => (spans ? voiceoverOrderDiffers(spans, shots) : false), [spans, shots])
+  const fitReason = fitUnavailableReason({
+    hasVoiceover: voiceover.current !== null,
+    inFlight: voiceover.state === 'generating',
+    stale: staleness?.stale ?? false,
+    orderDiffers,
+    maxSec: retimeMaxSec,
+  })
+  const [fitClamped, setFitClamped] = useState<number[] | null>(null)
+
+  // Fit to voiceover: applied at once from the same rule the server runs, then saved (the
+  // server recomputes from the stored spans, never from these lengths). Free.
+  const currentRead = voiceover.current
+  const fitToVoiceover = useCallback(() => {
+    if (readOnly || fitReason || !currentRead || retimeMaxSec === null) return
+    const result = fitLengths(currentRead.spans, shotsRef.current, currentRead.durationSec, retimeMaxSec)
+    const byId = new Map(shotsRef.current.map((s) => [s.id, s]))
+    setFitClamped(result.clamped.length > 0 ? result.clamped.map((id) => (byId.get(id)?.order_index ?? 0) + 1) : null)
+    if (result.writes.length === 0) return
+    void commitEdit('film_duration_sec', new Map(result.writes.map((w) => [w.id, w.film_duration_sec])), () =>
+      fitToVoiceoverAction(projectId)
+    )
+  }, [projectId, readOnly, fitReason, currentRead, retimeMaxSec, commitEdit])
 
   const laneShots = useMemo(() => orderLane(shots), [shots])
   const binnedShots = useMemo(
@@ -360,6 +417,13 @@ export function StoryboardProvider({
       reorder,
       setBinned,
       restoreScriptOrder,
+      voiceover,
+      refreshStatus: refresh,
+      voiceoverStaleness: staleness,
+      voiceoverOrderDiffers: orderDiffers,
+      fitReason,
+      fitToVoiceover,
+      fitClamped,
     }),
     [
       projectId,
@@ -385,6 +449,13 @@ export function StoryboardProvider({
       reorder,
       setBinned,
       restoreScriptOrder,
+      voiceover,
+      refresh,
+      staleness,
+      orderDiffers,
+      fitReason,
+      fitToVoiceover,
+      fitClamped,
     ]
   )
 

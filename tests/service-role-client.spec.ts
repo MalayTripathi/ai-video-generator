@@ -77,11 +77,14 @@ test.describe('service-role client isolation', () => {
     // discipline this client demands. The storyboard images route is the third: its
     // background run outlives the user's session, so it builds this client, having
     // verified the user and project at entry, and every write in the worker is scoped by
-    // both (see images/logic.ts).
+    // both (see images/logic.ts). The voiceover generate and align routes are the fourth
+    // and fifth, for the same reason and with the same discipline (voiceover/logic.ts).
     const expectedImporters = [
       path.resolve(__dirname, '../src/lib/credits/ledger.ts'),
       path.resolve(__dirname, '../src/lib/credits/signup-grant.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/images/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/align/route.ts'),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []

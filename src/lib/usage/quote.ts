@@ -154,3 +154,19 @@ export function quoteOpenAiImageCall(params: {
   // rather than blocking the call outright.
   return { estimatedCost: estimatedCost ?? 0, quotedBreakdown }
 }
+
+/**
+ * The pre-flight quote for an ElevenLabs call. Exact, like the image quote: text-to-speech
+ * bills the characters sent, and forced alignment bills the audio's measured length -
+ * both known before the call.
+ */
+export function quoteElevenLabsCall(
+  params: { model: string; characters: number } | { model: string; audioSeconds: number }
+): { estimatedCost: number; quotedBreakdown: UsageBreakdown } {
+  const quotedBreakdown: UsageBreakdown =
+    'characters' in params
+      ? { input_tokens: 0, output_tokens: 0, characters: params.characters }
+      : { input_tokens: 0, output_tokens: 0, audio_seconds: params.audioSeconds }
+  const { estimatedCost } = computeCost('elevenlabs', params.model, quotedBreakdown)
+  return { estimatedCost: estimatedCost ?? 0, quotedBreakdown }
+}

@@ -31,3 +31,6 @@ delete process.env.ALLOW_REAL_CLAUDE
 // Same reasoning, for the OpenAI images live-call guard (src/lib/images/gateway.ts's
 // assertLiveImageCallsAllowed).
 delete process.env.ALLOW_REAL_OPENAI_IMAGES
+// Same reasoning, for the ElevenLabs voiceover live-call guard (src/lib/voiceover/gateway.ts's
+// assertLiveVoiceoverCallsAllowed).
+delete process.env.ALLOW_REAL_ELEVENLABS

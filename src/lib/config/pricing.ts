@@ -3,7 +3,7 @@ import type { Provider } from '@/lib/config/pipeline'
 // Single place edited when a rate changes. Bump by hand on any edit below -
 // raw_usage.rates on every settled `usage` row records the rate_version that
 // produced it, so a past row's cost stays reconstructable even after rates move.
-export const RATE_VERSION = '2026-09-23'
+export const RATE_VERSION = '2026-09-25'
 
 // Anthropic injects a fixed system-prompt overhead when tools are present, on top of
 // the tool schema JSON and the visible system/user text - this approximates that
@@ -19,6 +19,10 @@ export type UsageBreakdown = {
   /** OpenAI images only: the part of input_tokens that was reference-image input, billed at
    * the image-input rate. input_tokens stays the provider's total. */
   image_input_tokens?: number | null
+  /** ElevenLabs text-to-speech only: characters sent (the provider bills per character). */
+  characters?: number | null
+  /** ElevenLabs forced alignment only: seconds of audio aligned (billed per minute). */
+  audio_seconds?: number | null
 }
 
 export type ClaudeRates = {
@@ -60,8 +64,8 @@ function perMillionToPerToken(ratePerMillion: number): number {
   return ratePerMillion / 1_000_000
 }
 
-// elevenlabs/fal below are stub shapes only - no values yet, and computeCost returns a
-// null estimatedCost for both until they're filled in.
+// fal below is a stub shape only - no values yet, and computeCost returns a null
+// estimatedCost for it until it's filled in.
 
 // OpenAI meters image generation as tokens, not a flat per-image fee. Keyed by OpenAI
 // image model so two models' size/quality keys can never collide. Authority:
@@ -128,10 +132,24 @@ export const OPENAI_RATES: OpenAiImageRates = {
   },
 }
 
+// ElevenLabs bills text-to-speech per character and forced alignment per minute of
+// audio. PLACEHOLDERS: $0.10 per 1K characters and $0.40 per hour are the published
+// API list prices at the time of writing, not a measurement against this account's
+// plan - recalibrate from real invoices before relying on them.
 type ElevenLabsRates = {
-  perCharacterUsd: number | null
+  /** USD per character of text-to-speech, keyed by model id. */
+  perCharacterUsd: Record<string, number>
+  /** USD per minute of forced alignment. */
+  alignmentPerMinuteUsd: number
 }
-export const ELEVENLABS_RATES: ElevenLabsRates = { perCharacterUsd: null }
+export const ELEVENLABS_RATES: ElevenLabsRates = {
+  perCharacterUsd: { eleven_v3: 0.1 / 1000 },
+  alignmentPerMinuteUsd: 0.4 / 60,
+}
+
+// The model name a usage row carries for a forced-alignment call - the endpoint has no
+// selectable model.
+export const ELEVENLABS_ALIGNMENT_MODEL = 'forced-alignment'
 
 /** Keyed by fal model name. A model uses exactly one of the two shapes, depending on how fal bills it. */
 type FalRates = {
@@ -140,13 +158,15 @@ type FalRates = {
 }
 export const FAL_RATES: FalRates = { perClipUsd: {}, perSecondUsd: {} }
 
+type ElevenLabsAppliedRates = { perCharacterUsd: number } | { alignmentPerMinuteUsd: number }
+
 type OpenAiImageAppliedRates = { textInputPerMTok: number; imageInputPerMTok: number; outputPerMTok: number }
 
 export type CostResult = {
   estimatedCost: number | null
-  appliedRates: ClaudeRates | OpenAiImageAppliedRates | null
+  appliedRates: ClaudeRates | OpenAiImageAppliedRates | ElevenLabsAppliedRates | null
   quantity: number
-  unit: 'tokens' | 'unknown'
+  unit: 'tokens' | 'characters' | 'seconds' | 'unknown'
 }
 
 /**
@@ -181,6 +201,26 @@ export function computeCost(provider: Provider, model: string, breakdown: UsageB
       quantity,
       unit: 'tokens',
     }
+  }
+
+  if (provider === 'elevenlabs') {
+    // Forced alignment reports seconds; text-to-speech reports characters.
+    if (model === ELEVENLABS_ALIGNMENT_MODEL) {
+      const seconds = breakdown.audio_seconds ?? 0
+      const rate = ELEVENLABS_RATES.alignmentPerMinuteUsd
+      return {
+        estimatedCost: (seconds / 60) * rate,
+        appliedRates: { alignmentPerMinuteUsd: rate },
+        quantity: seconds,
+        unit: 'seconds',
+      }
+    }
+    const characters = breakdown.characters ?? 0
+    const rate = ELEVENLABS_RATES.perCharacterUsd[model]
+    if (rate === undefined) {
+      return { estimatedCost: null, appliedRates: null, quantity: characters, unit: 'characters' }
+    }
+    return { estimatedCost: characters * rate, appliedRates: { perCharacterUsd: rate }, quantity: characters, unit: 'characters' }
   }
 
   if (provider !== 'anthropic') {

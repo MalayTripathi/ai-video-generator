@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import type { recordDynamicSpend } from '../../src/lib/credits/ledger'
+import type { recordDynamicSpend, recordFixedSpend } from '../../src/lib/credits/ledger'
 import { admin } from '../supabase-test-session'
 
 // src/lib/credits/ledger.ts imports src/lib/supabase/service-role.ts, which imports the
@@ -54,6 +54,13 @@ export const realRecordDynamicSpend: typeof recordDynamicSpend = async (params) 
   const result = await runModuleCall(MODULE_URL, 'recordDynamicSpend', params)
   if (!result.ok) {
     throw new Error(`recordDynamicSpend failed: ${result.errorName}: ${result.message}`)
+  }
+}
+
+export const realRecordFixedSpend: typeof recordFixedSpend = async (params) => {
+  const result = await runModuleCall(MODULE_URL, 'recordFixedSpend', params)
+  if (!result.ok) {
+    throw new Error(`recordFixedSpend failed: ${result.errorName}: ${result.message}`)
   }
 }
 

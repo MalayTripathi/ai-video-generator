@@ -31,6 +31,6 @@ export default defineConfig({
     // already-exported shell value. Force it closed regardless - there is no sanctioned
     // way to make a live Anthropic or OpenAI images call through the dev server this
     // suite drives.
-    env: { ALLOW_REAL_CLAUDE: '', ALLOW_REAL_OPENAI_IMAGES: '' },
+    env: { ALLOW_REAL_CLAUDE: '', ALLOW_REAL_OPENAI_IMAGES: '', ALLOW_REAL_ELEVENLABS: '' },
   },
 })

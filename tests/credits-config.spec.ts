@@ -46,6 +46,22 @@ test.describe('creditsFor', () => {
     expect(four).toBe(one * 4)
   })
 
+  test('per_1k_chars rounds credits x chars / 1000 up', async () => {
+    const perK = PRICE_TABLE.storyboard!.voiceover!.credits
+    expect(PRICE_TABLE.storyboard!.voiceover!.unit).toBe('per_1k_chars')
+    expect(creditsFor({ step: 'storyboard', operation: 'voiceover', quantity: 1000 })).toBe(perK)
+    expect(creditsFor({ step: 'storyboard', operation: 'voiceover', quantity: 1 })).toBe(Math.ceil(perK / 1000))
+    expect(creditsFor({ step: 'storyboard', operation: 'voiceover', quantity: 1501 })).toBe(Math.ceil((perK * 1501) / 1000))
+  })
+
+  test('per_minute rounds credits x seconds / 60 up', async () => {
+    const perMin = PRICE_TABLE.storyboard!.align_voiceover!.credits
+    expect(PRICE_TABLE.storyboard!.align_voiceover!.unit).toBe('per_minute')
+    expect(creditsFor({ step: 'storyboard', operation: 'align_voiceover', quantity: 60 })).toBe(perMin)
+    expect(creditsFor({ step: 'storyboard', operation: 'align_voiceover', quantity: 61 })).toBe(Math.ceil((perMin * 61) / 60))
+    expect(creditsFor({ step: 'storyboard', operation: 'align_voiceover', quantity: 0.5 })).toBe(Math.ceil((perMin * 0.5) / 60))
+  })
+
   test('throws MissingCreditPriceError for (generation, generate_clip)', async () => {
     expect(() => creditsFor({ step: 'generation', operation: 'generate_clip', quantity: 1 })).toThrow(
       MissingCreditPriceError

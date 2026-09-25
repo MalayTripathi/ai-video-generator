@@ -84,3 +84,7 @@ export type CameraOrigin = (typeof CAMERA_ORIGINS)[number]
 export const MODEL_REPORTABLE_CAMERA_ORIGINS = CAMERA_ORIGINS.filter(
   (v): v is Exclude<CameraOrigin, 'override'> => v !== 'override'
 )
+
+// projects.voiceover_source: how the current voiceover was made. Null when there is none.
+export const VOICEOVER_SOURCES = ['generated', 'uploaded'] as const
+export type VoiceoverSource = (typeof VOICEOVER_SOURCES)[number]

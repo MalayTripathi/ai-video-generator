@@ -89,3 +89,53 @@ export const LANE_AUTOSCROLL_MAX_PX = 14
 
 // A press that moves less than this is a click (it selects the shot), never a drag.
 export const DRAG_THRESHOLD_PX = 4
+
+// Voiceover (Storyboard C1). Voices and the model live in models.ts; every size, limit and
+// timing number lives here.
+
+// eleven_v3's per-request character limit (GET /v1/models, max_characters_request_*). A
+// longer script is read in several requests, split between shots, never mid-shot.
+export const VOICEOVER_CHUNK_MAX_CHARS = 5000
+
+// The most requests one voiceover may take. Bounds the whole read's length and, with the
+// timeout below, the claim's stale window.
+export const VOICEOVER_MAX_CHUNKS = 4
+
+export const VOICEOVER_MAX_SCRIPT_CHARS = VOICEOVER_CHUNK_MAX_CHARS * VOICEOVER_MAX_CHUNKS
+
+// The provider request timeout for one text-to-speech or alignment call.
+export const VOICEOVER_REQUEST_TIMEOUT_MS = 150_000
+
+// How long a started voiceover claim may run before it reads as failed: every chunk at
+// its full timeout plus storage writes, with margin.
+export const VOICEOVER_STALE_AFTER_MS = VOICEOVER_MAX_CHUNKS * (VOICEOVER_REQUEST_TIMEOUT_MS + 30_000) + 60_000
+
+// The same for an uploaded read's alignment: one call.
+export const VOICEOVER_ALIGN_STALE_AFTER_MS = VOICEOVER_REQUEST_TIMEOUT_MS + 90_000
+
+// Route maxDuration for the voiceover routes, in seconds (mirrors the literal in each
+// route file; the stale windows above must fit inside it).
+export const VOICEOVER_ROUTE_MAX_DURATION_S = 800
+
+// Uploads: what may be aligned. The file goes straight to Storage through a signed upload
+// URL, so these are checked when the URL is issued and again on the stored object.
+export const VOICEOVER_UPLOAD_FORMATS: Record<string, string> = {
+  'audio/mpeg': 'mp3',
+  'audio/mp3': 'mp3',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/wave': 'wav',
+  'audio/mp4': 'm4a',
+  'audio/x-m4a': 'm4a',
+}
+export const VOICEOVER_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+export const VOICEOVER_UPLOAD_MAX_SEC = 15 * 60
+
+// Display-only estimates for the generating state's progress line and ETA. Nothing times
+// out or settles on them.
+export const VOICEOVER_SPOKEN_CHARS_PER_SEC = 15
+export const VOICEOVER_ETA_CHARS_PER_SEC = 60
+export const VOICEOVER_ALIGN_ETA_MS = 20_000
+
+// Below this timeline-header width, Fit to voiceover collapses to its icon with a tooltip.
+export const FIT_COLLAPSE_BREAKPOINT_PX = 720

@@ -153,7 +153,7 @@ function InspectBody() {
           data-testid="inspect-regenerate-image"
           disabled={imageDisabled}
           onClick={() => void generate([shot.id], 'inspect')}
-          className={`flex h-[32px] cursor-pointer items-center justify-center gap-[8px] rounded-control border bg-bg-canvas text-small font-medium hover:bg-bg-inset disabled:cursor-not-allowed disabled:opacity-60 ${
+          className={`flex h-[32px] cursor-pointer items-center justify-center gap-[8px] rounded-control border bg-bg-canvas text-small leading-none font-medium hover:bg-bg-inset disabled:cursor-not-allowed disabled:opacity-60 ${
             stale ? 'border-status-stale-line text-status-stale-fg' : 'border-border-strong text-text-primary'
           }`}
         >
@@ -172,7 +172,7 @@ function InspectBody() {
               data-testid="inspect-regenerate-prompt"
               disabled={readOnly || promptBusy}
               onClick={() => regeneratePrompt(shot.id)}
-              className="flex h-[26px] cursor-pointer items-center gap-[6px] whitespace-nowrap rounded-control border border-border-subtle px-[9px] text-small text-text-secondary hover:border-border-strong hover:bg-bg-inset hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex h-[26px] cursor-pointer items-center gap-[6px] whitespace-nowrap rounded-control border border-border-subtle px-[9px] text-small leading-none text-text-secondary hover:border-border-strong hover:bg-bg-inset hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
             >
               {promptBusy ? 'Writing…' : 'Regenerate prompt'}
               <span className="font-mono text-mono text-text-tertiary">{formatCredits(promptCredits)} cr</span>

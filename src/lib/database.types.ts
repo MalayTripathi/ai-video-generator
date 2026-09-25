@@ -273,6 +273,11 @@ export type Database = {
           video_model: string | null
           video_type: string | null
           voice_id: string | null
+          voiceover_alignment_path: string | null
+          voiceover_generated_at: string | null
+          voiceover_muted: boolean
+          voiceover_source: string | null
+          voiceover_spans: Json | null
           voiceover_stale: boolean
         }
         Insert: {
@@ -296,6 +301,11 @@ export type Database = {
           video_model?: string | null
           video_type?: string | null
           voice_id?: string | null
+          voiceover_alignment_path?: string | null
+          voiceover_generated_at?: string | null
+          voiceover_muted?: boolean
+          voiceover_source?: string | null
+          voiceover_spans?: Json | null
           voiceover_stale?: boolean
         }
         Update: {
@@ -319,6 +329,11 @@ export type Database = {
           video_model?: string | null
           video_type?: string | null
           voice_id?: string | null
+          voiceover_alignment_path?: string | null
+          voiceover_generated_at?: string | null
+          voiceover_muted?: boolean
+          voiceover_source?: string | null
+          voiceover_spans?: Json | null
           voiceover_stale?: boolean
         }
         Relationships: [

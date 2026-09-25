@@ -13,6 +13,13 @@ const elementImageProvider: 'openai' | 'fal' =
 const storyboardImageProvider: 'openai' | 'fal' =
   process.env.STORYBOARD_IMAGE_PROVIDER === 'fal' ? 'fal' : 'openai'
 
+// Provider selection for Step 4 voiceover. ElevenLabs is the only implementation; any
+// other value is refused by the voiceover routes before a claim.
+const voiceoverProvider = 'elevenlabs' as const
+if (process.env.VOICEOVER_PROVIDER && process.env.VOICEOVER_PROVIDER !== 'elevenlabs') {
+  console.error(`[models] VOICEOVER_PROVIDER="${process.env.VOICEOVER_PROVIDER}" is not implemented; using elevenlabs`)
+}
+
 // Video-model registry: duration bounds per model, for the Step 2 duration stepper to
 // clamp against once it's built. This registry will grow - adding a model is one entry
 // here, not edits scattered across several places. Seconds are fractional (real clip
@@ -126,7 +133,12 @@ export type ModelsConfig = {
     provider: 'fal'
     model: string
   }
-  // Future steps (voiceover, video prompts) each get their own section here as they're
+  // Voices are not here: they are a per-language list, VOICEOVER_VOICES below.
+  voiceover: {
+    provider: 'elevenlabs'
+    model: string
+  }
+  // Future steps (video prompts) each get their own section here as they're
   // implemented - keep this type and the object below in sync.
 }
 
@@ -202,6 +214,12 @@ export const modelsConfig: ModelsConfig = {
     provider: 'fal',
     model: process.env.FAL_VIDEO_MODEL ?? VIDEO_MODELS[DEFAULT_VIDEO_MODEL].id,
   },
+  voiceover: {
+    provider: voiceoverProvider,
+    // eleven_v3 is required: scripts carry inline audio tags ([slowly], [warmly]) that
+    // older models would read aloud as words.
+    model: process.env.ELEVENLABS_VOICEOVER_MODEL ?? 'eleven_v3',
+  },
 }
 
 // generate_element_reference's credit price (PRICE_TABLE, src/lib/config/credits.ts)
@@ -225,4 +243,44 @@ if (modelsConfig.storyboardImages.quality !== 'low') {
       `storyboard generate_image credit price is calibrated for "low" only. Update ` +
       `PRICE_TABLE (src/lib/config/credits.ts) before changing storyboard image quality.`
   )
+}
+
+// Narration voices, four per language (two male, two female), picked by hand from the
+// provider's library. The sample is the provider's own preview clip, copied once into
+// public/ by scripts/fetch-voice-samples.mjs - auditioning never calls the provider.
+export type VoiceoverVoice = {
+  id: string
+  name: string
+  /** Short descriptor shown under the name, e.g. "warm · storyteller". */
+  descriptor: string
+  samplePath: string
+}
+
+function voice(lang: string, id: string, name: string, descriptor: string): VoiceoverVoice {
+  return { id, name, descriptor, samplePath: `/voice-samples/${lang}/${id}.mp3` }
+}
+
+export const VOICEOVER_VOICES: Record<string, VoiceoverVoice[]> = {
+  en: [
+    voice('en', 'JBFqnCBsd6RMkjVDRZzb', 'George', 'warm · storyteller'),
+    voice('en', 'nPczCjzI2devNBz1zQrb', 'Brian', 'deep · resonant'),
+    voice('en', 'EXAVITQu4vr4xnSDxMaL', 'Sarah', 'mature · reassuring'),
+    voice('en', 'pFZP5JQG7iQjIQuC4Bku', 'Lily', 'velvety · confident'),
+  ],
+  hi: [
+    voice('hi', 'zgqefOY5FPQ3bB7OZTVR', 'Niraj', 'smooth · romantic'),
+    voice('hi', 'Sxk6njaoa7XLsAFT7WcN', 'Amit', 'warm · sympathetic'),
+    voice('hi', '1qEiC6qsybMkmnNdVMbK', 'Monika', 'calm · natural'),
+    voice('hi', 'FFmp1h1BMl0iVHA0JxrI', 'Tarini', 'soft · cheerful'),
+  ],
+}
+
+// The voices a project's language offers. A language with no list offers none, and
+// generation is unavailable for it (upload still works).
+export function voicesForLanguage(language: string | null): VoiceoverVoice[] {
+  return VOICEOVER_VOICES[language ?? 'en'] ?? []
+}
+
+export function findVoice(language: string | null, voiceId: string): VoiceoverVoice | null {
+  return voicesForLanguage(language).find((v) => v.id === voiceId) ?? null
 }
