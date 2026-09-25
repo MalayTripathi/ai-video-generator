@@ -11,6 +11,7 @@ import {
   blockTier,
   filmDuration,
   filmSeconds,
+  formatPlayTime,
   formatTimecode,
   groupBands,
   LANE_GUTTER_PX,
@@ -29,6 +30,7 @@ import type { MotionSegment } from '../actions'
 import { BinControl } from './bin-control'
 import { FitButton } from './fit-button'
 import { Playhead, type PlayheadHandle } from './playhead'
+import { usePlayback, usePlaybackEngine } from './playback-context'
 import { useLaneDrag } from './use-lane-drag'
 import { useNow } from './use-now'
 
@@ -148,6 +150,55 @@ const JoinChip = memo(function JoinChip({
   )
 })
 
+export function PlayIcon({ size = 9 }: { size?: number }) {
+  return (
+    <svg width={size} height={size + 1} viewBox="0 0 8 9" fill="none" aria-hidden="true">
+      <path d="M1 1 7 4.5 1 8z" fill="currentColor" />
+    </svg>
+  )
+}
+
+export function PauseIcon({ size = 9 }: { size?: number }) {
+  return (
+    <svg width={size} height={size + 1} viewBox="0 0 9 10" fill="none" aria-hidden="true">
+      <rect x="1" y="1" width="2.4" height="8" fill="currentColor" />
+      <rect x="5.6" y="1" width="2.4" height="8" fill="currentColor" />
+    </svg>
+  )
+}
+
+export const PLAY_LOCKED_TIP = 'Available once every frame is ready.'
+
+// The transport (canvas 15b/15h): Play/Pause and the time. Play waits for every frame;
+// scrubbing never does.
+function Transport({ totalSeconds }: { totalSeconds: number }) {
+  const { framesReady } = useStoryboard()
+  const engine = usePlaybackEngine()
+  const { t, playing } = usePlayback()
+  return (
+    <div className="flex flex-none items-center gap-[3px]">
+      <button
+        type="button"
+        data-testid="transport-play"
+        aria-label={playing ? 'Pause' : 'Play'}
+        aria-pressed={playing}
+        title={framesReady ? (playing ? 'Pause (Space)' : 'Play (Space)') : PLAY_LOCKED_TIP}
+        disabled={!framesReady}
+        onClick={() => engine.toggle()}
+        className="flex h-[30px] w-[30px] flex-none cursor-pointer items-center justify-center rounded-control border border-border-strong text-text-primary hover:border-border-strong-hover hover:bg-bg-inset disabled:cursor-not-allowed disabled:border-border-muted disabled:text-text-quiet disabled:hover:bg-transparent"
+      >
+        {playing ? <PauseIcon /> : <PlayIcon />}
+      </button>
+      <span
+        data-testid="transport-time"
+        className="whitespace-nowrap pl-[6px] font-mono text-mono tracking-[-0.02em] text-text-secondary tabular-nums"
+      >
+        {formatPlayTime(Math.min(t, totalSeconds))} / {formatTimecode(totalSeconds)}
+      </span>
+    </div>
+  )
+}
+
 // The mode control (canvas 15b / 15d): two ways of touching one strip.
 function ModeToggle() {
   const { mode, setMode } = useStoryboard()
@@ -246,6 +297,7 @@ function TimelineHeader({
   const { ref, width } = useElementWidth<HTMLDivElement>()
   return (
     <div ref={ref} className="flex items-center gap-[12px] border-b border-border-subtle p-[11px_14px]">
+      <Transport totalSeconds={totalSeconds} />
       <ModeToggle />
       <ZoomControls />
 

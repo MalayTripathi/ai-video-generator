@@ -364,7 +364,9 @@ test.describe('storyboard editing - bin', () => {
     await expect(page.getByTestId('frames-ready')).toHaveText('2 of 2 frames ready')
     await expect(page.getByTestId('timeline-total')).toHaveText('Total 0:09 · provisional')
     await expect(page.getByTestId('continue-label')).toHaveText(`Continue to ${stepLabel('video_prompts')} (2 clips)`)
-    await expect(page.getByTestId('preview-locked-reason')).toHaveText('Every frame is ready. Preview & mix is not available yet.')
+    // Every in-film frame is ready once the ungenerated shot is binned: Preview unlocks.
+    await expect(page.getByTestId('preview-locked')).toHaveCount(0)
+    await expect(page.getByTestId('preview-mix')).toBeVisible()
 
     // Icon and count only, labelled by tooltip and aria-label; nothing else in the header moved.
     const bin = page.getByTestId('bin-control')

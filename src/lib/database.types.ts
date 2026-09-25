@@ -262,6 +262,11 @@ export type Database = {
           id: string
           language: string | null
           language_code: string | null
+          mix_duck_bypass: boolean | null
+          mix_duck_depth_db: number | null
+          mix_music_gain_db: number | null
+          mix_voice_gain_db: number | null
+          music_muted: boolean | null
           source_text: string | null
           status: string
           template_source_id: string | null
@@ -291,6 +296,11 @@ export type Database = {
           id?: string
           language?: string | null
           language_code?: string | null
+          mix_duck_bypass?: boolean | null
+          mix_duck_depth_db?: number | null
+          mix_music_gain_db?: number | null
+          mix_voice_gain_db?: number | null
+          music_muted?: boolean | null
           source_text?: string | null
           status?: string
           template_source_id?: string | null
@@ -320,6 +330,11 @@ export type Database = {
           id?: string
           language?: string | null
           language_code?: string | null
+          mix_duck_bypass?: boolean | null
+          mix_duck_depth_db?: number | null
+          mix_music_gain_db?: number | null
+          mix_voice_gain_db?: number | null
+          music_muted?: boolean | null
           source_text?: string | null
           status?: string
           template_source_id?: string | null

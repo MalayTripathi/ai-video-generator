@@ -272,3 +272,11 @@ export function caseTwo(r: Readiness, balanceCredits: number | null, price: numb
     shotCount: r.notGenerated,
   }
 }
+
+// The transport's time, to a tenth of a second (canvas 15h: "0:11.4").
+export function formatPlayTime(seconds: number): string {
+  const tenths = Math.max(0, Math.floor(seconds * 10 + 1e-6))
+  const m = Math.floor(tenths / 600)
+  const s = (tenths % 600) / 10
+  return `${m}:${s.toFixed(1).padStart(4, '0')}`
+}

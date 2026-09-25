@@ -6,6 +6,7 @@ import { resolveVideoModel, videoModelMaxSeconds } from '@/lib/config/models'
 import { filmDuration, filmSeconds, isRetimeAllowed, retimeBounds } from '@/lib/storyboard/timeline'
 import type { Motion, Transition } from '@/lib/config/enums'
 import { isSplitAllowed, parseMotion, parseTransition } from '@/lib/storyboard/motion'
+import { isMixDbAllowed, MIX_COLUMNS, MIX_RANGES, type MixColumn } from '@/lib/storyboard/film'
 import {
   fitToVoiceover as fitLengths,
   fitUnavailableReason,
@@ -400,6 +401,56 @@ export async function saveTransitionForUser(
   return { success: true }
 }
 
+// Preview & mix (E). One field per save, field-attributed; null returns a field to its
+// default. Free, and marks nothing stale. A value equal to the stored one writes nothing.
+export type MixValue = number | boolean | null
+export type MixSaveResult = ({ success: true; unchanged?: true } | { success: false; error: string }) & { field: MixColumn | 'all' }
+
+function isMixValueAllowed(field: MixColumn, value: MixValue): boolean {
+  if (value === null) return true
+  if (field === 'mix_duck_bypass') return typeof value === 'boolean'
+  return typeof value === 'number' && isMixDbAllowed(value, MIX_RANGES[field])
+}
+
+export async function saveMixForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string,
+  field: MixColumn,
+  value: MixValue
+): Promise<MixSaveResult> {
+  if (!(MIX_COLUMNS as readonly string[]).includes(field)) return { success: false, error: 'Unknown mix setting', field }
+  if (!isMixValueAllowed(field, value)) return { success: false, error: 'That value is out of range', field }
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error, field }
+  const { data: current } = await supabase.from('projects').select(field).eq('id', projectId).maybeSingle()
+  if (current && (current as Record<string, unknown>)[field] === value) return { success: true, unchanged: true, field }
+  const { error } = await supabase
+    .from('projects')
+    .update({ [field]: value, updated_at: new Date().toISOString() })
+    .eq('id', projectId)
+  if (error) return { success: false, error: error.message, field }
+  return { success: true, field }
+}
+
+// Reset mix: every mix setting back to its default (null). Lane mutes are lane state and stay.
+export async function resetMixForUser(supabase: SupabaseServerClient, userId: string, projectId: string): Promise<MixSaveResult> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error, field: 'all' }
+  const { error } = await supabase
+    .from('projects')
+    .update({
+      mix_voice_gain_db: null,
+      mix_music_gain_db: null,
+      mix_duck_depth_db: null,
+      mix_duck_bypass: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', projectId)
+  if (error) return { success: false, error: error.message, field: 'all' }
+  return { success: true, field: 'all' }
+}
+
 async function currentUser() {
   const supabase = await createClient()
   const {
@@ -484,4 +535,16 @@ export async function saveTransition(
   const { supabase, user } = await currentUser()
   if (!user) return NOT_AUTHENTICATED
   return saveTransitionForUser(supabase, user.id, projectId, shotId, transition)
+}
+
+export async function saveMix(projectId: string, field: MixColumn, value: MixValue): Promise<MixSaveResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return { ...NOT_AUTHENTICATED, field }
+  return saveMixForUser(supabase, user.id, projectId, field, value)
+}
+
+export async function resetMix(projectId: string): Promise<MixSaveResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return { ...NOT_AUTHENTICATED, field: 'all' }
+  return resetMixForUser(supabase, user.id, projectId)
 }

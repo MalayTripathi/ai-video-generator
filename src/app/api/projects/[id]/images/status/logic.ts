@@ -28,6 +28,8 @@ export type ShotImageStatus = {
 
 /** The project's current voiceover, when there is one. */
 export type CurrentVoiceover = {
+  /** The stored file (projects.audio_path) - what the film timeline names; audioUrl is its signed URL. */
+  audioPath: string
   audioUrl: string | null
   voiceId: string | null
   languageCode: string | null
@@ -223,6 +225,7 @@ export function deriveVoiceoverStatus(
   const current: CurrentVoiceover | null =
     project.audio_path && project.voiceover_generated_at && spans && project.voiceover_source
       ? {
+          audioPath: project.audio_path,
           audioUrl,
           voiceId: project.voice_id,
           languageCode: project.language_code,

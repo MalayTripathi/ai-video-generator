@@ -152,3 +152,42 @@ export const DISSOLVE_SEC = 0.5
 
 // A new split lands here, as a fraction of the shot's length.
 export const DEFAULT_SPLIT_AT = 0.5
+
+// Preview & mix (Storyboard E). One film timeline (src/lib/storyboard/film.ts) drives the
+// client player and, later, the export render - so every number both read lives here.
+
+// How far a push in / pull out travels: the still is drawn at 1 → MOTION_ZOOM (or back).
+export const MOTION_ZOOM = 1.12
+
+// How far a pan travels across its segment, as a percentage of the frame. The still is
+// held at MOTION_PAN_SCALE throughout so the edge never shows.
+export const MOTION_PAN_PCT = 8
+export const MOTION_PAN_SCALE = 1.1
+
+// The mix: gains and duck depth in dB. Null in a project column means the default here.
+export type MixRange = { min: number; max: number; default: number }
+export const MIX_VOICE_GAIN_DB: MixRange = { min: -24, max: 6, default: 0 }
+export const MIX_MUSIC_GAIN_DB: MixRange = { min: -36, max: 0, default: -14 }
+export const MIX_DUCK_DEPTH_DB: MixRange = { min: -24, max: 0, default: -9 }
+// Slider values snap to this many dB.
+export const MIX_STEP_DB = 0.5
+
+// Ducking is deterministic: the music is lowered by the duck depth over each spoken word,
+// reaching full depth over the attack before the word and recovering over the release after
+// it - from the word timings, never live analysis, so preview and export duck identically.
+export const DUCK_ATTACK_SEC = 0.08
+export const DUCK_RELEASE_SEC = 0.35
+
+// A slider saves once it has been still this long.
+export const MIX_SAVE_DEBOUNCE_MS = 400
+
+// The Preview player's box per aspect ratio (canvas 15i): 9:16 is 480px tall, 1:1 is
+// 400 × 400, 16:9 takes the full section width (height from the ratio, width null).
+export const PREVIEW_PLAYER_SIZES: Record<AspectRatio, { width: number | null; height: number | null }> = {
+  '9:16': { width: 270, height: 480 },
+  '1:1': { width: 400, height: 400 },
+  '16:9': { width: null, height: null },
+}
+
+// The mini player's long edge (canvas 15h).
+export const MINI_PLAYER_LONG_EDGE_PX = 240

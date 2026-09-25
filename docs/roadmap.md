@@ -233,8 +233,6 @@ are not lost.
   - Whether retiming sets `video_prompt_stale`.
   - Whether Storyboard's three generations (image, voiceover, background
     music) are one claimed action or three independent ones.
-  - Whether the still-frame video is server-rendered or a client-side
-    preview.
 
 - **Agent-turn cost estimate is calibrated on Haiku only.** `AGENT_TURN_ESTIMATE`
   (`src/lib/usage/quote.ts`) was cut from 17 development turns. Production Sonnet may emit
@@ -307,7 +305,7 @@ are not lost.
   (`image-prompts-context`) and the agent panel off the Storyboard still refresh the rail
   through `router.refresh()`. Push the figures into `rail-figures-context` from each paid
   response instead, as the Storyboard does.
-- **Storyboard static controls to wire:** the music lane, Preview & mix, and Export. Each
+- **Storyboard static controls to wire:** the music lane and Export. Each
   carries a `// static until <feature>` comment at its component.
 - **The storyboard agent's context block still says "coming soon"**
   (`src/lib/prompts/agent-storyboard.ts`). Rewrite (and bump its version) when the step

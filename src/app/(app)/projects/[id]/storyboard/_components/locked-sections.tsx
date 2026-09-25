@@ -1,4 +1,6 @@
+import type { AspectRatio } from '@/lib/config/enums'
 import type { Readiness } from '@/lib/storyboard/timeline'
+import { previewBoxStyle } from './preview-mix'
 import { lockedReason } from '@/lib/storyboard/timeline'
 
 function LockIcon() {
@@ -10,22 +12,26 @@ function LockIcon() {
   )
 }
 
-// Preview & mix keeps its heading and a held space while locked (canvas 15a), so the page
-// has the same three blocks at every moment. The reason is read from real readiness.
-export function PreviewLocked({ readiness }: { readiness: Readiness }) {
+// Preview & mix keeps its heading and a held space while locked (canvas 15a/15i), so the
+// page has the same three blocks at every moment: the well takes the player's height for
+// the project's ratio, so nothing jumps when it unlocks. The reason is read from real readiness.
+export function PreviewLocked({ readiness, aspectRatio }: { readiness: Readiness; aspectRatio: AspectRatio }) {
   const reason = lockedReason(readiness)
+  const box = previewBoxStyle(aspectRatio)
   return (
     <div data-testid="preview-locked" className="flex flex-none flex-col gap-[12px]">
       <div className="flex items-baseline gap-[12px]">
         <span className="text-screen font-medium tracking-snug text-text-tertiary">Preview &amp; mix</span>
         <span data-testid="preview-locked-reason" className="flex-1 text-meta text-text-tertiary">
-          {reason
-            ? `Available once every frame is ready — ${reason}.`
-            : 'Every frame is ready. Preview & mix is not available yet.'}
+          {reason ? `Available once every frame is ready — ${reason}.` : 'Available once every frame is ready.'}
         </span>
         <LockIcon />
       </div>
-      <div className="h-[96px] rounded-frame border border-dashed border-border-muted bg-bg-well" />
+      <div
+        data-testid="preview-locked-well"
+        className="rounded-frame border border-dashed border-border-muted bg-bg-well"
+        style={typeof box.height === 'number' ? { height: box.height } : { aspectRatio: box.aspectRatio }}
+      />
     </div>
   )
 }
@@ -44,9 +50,7 @@ function ExportSettingsRow() {
     <div className="flex cursor-pointer items-center gap-[12px] rounded-frame border border-border-subtle bg-bg-canvas p-[13px_15px] hover:border-border-strong">
       <ExportChevron />
       <span className="flex-none text-ui font-medium">Export settings</span>
-      <span className="flex-1 text-meta text-text-tertiary">
-        Alternate motion · Dissolve · Captions off · Streaming loudness
-      </span>
+      <span className="flex-1 text-meta text-text-tertiary">Alternate motion · Dissolve · Captions off · Streaming loudness</span>
       <span className="text-meta text-text-quiet">locked</span>
     </div>
   )

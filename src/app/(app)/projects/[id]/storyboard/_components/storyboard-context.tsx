@@ -7,7 +7,9 @@ import { parseRailFigures, useRailFigures } from '@/components/rail-figures-cont
 import { creditsFor } from '@/lib/config/credits'
 import type { AspectRatio, Motion, Transition } from '@/lib/config/enums'
 import { clampSplit, resolveJoins, resolveMotions, type ResolvedJoin, type ResolvedMotion } from '@/lib/storyboard/motion'
-import { filmDuration, filmSeconds, laneShots as orderLane, reorderWrites } from '@/lib/storyboard/timeline'
+import { filmDuration, filmSeconds, laneShots as orderLane, readiness, reorderWrites, type Readiness } from '@/lib/storyboard/timeline'
+import { MIX_SAVE_DEBOUNCE_MS } from '@/lib/config/storyboard'
+import { buildFilmTimeline, resolveMix, type FilmTimeline, type MixColumn, type StoredMix } from '@/lib/storyboard/film'
 import {
   fitToVoiceover as fitLengths,
   fitUnavailableReason,
@@ -18,6 +20,9 @@ import {
 } from '@/lib/storyboard/voiceover'
 import {
   fitToVoiceover as fitToVoiceoverAction,
+  resetMix as resetMixAction,
+  saveMix,
+  type MixValue,
   restoreScriptOrder as restoreScriptOrderAction,
   saveFilmDuration,
   saveFilmOrder,
@@ -31,6 +36,9 @@ import { useImageStatusPoll } from './use-image-status-poll'
 import type { ImageStatusData, ShotImageStatus, StoryboardShot, VoiceoverStatus } from './types'
 
 export type ActionSource = 'lane' | 'inspect'
+
+/** The mix as the project stores it (null = default); voiceover mute rides on the voiceover status. */
+export type MixState = Omit<StoredMix, 'voiceover_muted'>
 
 // The timeline's two modes (canvas 15b / 15d): one strip, the same geometry.
 export type TimelineMode = 'retime' | 'motion'
@@ -101,6 +109,16 @@ type StoryboardContextValue = {
   setMotion: (shotId: string, segment: MotionSegment, motion: Motion | null) => void
   setSplit: (shotId: string, splitAt: number | null) => void
   setTransition: (shotId: string, transition: Transition | null) => void
+  // Preview & mix (E). The film is the one timeline preview plays (and export renders);
+  // mix edits are optimistic, debounced, free, and mark nothing stale.
+  film: FilmTimeline
+  frameReadiness: Readiness
+  /** Every in-film frame has an image - Preview, Play and Export unlock on this. */
+  framesReady: boolean
+  mix: MixState
+  mixError: string | null
+  setMixField: (field: MixColumn, value: MixValue) => void
+  resetMix: () => void
 }
 
 const StoryboardContext = createContext<StoryboardContextValue | null>(null)
@@ -137,6 +155,7 @@ export function StoryboardProvider({
   retimeMaxSec,
   initialShots,
   initialStatus,
+  initialMix,
   children,
 }: {
   projectId: string
@@ -145,6 +164,7 @@ export function StoryboardProvider({
   retimeMaxSec: number | null
   initialShots: StoryboardShot[]
   initialStatus: ImageStatusData
+  initialMix: MixState
   children: ReactNode
 }) {
   const [shots, setShots] = useState(initialShots)
@@ -372,6 +392,80 @@ export function StoryboardProvider({
   const statusById = useMemo(() => new Map(data.shots.map((s) => [s.shotId, s])), [data.shots])
   const statusFor = useCallback((shotId: string) => statusById.get(shotId) ?? emptyStatus(shotId), [statusById])
 
+  // Preview & mix (E).
+  const [mix, setMix] = useState<MixState>(initialMix)
+  const savedMix = useRef<MixState>(initialMix)
+  const mixTimers = useRef(new Map<MixColumn, ReturnType<typeof setTimeout>>())
+  const [mixError, setMixError] = useState<string | null>(null)
+  const mixFailed = "That change couldn't be saved, so it was undone. Try again."
+
+  // Applied at once; saved once the value has been still for the debounce. A failed save
+  // rolls back only if nothing newer has been set since.
+  const setMixField = useCallback(
+    (field: MixColumn, value: MixValue) => {
+      if (readOnly) return
+      setMix((prev) => ({ ...prev, [field]: value }))
+      setMixError(null)
+      const timers = mixTimers.current
+      clearTimeout(timers.get(field))
+      timers.set(
+        field,
+        setTimeout(async () => {
+          timers.delete(field)
+          const result = await saveMix(projectId, field, value).catch(() => ({ success: false }) as const)
+          if (result.success) {
+            savedMix.current = { ...savedMix.current, [field]: value }
+            return
+          }
+          setMix((prev) => (prev[field] === value ? { ...prev, [field]: savedMix.current[field] } : prev))
+          setMixError(mixFailed)
+        }, MIX_SAVE_DEBOUNCE_MS)
+      )
+    },
+    [projectId, readOnly]
+  )
+
+  const resetMix = useCallback(async () => {
+    if (readOnly) return
+    mixTimers.current.forEach((timer) => clearTimeout(timer))
+    mixTimers.current.clear()
+    const cleared = { mix_voice_gain_db: null, mix_music_gain_db: null, mix_duck_depth_db: null, mix_duck_bypass: null }
+    const before = savedMix.current
+    setMix((prev) => ({ ...prev, ...cleared }))
+    setMixError(null)
+    const result = await resetMixAction(projectId).catch(() => ({ success: false }) as const)
+    if (result.success) {
+      savedMix.current = { ...savedMix.current, ...cleared }
+      return
+    }
+    setMix((prev) => ({ ...prev, ...before }))
+    setMixError(mixFailed)
+  }, [projectId, readOnly])
+
+  useLayoutEffect(() => {
+    const timers = mixTimers.current
+    return () => timers.forEach((timer) => clearTimeout(timer))
+  }, [])
+
+  const frameReadiness = useMemo(
+    () => readiness(laneShots.map((s) => (statusById.get(s.id) ?? emptyStatus(s.id)).state)),
+    [laneShots, statusById]
+  )
+  const framesReady = frameReadiness.total > 0 && frameReadiness.ready === frameReadiness.total
+  const film = useMemo(
+    () =>
+      buildFilmTimeline({
+        aspectRatio,
+        shots: shots.map((s) => ({ ...s, image_path: statusById.get(s.id)?.imagePath ?? null })),
+        voiceover: currentRead
+          ? { path: currentRead.audioPath, durationSec: currentRead.durationSec, spans: currentRead.spans, words: currentRead.words }
+          : null,
+        music: null,
+        mix: resolveMix({ ...mix, voiceover_muted: currentRead?.muted ?? false }),
+      }),
+    [aspectRatio, shots, statusById, currentRead, mix]
+  )
+
   const select = useCallback((shotId: string | null) => {
     setSelectedShotId(shotId)
     setActionError((prev) => (prev?.source === 'inspect' ? null : prev))
@@ -545,6 +639,13 @@ export function StoryboardProvider({
       setMotion,
       setSplit,
       setTransition,
+      film,
+      frameReadiness,
+      framesReady,
+      mix,
+      mixError,
+      setMixField,
+      resetMix,
     }),
     [
       projectId,
@@ -588,6 +689,13 @@ export function StoryboardProvider({
       setMotion,
       setSplit,
       setTransition,
+      film,
+      frameReadiness,
+      framesReady,
+      mix,
+      mixError,
+      setMixField,
+      resetMix,
     ]
   )
 

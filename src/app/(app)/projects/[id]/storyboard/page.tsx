@@ -9,6 +9,7 @@ import { getBalance } from '@/lib/credits/balance'
 import { resolveVideoModel, videoModelMaxSeconds } from '@/lib/config/models'
 import { loadImageStatuses } from '@/app/api/projects/[id]/images/status/logic'
 import { StoryboardProvider } from './_components/storyboard-context'
+import { PlaybackProvider } from './_components/playback-context'
 import { StoryboardMain } from './_components/storyboard-main'
 import { InspectPanel } from './_components/inspect-panel'
 import { StoryboardFooter } from './_components/storyboard-footer'
@@ -33,7 +34,7 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
   const { data: project } = await supabase
     .from('projects')
     .select(
-      'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target'
+      'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target, mix_voice_gain_db, mix_music_gain_db, mix_duck_depth_db, mix_duck_bypass, music_muted'
     )
     .eq('id', projectId)
     .eq('user_id', user.id)
@@ -85,19 +86,28 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
       retimeMaxSec={retimeMaxSec}
       initialShots={shots}
       initialStatus={status.data}
+      initialMix={{
+        mix_voice_gain_db: project.mix_voice_gain_db,
+        mix_music_gain_db: project.mix_music_gain_db,
+        mix_duck_depth_db: project.mix_duck_depth_db,
+        mix_duck_bypass: project.mix_duck_bypass,
+        music_muted: project.music_muted,
+      }}
     >
-      <WorkbenchShell
-        project={project}
-        agentStep="storyboard"
-        agentMessages={agentMessages}
-        readOnly={readOnly}
-        shots={shots}
-        header={<ProjectHeader project={project} shots={shots} />}
-        footer={<StoryboardFooter />}
-        sideColumn={<InspectPanel />}
-      >
-        <StoryboardMain language={project.language} />
-      </WorkbenchShell>
+      <PlaybackProvider>
+        <WorkbenchShell
+          project={project}
+          agentStep="storyboard"
+          agentMessages={agentMessages}
+          readOnly={readOnly}
+          shots={shots}
+          header={<ProjectHeader project={project} shots={shots} />}
+          footer={<StoryboardFooter />}
+          sideColumn={<InspectPanel />}
+        >
+          <StoryboardMain language={project.language} />
+        </WorkbenchShell>
+      </PlaybackProvider>
     </StoryboardProvider>
   )
 }
