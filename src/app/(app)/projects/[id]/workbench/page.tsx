@@ -218,7 +218,7 @@ export default async function WorkbenchPage({
           agentStep="workbench"
           agentMessages={agentMessages}
           header={<WorkbenchHeader project={project} />}
-          footer={<WorkbenchFooter projectId={projectId} furthestStep={project.furthest_step} />}
+          footer={<WorkbenchFooter projectId={projectId} furthestStep={project.furthest_step} activeTab={activeTab} />}
         >
           <WorkbenchTabs projectId={projectId} activeTab={activeTab}>
             {activeTab === 'shots' && <ShotsTab />}

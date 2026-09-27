@@ -12,7 +12,7 @@ export function Rail({ user }: { user?: User }) {
   const pathname = usePathname()
   const { spendThisMonth, creditsSpentThisMonth } = useRailFigures().figures
   const active = pathname === '/dashboard'
-  const usageActive = pathname === '/usage'
+  const usageActive = pathname === '/credits'
   const name = (user?.user_metadata?.full_name as string | undefined)?.trim() || user?.email || 'Account'
   const email = user?.email ?? ''
 

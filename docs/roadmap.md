@@ -5,6 +5,9 @@ are not lost.
 
 ## Known bugs
 
+- **Workbench (Step 2) — narration has no word budget per shot duration.** A 4 × 5s project
+  produced a 46s voiceover. Cap narration per shot at about duration × speaking rate
+  (words/sec in config), in both the Workbench shot generation and the agent paths.
 - **`resolveElement` matches only on current name, so a renamed element gets duplicated on
   regeneration.** `resolveElement` (`src/app/api/projects/[id]/shots/logic.ts`) dedups
   purely by `lower(name)`. If a user renames an element (a character, or the project's
@@ -207,6 +210,8 @@ are not lost.
 - **Step 6 architecture:** cannot be request-response at any timeout (75 clips,
   minutes each). Needs async submit plus webhook or poll; `generations`'
   `external_id` and per-shot rows already support this.
+- **Step 6 must handle storyboard shots longer than the video model's max clip length**
+  (cut, extend, or multiple clips). Storyboard lengths run to 30s regardless of the model.
 - **Step 7:** ffmpeg needs a container service, not Vercel (binary size,
   memory, CPU).
 - **Before Step 7:** finished videos must be served as Supabase signed URLs

@@ -6,7 +6,6 @@ import { loadAgentMessages } from '@/lib/load-agent-messages'
 import { stepIndex } from '@/lib/config/pipeline'
 import { ASPECT_RATIOS, type AspectRatio } from '@/lib/config/enums'
 import { getBalance } from '@/lib/credits/balance'
-import { resolveVideoModel, videoModelMaxSeconds } from '@/lib/config/models'
 import { loadImageStatuses } from '@/app/api/projects/[id]/images/status/logic'
 import { loadExports, type ExportsData } from '@/app/api/projects/[id]/exports/logic'
 import { STATUS_POLL_INTERVAL_MS } from '@/lib/config/storyboard'
@@ -79,17 +78,11 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
     ? (project.aspect_ratio as AspectRatio)
     : '9:16'
 
-  // The retime ceiling is the video model's longest clip; an unresolvable model (null in
-  // production) leaves retime unavailable rather than bounded by a guess.
-  const videoModel = resolveVideoModel(project.video_model)
-  const retimeMaxSec = videoModel ? videoModelMaxSeconds(videoModel) : null
-
   return (
     <StoryboardProvider
       projectId={projectId}
       aspectRatio={aspectRatio}
       readOnly={readOnly}
-      retimeMaxSec={retimeMaxSec}
       initialShots={shots}
       initialStatus={status.data}
       initialMix={{

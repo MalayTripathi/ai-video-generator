@@ -25,7 +25,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
     <RailFiguresProvider initial={railFigures}>
       <div className="flex h-screen">
         <Rail user={user ?? undefined} />
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">{children}</div>
       </div>
     </RailFiguresProvider>
   )

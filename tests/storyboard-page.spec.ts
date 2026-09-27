@@ -293,11 +293,14 @@ test.describe('storyboard page - picture lane', () => {
     // Truncated on the block, whole in the tooltip.
     expect(await text.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true)
     await expect(text).toHaveCSS('text-overflow', 'ellipsis')
-    expect(await first.getAttribute('title')).toBe(`${narration} · 6.0s`)
+    const tooltip = page.getByTestId('narration-tooltip-text')
+    await first.hover()
+    await expect(tooltip).toHaveText(narration)
 
     const second = block(page, ids[1])
     await expect(second.getByTestId('shot-block-text')).toHaveText('Boats crowd a quiet harbour')
-    await expect(second).toHaveAttribute('title', /^Boats crowd a quiet harbour · /)
+    await second.hover()
+    await expect(tooltip).toHaveText('Boats crowd a quiet harbour')
   })
 
   for (const aspectRatio of ['16:9', '9:16', '1:1'] as const) {
@@ -320,6 +323,46 @@ test.describe('storyboard page - picture lane', () => {
       const frame = (await page.getByTestId('inspect-frame').boundingBox())!
       expect(frame.width / frame.height).toBeCloseTo(w / h, 2)
       await expect(page.getByTestId('inspect-sub')).toContainText(`${w} × ${h}`)
+    })
+  }
+
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 2560, height: 900 },
+  ]) {
+    test(`inspect panel at ${viewport.width}×${viewport.height} with a long prompt: the image and both buttons keep their size`, async ({
+      page,
+    }) => {
+      await page.setViewportSize(viewport)
+      const { projectId, ids } = await seed([{ state: 'ready', duration: 8 }, { state: 'ready', duration: 8 }])
+      const longPrompt = Array.from(
+        { length: 40 },
+        (_, i) => `Detail ${i + 1}: warm dawn light across wet stone, scaffolding casting long shadows over the river.`
+      ).join(' ')
+      await admin.from('shots').update({ image_prompt: longPrompt }).eq('id', ids[0])
+      await open(page, projectId)
+      await block(page, ids[0]).click()
+
+      const body = (await page.getByTestId('inspect-body').boundingBox())!
+      const [w, h] = STORYBOARD_IMAGE_SIZES['9:16'].split('x').map(Number)
+      for (const id of ['inspect-frame', 'inspect-regenerate-image', 'inspect-remove']) {
+        const el = page.getByTestId(id)
+        await el.scrollIntoViewIfNeeded()
+        await expect(el).toBeVisible()
+        const box = (await el.boundingBox())!
+        expect(box.height).toBeGreaterThan(0)
+        if (id === 'inspect-frame') {
+          // Full panel width (less the body's padding), at the project's ratio.
+          expect(box.width).toBeGreaterThan(body.width - 40)
+          expect(box.width / box.height).toBeCloseTo(w / h, 2)
+          const img = page.getByTestId('inspect-frame').locator('img')
+          await expect(img).toBeVisible()
+          expect((await img.boundingBox())!.height).toBeCloseTo(box.height, -1)
+        } else {
+          // Natural height, never squeezed.
+          expect(Math.round(box.height)).toBe(32)
+        }
+      }
     })
   }
 

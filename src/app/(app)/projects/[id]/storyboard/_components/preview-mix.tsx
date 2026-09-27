@@ -2,20 +2,30 @@
 
 import { useEffect, useRef, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react'
 import type { AspectRatio } from '@/lib/config/enums'
-import { MIX_STEP_DB, PREVIEW_PLAYER_SIZES } from '@/lib/config/storyboard'
+import { MIX_STEP_DB, PREVIEW_MIX_MIN_WIDTH_PX, PREVIEW_PLAYER_SIZES } from '@/lib/config/storyboard'
 import { formatDb, MIX_RANGES, resolveMix, snapMixDb, type MixColumn } from '@/lib/storyboard/film'
 import { formatTimecode } from '@/lib/storyboard/timeline'
 import { useStoryboard } from './storyboard-context'
 import { usePlayback, usePlaybackEngine } from './playback-context'
 import { FilmPicture, useNowLine } from './film-picture'
 import { PauseIcon, PlayIcon } from './timeline-card'
+import { useElementWidth } from './use-element-width'
 
-/** The player's box for a ratio (canvas 15i). 16:9 fills the section; its height follows the ratio. */
-export function previewBoxStyle(aspectRatio: AspectRatio): CSSProperties {
+// Matches the card's gap-rc-md between the player and the mix.
+const PLAYER_MIX_GAP_PX = 16
+
+/**
+ * The player's box for a ratio (canvas 15b/15i). Fixed, but never wider than its column: a
+ * column narrower than the player shrinks it, keeping the ratio.
+ */
+export function previewBoxStyle(aspectRatio: AspectRatio): CSSProperties & { width: number; height: number } {
   const size = PREVIEW_PLAYER_SIZES[aspectRatio]
-  return size.width !== null && size.height !== null
-    ? { width: size.width, height: size.height }
-    : { width: '100%', aspectRatio: '16 / 9' }
+  return { width: size.width, height: size.height, maxWidth: '100%', aspectRatio: `${size.width} / ${size.height}` }
+}
+
+/** The mix sits beside the player unless the card is too narrow to hold both. */
+export function previewStacks(aspectRatio: AspectRatio, innerWidth: number): boolean {
+  return innerWidth < PREVIEW_PLAYER_SIZES[aspectRatio].width + PLAYER_MIX_GAP_PX + PREVIEW_MIX_MIN_WIDTH_PX
 }
 
 type DbField = Exclude<MixColumn, 'mix_duck_bypass'>
@@ -137,7 +147,10 @@ export function PreviewMix() {
   const { t, playing } = usePlayback()
   const line = useNowLine()
   const player = useRef<HTMLDivElement>(null)
-  const wide = aspectRatio === '16:9'
+  const { ref: cardRef, width: cardWidth } = useElementWidth<HTMLDivElement>()
+  // clientWidth includes the card's 14px padding on each side.
+  const stacked = cardWidth !== null && previewStacks(aspectRatio, cardWidth - 28)
+  const box = previewBoxStyle(aspectRatio)
   const anySet =
     mix.mix_voice_gain_db !== null ||
     mix.mix_music_gain_db !== null ||
@@ -170,13 +183,13 @@ export function PreviewMix() {
         </span>
       </div>
       <div
-        className={`flex items-stretch gap-rc-md rounded-frame border border-border-subtle bg-bg-surface p-[14px] ${wide ? 'flex-col' : 'flex-row'}`}
+        ref={cardRef}
+        data-testid="preview-card"
+        data-layout={stacked ? 'stacked' : 'row'}
+        className={`flex items-stretch gap-rc-md rounded-frame border border-border-subtle bg-bg-surface p-[14px] ${stacked ? 'flex-col' : 'flex-row'}`}
       >
-        <div
-          className="flex flex-none flex-col gap-[9px]"
-          style={wide ? undefined : { width: previewBoxStyle(aspectRatio).width }}
-        >
-          <div ref={player} data-testid="preview-player" style={previewBoxStyle(aspectRatio)}>
+        <div className="flex min-w-0 flex-none flex-col gap-[9px]" style={{ width: box.width, maxWidth: '100%' }}>
+          <div ref={player} data-testid="preview-player" style={{ ...box, height: 'auto' }}>
             <FilmPicture testId="preview-picture" className="h-full w-full rounded-control border border-border-subtle" />
           </div>
           <div className="flex items-center gap-[10px]">

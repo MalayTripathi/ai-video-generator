@@ -225,7 +225,6 @@ export const ShotBlock = memo(function ShotBlock({
       data-selected={selected ? 'true' : 'false'}
       aria-pressed={selected}
       aria-label={`Shot ${number}`}
-      title={`${name} · ${duration}`}
       onClick={() => onSelect(shot.id)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {

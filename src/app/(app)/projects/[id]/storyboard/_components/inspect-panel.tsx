@@ -16,8 +16,6 @@ import { hasPrompt, isEdited } from '../../image_prompts/_components/derive-imag
 import { SaveStatusIndicator } from '../../workbench/_components/save-status-indicator'
 import { useFieldSave } from '../../workbench/_components/use-field-save'
 
-const FRAME_MAX_HEIGHT_PX = 249
-
 function RegenerateIcon() {
   return (
     <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true">
@@ -131,13 +129,15 @@ function InspectBody() {
         </span>
       </div>
 
-      <div className="flex flex-1 flex-col gap-[13px] overflow-y-auto p-rc-md">
+      {/* The body scrolls as a whole; no child may shrink, so a long prompt never squeezes
+          the frame or the buttons. */}
+      <div data-testid="inspect-body" className="flex min-h-0 flex-1 flex-col gap-[13px] overflow-y-auto p-rc-md [&>*]:flex-none">
         <div
           data-testid="inspect-frame"
-          className={`self-center overflow-hidden rounded-control border ${
+          className={`w-full overflow-hidden rounded-control border ${
             stale ? 'border-status-stale-line' : 'border-border-subtle'
           } ${hasImage ? '' : 'flex items-center justify-center border-dashed bg-bg-well'}`}
-          style={{ aspectRatio: `${w} / ${h}`, width: `min(100%, ${(FRAME_MAX_HEIGHT_PX * w) / h}px)` }}
+          style={{ aspectRatio: `${w} / ${h}` }}
         >
           {hasImage ? (
             // eslint-disable-next-line @next/next/no-img-element -- signed, short-lived storage URL

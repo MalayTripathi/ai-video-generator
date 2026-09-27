@@ -16,6 +16,7 @@ import { creditsFor } from '@/lib/config/credits'
 import { getBalance } from '@/lib/credits/balance'
 import { ASPECT_RATIOS, type AspectRatio } from '@/lib/config/enums'
 import type { Tables } from '@/lib/database.types'
+import { signStoryboardImages, storyboardThumbUrl } from '@/app/api/projects/[id]/images/status/logic'
 
 type ElementRow = Pick<Tables<'elements'>, 'id' | 'name' | 'type' | 'status' | 'reference_image_path'>
 type ShotRow = Tables<'shots'> & { shot_elements: { elements: ElementRow | null }[] }
@@ -101,6 +102,12 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
   // ProjectHeader and the shell read the raw rows; the client provider gets only what
   // Step 3 renders.
   const shots = shotRows
+  // Each card shows its Storyboard frame: one batched signing call for the whole page.
+  const frameUrls = await signStoryboardImages(
+    supabase,
+    projectId,
+    shotRows.map((row) => row.image_path)
+  )
   const promptShots: PromptShot[] = shotRows.map((row) => ({
     id: row.id,
     order_index: row.order_index,
@@ -108,6 +115,10 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
     image_prompt: row.image_prompt,
     image_prompt_stale: row.image_prompt_stale,
     image_prompt_edited: row.image_prompt_edited,
+    frame: (() => {
+      const url = storyboardThumbUrl(frameUrls, row.image_path)
+      return url ? { url, stale: row.image_stale } : null
+    })(),
     elements: (row.shot_elements ?? [])
       .map((se) => se.elements)
       .filter((el): el is ElementRow => el !== null)

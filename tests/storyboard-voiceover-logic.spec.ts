@@ -217,7 +217,7 @@ test.describe('fitToVoiceover - tiling, snap and clamp', () => {
     const shots = [shot('a', 0, 'x'), shot('b', 1, 'x'), shot('c', 2, 'x')]
     // a speaks 0.4-2.0, pause, b speaks 3.0-5.0, c speaks 5.5-7.2; audio runs 8.0s.
     const spans = [span('a', 0.4, 2.0, 'x', 0, 1), span('b', 3.0, 5.0, 'x', 2, 3), span('c', 5.5, 7.2, 'x', 4, 5)]
-    const result = fitToVoiceover(spans, shots, 8.0, 10)
+    const result = fitToVoiceover(spans, shots, 8.0)
     expect(result.lengths.map((l) => l.seconds)).toEqual([3.0, 2.5, 2.5])
     expect(result.lengths.reduce((sum, l) => sum + l.seconds, 0)).toBeCloseTo(8.0, 6)
     expect(result.clamped).toEqual([])
@@ -226,29 +226,37 @@ test.describe('fitToVoiceover - tiling, snap and clamp', () => {
   test('boundaries snap to 0.1s, so lengths stay on the grid and still tile the whole read', () => {
     const shots = [shot('a', 0, 'x'), shot('b', 1, 'x'), shot('c', 2, 'x')]
     const spans = [span('a', 0, 1, 'x', 0, 1), span('b', 1.24, 2, 'x', 2, 3), span('c', 2.38, 3, 'x', 4, 5)]
-    const result = fitToVoiceover(spans, shots, 3.42, 10)
+    const result = fitToVoiceover(spans, shots, 3.42)
     expect(result.lengths.map((l) => l.seconds)).toEqual([1.2, 1.2, 1.0])
     expect(result.lengths.reduce((sum, l) => sum + l.seconds, 0)).toBeCloseTo(3.4, 6)
   })
 
-  test('lengths clamp to the minimum and the model’s maximum, and the clamped shots are named', () => {
+  test('uses the true spans, past any video model’s clip limit, with nothing clamped', () => {
+    const shots = [shot('a', 0, 'x'), shot('b', 1, 'x')]
+    const spans = [span('a', 0, 14, 'x', 0, 1), span('b', 14, 20, 'x', 2, 3)]
+    const result = fitToVoiceover(spans, shots, 20)
+    expect(result.lengths.map((l) => l.seconds)).toEqual([14, 6])
+    expect(result.clamped).toEqual([])
+  })
+
+  test('lengths clamp only to the minimum and the 30s maximum, and the clamped shots are named', () => {
     const shots = [shot('a', 0, 'x'), shot('b', 1, 'x'), shot('c', 2, 'x')]
-    const spans = [span('a', 0, 0.3, 'x', 0, 1), span('b', 0.4, 9, 'x', 2, 3), span('c', 9, 9.5, 'x', 4, 5)]
-    const result = fitToVoiceover(spans, shots, 10, 5, 1)
-    expect(result.lengths.map((l) => l.seconds)).toEqual([1, 5, 1])
+    const spans = [span('a', 0, 0.3, 'x', 0, 1), span('b', 0.4, 40, 'x', 2, 3), span('c', 41, 41.5, 'x', 4, 5)]
+    const result = fitToVoiceover(spans, shots, 42)
+    expect(result.lengths.map((l) => l.seconds)).toEqual([1, 30, 1])
     expect(result.clamped.sort()).toEqual(['a', 'b'])
   })
 
   test('only shots whose length changes are written', () => {
     const shots = [shot('a', 0, 'x', { duration_sec: 3 }), shot('b', 1, 'x', { duration_sec: 1 })]
     const spans = [span('a', 0, 2, 'x', 0, 1), span('b', 3, 4, 'x', 2, 3)]
-    const result = fitToVoiceover(spans, shots, 5, 10)
+    const result = fitToVoiceover(spans, shots, 5)
     expect(result.writes).toEqual([{ id: 'b', film_duration_sec: 2 }])
   })
 })
 
 test.describe('fitUnavailableReason', () => {
-  const ok = { hasVoiceover: true, inFlight: false, stale: false, orderDiffers: false, maxSec: 10 }
+  const ok = { hasVoiceover: true, inFlight: false, stale: false, orderDiffers: false }
 
   test('available with a fresh, in-order read', () => {
     expect(fitUnavailableReason(ok)).toBeNull()
@@ -262,10 +270,9 @@ test.describe('fitUnavailableReason', () => {
     expect(fitUnavailableReason({ ...ok, orderDiffers: true })).toMatch(/order differs/)
   })
 
-  test('unavailable with no voiceover, while one is being made, or with no model bound', () => {
+  test('unavailable with no voiceover, or while one is being made', () => {
     expect(fitUnavailableReason({ ...ok, hasVoiceover: false })).not.toBeNull()
     expect(fitUnavailableReason({ ...ok, inFlight: true })).not.toBeNull()
-    expect(fitUnavailableReason({ ...ok, maxSec: null })).not.toBeNull()
   })
 })
 

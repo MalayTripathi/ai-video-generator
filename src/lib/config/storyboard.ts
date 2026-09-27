@@ -65,9 +65,11 @@ export const STORYBOARD_SIGNED_URL_EXPIRES_S = 3600
 // a display figure - nothing times out or settles on it.
 export const IMAGE_ETA_ESTIMATE_MS = 45_000
 
-// Retime (Storyboard B2). The shortest a boundary drag can make a shot; the longest comes
-// from the project's video model (videoModelMaxSeconds in models.ts), never a constant.
+// Retime (Storyboard B2). The shortest and longest a boundary drag or Fit to voiceover can
+// make a shot. The video model's clip limit does not apply here - Step 6 handles a shot
+// longer than one clip.
 export const STORYBOARD_MIN_SHOT_SEC = 1.0
+export const STORYBOARD_MAX_SHOT_SEC = 30
 
 // Retimed lengths snap to this step, on drag and on each keyboard nudge.
 export const RETIME_SNAP_SEC = 0.1
@@ -181,13 +183,18 @@ export const DUCK_RELEASE_SEC = 0.35
 // A slider saves once it has been still this long.
 export const MIX_SAVE_DEBOUNCE_MS = 400
 
-// The Preview player's box per aspect ratio (canvas 15i): 9:16 is 480px tall, 1:1 is
-// 400 × 400, 16:9 takes the full section width (height from the ratio, width null).
-export const PREVIEW_PLAYER_SIZES: Record<AspectRatio, { width: number | null; height: number | null }> = {
+// The Preview player's box per aspect ratio (canvas 15b/15i): 9:16 is 480px tall, 1:1 is
+// 400 × 400. 16:9 departs from 15i's full section width: it is capped at the same 480px
+// height as 9:16, so the mix can sit beside it.
+export const PREVIEW_PLAYER_SIZES: Record<AspectRatio, { width: number; height: number }> = {
   '9:16': { width: 270, height: 480 },
   '1:1': { width: 400, height: 400 },
-  '16:9': { width: null, height: null },
+  '16:9': { width: 853, height: 480 },
 }
+
+// The narrowest the mix panel may be beside the player - the 1:1 case at 1440 in canvas
+// 15i. Narrower than this and the mix stacks below the player instead.
+export const PREVIEW_MIX_MIN_WIDTH_PX = 372
 
 // The mini player's long edge (canvas 15h).
 export const MINI_PLAYER_LONG_EDGE_PX = 240

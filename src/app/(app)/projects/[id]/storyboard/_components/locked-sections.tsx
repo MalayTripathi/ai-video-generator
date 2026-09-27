@@ -30,7 +30,7 @@ export function PreviewLocked({ readiness, aspectRatio }: { readiness: Readiness
       <div
         data-testid="preview-locked-well"
         className="rounded-frame border border-dashed border-border-muted bg-bg-well"
-        style={typeof box.height === 'number' ? { height: box.height } : { aspectRatio: box.aspectRatio }}
+        style={{ height: box.height }}
       />
     </div>
   )

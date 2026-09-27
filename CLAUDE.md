@@ -723,8 +723,8 @@ set while waiting). `claimGeneration`/`persistGenerationPayload`/`settleGenerati
 are the only generation lock; exports lock through `exports_one_active_idx`.
 
 The Storyboard page reads image state only from `loadImageStatuses` (server first
-paint, then the status endpoint, polled only while a frame is in flight) — the one
-place storyboard images are signed; it never calls `router.refresh()`. Each image has
+paint, then the status endpoint, polled only while a frame is in flight); images are
+signed only via `signStoryboardImages`; it never calls `router.refresh()`. Each image has
 a best-effort `{attemptId}_thumb.webp` beside it; readers fall back to the full image.
 
 **`derive_camera` writes a `usage` row but never a `generations` row** —

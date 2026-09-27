@@ -65,9 +65,7 @@ export const MotionBlock = memo(function MotionBlock({
         data-motion={motion}
         aria-pressed={selected}
         aria-label={`Shot ${label}`}
-        title={`${name}${splitAt !== null ? (segment === 'a' ? ' (first part)' : ' (second part)') : ''} · ${length}${
-          motion ? ` · ${MOTION_LABELS[motion]}` : ''
-        }`}
+        data-length={length}
         onClick={(e) => {
           e.stopPropagation()
           onSelect(shot.id, segment)

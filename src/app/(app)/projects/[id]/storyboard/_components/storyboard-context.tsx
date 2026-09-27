@@ -89,7 +89,6 @@ type StoryboardContextValue = {
   // lane, the counters, the total and Continue all read. binnedShots is the bin, oldest first.
   laneShots: StoryboardShot[]
   binnedShots: StoryboardShot[]
-  retimeMaxSec: number | null
   zoomIndex: number
   setZoomIndex: (index: number) => void
   retime: (shotId: string, seconds: number) => void
@@ -170,7 +169,6 @@ export function StoryboardProvider({
   projectId,
   aspectRatio,
   readOnly,
-  retimeMaxSec,
   initialShots,
   initialStatus,
   initialMix,
@@ -180,7 +178,6 @@ export function StoryboardProvider({
   projectId: string
   aspectRatio: AspectRatio
   readOnly: boolean
-  retimeMaxSec: number | null
   initialShots: StoryboardShot[]
   initialStatus: ImageStatusData
   initialMix: MixState
@@ -324,7 +321,6 @@ export function StoryboardProvider({
     inFlight: voiceover.state === 'generating',
     stale: staleness?.stale ?? false,
     orderDiffers,
-    maxSec: retimeMaxSec,
   })
   const [fitClamped, setFitClamped] = useState<number[] | null>(null)
 
@@ -332,15 +328,15 @@ export function StoryboardProvider({
   // server recomputes from the stored spans, never from these lengths). Free.
   const currentRead = voiceover.current
   const fitToVoiceover = useCallback(() => {
-    if (readOnly || fitReason || !currentRead || retimeMaxSec === null) return
-    const result = fitLengths(currentRead.spans, shotsRef.current, currentRead.durationSec, retimeMaxSec)
+    if (readOnly || fitReason || !currentRead) return
+    const result = fitLengths(currentRead.spans, shotsRef.current, currentRead.durationSec)
     const byId = new Map(shotsRef.current.map((s) => [s.id, s]))
     setFitClamped(result.clamped.length > 0 ? result.clamped.map((id) => (byId.get(id)?.order_index ?? 0) + 1) : null)
     if (result.writes.length === 0) return
     void commitEdit('film_duration_sec', new Map(result.writes.map((w) => [w.id, w.film_duration_sec])), () =>
       fitToVoiceoverAction(projectId)
     )
-  }, [projectId, readOnly, fitReason, currentRead, retimeMaxSec, commitEdit])
+  }, [projectId, readOnly, fitReason, currentRead, commitEdit])
 
   const laneShots = useMemo(() => orderLane(shots), [shots])
   const binnedShots = useMemo(
@@ -665,7 +661,6 @@ export function StoryboardProvider({
       onPromptSaved,
       laneShots,
       binnedShots,
-      retimeMaxSec,
       zoomIndex,
       setZoomIndex,
       retime,
@@ -721,7 +716,6 @@ export function StoryboardProvider({
       onPromptSaved,
       laneShots,
       binnedShots,
-      retimeMaxSec,
       zoomIndex,
       retime,
       reorder,

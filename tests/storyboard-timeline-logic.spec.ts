@@ -1,5 +1,10 @@
 import { test, expect } from '@playwright/test'
-import { IMAGE_ETA_ESTIMATE_MS, RETIME_SNAP_SEC, STORYBOARD_MIN_SHOT_SEC } from '../src/lib/config/storyboard'
+import {
+  IMAGE_ETA_ESTIMATE_MS,
+  RETIME_SNAP_SEC,
+  STORYBOARD_MAX_SHOT_SEC,
+  STORYBOARD_MIN_SHOT_SEC,
+} from '../src/lib/config/storyboard'
 import { VIDEO_MODELS, videoModelMaxSeconds } from '../src/lib/config/models'
 import {
   blockTier,
@@ -201,12 +206,15 @@ function applyWrites(shots: LaneShot[], writes: { id: string; film_order: number
 }
 
 test.describe('retime bounds and snap', () => {
-  test('the floor is STORYBOARD_MIN_SHOT_SEC and the ceiling is the model maximum', () => {
-    const bounds = retimeBounds(5.4, 3)!
-    expect(bounds).toEqual({ min: STORYBOARD_MIN_SHOT_SEC, max: 5.4 })
+  test('the floor is STORYBOARD_MIN_SHOT_SEC and the ceiling STORYBOARD_MAX_SHOT_SEC, never the video model', () => {
+    const bounds = retimeBounds(3)
+    expect(bounds).toEqual({ min: STORYBOARD_MIN_SHOT_SEC, max: STORYBOARD_MAX_SHOT_SEC })
     expect(STORYBOARD_MIN_SHOT_SEC).toBe(1)
+    expect(STORYBOARD_MAX_SHOT_SEC).toBe(30)
     expect(snapRetime(0.2, bounds)).toBe(1)
-    expect(snapRetime(9, bounds)).toBe(5.4)
+    // Past Kling 2.1's 10s clip limit, up to the storyboard's own ceiling.
+    expect(snapRetime(14.2, bounds)).toBe(14.2)
+    expect(snapRetime(45, bounds)).toBe(30)
   })
 
   test('a discrete model caps at its longest allowed value; a continuous one at durationMax', () => {
@@ -215,25 +223,22 @@ test.describe('retime bounds and snap', () => {
   })
 
   test('a shot already past the ceiling (or under the floor) is never forced back by the bounds', () => {
-    expect(retimeBounds(5.4, 6)).toEqual({ min: 1, max: 6 })
-    expect(retimeBounds(5.4, 0.8)).toEqual({ min: 0.8, max: 5.4 })
+    expect(retimeBounds(32)).toEqual({ min: 1, max: 32 })
+    expect(retimeBounds(0.8)).toEqual({ min: 0.8, max: 30 })
     // A shot with no length yet gets the plain bounds.
-    expect(retimeBounds(10, null)).toEqual({ min: 1, max: 10 })
-  })
-
-  test('an unknown model leaves retime unavailable', () => {
-    expect(retimeBounds(null, 5)).toBeNull()
+    expect(retimeBounds(null)).toEqual({ min: 1, max: 30 })
   })
 
   test('snaps to 0.1s', () => {
-    const bounds = retimeBounds(10, 5)!
+    const bounds = retimeBounds(5)
     expect(snapRetime(4.5321, bounds)).toBe(4.5)
     expect(snapRetime(5.26, bounds)).toBe(5.3)
     expect(snapRetime(4.5 + RETIME_SNAP_SEC, bounds)).toBe(4.6)
     expect(isRetimeAllowed(5.2, bounds)).toBe(true)
     expect(isRetimeAllowed(5.25, bounds)).toBe(false)
     expect(isRetimeAllowed(0.9, bounds)).toBe(false)
-    expect(isRetimeAllowed(10.1, bounds)).toBe(false)
+    expect(isRetimeAllowed(10.1, bounds)).toBe(true)
+    expect(isRetimeAllowed(30.1, bounds)).toBe(false)
   })
 })
 

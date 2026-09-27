@@ -4,7 +4,7 @@ import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import type { AspectRatio } from '../src/lib/config/enums'
-import { MIX_STEP_DB, MIX_VOICE_GAIN_DB } from '../src/lib/config/storyboard'
+import { MIX_STEP_DB, MIX_VOICE_GAIN_DB, PREVIEW_MIX_MIN_WIDTH_PX, PREVIEW_PLAYER_SIZES } from '../src/lib/config/storyboard'
 
 // Storyboard E: the transport, the shared playhead, Preview & mix and the mini player
 // (canvas 15b / 15h / 15i). Every save is a real server action against a real row; no
@@ -225,18 +225,33 @@ test.describe('storyboard preview - mini player', () => {
 test.describe('storyboard preview - player size by ratio', () => {
   test.use({ viewport: { width: 1920, height: 1200 } })
 
-  test('1:1 is 400 × 400 and 16:9 fills the section with the mix below', async ({ page }) => {
-    const square = await seed({ aspectRatio: '1:1' })
-    await open(page, square.projectId)
-    const a = (await page.getByTestId('preview-player').boundingBox())!
-    expect([Math.round(a.width), Math.round(a.height)]).toEqual([400, 400])
+  // Canvas 15b / 15i: 9:16 is 270 × 480 and 1:1 400 × 400. 16:9 is capped at the same 480px
+  // height (853 × 480) rather than 15i's full section width. The mix sits beside the player
+  // whenever the card can hold both.
+  for (const [ratio, size] of Object.entries(PREVIEW_PLAYER_SIZES) as [AspectRatio, { width: number; height: number }][]) {
+    test(`${ratio} is ${size.width} × ${size.height} with the mix beside it`, async ({ page }) => {
+      const { projectId } = await seed({ aspectRatio: ratio })
+      await open(page, projectId)
+      const box = (await page.getByTestId('preview-player').boundingBox())!
+      expect([Math.round(box.width), Math.round(box.height)]).toEqual([size.width, size.height])
+      await expect(page.getByTestId('preview-card')).toHaveAttribute('data-layout', 'row')
+      const slider = (await page.getByTestId('mix-slider-mix_voice_gain_db').boundingBox())!
+      expect(slider.x).toBeGreaterThan(box.x + box.width)
+      expect(slider.width).toBeGreaterThan(0)
+    })
+  }
 
-    const wide = await seed({ aspectRatio: '16:9' })
-    await open(page, wide.projectId)
-    const b = (await page.getByTestId('preview-player').boundingBox())!
-    expect(b.width / b.height).toBeCloseTo(16 / 9, 1)
+  test('16:9 stacks the mix below the player when the column is too narrow for both', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 1000 })
+    const { projectId } = await seed({ aspectRatio: '16:9' })
+    await open(page, projectId)
+    const card = (await page.getByTestId('preview-card').boundingBox())!
+    expect(card.width - 30).toBeLessThan(PREVIEW_PLAYER_SIZES['16:9'].width + 16 + PREVIEW_MIX_MIN_WIDTH_PX)
+    await expect(page.getByTestId('preview-card')).toHaveAttribute('data-layout', 'stacked')
+    const box = (await page.getByTestId('preview-player').boundingBox())!
+    expect(box.width / box.height).toBeCloseTo(16 / 9, 1)
     const slider = (await page.getByTestId('mix-slider-mix_voice_gain_db').boundingBox())!
-    expect(slider.y).toBeGreaterThan(b.y + b.height)
+    expect(slider.y).toBeGreaterThan(box.y + box.height)
   })
 })
 

@@ -198,8 +198,11 @@ export function ImagePromptsProvider({
       prev.map((s) => {
         const row = byId.get(s.id)
         if (!row) return s
+        // A changed prompt marks the drawn frame stale (the server sets image_stale too).
+        const changed = row.image_prompt !== s.image_prompt
         return {
           ...s,
+          frame: s.frame && changed ? { ...s.frame, stale: true } : s.frame,
           image_prompt: row.image_prompt,
           image_prompt_stale: row.image_prompt_stale,
           image_prompt_edited: row.image_prompt_edited,

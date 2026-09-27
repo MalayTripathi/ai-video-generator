@@ -1,6 +1,6 @@
 import type { ImageState } from './image-state'
 import type { AspectRatio } from '@/lib/config/enums'
-import { IMAGE_ETA_ESTIMATE_MS, RETIME_SNAP_SEC, STORYBOARD_IMAGE_SIZES, STORYBOARD_MIN_SHOT_SEC } from '@/lib/config/storyboard'
+import { IMAGE_ETA_ESTIMATE_MS, RETIME_SNAP_SEC, STORYBOARD_IMAGE_SIZES, STORYBOARD_MAX_SHOT_SEC, STORYBOARD_MIN_SHOT_SEC } from '@/lib/config/storyboard'
 
 // Pure geometry and copy rules for the Storyboard timeline (canvas 15a/15c). No React, so
 // every rule here is testable on its own.
@@ -95,16 +95,14 @@ export function orderDiffersFromScript<T extends FilmOrdered & Binnable & { id: 
 
 export type RetimeBounds = { min: number; max: number }
 
-// The range a retime may set. The floor is STORYBOARD_MIN_SHOT_SEC and the ceiling the
-// video model's longest clip, each widened to the shot's committed length when that
-// already sits outside - a nudge never forces a shot shorter (or longer) than it is. Null
-// when the model is unknown: retime is then unavailable rather than bounded by a guess.
-export function retimeBounds(modelMaxSec: number | null, committedSec: number | null): RetimeBounds | null {
-  if (modelMaxSec === null) return null
+// The range a retime may set: STORYBOARD_MIN_SHOT_SEC to STORYBOARD_MAX_SHOT_SEC, each
+// widened to the shot's committed length when that already sits outside - a nudge never
+// forces a shot shorter (or longer) than it is.
+export function retimeBounds(committedSec: number | null): RetimeBounds {
   const committed = committedSec !== null && committedSec > 0 ? committedSec : null
   return {
     min: committed === null ? STORYBOARD_MIN_SHOT_SEC : Math.min(STORYBOARD_MIN_SHOT_SEC, committed),
-    max: committed === null ? modelMaxSec : Math.max(modelMaxSec, committed),
+    max: committed === null ? STORYBOARD_MAX_SHOT_SEC : Math.max(STORYBOARD_MAX_SHOT_SEC, committed),
   }
 }
 

@@ -1,4 +1,4 @@
-import { RETIME_SNAP_SEC, STORYBOARD_MIN_SHOT_SEC } from '@/lib/config/storyboard'
+import { RETIME_SNAP_SEC, STORYBOARD_MAX_SHOT_SEC, STORYBOARD_MIN_SHOT_SEC } from '@/lib/config/storyboard'
 import { filmDuration, filmOrdered, filmPosition, laneShots } from './timeline'
 
 // Pure rules for the Storyboard's voiceover (canvas 15f / 15c c): the script a read is made
@@ -342,7 +342,7 @@ export function fitToVoiceover(
   spans: readonly VoiceoverSpan[],
   shots: readonly FitShot[],
   audioSec: number,
-  maxSec: number,
+  maxSec: number = STORYBOARD_MAX_SHOT_SEC,
   minSec: number = STORYBOARD_MIN_SHOT_SEC
 ): FitResult {
   const lane = laneShots(shots)
@@ -387,13 +387,11 @@ export function fitUnavailableReason(params: {
   inFlight: boolean
   stale: boolean
   orderDiffers: boolean
-  maxSec: number | null
 }): string | null {
   if (params.inFlight) return 'Wait for the voiceover to finish.'
   if (!params.hasVoiceover) return 'Generate or upload a voiceover first.'
   if (params.stale) return 'The voiceover is out of date. Regenerate it first.'
   if (params.orderDiffers) return 'Picture order differs from the voiceover. Restore script order first.'
-  if (params.maxSec === null) return 'Shot lengths can’t be set for this video model.'
   return null
 }
 

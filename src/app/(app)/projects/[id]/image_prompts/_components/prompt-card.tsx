@@ -64,12 +64,43 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
       aria-busy={busy}
       className={`grid flex-none grid-cols-[auto_1fr] gap-rc-sm rounded-frame border bg-bg-canvas p-[14px_16px] ${borderClass}`}
     >
-      <div
-        className="flex items-center justify-center rounded-control border border-border-subtle bg-bg-inset font-mono text-mono text-text-quiet"
-        style={{ width: plate.w, height: plate.h }}
-      >
-        {aspectRatio}
-      </div>
+      {shot.frame ? (
+        // The shot's Storyboard frame, display only. Dimmed with a Stale chip once a later
+        // edit has made it out of date.
+        <div
+          data-testid="prompt-frame"
+          data-stale={shot.frame.stale ? 'true' : 'false'}
+          className={`relative overflow-hidden rounded-control border ${
+            shot.frame.stale ? 'border-status-stale-line' : 'border-border-subtle'
+          }`}
+          style={{ width: plate.w, height: plate.h }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element -- signed, short-lived storage URL */}
+          <img
+            src={shot.frame.url}
+            alt={`Shot ${shot.order_index + 1} storyboard frame`}
+            loading="lazy"
+            decoding="async"
+            className={`block h-full w-full object-cover ${shot.frame.stale ? 'opacity-50' : ''}`}
+          />
+          {shot.frame.stale && (
+            <span
+              data-testid="prompt-frame-stale"
+              className="absolute left-[5px] top-[5px] rounded-badge border border-status-stale-line bg-status-stale-bg px-[5px] text-chip font-medium uppercase tracking-label text-status-stale-fg"
+            >
+              Stale
+            </span>
+          )}
+        </div>
+      ) : (
+        <div
+          data-testid="prompt-frame-placeholder"
+          className="flex items-center justify-center rounded-control border border-border-subtle bg-bg-inset font-mono text-mono text-text-quiet"
+          style={{ width: plate.w, height: plate.h }}
+        >
+          {aspectRatio}
+        </div>
+      )}
 
       <div className={`flex min-w-0 flex-col gap-[9px] ${busy ? 'opacity-[0.72]' : ''}`}>
         <div className="flex min-w-0 items-center gap-[9px]">
@@ -129,7 +160,16 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
           </div>
         ) : (
           <div className="flex flex-col gap-[5px]">
-            <PromptEditor shotId={shot.id} value={shot.image_prompt ?? ''} run={save.run} missing={missing} onSaved={updateShotLocal} />
+            <PromptEditor
+              shotId={shot.id}
+              value={shot.image_prompt ?? ''}
+              run={save.run}
+              missing={missing}
+              // A saved hand edit marks the drawn frame stale (the action sets image_stale).
+              onSaved={(id, patch) =>
+                updateShotLocal(id, shot.frame ? { ...patch, frame: { ...shot.frame, stale: true } } : patch)
+              }
+            />
             {save.status === 'failed' && save.error && (
               <span className="text-meta text-status-failed-fg">{save.error}</span>
             )}

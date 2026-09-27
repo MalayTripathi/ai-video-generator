@@ -76,6 +76,43 @@ export type ImageStatusResult =
   | { ok: false; status: 404 | 500; error: string }
 
 /**
+ * ONE batched signing call for storyboard artifacts: each image path plus its best-effort
+ * `{attemptId}_thumb.webp`, and any extra paths (the voiceover). A missing thumbnail comes
+ * back as a per-entry error - the expected fallback, not a failure - so it is simply absent
+ * from the map; readers fall back to the full image. A failed batch logs and returns empty.
+ */
+export async function signStoryboardImages(
+  supabase: SupabaseServerClient,
+  projectId: string,
+  imagePaths: readonly (string | null)[],
+  extraPaths: readonly string[] = []
+): Promise<Map<string, string>> {
+  const paths = [...extraPaths]
+  for (const path of imagePaths) {
+    if (path) paths.push(path, storyboardThumbPath(path))
+  }
+  const urlByPath = new Map<string, string>()
+  if (paths.length === 0) return urlByPath
+  const { data: signed, error } = await supabase.storage
+    .from('artifacts')
+    .createSignedUrls(paths, STORYBOARD_SIGNED_URL_EXPIRES_S)
+  if (error) {
+    console.error(`[images/status] batch signing failed for project ${projectId}:`, error.message)
+    return urlByPath
+  }
+  for (const entry of signed ?? []) {
+    if (!entry.error && entry.signedUrl && entry.path) urlByPath.set(entry.path, entry.signedUrl)
+  }
+  return urlByPath
+}
+
+/** The thumbnail's signed URL for an image, falling back to the full image's. */
+export function storyboardThumbUrl(urlByPath: Map<string, string>, imagePath: string | null): string | null {
+  if (!imagePath) return null
+  return urlByPath.get(storyboardThumbPath(imagePath)) ?? urlByPath.get(imagePath) ?? null
+}
+
+/**
  * Per-shot storyboard image state for one project, cheap enough to poll: two narrow
  * selects, a pure derivation, ONE batched signing call for every full image and thumbnail,
  * and the balance the case-2 banner needs. imagePath is present for every state, so a
@@ -123,26 +160,12 @@ export async function loadImageStatuses(params: {
   if (voiceoverClaimsResult.error) return { ok: false, status: 500, error: voiceoverClaimsResult.error.message }
   const shotRows = shotsResult.data ?? []
 
-  const paths: string[] = []
-  if (project.audio_path) paths.push(project.audio_path)
-  for (const shot of shotRows) {
-    if (shot.image_path) paths.push(shot.image_path, storyboardThumbPath(shot.image_path))
-  }
-  const urlByPath = new Map<string, string>()
-  if (paths.length > 0) {
-    const { data: signed, error: signError } = await supabase.storage
-      .from('artifacts')
-      .createSignedUrls(paths, STORYBOARD_SIGNED_URL_EXPIRES_S)
-    if (signError) {
-      console.error(`[images/status] batch signing failed for project ${projectId}:`, signError.message)
-    } else {
-      // A thumbnail that was never written comes back as a per-entry error - that's the
-      // expected fallback case, not a failure worth logging.
-      for (const entry of signed ?? []) {
-        if (!entry.error && entry.signedUrl && entry.path) urlByPath.set(entry.path, entry.signedUrl)
-      }
-    }
-  }
+  const urlByPath = await signStoryboardImages(
+    supabase,
+    projectId,
+    shotRows.map((shot) => shot.image_path),
+    project.audio_path ? [project.audio_path] : []
+  )
 
   const claimByShot = new Map((claimsResult.data ?? []).map((row) => [row.shot_id, row]))
   const now = Date.now()

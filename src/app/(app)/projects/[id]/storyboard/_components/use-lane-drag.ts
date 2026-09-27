@@ -20,7 +20,6 @@ export type LaneDragInputs = {
   layout: LaneLayout | null
   laneShots: StoryboardShot[]
   totalSeconds: number
-  retimeMaxSec: number | null
   readOnly: boolean
   retime: (shotId: string, seconds: number) => void
   reorder: (shotId: string, toLaneIndex: number) => void
@@ -265,7 +264,7 @@ export function useLaneDrag({
       if (grip) {
         const index = slots.findIndex((s) => s.dataset.shotId === grip.dataset.shotId)
         const shot = inp.laneShots[index]
-        const bounds = shot ? retimeBounds(inp.retimeMaxSec, filmDuration(shot)) : null
+        const bounds = shot ? retimeBounds(filmDuration(shot)) : null
         if (!shot || !bounds || inp.layout.pxPerSecond <= 0) return
         e.preventDefault()
         grip.focus()

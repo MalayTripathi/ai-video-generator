@@ -2,7 +2,6 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { stepIndex } from '@/lib/config/pipeline'
-import { resolveVideoModel, videoModelMaxSeconds } from '@/lib/config/models'
 import { filmDuration, filmSeconds, isRetimeAllowed, retimeBounds } from '@/lib/storyboard/timeline'
 import type { Motion, Transition } from '@/lib/config/enums'
 import { isSplitAllowed, parseMotion, parseTransition } from '@/lib/storyboard/motion'
@@ -26,7 +25,7 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 // advanceStep - saving is not advancing.
 export type TimelineEditResult = { success: true; unchanged?: true } | { success: false; error: string }
 
-type EditableProject = { id: string; video_model: string | null }
+type EditableProject = { id: string }
 
 // The project, if this user owns it and its Storyboard is still editable (the edit-lock
 // closes once the next step has started, as the page's readOnly does).
@@ -37,20 +36,13 @@ async function editableProject(
 ): Promise<EditableProject | { error: string }> {
   const { data: project } = await supabase
     .from('projects')
-    .select('id, video_model, furthest_step')
+    .select('id, furthest_step')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
   if (!project) return { error: 'Project not found' }
   if (project.furthest_step >= stepIndex('video_prompts')) return { error: 'The storyboard is locked' }
-  return { id: project.id, video_model: project.video_model }
-}
-
-// resolveVideoModel throws outside production for an unregistered model (a missing
-// registry entry should fail loudly) and is null in production - retime is then refused.
-function modelMaxSeconds(videoModel: string | null): number | null {
-  const config = resolveVideoModel(videoModel)
-  return config ? videoModelMaxSeconds(config) : null
+  return { id: project.id }
 }
 
 export async function saveFilmDurationForUser(
@@ -73,9 +65,7 @@ export async function saveFilmDurationForUser(
   if (!shot) return { success: false, error: 'Shot not found' }
 
   const committed = filmDuration(shot)
-  const bounds = retimeBounds(modelMaxSeconds(project.video_model), committed)
-  if (!bounds) return { success: false, error: 'Retime is unavailable for this video model' }
-  if (!isRetimeAllowed(seconds, bounds)) return { success: false, error: 'That length is outside what this model allows' }
+  if (!isRetimeAllowed(seconds, retimeBounds(committed))) return { success: false, error: 'That length is outside the allowed range' }
   if (seconds === committed) return { success: true, unchanged: true }
 
   const { error } = await supabase
@@ -197,18 +187,16 @@ export async function fitToVoiceoverForUser(
     .eq('project_id', projectId)
   if (shotsError) return { success: false, error: shotsError.message }
 
-  const maxSec = modelMaxSeconds(project.video_model)
   const hasVoiceover = !!vo?.audio_path && spans !== null
   const reason = fitUnavailableReason({
     hasVoiceover,
     inFlight: false,
     stale: hasVoiceover && voiceoverStaleness(spans!, shots ?? []).stale,
     orderDiffers: hasVoiceover && voiceoverOrderDiffers(spans!, shots ?? []),
-    maxSec,
   })
   if (reason) return { success: false, error: reason }
 
-  const result = fitLengths(spans!, shots ?? [], vo!.total_duration_sec ?? 0, maxSec!)
+  const result = fitLengths(spans!, shots ?? [], vo!.total_duration_sec ?? 0)
   const updatedAt = new Date().toISOString()
   for (const w of result.writes) {
     const { error } = await supabase

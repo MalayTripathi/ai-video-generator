@@ -421,6 +421,35 @@ test.describe('voiceover - Fit to voiceover (server)', () => {
     const refused = await fitToVoiceoverForUser(admin, primary.user.id, projectId)
     expect(refused).toMatchObject({ success: false })
   })
+
+  test('uses the true spans, past the video model’s clip limit, clamping only at 30s', async () => {
+    // mochi-1 clips top out at 5.4s; the storyboard ignores that.
+    const projectId = await seedProject(primary.user.id)
+    const narration = ['The river rises.', 'The city wakes.', 'The night falls.']
+    const shotIds = await seedShots(projectId, narration)
+    const bounds = [0, 14, 20, 60]
+    await admin
+      .from('projects')
+      .update({
+        audio_path: `${primary.user.id}/${projectId}/voiceover/long.mp3`,
+        total_duration_sec: 60,
+        voiceover_spans: shotIds.map((shotId, i) => ({
+          shotId,
+          from: 0,
+          to: narration[i].length,
+          text: narration[i],
+          startSec: bounds[i],
+          endSec: bounds[i + 1],
+        })),
+      })
+      .eq('id', projectId)
+
+    const fit = await fitToVoiceoverForUser(admin, primary.user.id, projectId)
+    expect(fit).toMatchObject({ success: true, clamped: [shotIds[2]] })
+    const { data: shots } = await admin.from('shots').select('id, film_duration_sec').in('id', shotIds)
+    const byId = new Map((shots ?? []).map((r) => [r.id, r.film_duration_sec]))
+    expect(shotIds.map((id) => byId.get(id))).toEqual([14, 6, 30])
+  })
 })
 
 test.describe('voiceover - status derivation', () => {

@@ -1,12 +1,14 @@
 'use client'
 
-import { memo, useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react'
+import { memo, useCallback, useLayoutEffect, useRef, type KeyboardEvent, type RefObject } from 'react'
 import {
   FIT_COLLAPSE_BREAKPOINT_PX,
   RETIME_SNAP_SEC,
   STORYBOARD_ZOOM_STEPS,
 } from '@/lib/config/storyboard'
 import { speechBars } from '@/lib/storyboard/voiceover'
+import { MOTION_LABELS } from '@/lib/motion-labels'
+import type { Motion } from '@/lib/config/enums'
 import {
   blockTier,
   filmDuration,
@@ -24,7 +26,8 @@ import {
 } from '@/lib/storyboard/timeline'
 import { FORCED_CUT_REASON, type ResolvedJoin } from '@/lib/storyboard/motion'
 import { imagePrice, useStoryboard, type TimelineMode } from './storyboard-context'
-import { ShotBlock } from './shot-block'
+import { blockText, formatSeconds, ShotBlock } from './shot-block'
+import { NarrationTooltip, useNarrationTooltip } from './narration-tooltip'
 import { MotionBlock } from './motion-block'
 import type { MotionSegment } from '../actions'
 import { BinControl } from './bin-control'
@@ -33,20 +36,7 @@ import { Playhead, type PlayheadHandle } from './playhead'
 import { usePlayback, usePlaybackEngine } from './playback-context'
 import { useLaneDrag } from './use-lane-drag'
 import { useNow } from './use-now'
-
-function useElementWidth<T extends HTMLElement>() {
-  const ref = useRef<T>(null)
-  const [width, setWidth] = useState<number | null>(null)
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    setWidth(el.clientWidth)
-    const observer = new ResizeObserver(() => setWidth(el.clientWidth))
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [])
-  return { ref, width }
-}
+import { useElementWidth } from './use-element-width'
 
 // A boundary between two shots, or the end handle after the last. Dragging it (use-lane-
 // drag) or pressing ←/→ while it has focus sets the length of the shot on its left.
@@ -369,7 +359,6 @@ export function TimelineCard() {
     generate,
     aspectRatio,
     zoomIndex,
-    retimeMaxSec,
     retime,
     reorder,
     setBinned,
@@ -405,7 +394,7 @@ export function TimelineCard() {
 
   const { onPointerDown, consumeClick } = useLaneDrag({
     // Boundary drags and reordering belong to Retime; Motion mode starts neither.
-    inputs: { layout, laneShots, totalSeconds: total, retimeMaxSec, readOnly: readOnly || motionMode, retime, reorder },
+    inputs: { layout, laneShots, totalSeconds: total, readOnly: readOnly || motionMode, retime, reorder },
     scrollerRef,
     tooltipRef,
     totalRef,
@@ -438,17 +427,38 @@ export function TimelineCard() {
     [selectSegment]
   )
   const onMoveSplit = useCallback((shotId: string, at: number) => setSplit(shotId, at), [setSplit])
+
+  // The hovered block's whole narration (or its visual description), with its length - and
+  // in Motion mode the hovered segment's length and motion - on a second line.
+  const tipFor = useCallback((el: HTMLElement) => {
+    const shot = laneRef.current.find((s) => s.id === el.dataset.shotId)
+    if (!shot) return null
+    const text = blockText(shot)
+    if (el.dataset.testid !== 'motion-segment') {
+      return { key: shot.id, text, detail: formatSeconds(filmDuration(shot)) }
+    }
+    const split = el.closest<HTMLElement>('[data-testid="shot-block"]')?.dataset.split !== undefined
+    const segment = el.dataset.segment ?? 'a'
+    const motion = el.dataset.motion as Motion | undefined
+    const detail = [
+      split ? (segment === 'a' ? 'First part' : 'Second part') : null,
+      el.dataset.length ?? null,
+      motion ? MOTION_LABELS[motion] : null,
+    ]
+      .filter(Boolean)
+      .join(' · ')
+    return { key: `${shot.id}:${segment}`, text, detail }
+  }, [])
+  const narration = useNarrationTooltip(tipFor)
   const joinByShot = new Map(joins.map((j) => [j.shotId, j]))
   const onNudge = useCallback(
     (shotId: string, direction: 1 | -1) => {
       const shot = laneRef.current.find((s) => s.id === shotId)
       if (!shot) return
       const committed = filmDuration(shot)
-      const bounds = retimeBounds(retimeMaxSec, committed)
-      if (!bounds) return
-      retime(shotId, snapRetime((committed ?? 0) + direction * RETIME_SNAP_SEC, bounds))
+      retime(shotId, snapRetime((committed ?? 0) + direction * RETIME_SNAP_SEC, retimeBounds(committed)))
     },
-    [retime, retimeMaxSec]
+    [retime]
   )
 
   return (
@@ -513,12 +523,18 @@ export function TimelineCard() {
               className="relative flex h-[62px] select-none items-stretch"
               data-testid="picture-lane"
               data-layout={layout ? 'measured' : 'pending'}
-              onPointerDown={onPointerDown}
+              onPointerDown={(e) => {
+                narration.hide()
+                onPointerDown(e)
+              }}
+              onPointerOver={narration.track}
+              onPointerMove={narration.track}
+              onPointerLeave={narration.hide}
             >
               {laneShots.map((shot, i) => {
                 const last = i === laneShots.length - 1
                 const seconds = filmSeconds(shot)
-                const bounds = retimeBounds(retimeMaxSec, filmDuration(shot))
+                const bounds = retimeBounds(filmDuration(shot))
                 const join = joinByShot.get(shot.id)
                 const grip = motionMode ? (
                   join ? (
@@ -535,8 +551,8 @@ export function TimelineCard() {
                     shotId={shot.id}
                     number={shot.order_index + 1}
                     seconds={seconds}
-                    min={readOnly ? null : (bounds?.min ?? null)}
-                    max={readOnly ? null : (bounds?.max ?? null)}
+                    min={readOnly ? null : bounds.min}
+                    max={readOnly ? null : bounds.max}
                     end={last}
                     onNudge={onNudge}
                   />
@@ -597,6 +613,8 @@ export function TimelineCard() {
                 className="pointer-events-none absolute top-[-30px] z-20 -translate-x-1/2 whitespace-nowrap rounded-badge bg-text-primary px-[6px] py-[2px] font-mono text-mono text-bg-canvas"
               />
             </div>
+
+            <NarrationTooltip shown={narration.shown} />
 
             <VoiceLane totalSeconds={total} />
 
