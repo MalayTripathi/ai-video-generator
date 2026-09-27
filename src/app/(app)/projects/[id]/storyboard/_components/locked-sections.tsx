@@ -44,30 +44,32 @@ function ExportChevron() {
   )
 }
 
-// static until export - the collapsed settings row
-function ExportSettingsRow() {
+// The collapsed settings row while Export is locked (canvas 15a): the summary is the
+// project's real settings.
+function ExportSettingsRow({ summary }: { summary: string }) {
   return (
-    <div className="flex cursor-pointer items-center gap-[12px] rounded-frame border border-border-subtle bg-bg-canvas p-[13px_15px] hover:border-border-strong">
+    <div className="flex items-center gap-[12px] rounded-frame border border-border-subtle bg-bg-canvas p-[13px_15px]">
       <ExportChevron />
       <span className="flex-none text-ui font-medium">Export settings</span>
-      <span className="flex-1 text-meta text-text-tertiary">Alternate motion · Dissolve · Captions off · Streaming loudness</span>
+      <span data-testid="export-summary" className="flex-1 text-meta text-text-tertiary">
+        {summary}
+      </span>
       <span className="text-meta text-text-quiet">locked</span>
     </div>
   )
 }
 
 // Export keeps its summary line while locked (canvas 15a).
-export function ExportLocked({ readiness }: { readiness: Readiness }) {
-  const allReady = lockedReason(readiness) === null
+export function ExportLocked({ summary }: { summary: string }) {
   return (
     <div data-testid="export-locked" className="flex flex-none flex-col gap-[12px] opacity-[0.72]">
       <div className="flex items-baseline gap-[12px]">
         <span className="text-screen font-medium tracking-snug text-text-tertiary">Export</span>
         <span className="flex-1 text-meta text-text-tertiary">
-          {allReady ? 'Not available yet.' : 'Locked until every frame is ready.'}
+          Locked until every frame is ready.
         </span>
       </div>
-      <ExportSettingsRow />
+      <ExportSettingsRow summary={summary} />
     </div>
   )
 }

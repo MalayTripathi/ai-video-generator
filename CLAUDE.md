@@ -525,8 +525,8 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   logged and swallowed, never rethrown.
 
 ## Database
-Tables: `projects`, `shots`, `elements`, `shot_elements`, `messages`,
-`generations`, `usage`, `shot_dialogue`, `credit_ledger`. All RLS-protected. Two tables
+Tables: `projects`, `shots`, `elements`, `shot_elements`, `messages`, `generations`,
+`usage`, `shot_dialogue`, `credit_ledger`, `exports`. All RLS-protected. Two tables
 deviate from the single-level `exists`-on-`projects` subquery every other
 child table (including `generations`) uses for ownership: `shot_elements`
 resolves ownership through a two-level join (shots → projects); `usage`
@@ -719,8 +719,8 @@ Otherwise a failed row's payload survives for RECOVER.
 `/image-prompts` (`image_prompts`/`write_image_prompts`), both `shot_id: null`;
 element references (`workbench`/`generate_element_reference`, per `element_id`);
 and storyboard images (`storyboard`/`generate_image`, per `shot_id`, `queued_at`
-set while waiting). `claimGeneration`/`persistGenerationPayload`/
-`settleGeneration` are the only locking mechanism in the codebase.
+set while waiting). `claimGeneration`/`persistGenerationPayload`/`settleGeneration`
+are the only generation lock; exports lock through `exports_one_active_idx`.
 
 The Storyboard page reads image state only from `loadImageStatuses` (server first
 paint, then the status endpoint, polled only while a frame is in flight) — the one

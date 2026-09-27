@@ -7,6 +7,7 @@ import { filmDuration, filmSeconds, isRetimeAllowed, retimeBounds } from '@/lib/
 import type { Motion, Transition } from '@/lib/config/enums'
 import { isSplitAllowed, parseMotion, parseTransition } from '@/lib/storyboard/motion'
 import { isMixDbAllowed, MIX_COLUMNS, MIX_RANGES, type MixColumn } from '@/lib/storyboard/film'
+import { EXPORT_SETTING_COLUMNS, EXPORT_SETTING_VALUES, type ExportSettingColumn } from '@/lib/export/settings'
 import {
   fitToVoiceover as fitLengths,
   fitUnavailableReason,
@@ -433,6 +434,38 @@ export async function saveMixForUser(
   return { success: true, field }
 }
 
+// Export settings (F). One field per save, field-attributed; null returns a field to its
+// default. The motion and transition settings are the film defaults, so they change what
+// every shot without its own choice plays. Free, and marks nothing stale.
+export type ExportSettingSaveResult = ({ success: true; unchanged?: true } | { success: false; error: string }) & {
+  field: ExportSettingColumn
+}
+
+export async function saveExportSettingForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string,
+  field: ExportSettingColumn,
+  value: string | null
+): Promise<ExportSettingSaveResult> {
+  if (!(EXPORT_SETTING_COLUMNS as readonly string[]).includes(field)) {
+    return { success: false, error: 'Unknown export setting', field }
+  }
+  if (value !== null && !EXPORT_SETTING_VALUES[field].includes(value)) {
+    return { success: false, error: 'That value is not allowed', field }
+  }
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error, field }
+  const { data: current } = await supabase.from('projects').select(field).eq('id', projectId).maybeSingle()
+  if (current && (current as Record<string, unknown>)[field] === value) return { success: true, unchanged: true, field }
+  const { error } = await supabase
+    .from('projects')
+    .update({ [field]: value, updated_at: new Date().toISOString() })
+    .eq('id', projectId)
+  if (error) return { success: false, error: error.message, field }
+  return { success: true, field }
+}
+
 // Reset mix: every mix setting back to its default (null). Lane mutes are lane state and stay.
 export async function resetMixForUser(supabase: SupabaseServerClient, userId: string, projectId: string): Promise<MixSaveResult> {
   const project = await editableProject(supabase, projectId, userId)
@@ -547,4 +580,14 @@ export async function resetMix(projectId: string): Promise<MixSaveResult> {
   const { supabase, user } = await currentUser()
   if (!user) return { ...NOT_AUTHENTICATED, field: 'all' }
   return resetMixForUser(supabase, user.id, projectId)
+}
+
+export async function saveExportSetting(
+  projectId: string,
+  field: ExportSettingColumn,
+  value: string | null
+): Promise<ExportSettingSaveResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return { ...NOT_AUTHENTICATED, field }
+  return saveExportSettingForUser(supabase, user.id, projectId, field, value)
 }

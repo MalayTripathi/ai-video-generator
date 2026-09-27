@@ -119,6 +119,9 @@ are not lost.
 
 ## Deferred decisions
 
+- **Export worker hosting.** `worker/` (Dockerfile included) runs as a standalone Node
+  service with ffmpeg and the service-role key; where it is hosted, and how many run, is
+  decided at deploy.
 - **Per-step model selection.** `projects.video_model` is a single column holding one
   model string, but model choice is per-step, not per-project: OpenAI for images,
   ElevenLabs for voiceover, fal.ai for clips. The schema needs to reflect that before Step

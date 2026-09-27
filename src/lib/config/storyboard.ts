@@ -1,4 +1,4 @@
-import type { AspectRatio, Motion, Transition } from './enums'
+import type { AspectRatio, CaptionMode, CaptionPosition, CaptionStyle, ExportMotion, LoudnessPreset, Motion, Transition } from './enums'
 
 // Step 4 storyboard image generation: every size, timing and encoding number lives here,
 // never at a call site and never in env. Model/provider/quality are env-driven and live
@@ -142,9 +142,9 @@ export const FIT_COLLAPSE_BREAKPOINT_PX = 720
 // any move equal to the previous shot's, so two consecutive shots never repeat a move.
 export const ALTERNATE_MOTION_CYCLE: readonly Motion[] = ['push_in', 'pan_left', 'pull_out', 'pan_right']
 
-// The film defaults a null motion / transition_out follows, until Export settings (#22)
-// makes them the project's own.
-export const FILM_DEFAULT_MOTION = 'alternate' as const
+// The film defaults: a null motion / transition_out follows the project's export setting
+// (projects.export_motion / export_transition), and a null setting follows these.
+export const FILM_DEFAULT_MOTION: ExportMotion = 'alternate'
 export const FILM_DEFAULT_TRANSITION: Transition = 'dissolve'
 
 // A dissolve's length, centred on the join, capped at half the shorter neighbouring shot.
@@ -191,3 +191,61 @@ export const PREVIEW_PLAYER_SIZES: Record<AspectRatio, { width: number | null; h
 
 // The mini player's long edge (canvas 15h).
 export const MINI_PLAYER_LONG_EDGE_PX = 240
+
+// Export (Storyboard F). Render tunables that are not per-project live in export.ts; the
+// film-level defaults and presets live here beside the other film defaults.
+
+// The rendered film's frame size per aspect ratio.
+export const EXPORT_OUTPUT_SIZES: Record<AspectRatio, { width: number; height: number }> = {
+  '9:16': { width: 1080, height: 1920 },
+  '16:9': { width: 1920, height: 1080 },
+  '1:1': { width: 1080, height: 1080 },
+}
+
+// Export settings defaults: what a null projects column means.
+export const FILM_DEFAULT_CAPTION_MODE: CaptionMode = 'off'
+export const FILM_DEFAULT_CAPTION_STYLE: CaptionStyle = 'reelcraft_default'
+export const FILM_DEFAULT_CAPTION_POSITION: CaptionPosition = 'bottom'
+export const FILM_DEFAULT_LOUDNESS: LoudnessPreset = 'streaming'
+
+// Caption lines are grouped from the voiceover's word timings: a line ends before a word
+// that would take it past this many characters, at a pause of at least this long between
+// two words, and at every shot boundary.
+export const CAPTION_MAX_CHARS_PER_LINE = 32
+export const CAPTION_PAUSE_BREAK_SEC = 0.4
+
+// Burned-in caption styles. Only the exposed presets are offered in settings; sizes are
+// fractions of the frame height so one preset reads the same at every resolution.
+export type CaptionStylePreset = {
+  font: string
+  fontSizeFrac: number
+  bold: boolean
+  /** ASS colours, &HAABBGGRR. */
+  primary: string
+  outline: string
+  outlineFrac: number
+  shadowFrac: number
+  /** Vertical margin from the frame edge for 'bottom', as a fraction of the frame height. */
+  marginFrac: number
+}
+export const CAPTION_STYLE_PRESETS: Record<CaptionStyle, CaptionStylePreset> = {
+  reelcraft_default: {
+    font: 'Inter',
+    fontSizeFrac: 0.042,
+    bold: true,
+    primary: '&H00FFFFFF',
+    outline: '&H00000000',
+    outlineFrac: 0.0035,
+    shadowFrac: 0.0015,
+    marginFrac: 0.09,
+  },
+}
+export const EXPOSED_CAPTION_STYLES: readonly CaptionStyle[] = ['reelcraft_default']
+
+// Loudness targets for ffmpeg's two-pass loudnorm: integrated (LUFS), true peak (dBTP),
+// loudness range (LU).
+export const LOUDNESS_TARGETS: Record<LoudnessPreset, { i: number; tp: number; lra: number }> = {
+  streaming: { i: -14, tp: -1, lra: 11 },
+  podcast: { i: -16, tp: -1.5, lra: 11 },
+  broadcast: { i: -23, tp: -2, lra: 15 },
+}

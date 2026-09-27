@@ -3,6 +3,8 @@ import {
   DISSOLVE_SEC,
   DUCK_ATTACK_SEC,
   DUCK_RELEASE_SEC,
+  FILM_DEFAULT_MOTION,
+  FILM_DEFAULT_TRANSITION,
   MIX_DUCK_DEPTH_DB,
   MIX_MUSIC_GAIN_DB,
   MIX_VOICE_GAIN_DB,
@@ -54,6 +56,8 @@ function film(list: FilmShot[], extra: Partial<Parameters<typeof buildFilmTimeli
     shots: list,
     voiceover: null,
     mix: MIX,
+    defaultMotion: FILM_DEFAULT_MOTION,
+    defaultTransition: FILM_DEFAULT_TRANSITION,
     ...extra,
   })
 }

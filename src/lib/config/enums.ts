@@ -100,3 +100,25 @@ export type Motion = (typeof MOTIONS)[number]
 export const TRANSITIONS = ['cut', 'dissolve'] as const
 
 export type Transition = (typeof TRANSITIONS)[number]
+
+// Export settings (Storyboard F). Each is a nullable projects column - null follows the film
+// default in storyboard.ts - and each CHECK is mirrored by hand, covered by enums-drift.
+// EXPORT_MOTIONS is the film-wide default motion: 'alternate' (the cycle) or one move.
+export const EXPORT_MOTIONS = ['alternate', ...MOTIONS] as const
+export type ExportMotion = (typeof EXPORT_MOTIONS)[number]
+
+export const CAPTION_MODES = ['off', 'srt', 'burned', 'both'] as const
+export type CaptionMode = (typeof CAPTION_MODES)[number]
+
+export const CAPTION_STYLES = ['reelcraft_default'] as const
+export type CaptionStyle = (typeof CAPTION_STYLES)[number]
+
+export const CAPTION_POSITIONS = ['bottom', 'middle'] as const
+export type CaptionPosition = (typeof CAPTION_POSITIONS)[number]
+
+export const LOUDNESS_PRESETS = ['streaming', 'podcast', 'broadcast'] as const
+export type LoudnessPreset = (typeof LOUDNESS_PRESETS)[number]
+
+// exports.status: one row per export job.
+export const EXPORT_STATUSES = ['queued', 'rendering', 'succeeded', 'failed', 'cancelled'] as const
+export type ExportStatus = (typeof EXPORT_STATUSES)[number]

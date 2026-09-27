@@ -1,8 +1,7 @@
-import type { AspectRatio, Motion, Transition } from '@/lib/config/enums'
+import type { AspectRatio, ExportMotion, Motion, Transition } from '@/lib/config/enums'
 import {
   DUCK_ATTACK_SEC,
   DUCK_RELEASE_SEC,
-  FILM_DEFAULT_TRANSITION,
   MIX_DUCK_DEPTH_DB,
   MIX_MUSIC_GAIN_DB,
   MIX_STEP_DB,
@@ -240,14 +239,16 @@ export type FilmInput = {
   voiceover: FilmVoiceover | null
   music?: { path: string; durationSec: number } | null
   mix: Mix
-  defaultTransition?: Transition
+  /** The film defaults a shot's null motion / transition_out follows (resolveExportSettings). */
+  defaultMotion: ExportMotion
+  defaultTransition: Transition
 }
 
 export function buildFilmTimeline(input: FilmInput): FilmTimeline {
   const lane = laneShots(input.shots)
   const words = input.voiceover?.words ?? null
-  const motions = resolveMotions(lane)
-  const joins = resolveJoins(lane, words, input.defaultTransition ?? FILM_DEFAULT_TRANSITION)
+  const motions = resolveMotions(lane, input.defaultMotion)
+  const joins = resolveJoins(lane, words, input.defaultTransition)
 
   const segments: FilmSegment[] = []
   let at = 0

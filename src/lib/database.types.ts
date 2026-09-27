@@ -134,6 +134,71 @@ export type Database = {
           },
         ]
       }
+      exports: {
+        Row: {
+          chapters_path: string | null
+          created_at: string
+          duration_sec: number | null
+          error: string | null
+          film_hash: string
+          finished_at: string | null
+          id: string
+          mp4_path: string | null
+          progress: number
+          project_id: string
+          settings: Json
+          size_bytes: number | null
+          srt_path: string | null
+          started_at: string | null
+          status: string
+          user_id: string
+        }
+        Insert: {
+          chapters_path?: string | null
+          created_at?: string
+          duration_sec?: number | null
+          error?: string | null
+          film_hash: string
+          finished_at?: string | null
+          id?: string
+          mp4_path?: string | null
+          progress?: number
+          project_id: string
+          settings: Json
+          size_bytes?: number | null
+          srt_path?: string | null
+          started_at?: string | null
+          status?: string
+          user_id: string
+        }
+        Update: {
+          chapters_path?: string | null
+          created_at?: string
+          duration_sec?: number | null
+          error?: string | null
+          film_hash?: string
+          finished_at?: string | null
+          id?: string
+          mp4_path?: string | null
+          progress?: number
+          project_id?: string
+          settings?: Json
+          size_bytes?: number | null
+          srt_path?: string | null
+          started_at?: string | null
+          status?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "exports_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       generations: {
         Row: {
           created_at: string
@@ -255,13 +320,19 @@ export type Database = {
         Row: {
           aspect_ratio: string | null
           audio_path: string | null
+          caption_mode: string | null
+          caption_position: string | null
+          caption_style: string | null
           created_at: string
           current_step: string
           duration_target: string | null
+          export_motion: string | null
+          export_transition: string | null
           furthest_step: number
           id: string
           language: string | null
           language_code: string | null
+          loudness_preset: string | null
           mix_duck_bypass: boolean | null
           mix_duck_depth_db: number | null
           mix_music_gain_db: number | null
@@ -289,13 +360,19 @@ export type Database = {
         Insert: {
           aspect_ratio?: string | null
           audio_path?: string | null
+          caption_mode?: string | null
+          caption_position?: string | null
+          caption_style?: string | null
           created_at?: string
           current_step?: string
           duration_target?: string | null
+          export_motion?: string | null
+          export_transition?: string | null
           furthest_step?: number
           id?: string
           language?: string | null
           language_code?: string | null
+          loudness_preset?: string | null
           mix_duck_bypass?: boolean | null
           mix_duck_depth_db?: number | null
           mix_music_gain_db?: number | null
@@ -323,13 +400,19 @@ export type Database = {
         Update: {
           aspect_ratio?: string | null
           audio_path?: string | null
+          caption_mode?: string | null
+          caption_position?: string | null
+          caption_style?: string | null
           created_at?: string
           current_step?: string
           duration_target?: string | null
+          export_motion?: string | null
+          export_transition?: string | null
           furthest_step?: number
           id?: string
           language?: string | null
           language_code?: string | null
+          loudness_preset?: string | null
           mix_duck_bypass?: boolean | null
           mix_duck_depth_db?: number | null
           mix_music_gain_db?: number | null

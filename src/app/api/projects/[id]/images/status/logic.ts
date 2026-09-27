@@ -7,8 +7,9 @@ import { deriveImageState, type ImageState } from '@/lib/storyboard/image-state'
 import { countLiveImageClaims, storyboardThumbPath } from '../logic'
 import { isLiveClaim } from '@/lib/generations/claim'
 import { liveVoiceoverCommittedCredits } from '@/lib/voiceover/committed'
-import { parseWords, type WordBoundary } from '@/lib/storyboard/motion'
-import { parseSpans, type VoiceoverSpan } from '@/lib/storyboard/voiceover'
+import { type WordBoundary } from '@/lib/storyboard/motion'
+import { type VoiceoverSpan } from '@/lib/storyboard/voiceover'
+import { currentRead } from '@/lib/export/film-input'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -221,20 +222,17 @@ export function deriveVoiceoverStatus(
   audioUrl: string | null,
   now: number
 ): VoiceoverStatus {
-  const spans = parseSpans(project.voiceover_spans)
+  // The same rule the film (and so export) reads the current read by.
+  const read = currentRead(project)
   const current: CurrentVoiceover | null =
-    project.audio_path && project.voiceover_generated_at && spans && project.voiceover_source
+    read && project.voiceover_generated_at
       ? {
-          audioPath: project.audio_path,
+          ...read,
           audioUrl,
           voiceId: project.voice_id,
           languageCode: project.language_code,
-          durationSec: project.total_duration_sec ?? 0,
           source: project.voiceover_source === 'uploaded' ? 'uploaded' : 'generated',
           generatedAt: project.voiceover_generated_at,
-          muted: project.voiceover_muted,
-          spans,
-          words: parseWords(project.voiceover_words),
         }
       : null
 

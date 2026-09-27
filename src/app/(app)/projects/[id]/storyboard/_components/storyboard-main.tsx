@@ -8,6 +8,9 @@ import { MotionPanels } from './motion-panels'
 import { MusicSection } from './audio-sections'
 import { VoiceoverCard } from './voiceover-card'
 import { ExportLocked, PreviewLocked } from './locked-sections'
+import { ExportSection } from './export-section'
+import { exportSummary } from '@/lib/export/settings'
+import type { ExportsData } from '@/app/api/projects/[id]/exports/logic'
 import { OrderDiffersBanner } from './order-differs-banner'
 import { PreviewMix } from './preview-mix'
 import { MiniPlayer } from './mini-player'
@@ -15,7 +18,7 @@ import { MiniPlayer } from './mini-player'
 // The Storyboard main column (canvas 15a): Timeline, the two audio lane controls, then
 // Preview & mix and Export. Its width never changes - the inspect panel takes the agent's
 // column instead.
-export function StoryboardMain({ language }: { language: string | null }) {
+export function StoryboardMain({ language, initialExports }: { language: string | null; initialExports: ExportsData }) {
   const {
     laneShots,
     statusFor,
@@ -31,6 +34,7 @@ export function StoryboardMain({ language }: { language: string | null }) {
     frameReadiness: r,
     framesReady,
     aspectRatio,
+    resolvedExport,
   } = useStoryboard()
 
   // Binned shots are off the film: the counter, Preview lock, Export and Generate remaining
@@ -111,7 +115,11 @@ export function StoryboardMain({ language }: { language: string | null }) {
         </div>
 
         {framesReady ? <PreviewMix /> : <PreviewLocked readiness={r} aspectRatio={aspectRatio} />}
-        <ExportLocked readiness={r} />
+        {framesReady ? (
+          <ExportSection initialExports={initialExports} />
+        ) : (
+          <ExportLocked summary={exportSummary(resolvedExport)} />
+        )}
       </div>
       <MiniPlayer />
     </div>

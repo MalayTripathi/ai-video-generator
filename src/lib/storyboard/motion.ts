@@ -1,5 +1,5 @@
-import { MOTIONS, TRANSITIONS, type Motion, type Transition } from '@/lib/config/enums'
-import { ALTERNATE_MOTION_CYCLE, DISSOLVE_SEC, FILM_DEFAULT_TRANSITION, STORYBOARD_MIN_SHOT_SEC } from '@/lib/config/storyboard'
+import { MOTIONS, TRANSITIONS, type ExportMotion, type Motion, type Transition } from '@/lib/config/enums'
+import { ALTERNATE_MOTION_CYCLE, DISSOLVE_SEC, STORYBOARD_MIN_SHOT_SEC } from '@/lib/config/storyboard'
 import { filmSeconds } from './timeline'
 import { readAlignment, type CharacterAlignment } from './voiceover'
 
@@ -93,12 +93,15 @@ export type ResolvedMotion = {
 
 /**
  * Every lane shot's motion, in film order. A segment with its own motion plays it; every
- * other segment takes Alternate: the cycle at its film position, skipping a move equal to
- * the previous segment's, so Alternate never repeats a move on consecutive segments. A
- * split shot is two segments of the same image and counts as two positions.
+ * other segment takes the film default (the project's export motion, else the config
+ * default - resolved by the caller). A fixed default is that move everywhere; Alternate is
+ * the cycle at the segment's film position, skipping a move equal to the previous
+ * segment's, so it never repeats a move on consecutive segments. A split shot is two
+ * segments of the same image and counts as two positions.
  */
 export function resolveMotions(
   lane: readonly MotionShot[],
+  filmDefault: ExportMotion,
   cycle: readonly Motion[] = ALTERNATE_MOTION_CYCLE
 ): Map<string, ResolvedMotion> {
   const resolved = new Map<string, ResolvedMotion>()
@@ -106,6 +109,7 @@ export function resolveMotions(
   let position = 0
   const next = (stored: Motion | null): Motion => {
     let motion = stored
+    if (!motion && filmDefault !== 'alternate') motion = filmDefault
     if (!motion) {
       for (let k = 0; k < cycle.length; k++) {
         const candidate = cycle[(position + k) % cycle.length]
@@ -208,13 +212,14 @@ export type ResolvedJoin = {
 /**
  * Every join between consecutive lane shots. A dissolve is centred on the join and never
  * changes the film's length; it lasts DISSOLVE_SEC, capped at half the shorter neighbour.
+ * A join with no stored transition takes `filmDefault` (the project's, resolved by the caller).
  * With a voiceover (`words` non-null), a dissolve whose join falls inside a spoken word is
  * forced to a cut. With none, nothing is forced.
  */
 export function resolveJoins(
   lane: readonly MotionShot[],
   words: readonly WordBoundary[] | null,
-  filmDefault: Transition = FILM_DEFAULT_TRANSITION
+  filmDefault: Transition
 ): ResolvedJoin[] {
   const joins: ResolvedJoin[] = []
   let atSec = 0

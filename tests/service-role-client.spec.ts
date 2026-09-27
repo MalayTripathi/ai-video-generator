@@ -79,12 +79,16 @@ test.describe('service-role client isolation', () => {
     // verified the user and project at entry, and every write in the worker is scoped by
     // both (see images/logic.ts). The voiceover generate and align routes are the fourth
     // and fifth, for the same reason and with the same discipline (voiceover/logic.ts).
+    // The exports logic is the sixth: exports has no authenticated write policy, so every
+    // export write goes through it, after the session client has verified ownership and
+    // scoped by that row's id; its one read is a queue-position count.
     const expectedImporters = [
       path.resolve(__dirname, '../src/lib/credits/ledger.ts'),
       path.resolve(__dirname, '../src/lib/credits/signup-grant.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/images/route.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/route.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/align/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/exports/logic.ts'),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []

@@ -8,6 +8,8 @@ import { ASPECT_RATIOS, type AspectRatio } from '@/lib/config/enums'
 import { getBalance } from '@/lib/credits/balance'
 import { resolveVideoModel, videoModelMaxSeconds } from '@/lib/config/models'
 import { loadImageStatuses } from '@/app/api/projects/[id]/images/status/logic'
+import { loadExports, type ExportsData } from '@/app/api/projects/[id]/exports/logic'
+import { STATUS_POLL_INTERVAL_MS } from '@/lib/config/storyboard'
 import { StoryboardProvider } from './_components/storyboard-context'
 import { PlaybackProvider } from './_components/playback-context'
 import { StoryboardMain } from './_components/storyboard-main'
@@ -34,7 +36,7 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
   const { data: project } = await supabase
     .from('projects')
     .select(
-      'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target, mix_voice_gain_db, mix_music_gain_db, mix_duck_depth_db, mix_duck_bypass, music_muted'
+      'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target, mix_voice_gain_db, mix_music_gain_db, mix_duck_depth_db, mix_duck_bypass, music_muted, export_motion, export_transition, caption_mode, caption_style, caption_position, loudness_preset'
     )
     .eq('id', projectId)
     .eq('user_id', user.id)
@@ -62,6 +64,10 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
     if (status.status === 404) notFound()
     throw new Error(status.error)
   }
+
+  // Export history's first paint, from the same function its poll reads.
+  const exportsResult = await loadExports({ supabase, projectId, userId: user.id })
+  const exportsData: ExportsData = exportsResult.ok ? exportsResult.data : { rows: [], pollIntervalMs: STATUS_POLL_INTERVAL_MS }
 
   const agentMessages = await loadAgentMessages(supabase, projectId, shots)
 
@@ -93,6 +99,14 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
         mix_duck_bypass: project.mix_duck_bypass,
         music_muted: project.music_muted,
       }}
+      initialExportSettings={{
+        export_motion: project.export_motion,
+        export_transition: project.export_transition,
+        caption_mode: project.caption_mode,
+        caption_style: project.caption_style,
+        caption_position: project.caption_position,
+        loudness_preset: project.loudness_preset,
+      }}
     >
       <PlaybackProvider>
         <WorkbenchShell
@@ -105,7 +119,7 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
           footer={<StoryboardFooter />}
           sideColumn={<InspectPanel />}
         >
-          <StoryboardMain language={project.language} />
+          <StoryboardMain language={project.language} initialExports={exportsData} />
         </WorkbenchShell>
       </PlaybackProvider>
     </StoryboardProvider>

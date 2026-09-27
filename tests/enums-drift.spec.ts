@@ -12,6 +12,12 @@ import {
   MOTIONS,
   TRANSITIONS,
   VOICEOVER_SOURCES,
+  EXPORT_MOTIONS,
+  CAPTION_MODES,
+  CAPTION_STYLES,
+  CAPTION_POSITIONS,
+  LOUDNESS_PRESETS,
+  EXPORT_STATUSES,
 } from '../src/lib/config/enums'
 import { STEPS, OPERATIONS, PROVIDERS } from '../src/lib/config/pipeline'
 import { MESSAGE_KINDS, TOOL_NAMES } from '../src/lib/config/messages'
@@ -524,5 +530,45 @@ test.describe('enum drift - elements columns', () => {
       type: 'not_a_real_type',
     })
     expect(badError).not.toBeNull()
+  })
+})
+
+// Export settings (Storyboard F): six nullable projects columns, and exports.status. Each
+// CHECK mirrors its enums.ts tuple by hand.
+test.describe('enum drift - export settings and exports', () => {
+  for (const [column, values] of [
+    ['export_motion', EXPORT_MOTIONS],
+    ['export_transition', TRANSITIONS],
+    ['caption_mode', CAPTION_MODES],
+    ['caption_style', CAPTION_STYLES],
+    ['caption_position', CAPTION_POSITIONS],
+    ['loudness_preset', LOUDNESS_PRESETS],
+  ] as const) {
+    test(`accepts every projects.${column} member and rejects a bogus value`, async () => {
+      const insert = (value: string) =>
+        admin
+          .from('projects')
+          .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: 'workbench', [column]: value })
+      await assertEnumDrift(values, insert, () => insert(`not_a_real_${column}`))
+    })
+  }
+
+  test('accepts every EXPORT_STATUSES member and rejects a bogus value', async () => {
+    const projectIds: string[] = []
+    const insert = async (status: string) => {
+      // One project per row: queued/rendering are limited to one active export per project.
+      const projectId = await insertProject()
+      projectIds.push(projectId)
+      return admin.from('exports').insert({
+        user_id: primary.user.id,
+        project_id: projectId,
+        status,
+        settings: {},
+        film_hash: 'h',
+      })
+    }
+    await assertEnumDrift(EXPORT_STATUSES, insert, () => insert('not_a_real_status'))
+    // Leave nothing queued for a running worker.
+    await admin.from('exports').update({ status: 'cancelled' }).in('project_id', projectIds).in('status', ['queued', 'rendering'])
   })
 })

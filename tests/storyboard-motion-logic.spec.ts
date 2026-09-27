@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test'
 import {
   ALTERNATE_MOTION_CYCLE,
   DISSOLVE_SEC,
+  FILM_DEFAULT_MOTION,
   FILM_DEFAULT_TRANSITION,
   STORYBOARD_MIN_SHOT_SEC,
 } from '../src/lib/config/storyboard'
@@ -37,7 +38,7 @@ function lane(durations: number[], overrides: Partial<Shot>[] = []): Shot[] {
 }
 
 function playedMotions(shots: Shot[]): string[] {
-  const resolved = resolveMotions(shots)
+  const resolved = resolveMotions(shots, FILM_DEFAULT_MOTION)
   return shots.flatMap((s) => {
     const r = resolved.get(s.id)!
     return r.splitMotion ? [r.motion, r.splitMotion] : [r.motion]
@@ -62,7 +63,7 @@ test.describe('motion - Alternate', () => {
         const played = playedMotions(shots)
         played.forEach((m, i) => {
           if (i === 0) return
-          const resolved = resolveMotions(shots)
+          const resolved = resolveMotions(shots, FILM_DEFAULT_MOTION)
           const alternated = resolved.get(shots[i].id)!.storedMotion === null
           if (alternated) expect(m, `shot ${i} with ${override} at ${at}`).not.toBe(played[i - 1])
         })
@@ -72,7 +73,7 @@ test.describe('motion - Alternate', () => {
 
   test('respects overrides - even one that repeats its neighbour - and reports them as stored', () => {
     const shots = lane([5, 5, 5], [{ motion: 'static' }, { motion: 'static' }])
-    const resolved = resolveMotions(shots)
+    const resolved = resolveMotions(shots, FILM_DEFAULT_MOTION)
     expect(resolved.get('s0')).toMatchObject({ motion: 'static', storedMotion: 'static' })
     expect(resolved.get('s1')).toMatchObject({ motion: 'static', storedMotion: 'static' })
     expect(resolved.get('s2')!.storedMotion).toBeNull()
@@ -80,20 +81,20 @@ test.describe('motion - Alternate', () => {
   })
 
   test('an unknown stored value follows the film default', () => {
-    const resolved = resolveMotions(lane([5], [{ motion: 'spin' }]))
+    const resolved = resolveMotions(lane([5], [{ motion: 'spin' }]), FILM_DEFAULT_MOTION)
     expect(resolved.get('s0')).toMatchObject({ motion: ALTERNATE_MOTION_CYCLE[0], storedMotion: null })
   })
 
   test('a split shot plays two segments, each resolved, and Alternate never repeats across them', () => {
     const shots = lane([6, 6, 6], [{}, { split_at: 0.5 }])
-    const resolved = resolveMotions(shots)
+    const resolved = resolveMotions(shots, FILM_DEFAULT_MOTION)
     expect(resolved.get('s1')!.splitAt).toBe(0.5)
     expect(resolved.get('s1')!.splitMotion).not.toBeNull()
     const played = playedMotions(shots)
     expect(played).toHaveLength(4)
     played.forEach((m, i) => i > 0 && expect(m).not.toBe(played[i - 1]))
     // The second segment's own motion wins.
-    const own = resolveMotions(lane([6], [{ split_at: 0.5, split_motion: 'pan_up' }])).get('s0')!
+    const own = resolveMotions(lane([6], [{ split_at: 0.5, split_motion: 'pan_up' }]), FILM_DEFAULT_MOTION).get('s0')!
     expect(own).toMatchObject({ splitMotion: 'pan_up', storedSplitMotion: 'pan_up' })
   })
 })
@@ -135,7 +136,7 @@ test.describe('split', () => {
 
 test.describe('transitions', () => {
   test('a null join follows the film default; a stored one wins', () => {
-    const joins = resolveJoins(lane([4, 4, 4], [{ transition_out: 'cut' }]), null)
+    const joins = resolveJoins(lane([4, 4, 4], [{ transition_out: 'cut' }]), null, FILM_DEFAULT_TRANSITION)
     expect(joins).toHaveLength(2)
     expect(joins[0]).toMatchObject({ stored: 'cut', transition: 'cut', dissolveSec: 0 })
     expect(joins[1]).toMatchObject({ stored: null, chosen: FILM_DEFAULT_TRANSITION, transition: FILM_DEFAULT_TRANSITION })
@@ -143,7 +144,7 @@ test.describe('transitions', () => {
 
   test('a dissolve is centred on the join and leaves the total length unchanged', () => {
     const shots = lane([4, 6], [{ transition_out: 'dissolve' }])
-    const [join] = resolveJoins(shots, null)
+    const [join] = resolveJoins(shots, null, FILM_DEFAULT_TRANSITION)
     expect(join.atSec).toBe(4)
     expect(join.dissolveSec).toBe(DISSOLVE_SEC)
     expect(join.startSec).toBeCloseTo(4 - DISSOLVE_SEC / 2)
@@ -154,7 +155,7 @@ test.describe('transitions', () => {
 
   test('a dissolve is capped at half the shorter neighbouring shot', () => {
     const shortNeighbour = DISSOLVE_SEC // half of it is under DISSOLVE_SEC
-    const [join] = resolveJoins(lane([shortNeighbour, 6], [{ transition_out: 'dissolve' }]), null)
+    const [join] = resolveJoins(lane([shortNeighbour, 6], [{ transition_out: 'dissolve' }]), null, FILM_DEFAULT_TRANSITION)
     expect(join.dissolveSec).toBeCloseTo(shortNeighbour / 2)
   })
 })
@@ -188,24 +189,24 @@ test.describe('forced cut', () => {
 
   test('a dissolve whose join lands inside a spoken word resolves to Cut; the stored value is unchanged', () => {
     const shots = lane([1.5, 3], [{ transition_out: 'dissolve' }])
-    const [join] = resolveJoins(shots, wordBoundaries(alignment))
+    const [join] = resolveJoins(shots, wordBoundaries(alignment), FILM_DEFAULT_TRANSITION)
     expect(join).toMatchObject({ stored: 'dissolve', chosen: 'dissolve', transition: 'cut', forced: true, dissolveSec: 0 })
     expect(shots[0].transition_out).toBe('dissolve')
   })
 
   test('a later retime that moves the join between words releases it', () => {
     const shots = lane([1.5, 3], [{ transition_out: 'dissolve', film_duration_sec: 1.0 }])
-    const [join] = resolveJoins(shots, wordBoundaries(alignment))
+    const [join] = resolveJoins(shots, wordBoundaries(alignment), FILM_DEFAULT_TRANSITION)
     expect(join).toMatchObject({ transition: 'dissolve', forced: false })
   })
 
   test('with no voiceover nothing is forced', () => {
-    const [join] = resolveJoins(lane([1.5, 3], [{ transition_out: 'dissolve' }]), null)
+    const [join] = resolveJoins(lane([1.5, 3], [{ transition_out: 'dissolve' }]), null, FILM_DEFAULT_TRANSITION)
     expect(join).toMatchObject({ transition: 'dissolve', forced: false })
   })
 
   test('a chosen cut inside a word is simply a cut, never reported as forced', () => {
-    const [join] = resolveJoins(lane([1.5, 3], [{ transition_out: 'cut' }]), wordBoundaries(alignment))
+    const [join] = resolveJoins(lane([1.5, 3], [{ transition_out: 'cut' }]), wordBoundaries(alignment), FILM_DEFAULT_TRANSITION)
     expect(join).toMatchObject({ transition: 'cut', forced: false })
   })
 })

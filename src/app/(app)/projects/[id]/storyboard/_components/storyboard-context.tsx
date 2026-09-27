@@ -9,7 +9,16 @@ import type { AspectRatio, Motion, Transition } from '@/lib/config/enums'
 import { clampSplit, resolveJoins, resolveMotions, type ResolvedJoin, type ResolvedMotion } from '@/lib/storyboard/motion'
 import { filmDuration, filmSeconds, laneShots as orderLane, readiness, reorderWrites, type Readiness } from '@/lib/storyboard/timeline'
 import { MIX_SAVE_DEBOUNCE_MS } from '@/lib/config/storyboard'
-import { buildFilmTimeline, resolveMix, type FilmTimeline, type MixColumn, type StoredMix } from '@/lib/storyboard/film'
+import { buildFilmTimeline, type FilmTimeline, type MixColumn, type StoredMix } from '@/lib/storyboard/film'
+import { toFilmInput } from '@/lib/export/film-input'
+import { filmHash as hashFilm } from '@/lib/export/film-hash'
+import {
+  resolveExportSettings,
+  resolveFilmDefaults,
+  type ExportSettingColumn,
+  type ExportSettings,
+  type StoredExportSettings,
+} from '@/lib/export/settings'
 import {
   fitToVoiceover as fitLengths,
   fitUnavailableReason,
@@ -22,6 +31,7 @@ import {
   fitToVoiceover as fitToVoiceoverAction,
   resetMix as resetMixAction,
   saveMix,
+  saveExportSetting,
   type MixValue,
   restoreScriptOrder as restoreScriptOrderAction,
   saveFilmDuration,
@@ -119,6 +129,14 @@ type StoryboardContextValue = {
   mixError: string | null
   setMixField: (field: MixColumn, value: MixValue) => void
   resetMix: () => void
+  // Export (F). The settings as stored (null = default) and as they resolve; the motion and
+  // transition settings are the film defaults the lane and the film resolve with.
+  exportSettings: StoredExportSettings
+  resolvedExport: ExportSettings
+  setExportSetting: (field: ExportSettingColumn, value: string | null) => void
+  exportSettingError: string | null
+  /** The live film's fingerprint - an export with a different one reads "Edited since". */
+  filmHash: string
 }
 
 const StoryboardContext = createContext<StoryboardContextValue | null>(null)
@@ -156,6 +174,7 @@ export function StoryboardProvider({
   initialShots,
   initialStatus,
   initialMix,
+  initialExportSettings,
   children,
 }: {
   projectId: string
@@ -165,6 +184,7 @@ export function StoryboardProvider({
   initialShots: StoryboardShot[]
   initialStatus: ImageStatusData
   initialMix: MixState
+  initialExportSettings: StoredExportSettings
   children: ReactNode
 }) {
   const [shots, setShots] = useState(initialShots)
@@ -344,8 +364,34 @@ export function StoryboardProvider({
   // Word boundaries for the forced-cut rule ride on the voiceover status (projects.
   // voiceover_words, computed when the read settled). With no voiceover nothing is forced.
   const liveWords = voiceover.current?.words ?? null
-  const motions = useMemo(() => resolveMotions(laneShots), [laneShots])
-  const joins = useMemo(() => resolveJoins(laneShots, liveWords), [laneShots, liveWords])
+  // Export (F): the settings, whose motion and transition are the film defaults.
+  const [exportSettings, setExportSettings] = useState<StoredExportSettings>(initialExportSettings)
+  const savedExportSettings = useRef<StoredExportSettings>(initialExportSettings)
+  const [exportSettingError, setExportSettingError] = useState<string | null>(null)
+  const filmDefaults = useMemo(() => resolveFilmDefaults(exportSettings), [exportSettings])
+  const motions = useMemo(() => resolveMotions(laneShots, filmDefaults.motion), [laneShots, filmDefaults.motion])
+  const joins = useMemo(
+    () => resolveJoins(laneShots, liveWords, filmDefaults.transition),
+    [laneShots, liveWords, filmDefaults.transition]
+  )
+
+  // Applied at once and saved at once (a choice, not a slider); a failed save rolls back
+  // only if nothing newer has been chosen since.
+  const setExportSetting = useCallback(
+    async (field: ExportSettingColumn, value: string | null) => {
+      if (readOnly) return
+      setExportSettings((prev) => ({ ...prev, [field]: value }))
+      setExportSettingError(null)
+      const result = await saveExportSetting(projectId, field, value).catch(() => ({ success: false }) as const)
+      if (result.success) {
+        savedExportSettings.current = { ...savedExportSettings.current, [field]: value }
+        return
+      }
+      setExportSettings((prev) => (prev[field] === value ? { ...prev, [field]: savedExportSettings.current[field] } : prev))
+      setExportSettingError("That change couldn't be saved, so it was undone. Try again.")
+    },
+    [projectId, readOnly]
+  )
 
   const setMotion = useCallback(
     (shotId: string, segment: MotionSegment, motion: Motion | null) => {
@@ -454,16 +500,21 @@ export function StoryboardProvider({
   const framesReady = frameReadiness.total > 0 && frameReadiness.ready === frameReadiness.total
   const film = useMemo(
     () =>
-      buildFilmTimeline({
-        aspectRatio,
-        shots: shots.map((s) => ({ ...s, image_path: statusById.get(s.id)?.imagePath ?? null })),
-        voiceover: currentRead
-          ? { path: currentRead.audioPath, durationSec: currentRead.durationSec, spans: currentRead.spans, words: currentRead.words }
-          : null,
-        music: null,
-        mix: resolveMix({ ...mix, voiceover_muted: currentRead?.muted ?? false }),
-      }),
-    [aspectRatio, shots, statusById, currentRead, mix]
+      buildFilmTimeline(
+        toFilmInput({
+          aspectRatio,
+          shots: shots.map((s) => ({ ...s, image_path: statusById.get(s.id)?.imagePath ?? null })),
+          read: currentRead,
+          mix,
+          settings: exportSettings,
+        })
+      ),
+    [aspectRatio, shots, statusById, currentRead, mix, exportSettings]
+  )
+  const filmHash = useMemo(() => hashFilm(film), [film])
+  const resolvedExport = useMemo(
+    () => resolveExportSettings(exportSettings, { hasVoiceover: currentRead !== null, aspectRatio }),
+    [exportSettings, currentRead, aspectRatio]
   )
 
   const select = useCallback((shotId: string | null) => {
@@ -646,6 +697,11 @@ export function StoryboardProvider({
       mixError,
       setMixField,
       resetMix,
+      exportSettings,
+      resolvedExport,
+      setExportSetting,
+      exportSettingError,
+      filmHash,
     }),
     [
       projectId,
@@ -696,6 +752,11 @@ export function StoryboardProvider({
       mixError,
       setMixField,
       resetMix,
+      exportSettings,
+      resolvedExport,
+      setExportSetting,
+      exportSettingError,
+      filmHash,
     ]
   )
 
