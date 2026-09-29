@@ -366,7 +366,7 @@ test.describe('storyboard images - request validation and gate', () => {
 })
 
 test.describe('storyboard images - worker', () => {
-  test('success stores a native-size WebP at the attempt path, clears image_stale and charges once', async () => {
+  test('success stores a native-size WebP at the attempt path, clears image_stale and charges once', { tag: '@smoke' }, async () => {
     const projectId = await seedProject(primary.user.id, '9:16')
     const [shotId] = await seedShots(projectId, 1)
     const gateway = successImageGateway()

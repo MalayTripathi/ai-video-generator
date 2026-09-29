@@ -204,7 +204,7 @@ test.describe('Step 3 image prompts', () => {
     await expect(banner).toContainText('You have 1 credits available')
   })
 
-  test('editing saves on blur through the real action: a change marks the prompt edited, an unchanged blur writes nothing', async ({
+  test('editing saves on blur through the real action: a change marks the prompt edited, an unchanged blur writes nothing', { tag: '@smoke' }, async ({
     page,
   }) => {
     const { projectId, shotIds } = await seed([{ prompt: PROMPT(1), stale: false }])

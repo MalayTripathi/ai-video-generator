@@ -8,7 +8,13 @@
     "start": "next start",
     "lint": "eslint",
     "types:db": "supabase gen types typescript --linked > src/lib/database.types.ts",
-    "worker": "tsx worker/index.ts"
+    "worker": "tsx worker/index.ts",
+    "test:full": "rm -rf blob-report && PW_SERVER=prod playwright test",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:dev": "playwright test",
+    "test:failed": "PW_SERVER=prod playwright test --last-failed",
+    "test:changed": "playwright test --only-changed",
+    "test:report": "playwright merge-reports --reporter html blob-report"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

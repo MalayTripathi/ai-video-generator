@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { runCameraDerivation } from '../src/app/api/projects/[id]/shots/[shotId]/camera/logic'
@@ -658,35 +658,39 @@ test.describe('camera field editing and re-derivation', () => {
   })
 
   test.describe('fields scope contract (400s)', () => {
-    async function assertRejected(page: Page, projectId: string, shotId: string, body: unknown, before: unknown) {
-      const response = await page.request.post(`/api/projects/${projectId}/shots/${shotId}/camera`, { data: body })
+    // API-only: no page is opened. The request fixture carries the primary user's session.
+    async function assertRejected(
+      request: APIRequestContext,
+      projectId: string,
+      shotId: string,
+      body: unknown,
+      before: unknown
+    ) {
+      const response = await request.post(`/api/projects/${projectId}/shots/${shotId}/camera`, { data: body })
       expect(response.status()).toBe(400)
       expect(await countCameraUsageRows(projectId, shotId)).toBe(0)
       expect(await readShot(shotId)).toEqual(before)
     }
 
-    test('fields omitted -> 400, no AI call, no row mutation', async ({ page }) => {
+    test('fields omitted -> 400, no AI call, no row mutation', async ({ request }) => {
       const projectId = await seedProject()
       const shotId = await seedShot(projectId)
       const before = await readShot(shotId)
-      await page.goto(`/projects/${projectId}/workbench`)
-      await assertRejected(page, projectId, shotId, {}, before)
+      await assertRejected(request, projectId, shotId, {}, before)
     })
 
-    test('fields: [] -> 400, no AI call, no row mutation', async ({ page }) => {
+    test('fields: [] -> 400, no AI call, no row mutation', async ({ request }) => {
       const projectId = await seedProject()
       const shotId = await seedShot(projectId)
       const before = await readShot(shotId)
-      await page.goto(`/projects/${projectId}/workbench`)
-      await assertRejected(page, projectId, shotId, { fields: [] }, before)
+      await assertRejected(request, projectId, shotId, { fields: [] }, before)
     })
 
-    test('fields with an unknown member -> 400, no AI call, no row mutation', async ({ page }) => {
+    test('fields with an unknown member -> 400, no AI call, no row mutation', async ({ request }) => {
       const projectId = await seedProject()
       const shotId = await seedShot(projectId)
       const before = await readShot(shotId)
-      await page.goto(`/projects/${projectId}/workbench`)
-      await assertRejected(page, projectId, shotId, { fields: ['shot_size', 'lens_type'] }, before)
+      await assertRejected(request, projectId, shotId, { fields: ['shot_size', 'lens_type'] }, before)
     })
   })
 

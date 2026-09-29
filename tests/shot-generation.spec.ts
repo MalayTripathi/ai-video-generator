@@ -107,7 +107,7 @@ async function readGeneration(projectId: string) {
 }
 
 test.describe('Step 2 workbench - shot generation', () => {
-  test('parses shots, applies the title/video_type, inserts an assistant message, and lands on ready with the payload cleared', async () => {
+  test('parses shots, applies the title/video_type, inserts an assistant message, and lands on ready with the payload cleared', { tag: '@smoke' }, async () => {
     const user = primary.user
     {
       const projectId = await insertProject(user.id)
@@ -261,7 +261,7 @@ test.describe('Step 2 workbench - shot generation', () => {
     }
   })
 
-  test('a pre-network blocked call settles as failed with zero cost, not the quote', async () => {
+  test('a pre-network blocked call settles as failed with zero cost, not the quote', { tag: '@smoke' }, async () => {
     const user = primary.user
     {
       const projectId = await insertProject(user.id)

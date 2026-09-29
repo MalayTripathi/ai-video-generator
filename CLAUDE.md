@@ -435,30 +435,31 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   inject hand-written fakes from `tests/helpers/claude-fakes.ts`
   (`successMessage`, `truncatedMessage`, `throwingGateway`) — never the real
   SDK.
-- `assertLiveCallsAllowed()` runs at call time, inside `createMessage`, not
-  at import time. It returns early when `NODE_ENV === 'production'`.
-  Outside production it throws unless `ALLOW_REAL_CLAUDE === '1'` — an exact
-  string match; `'0'`, unset, or anything else all block. A permitted live
-  call logs a `console.warn` banner naming the model and tool before the
-  request fires. It throws a typed `LiveCallsBlockedError` (`src/lib/claude.ts`),
-  not a plain `Error` — `settleUsage` detects it by `instanceof`, never by
-  message text (same principle as detecting a `23505` unique violation by error
-  code), to settle a blocked local call at zero cost instead of the full
-  pre-flight quote.
+- Whether a real call may leave the process is decided in one place,
+  `src/lib/providers/live-call-guard.ts`, at call time and twice: at each gateway
+  method's entry (`assertLiveCallsAllowed()` and its image/voiceover twins) and in
+  the `fetch` every provider client is built with (`guardedFetch`). Lint forbids
+  constructing an Anthropic or OpenAI client, or naming a provider host, outside
+  the gateways. `BLOCK_PROVIDER_CALLS` (any value but empty or `'0'`) refuses every
+  provider regardless of `NODE_ENV`, and refuses the `ALLOW_REAL_*` opt-outs; set it
+  in a deployment to stop all provider spend there. Without it, production passes
+  and anything else needs that provider's `ALLOW_REAL_*` to be exactly `'1'`. A
+  refusal throws the provider's typed blocked error (`LiveCallsBlockedError` etc.),
+  never a plain `Error` — `settleUsage` detects it by `instanceof`, never by message
+  text, to settle a blocked call at zero cost instead of the pre-flight quote.
 - **Never set, export, or add any `ALLOW_REAL_*` live-call flag to any env file, npm
   script, test config, CI workflow, or shell command.** Whether to spend
   money on a live call is the developer's decision alone. If a task appears
   to need a live call to verify, stop and say so instead of enabling the
   flag.
-- Playwright has no live path, enforced three times over:
-  `tests/global-setup.ts` throws unconditionally if `ALLOW_REAL_CLAUDE=1` is
-  set; `tests/load-env.ts` deletes the flag from the test-runner's own
-  process immediately after loading `.env.local`; `playwright.config.ts`
-  forces `webServer.env.ALLOW_REAL_CLAUDE` to `''` for the spawned dev
-  server. There is no `test:live` script and nothing in the suite is tagged
-  `@live`. The one sanctioned live-call path is `npm run dev` with
-  `ALLOW_REAL_CLAUDE=1` exported by hand in a developer's own shell,
-  entirely outside Playwright and CI.
+- Automated test runs never make live provider calls: the block variable is
+  always set. `playwright.config.ts` sets `BLOCK_PROVIDER_CALLS=1` for the runner
+  and the server it starts (with every `ALLOW_REAL_*` forced to `''` there);
+  `tests/global-setup.ts` refuses to run without it or with any `ALLOW_REAL_*`
+  exported; `tests/load-env.ts` deletes the opt-outs and re-asserts the block after
+  loading `.env.local`. There is no `test:live` script and nothing is tagged
+  `@live`. The one sanctioned live-call path is `npm run dev` with the provider's
+  `ALLOW_REAL_*=1` exported by hand in a developer's own shell, outside Playwright and CI.
 - Calls are streaming-only (`messages.stream()` + `finalMessage()`, never
   `create()`) with `maxRetries: 0` — an SDK-level retry on a partially
   generated response would be a silent second charge — and a 600s client
@@ -473,20 +474,28 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   build). Don't run `npx playwright install chromium`. Auth, fakes, and
   the live-call run guard are all covered in this section — read it before
   writing a spec.
+- **Test runs are tiered.** During a task, run the affected specs plus `@smoke` on the
+  dev server (`npm run test:dev -- <specs>`, `npm run test:smoke`); at task close, the
+  full suite on a production build (`npm run test:full`). `npm run test:failed` resumes
+  only the failures and `npm run test:report` merges every run into one report.
+  `@smoke` holds each protected rule once plus one happy path per page;
+  `tests/smoke-manifest.ts` names the required members, `smoke-guard.spec.ts` enforces them.
+- **Every new spec declares its layer** in `tests/spec-layers.ts`: `api` (no browser —
+  `request` fixture, direct imports, Supabase clients) by default, `ui` only when the
+  behaviour genuinely needs a browser. `spec-layers.spec.ts` fails an undeclared spec
+  and an `api` spec that asks for `page`, `context` or `browser`.
 - Business logic (`runShotGeneration`, etc.) is tested by injecting a `ClaudeGateway`
   literal built from `tests/helpers/claude-fakes.ts`'s canned-shape builders
   (`successMessage`, `truncatedMessage`, `throwingGateway`) — never a fixture/scenario
-  system, never an env var selecting behavior. No test ever imports or calls
-  `createClaudeGateway()` / the real Anthropic SDK to make a request; `@anthropic-ai/sdk`
-  may only be imported for types in tests.
+  system, never an env var selecting behavior. No test makes a request through
+  `createClaudeGateway()` / the real SDK — `provider-block.spec.ts` calls the real
+  gateways only to prove they refuse; `@anthropic-ai/sdk` is imported for types only.
 - **A test must never assert on hoped-for behaviour that has not been
   confirmed.** If a fix could not be verified, or a bug could not be
   reproduced, no test is added for it — a green assertion on an unproven
   claim is worse than no coverage, because it reads as evidence.
-- Caveat: the Playwright guard cannot protect a manually pre-started `npm run dev`
-  process, since `webServer.reuseExistingServer: true` means Playwright reuses rather
-  than re-spawns it — always start the dev server fresh (or stop a stray one) before
-  trusting the guard.
+- `test:full` never reuses a running server; dev runs reuse whatever is on :3000,
+  which the guard cannot protect — stop a stray dev server before trusting it there.
 - Any test that drives the retry control through the UI must go through the real
   `RetryConfirmModal` (`role="dialog"`, `retry-confirm-modal.tsx`) — there is no
   `window.confirm` to handle anymore.

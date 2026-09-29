@@ -92,7 +92,7 @@ test.describe('elements read path', () => {
     expect(result.groups.map((g) => g.type)).toEqual(['character', 'location', 'prop', 'style'])
   })
 
-  test('a user cannot read another user\'s project elements', async () => {
+  test('a user cannot read another user\'s project elements', { tag: '@smoke' }, async () => {
     const projectId = await seedProject()
     await seedElement(projectId, { name: 'Owner-only Character', type: 'character' })
 

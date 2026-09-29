@@ -202,7 +202,7 @@ test.describe('credits page', () => {
     }
   })
 
-  test('the balance tile is identical across all three period tabs, unlike spent-this-period', async ({ page, context }) => {
+  test('the balance tile is identical across all three period tabs, unlike spent-this-period', { tag: '@smoke' }, async ({ page, context }) => {
     const { user, cookie } = await createTestSession()
     try {
       const now = new Date()

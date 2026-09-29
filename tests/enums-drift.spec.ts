@@ -164,7 +164,7 @@ test.describe('enum drift - generations columns', () => {
   // under test varies while every other identity column stays fixed - STEPS/OPERATIONS
   // have no duplicate members by construction, so every row (plus the final bogus-value
   // row) has a distinct identity tuple even before accounting for the fresh project_id.
-  test('accepts every STEPS member as generations.step and rejects a bogus value', async () => {
+  test('accepts every STEPS member as generations.step and rejects a bogus value', { tag: '@smoke' }, async () => {
     const projectId = await insertProject()
     await assertEnumDrift(
       STEPS,

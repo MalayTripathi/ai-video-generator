@@ -1,8 +1,11 @@
 import { MUSIC_REQUEST_TIMEOUT_MS } from '@/lib/config/storyboard'
 import { assertLiveVoiceoverCallsAllowed } from '@/lib/voiceover/gateway'
+import { guardedFetch } from '@/lib/providers/live-call-guard'
 
 // The one place ElevenLabs Music is called. Server-side only: the key never reaches a
-// client. Tests inject hand-written fakes instead of this (tests/helpers/music-fakes.ts).
+// client. Every request goes through guardedFetch. Tests inject hand-written fakes instead of this (tests/helpers/music-fakes.ts).
+
+const providerFetch = guardedFetch('elevenlabs')
 
 const API_BASE = 'https://api.elevenlabs.io'
 const OUTPUT_FORMAT = 'mp3_44100_128'
@@ -38,7 +41,7 @@ export function createMusicGateway(): MusicGateway {
       }
 
       // One request, no retry: a retried request is a second charge.
-      const res = await fetch(`${API_BASE}/v1/music?output_format=${OUTPUT_FORMAT}`, {
+      const res = await providerFetch(`${API_BASE}/v1/music?output_format=${OUTPUT_FORMAT}`, {
         method: 'POST',
         headers: { 'xi-api-key': apiKey(), 'Content-Type': 'application/json' },
         body: JSON.stringify({

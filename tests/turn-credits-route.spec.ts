@@ -36,7 +36,7 @@ async function seedUserMessage(projectId: string) {
 }
 
 test.describe('GET /api/projects/[id]/agent/turn-credits', () => {
-  test('returns the matching agent_turn spend row\'s credits, negated to a positive figure', async ({ page }) => {
+  test('returns the matching agent_turn spend row\'s credits, negated to a positive figure', async ({ request }) => {
     const projectId = await seedProject(primary.user.id)
     const messageId = await seedUserMessage(projectId)
 
@@ -55,7 +55,7 @@ test.describe('GET /api/projects/[id]/agent/turn-credits', () => {
     })
     expect(ledgerError).toBeNull()
 
-    const response = await page.request.get(`/api/projects/${projectId}/agent/turn-credits?messageId=${messageId}`)
+    const response = await request.get(`/api/projects/${projectId}/agent/turn-credits?messageId=${messageId}`)
     expect(response.ok()).toBe(true)
     const body = await response.json()
     expect(body.credits).toBe(17)
@@ -63,11 +63,11 @@ test.describe('GET /api/projects/[id]/agent/turn-credits', () => {
     expect(body.rail).toEqual({ spendThisMonth: expect.any(Number), creditsSpentThisMonth: expect.any(Number) })
   })
 
-  test('returns credits: null for a message with no matching spend row - never 0', async ({ page }) => {
+  test('returns credits: null for a message with no matching spend row - never 0', async ({ request }) => {
     const projectId = await seedProject(primary.user.id)
     const messageId = await seedUserMessage(projectId)
 
-    const response = await page.request.get(`/api/projects/${projectId}/agent/turn-credits?messageId=${messageId}`)
+    const response = await request.get(`/api/projects/${projectId}/agent/turn-credits?messageId=${messageId}`)
     expect(response.ok()).toBe(true)
     const body = await response.json()
     expect(body.credits).toBe(null)
@@ -75,7 +75,7 @@ test.describe('GET /api/projects/[id]/agent/turn-credits', () => {
     expect(body.rail).toEqual({ spendThisMonth: expect.any(Number), creditsSpentThisMonth: expect.any(Number) })
   })
 
-  test('a user cannot read another user\'s turn credits - 404, not their data', async ({ page }) => {
+  test('a user cannot read another user\'s turn credits - 404, not their data', async ({ request }) => {
     // Default storageState (per playwright.config.ts) is primary - requesting a
     // project owned by secondary must 404 at the ownership check, before the
     // credit_ledger query (and its own RLS) is even reached.
@@ -95,7 +95,7 @@ test.describe('GET /api/projects/[id]/agent/turn-credits', () => {
       price_version: 'test',
     })
 
-    const response = await page.request.get(`/api/projects/${projectId}/agent/turn-credits?messageId=${messageId}`)
+    const response = await request.get(`/api/projects/${projectId}/agent/turn-credits?messageId=${messageId}`)
     expect(response.status()).toBe(404)
   })
 })

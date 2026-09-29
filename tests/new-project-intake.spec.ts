@@ -4,7 +4,7 @@ import { primary } from './fixed-users'
 import { DEFAULT_DURATION_TARGET } from '../src/lib/config/duration'
 
 test.describe('New Project intake', () => {
-  test('filling the brief and submitting creates a project and lands on workbench', async ({ page }) => {
+  test('filling the brief and submitting creates a project and lands on workbench', { tag: '@smoke' }, async ({ page }) => {
     // The default browser identity (primary, via playwright.config.ts's storageState)
     // is already authenticated - no per-test createTestSession()/addCookies needed.
     const user = primary.user
