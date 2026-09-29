@@ -9,6 +9,8 @@ import {
   MOTION_PAN_PCT,
   MOTION_PAN_SCALE,
   MOTION_ZOOM,
+  MUSIC_END_FADE_SEC,
+  MUSIC_LOOP_CROSSFADE_SEC,
   type MixRange,
 } from '@/lib/config/storyboard'
 import { resolveJoins, resolveMotions, type ResolvedJoin, type WordBoundary } from './motion'
@@ -216,6 +218,99 @@ export type FilmVoiceover = {
   words: readonly WordBoundary[] | null
 }
 
+/**
+ * One pass of the music file through the film: it starts at startSec, plays the file from
+ * its beginning for durationSec, fading in over fadeInSec and out over fadeOutSec (the
+ * crossfade into the next pass). Every pass but the first fades in; every pass with a
+ * successor fades out.
+ */
+export type MusicPlay = {
+  startSec: number
+  durationSec: number
+  fadeInSec: number
+  fadeOutSec: number
+}
+
+export type FilmMusic = {
+  path: string
+  durationSec: number
+  gainDb: number
+  /** Loop to fit in effect: set, and the music shorter than the picture. */
+  looping: boolean
+  plays: MusicPlay[]
+  /** Where the music ends: the picture's end, or its own end when it is shorter and not looped. */
+  endSec: number
+  /** The fade-out ending at endSec, over the whole music bus. */
+  endFadeSec: number
+}
+
+/**
+ * Where the music plays against a picture of totalSec. Looped (Loop to fit, and only when
+ * the music is shorter than the picture): repeats that overlap by a crossfade until the
+ * picture ends. Otherwise one pass. Either way the music fades out ending at endSec - the
+ * picture's end when the music is at least as long (a picture that shrank after the music
+ * was made), or its own end when it is shorter and not looped.
+ */
+export function musicSchedule(
+  durationSec: number,
+  totalSec: number,
+  loop: boolean
+): Pick<FilmMusic, 'looping' | 'plays' | 'endSec' | 'endFadeSec'> {
+  const dur = Math.max(0, durationSec)
+  const total = Math.max(0, totalSec)
+  const looping = loop && dur > 0 && dur < total
+  const plays: MusicPlay[] = []
+  let endSec: number
+  if (looping) {
+    const crossfade = Math.min(MUSIC_LOOP_CROSSFADE_SEC, dur / 2)
+    const step = dur - crossfade
+    for (let k = 0, start = 0; start < total; k++, start = k * step) {
+      const hasNext = start + dur < total
+      plays.push({
+        startSec: start,
+        durationSec: Math.min(dur, total - start),
+        fadeInSec: k > 0 ? crossfade : 0,
+        fadeOutSec: hasNext ? crossfade : 0,
+      })
+    }
+    endSec = total
+  } else {
+    endSec = Math.min(dur, total)
+    if (endSec > 0) plays.push({ startSec: 0, durationSec: endSec, fadeInSec: 0, fadeOutSec: 0 })
+  }
+  return { looping, plays, endSec, endFadeSec: Math.min(MUSIC_END_FADE_SEC, endSec / 2) }
+}
+
+/** One pass's own gain (0..1) at film time t: its crossfades, zero outside the pass. */
+export function musicPlayGainAt(play: MusicPlay, t: number): number {
+  const local = t - play.startSec
+  if (local < 0 || local >= play.durationSec) return 0
+  let g = 1
+  if (play.fadeInSec > 0 && local < play.fadeInSec) g = Math.min(g, local / play.fadeInSec)
+  const fromEnd = play.durationSec - local
+  if (play.fadeOutSec > 0 && fromEnd < play.fadeOutSec) g = Math.min(g, fromEnd / play.fadeOutSec)
+  return g
+}
+
+/** The end fade's gain (0..1) at film time t, over the whole music bus. */
+export function musicEndFadeAt(music: Pick<FilmMusic, 'endSec' | 'endFadeSec'>, t: number): number {
+  if (t >= music.endSec) return 0
+  const fadeStart = music.endSec - music.endFadeSec
+  if (music.endFadeSec <= 0 || t <= fadeStart) return 1
+  return (music.endSec - t) / music.endFadeSec
+}
+
+/**
+ * The music's own gain (0..1) at film time t from its schedule, before the mix gain and the
+ * duck: the overlapping passes' crossfades, times the end fade. The preview sets its gains
+ * from these same functions; the export renders the same breakpoints with afade.
+ */
+export function musicEnvelopeAt(music: Pick<FilmMusic, 'plays' | 'endSec' | 'endFadeSec'>, t: number): number {
+  if (t < 0) return 0
+  const passes = music.plays.reduce((sum, p) => sum + musicPlayGainAt(p, t), 0)
+  return Math.min(1, passes * musicEndFadeAt(music, t))
+}
+
 export type FilmTimeline = {
   aspectRatio: AspectRatio
   totalSec: number
@@ -224,8 +319,8 @@ export type FilmTimeline = {
   audio: {
     /** Omitted (null) when there is no voiceover or its lane is muted. */
     voice: { path: string; durationSec: number; gainDb: number } | null
-    /** Music arrives with Storyboard D; until then always null. */
-    music: { path: string; durationSec: number; gainDb: number } | null
+    /** Omitted (null) when there is no music or its lane is muted. */
+    music: FilmMusic | null
     duck: DuckPoint[]
   }
   lines: FilmLine[]
@@ -237,7 +332,7 @@ export type FilmInput = {
   aspectRatio: AspectRatio
   shots: readonly FilmShot[]
   voiceover: FilmVoiceover | null
-  music?: { path: string; durationSec: number } | null
+  music?: { path: string; durationSec: number; loop: boolean } | null
   mix: Mix
   /** The film defaults a shot's null motion / transition_out follows (resolveExportSettings). */
   defaultMotion: ExportMotion
@@ -296,7 +391,6 @@ export function buildFilmTimeline(input: FilmInput): FilmTimeline {
 
   const vo = input.voiceover
   const mix = input.mix
-  const music = input.music && !mix.musicMuted ? { ...input.music, gainDb: mix.musicGainDb } : null
   const lines = (vo?.spans ?? [])
     .filter((s) => s.text.trim().length > 0 && s.endSec > s.startSec)
     .map((s) => ({
@@ -313,6 +407,16 @@ export function buildFilmTimeline(input: FilmInput): FilmTimeline {
     if (band.name) chapters.push({ title: band.name, startSec: bandAt })
     bandAt += band.seconds
   }
+
+  const music: FilmMusic | null =
+    input.music && !mix.musicMuted && at > 0
+      ? {
+          path: input.music.path,
+          durationSec: input.music.durationSec,
+          gainDb: mix.musicGainDb,
+          ...musicSchedule(input.music.durationSec, at, input.music.loop),
+        }
+      : null
 
   return {
     aspectRatio: input.aspectRatio,

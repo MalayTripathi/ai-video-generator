@@ -58,7 +58,8 @@ export const PRICE_TABLE: Partial<Record<Step, Partial<Record<Operation, PriceEn
     // Generation is priced by the script's length; aligning an upload by the audio's.
     voiceover: { credits: 8, unit: 'per_1k_chars' }, // placeholder
     align_voiceover: { credits: 4, unit: 'per_minute' }, // placeholder
-    background_music: { credits: 40, unit: 'per_project' }, // placeholder
+    // Music is priced by the seconds requested (the picture's length, clamped).
+    background_music: { credits: 3, unit: 'per_minute' }, // placeholder
   },
   video_prompts: {
     write_video_prompts: { credits: 2, unit: 'per_shot' }, // placeholder

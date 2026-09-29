@@ -5,7 +5,7 @@ import { caseTwo } from '@/lib/storyboard/timeline'
 import { imagePrice, useStoryboard } from './storyboard-context'
 import { TimelineCard } from './timeline-card'
 import { MotionPanels } from './motion-panels'
-import { MusicSection } from './audio-sections'
+import { MusicCard } from './music-card'
 import { VoiceoverCard } from './voiceover-card'
 import { ExportLocked, PreviewLocked } from './locked-sections'
 import { ExportSection } from './export-section'
@@ -18,7 +18,15 @@ import { MiniPlayer } from './mini-player'
 // The Storyboard main column (canvas 15a): Timeline, the two audio lane controls, then
 // Preview & mix and Export. Its width never changes - the inspect panel takes the agent's
 // column instead.
-export function StoryboardMain({ language, initialExports }: { language: string | null; initialExports: ExportsData }) {
+export function StoryboardMain({
+  language,
+  initialExports,
+  initialMusicStylePrompt,
+}: {
+  language: string | null
+  initialExports: ExportsData
+  initialMusicStylePrompt: string | null
+}) {
   const {
     laneShots,
     statusFor,
@@ -110,7 +118,7 @@ export function StoryboardMain({ language, initialExports }: { language: string 
 
           <div className="flex flex-col gap-[8px]">
             <VoiceoverCard language={language} />
-            <MusicSection />
+            <MusicCard initialStylePrompt={initialMusicStylePrompt} />
           </div>
         </div>
 

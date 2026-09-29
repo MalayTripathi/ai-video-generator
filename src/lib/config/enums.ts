@@ -89,6 +89,9 @@ export const MODEL_REPORTABLE_CAMERA_ORIGINS = CAMERA_ORIGINS.filter(
 export const VOICEOVER_SOURCES = ['generated', 'uploaded'] as const
 export type VoiceoverSource = (typeof VOICEOVER_SOURCES)[number]
 
+export const MUSIC_SOURCES = ['generated', 'uploaded'] as const
+export type MusicSource = (typeof MUSIC_SOURCES)[number]
+
 // Storyboard motion & transitions (B3): render-only - the slideshow and preview play them;
 // they never feed Step 5 video prompts or any camera field. MOTIONS is the domain of
 // shots.motion and shots.split_motion, TRANSITIONS of shots.transition_out; each CHECK

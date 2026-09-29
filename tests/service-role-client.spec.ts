@@ -81,7 +81,9 @@ test.describe('service-role client isolation', () => {
     // and fifth, for the same reason and with the same discipline (voiceover/logic.ts).
     // The exports logic is the sixth: exports has no authenticated write policy, so every
     // export write goes through it, after the session client has verified ownership and
-    // scoped by that row's id; its one read is a queue-position count.
+    // scoped by that row's id; its one read is a queue-position count. The music generate
+    // route is the seventh, for the voiceover routes' reason and with their discipline
+    // (music/logic.ts).
     const expectedImporters = [
       path.resolve(__dirname, '../src/lib/credits/ledger.ts'),
       path.resolve(__dirname, '../src/lib/credits/signup-grant.ts'),
@@ -89,6 +91,7 @@ test.describe('service-role client isolation', () => {
       path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/route.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/align/route.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/exports/logic.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/music/route.ts'),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []

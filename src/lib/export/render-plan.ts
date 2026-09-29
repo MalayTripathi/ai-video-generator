@@ -1,5 +1,5 @@
 import { CAPTION_STYLE_PRESETS, LOUDNESS_TARGETS } from '@/lib/config/storyboard'
-import { dbToGain, motionTransform, type DuckPoint, type FilmTimeline } from '@/lib/storyboard/film'
+import { dbToGain, motionTransform, type DuckPoint, type FilmTimeline, type MusicPlay } from '@/lib/storyboard/film'
 import type { Motion } from '@/lib/config/enums'
 import { captionLines, toAss, toSrt } from './captions'
 import { chaptersFfmetadata, chaptersTxt } from './chapters'
@@ -38,7 +38,15 @@ export type RenderPlan = {
   joinFrames: number[]
   audio: {
     voice: { path: string; gainDb: number } | null
-    music: { path: string; gainDb: number; duck: DuckPoint[] } | null
+    /** The film's music schedule (buildFilmTimeline): its passes, where it ends, its end fade. */
+    music: {
+      path: string
+      gainDb: number
+      duck: DuckPoint[]
+      plays: MusicPlay[]
+      endSec: number
+      endFadeSec: number
+    } | null
   }
   loudness: { i: number; tp: number; lra: number }
   burnCaptions: boolean
@@ -136,7 +144,14 @@ export function buildRenderPlan(
     audio: {
       voice: timeline.audio.voice ? { path: timeline.audio.voice.path, gainDb: timeline.audio.voice.gainDb } : null,
       music: timeline.audio.music
-        ? { path: timeline.audio.music.path, gainDb: timeline.audio.music.gainDb, duck: timeline.audio.duck }
+        ? {
+            path: timeline.audio.music.path,
+            gainDb: timeline.audio.music.gainDb,
+            duck: timeline.audio.duck,
+            plays: timeline.audio.music.plays,
+            endSec: timeline.audio.music.endSec,
+            endFadeSec: timeline.audio.music.endFadeSec,
+          }
         : null,
     },
     loudness: LOUDNESS_TARGETS[settings.loudness],
@@ -186,11 +201,11 @@ export function videoGraph(plan: RenderPlan, assPath: string | null, fontsDir: s
 }
 
 /**
- * The audio mix, ending in [amix]. `voiceInput`/`musicInput` are input indices (null when
- * the lane is absent or muted - it is then omitted). With neither, a silent track keeps the
- * file's shape.
+ * The audio mix, ending in [amix]. `voiceInput` is an input index and `musicInputs` the
+ * music file's input indices (musicInputCount of them), each null when the lane is absent
+ * or muted - it is then omitted. With neither, a silent track keeps the file's shape.
  */
-export function audioGraph(plan: RenderPlan, voiceInput: number | null, musicInput: number | null): string {
+export function audioGraph(plan: RenderPlan, voiceInput: number | null, musicInputs: number[] | null): string {
   const total = n(plan.totalSec)
   const parts: string[] = []
   const labels: string[] = []
@@ -198,10 +213,8 @@ export function audioGraph(plan: RenderPlan, voiceInput: number | null, musicInp
     parts.push(`[${voiceInput}:a]aresample=48000,volume=${n(plan.audio.voice.gainDb)}dB,apad,atrim=0:${total}[voice]`)
     labels.push('[voice]')
   }
-  if (musicInput !== null && plan.audio.music) {
-    parts.push(
-      `[${musicInput}:a]aresample=48000,volume=${n(plan.audio.music.gainDb)}dB,volume='${duckExpr(plan.audio.music.duck)}':eval=frame,apad,atrim=0:${total}[music]`
-    )
+  if (musicInputs && musicInputs.length === musicInputCount(plan) && plan.audio.music) {
+    parts.push(...musicGraph(plan.audio.music, musicInputs, plan.totalSec))
     labels.push('[music]')
   }
   if (labels.length === 0) {
@@ -212,6 +225,74 @@ export function audioGraph(plan: RenderPlan, voiceInput: number | null, musicInp
     parts.push(`${labels.join('')}amix=inputs=2:normalize=0:duration=longest[amix]`)
   }
   return parts.join(';')
+}
+
+/**
+ * How many times the worker passes the music file as an input: once for a single pass, twice
+ * for Loop to fit - the even passes on one input and the odd on the other, since only
+ * neighbouring passes ever overlap (the crossfade is at most half the file). One ffmpeg input
+ * per pass would not scale to a long picture, and splitting one input (asplit) into delayed
+ * branches stalls the mix in the ffmpeg this worker ships.
+ */
+export function musicInputCount(plan: RenderPlan): 0 | 1 | 2 {
+  const music = plan.audio.music
+  if (!music || music.plays.length === 0) return 0
+  return music.plays.length > 1 ? 2 : 1
+}
+
+/** A pass's gain as an ffmpeg expression of film time t: its crossfades inside it, 0 outside. */
+function playGainExpr(play: MusicPlay): string {
+  const start = play.startSec
+  const end = play.startSec + play.durationSec
+  const fadeIn = play.fadeInSec > 0 ? `min(1,(t-${n(start)})/${n(play.fadeInSec)})` : '1'
+  const fadeOut = play.fadeOutSec > 0 ? `min(1,(${n(end)}-t)/${n(play.fadeOutSec)})` : '1'
+  return `gte(t,${n(start)})*lt(t,${n(end)})*min(${fadeIn},${fadeOut})`
+}
+
+/**
+ * The music bed, ending in [music] - the film's schedule (buildFilmTimeline), the same one
+ * the preview plays. One pass: the file trimmed to the pass. Looped: two streams, each the
+ * file padded to two steps and looped (so the even passes land on one and the odd, a step
+ * later, on the other), shaped by their passes' crossfades and mixed. Then the mix gain, the
+ * duck, the end fade and the film's length.
+ */
+export function musicGraph(music: NonNullable<RenderPlan['audio']['music']>, inputs: number[], totalSec: number): string[] {
+  const total = n(totalSec)
+  const parts: string[] = []
+  let bed: string
+  if (music.plays.length === 1) {
+    const play = music.plays[0]
+    bed = `[${inputs[0]}:a]aresample=48000,atrim=0:${n(play.durationSec)},asetpts=PTS-STARTPTS,`
+  } else {
+    const step = music.plays[1].startSec - music.plays[0].startSec
+    const period = 2 * step
+    const streams = [0, 1].map((parity) => {
+      const plays = music.plays.filter((_, k) => k % 2 === parity)
+      const offset = parity * step
+      const chain = [
+        'aresample=48000',
+        `apad=whole_dur=${n(period)}`,
+        `atrim=0:${n(period)}`,
+        `aloop=loop=-1:size=${Math.round(period * 48000)}`,
+        `atrim=0:${n(Math.max(0, totalSec - offset))}`,
+        'asetpts=N/SR/TB',
+        ...(offset > 0 ? [`adelay=delays=${Math.round(offset * 1000)}:all=1`] : []),
+        `volume='${plays.map(playGainExpr).join('+')}':eval=frame`,
+      ]
+      parts.push(`[${inputs[parity]}:a]${chain.join(',')}[mp${parity}]`)
+      return `[mp${parity}]`
+    })
+    bed = `${streams.join('')}amix=inputs=2:normalize=0:duration=longest,`
+  }
+  const tail = [
+    `volume=${n(music.gainDb)}dB`,
+    `volume='${duckExpr(music.duck)}':eval=frame`,
+    ...(music.endFadeSec > 0 ? [`afade=t=out:st=${n(music.endSec - music.endFadeSec)}:d=${n(music.endFadeSec)}`] : []),
+    'apad',
+    `atrim=0:${total}`,
+  ].join(',')
+  parts.push(`${bed}${tail}[music]`)
+  return parts
 }
 
 export function hasAudio(plan: RenderPlan): boolean {

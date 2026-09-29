@@ -4,13 +4,14 @@ import { OPERATION_POLICY, getOperationPolicy, STALE_AFTER_MS } from '../src/lib
 import {
   IMAGE_QUEUE_STALE_AFTER_MS,
   IMAGE_STALE_AFTER_MS,
+  MUSIC_PROMPT_STALE_AFTER_MS,
+  MUSIC_STALE_AFTER_MS,
   VOICEOVER_ALIGN_STALE_AFTER_MS,
   VOICEOVER_ROUTE_MAX_DURATION_S,
   VOICEOVER_STALE_AFTER_MS,
 } from '../src/lib/config/storyboard'
 
 const DEFAULT_POLICY_OPS: Operation[] = [
-  'background_music',
   'write_video_prompts',
   'generate_clip',
   'merge',
@@ -32,6 +33,18 @@ test.describe('OPERATION_POLICY', () => {
     // Both windows must fit inside the route's own maxDuration.
     expect(vo.staleAfterMs).toBeLessThan(VOICEOVER_ROUTE_MAX_DURATION_S * 1000)
     expect(align.staleAfterMs).toBeLessThan(VOICEOVER_ROUTE_MAX_DURATION_S * 1000)
+  })
+
+  test('background_music: its own window, reclaimable from either terminal state; derive_music_prompt: once per project', () => {
+    const music = getOperationPolicy('background_music')
+    expect(music.staleAfterMs).toBe(MUSIC_STALE_AFTER_MS)
+    expect(music.claimableFrom).toEqual({ succeeded: 'always', failed: 'always' })
+    // The music route's maxDuration is the same literal as the voiceover routes'.
+    expect(music.staleAfterMs).toBeLessThan(VOICEOVER_ROUTE_MAX_DURATION_S * 1000)
+    const derive = getOperationPolicy('derive_music_prompt')
+    expect(derive.staleAfterMs).toBe(MUSIC_PROMPT_STALE_AFTER_MS)
+    // Never reclaimed once it succeeded; a failure only behind retry:true, which no caller passes.
+    expect(derive.claimableFrom).toEqual({ succeeded: 'never', failed: 'retry' })
   })
 
   test('agent_turn: 180s window, claimable unconditionally from succeeded or failed', () => {

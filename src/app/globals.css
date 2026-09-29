@@ -126,6 +126,12 @@
   --sb-active-bg: #e6ecf9;
   --sb-active-bg-hover: #dbe4f5;
   --sb-active-line: #c3d0ec;
+  --sb-warn-fg: #8a5a06;
+  --sb-warn-bg: #fbf0d6;
+  --sb-warn-bg-hover: #f4ead0;
+  --sb-warn-line: #eed9a4;
+  --sb-warn-title: #7a4f05;
+  --sb-warn-body: #6f5320;
   --status-edited-fg: #495271;
   --status-edited-bg: #e7e9f3;
 
@@ -227,6 +233,12 @@
   --sb-active-bg: #16213c;
   --sb-active-bg-hover: #1d2a49;
   --sb-active-line: #2c3d63;
+  --sb-warn-fg: #e0b25f;
+  --sb-warn-bg: #3a2d12;
+  --sb-warn-bg-hover: #463719;
+  --sb-warn-line: #54421c;
+  --sb-warn-title: #eec684;
+  --sb-warn-body: #c8b28a;
   --status-edited-fg: #a9b2cc;
   --status-edited-bg: #262a3c;
 
@@ -317,6 +329,12 @@
   --color-sb-active-bg: var(--sb-active-bg);
   --color-sb-active-bg-hover: var(--sb-active-bg-hover);
   --color-sb-active-line: var(--sb-active-line);
+  --color-sb-warn-fg: var(--sb-warn-fg);
+  --color-sb-warn-bg: var(--sb-warn-bg);
+  --color-sb-warn-bg-hover: var(--sb-warn-bg-hover);
+  --color-sb-warn-line: var(--sb-warn-line);
+  --color-sb-warn-title: var(--sb-warn-title);
+  --color-sb-warn-body: var(--sb-warn-body);
   --color-status-edited-fg: var(--status-edited-fg);
   --color-status-edited-bg: var(--status-edited-bg);
 

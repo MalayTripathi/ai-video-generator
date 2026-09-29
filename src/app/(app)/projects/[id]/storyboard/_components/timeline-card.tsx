@@ -7,6 +7,7 @@ import {
   STORYBOARD_ZOOM_STEPS,
 } from '@/lib/config/storyboard'
 import { speechBars } from '@/lib/storyboard/voiceover'
+import { musicSchedule } from '@/lib/storyboard/film'
 import { MOTION_LABELS } from '@/lib/motion-labels'
 import type { Motion } from '@/lib/config/enums'
 import {
@@ -344,6 +345,39 @@ function VoiceLane({ totalSeconds }: { totalSeconds: number }) {
   )
 }
 
+// The music lane (StoryboardFrame pass 2): one block per pass of the film's music schedule
+// across the time it covers - a single block, or the repeats of Loop to fit; "No music yet"
+// until a piece lands. Muted music draws faded.
+function MusicLane({ totalSeconds }: { totalSeconds: number }) {
+  const { music } = useStoryboard()
+  const current = music.current
+  if (!current || totalSeconds <= 0) {
+    return (
+      <span data-testid="music-lane" className="flex h-[30px] items-center overflow-hidden rounded-badge bg-bg-inset px-[6px]">
+        <span className="pl-[4px] text-meta text-text-quiet">No music yet</span>
+      </span>
+    )
+  }
+  const { plays } = musicSchedule(current.durationSec, totalSeconds, current.loop)
+  return (
+    <span
+      data-testid="music-lane"
+      data-muted={current.muted}
+      data-passes={plays.length}
+      className="relative flex h-[30px] items-center overflow-hidden rounded-badge bg-bg-well"
+    >
+      {plays.map((p, i) => (
+        <span
+          key={i}
+          data-testid="music-pass"
+          className={`absolute inset-y-[3px] rounded-[3px] border border-border-muted bg-bg-inset ${current.muted ? 'opacity-40' : ''}`}
+          style={{ left: `${(p.startSec / totalSeconds) * 100}%`, width: `${(p.durationSec / totalSeconds) * 100}%` }}
+        />
+      ))}
+    </span>
+  )
+}
+
 // The timeline card (canvas 15a/15b/15c): header, scene bands, ruler, the editable picture
 // lane, the two audio lanes and the playhead. Shots are as wide as they are long; bands,
 // ruler, lane and playhead scroll together when zoomed past Fit.
@@ -618,9 +652,7 @@ export function TimelineCard() {
 
             <VoiceLane totalSeconds={total} />
 
-            <span className="flex h-[30px] items-center overflow-hidden rounded-badge bg-bg-inset px-[6px]">
-              <span className="pl-[4px] text-meta text-text-quiet">No music yet</span>
-            </span>
+            <MusicLane totalSeconds={total} />
 
             <Playhead ref={playheadRef} totalSeconds={total} contentWidth={layout?.contentWidth ?? null} scrollerRef={scrollerRef} />
           </div>

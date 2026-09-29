@@ -12,6 +12,7 @@ import {
   MOTIONS,
   TRANSITIONS,
   VOICEOVER_SOURCES,
+  MUSIC_SOURCES,
   EXPORT_MOTIONS,
   CAPTION_MODES,
   CAPTION_STYLES,
@@ -543,6 +544,7 @@ test.describe('enum drift - export settings and exports', () => {
     ['caption_style', CAPTION_STYLES],
     ['caption_position', CAPTION_POSITIONS],
     ['loudness_preset', LOUDNESS_PRESETS],
+    ['music_source', MUSIC_SOURCES],
   ] as const) {
     test(`accepts every projects.${column} member and rejects a bogus value`, async () => {
       const insert = (value: string) =>

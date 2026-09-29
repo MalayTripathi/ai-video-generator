@@ -40,6 +40,9 @@ export const OPERATIONS = [
   // Aligning an uploaded voiceover to the script (forced alignment), at the storyboard.
   // Priced per minute of audio, unlike voiceover's per-character generation.
   'align_voiceover',
+  // Deriving the one-line music style prompt from the script, once per project, at the
+  // storyboard. Writes usage (and a claim) but is free to the user - no ledger row.
+  'derive_music_prompt',
 ] as const
 
 export type Operation = (typeof OPERATIONS)[number]
@@ -61,7 +64,7 @@ export type Provider = (typeof PROVIDERS)[number]
 export const STEP_OPERATIONS: Record<Step, readonly Operation[]> = {
   workbench: ['generate_shots', 'agent_turn', 'derive_camera', 'generate_element_reference'],
   image_prompts: ['write_image_prompts', 'agent_turn'],
-  storyboard: ['generate_image', 'voiceover', 'align_voiceover', 'background_music', 'agent_turn'],
+  storyboard: ['generate_image', 'voiceover', 'align_voiceover', 'background_music', 'derive_music_prompt', 'agent_turn'],
   video_prompts: ['write_video_prompts'],
   generation: ['generate_clip'],
   assembly: ['merge'],
@@ -92,6 +95,7 @@ const OPERATION_LABELS: Record<Step, Partial<Record<Operation, string>>> = {
     voiceover: 'Voiceover',
     align_voiceover: 'Voiceover alignment',
     background_music: 'Background music',
+    derive_music_prompt: 'Music style',
     agent_turn: 'Agent turn',
   },
   video_prompts: { write_video_prompts: 'Prompt writing' },

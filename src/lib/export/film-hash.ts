@@ -15,7 +15,15 @@ function canonical(t: FilmTimeline): string {
     t.segments.map((s) => [s.shotId, s.part, s.imagePath, s.motion, ms(s.startSec), ms(s.endSec)]),
     t.joins.map((j) => [j.shotId, j.transition, ms(j.dissolveSec)]),
     t.audio.voice ? [t.audio.voice.path, t.audio.voice.gainDb] : null,
-    t.audio.music ? [t.audio.music.path, t.audio.music.gainDb] : null,
+    t.audio.music
+      ? [
+          t.audio.music.path,
+          t.audio.music.gainDb,
+          t.audio.music.plays.map((p) => [ms(p.startSec), ms(p.durationSec), ms(p.fadeInSec), ms(p.fadeOutSec)]),
+          ms(t.audio.music.endSec),
+          ms(t.audio.music.endFadeSec),
+        ]
+      : null,
     t.audio.duck.map((p) => [ms(p.t), p.db]),
     t.lines.map((l) => [l.text, ms(l.startSec), ms(l.endSec)]),
     (t.words ?? []).map(([a, b]) => [ms(a), ms(b)]),

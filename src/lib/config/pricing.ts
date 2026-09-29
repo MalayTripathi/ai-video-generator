@@ -21,7 +21,7 @@ export type UsageBreakdown = {
   image_input_tokens?: number | null
   /** ElevenLabs text-to-speech only: characters sent (the provider bills per character). */
   characters?: number | null
-  /** ElevenLabs forced alignment only: seconds of audio aligned (billed per minute). */
+  /** ElevenLabs forced alignment and music: seconds of audio aligned or generated (billed per minute). */
   audio_seconds?: number | null
 }
 
@@ -141,10 +141,15 @@ type ElevenLabsRates = {
   perCharacterUsd: Record<string, number>
   /** USD per minute of forced alignment. */
   alignmentPerMinuteUsd: number
+  /** USD per minute of generated music, keyed by model id. */
+  musicPerMinuteUsd: Record<string, number>
 }
+// Music PLACEHOLDER: $0.15 per minute is the published pay-as-you-go figure at the time
+// of writing, applied to every music model until invoices say otherwise.
 export const ELEVENLABS_RATES: ElevenLabsRates = {
   perCharacterUsd: { eleven_v3: 0.1 / 1000 },
   alignmentPerMinuteUsd: 0.4 / 60,
+  musicPerMinuteUsd: { music_v1: 0.15, music_v2: 0.15, music_v2_5: 0.15 },
 }
 
 // The model name a usage row carries for a forced-alignment call - the endpoint has no
@@ -158,7 +163,10 @@ type FalRates = {
 }
 export const FAL_RATES: FalRates = { perClipUsd: {}, perSecondUsd: {} }
 
-type ElevenLabsAppliedRates = { perCharacterUsd: number } | { alignmentPerMinuteUsd: number }
+type ElevenLabsAppliedRates =
+  | { perCharacterUsd: number }
+  | { alignmentPerMinuteUsd: number }
+  | { musicPerMinuteUsd: number }
 
 type OpenAiImageAppliedRates = { textInputPerMTok: number; imageInputPerMTok: number; outputPerMTok: number }
 
@@ -204,7 +212,17 @@ export function computeCost(provider: Provider, model: string, breakdown: UsageB
   }
 
   if (provider === 'elevenlabs') {
-    // Forced alignment reports seconds; text-to-speech reports characters.
+    // Forced alignment and music report seconds; text-to-speech reports characters.
+    const musicRate = ELEVENLABS_RATES.musicPerMinuteUsd[model]
+    if (musicRate !== undefined) {
+      const seconds = breakdown.audio_seconds ?? 0
+      return {
+        estimatedCost: (seconds / 60) * musicRate,
+        appliedRates: { musicPerMinuteUsd: musicRate },
+        quantity: seconds,
+        unit: 'seconds',
+      }
+    }
     if (model === ELEVENLABS_ALIGNMENT_MODEL) {
       const seconds = breakdown.audio_seconds ?? 0
       const rate = ELEVENLABS_RATES.alignmentPerMinuteUsd

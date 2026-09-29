@@ -1,8 +1,10 @@
 import type { Tables } from '@/lib/database.types'
 
 export type {
+  CurrentMusic,
   CurrentVoiceover,
   ImageStatusData,
+  MusicStatus,
   ShotImageStatus,
   VoiceoverStatus,
 } from '@/app/api/projects/[id]/images/status/logic'

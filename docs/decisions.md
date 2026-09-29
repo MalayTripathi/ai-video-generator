@@ -1357,3 +1357,30 @@ within documented pixel and ratio bounds, so each aspect ratio gets an exact siz
 (1008x1792, 1792x1008, 1088x1088) and the stored image is already Step 6's first-frame
 shape. `gpt-image-1-mini`'s fixed 2:3 portrait would have needed a crop that throws away
 the edges of every frame.
+
+## Storyboard music: the derivation claim, the loop schedule, and two ffmpeg inputs
+
+**The style prompt is derived once per project, guarded by a claim.** `derive_music_prompt`
+fires only from the Music card's first user expand while the field is empty - never on
+render - and claims `(storyboard, derive_music_prompt)` with `succeeded: 'never'` and
+`failed: 'retry'` that no caller passes. A reload, a re-expand, a second tab or an emptied
+field all hit the claim and make no call; a failure leaves the field empty for the person
+rather than spending again on its own. It writes a `usage` row (the spend is real) and no
+ledger row (it is free to the user). The write into `projects` is conditional on the field
+still being null, so a prompt typed while the call ran is never overwritten.
+
+**Music is sized to the picture when it is made, and the film adapts afterwards.** A
+request asks for the in-film length, clamped to the provider's 3-600s. Afterwards the
+picture can change freely without regenerating anything: grown past the music, the card
+warns and offers Loop to fit; shrunk, the music fades out at the picture's end with no
+warning. Both behaviours are one pure function, `musicSchedule` (`film.ts`), which the
+preview and the export both read - loop passes overlap by a crossfade, the last is cut at
+the picture's end, and the loop flag is ignored when the music already covers the picture.
+
+**Why the export loops on two inputs, not one per pass or a split.** Splitting one input
+(`asplit`) into delayed, trimmed branches and mixing them stalls or truncates the mix in the
+ffmpeg this worker ships (6.1), and one `-i` per pass does not scale to a ten-minute
+picture. Because the crossfade is at most half the file, only neighbouring passes overlap:
+the even passes go on one input and the odd on another, each the file padded to two steps
+and looped with `aloop`, shaped by an expression built from the same passes the preview
+schedules. The worker passes the file `musicInputCount(plan)` times.

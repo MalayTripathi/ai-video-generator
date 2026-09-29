@@ -29,7 +29,7 @@ import {
   settleGeneration,
 } from '@/lib/generations/claim'
 import { assertWithinAllowance, reserveUsage, settleUsage } from '@/lib/usage'
-import { liveVoiceoverCommittedCredits } from '@/lib/voiceover/committed'
+import { liveAudioCommittedCredits } from '@/lib/voiceover/committed'
 import { estimateInputTokens, quoteOpenAiImageCall } from '@/lib/usage/quote'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 
@@ -148,7 +148,7 @@ export async function runImagesRequest(params: {
   await ensureSignupGrant(userId)
   const balance = await getBalance(userId)
   const committed =
-    (await countLiveImageClaims(supabase, userId)) * price + (await liveVoiceoverCommittedCredits(supabase, userId))
+    (await countLiveImageClaims(supabase, userId)) * price + (await liveAudioCommittedCredits(supabase, userId))
   const effective = balance - committed
   const affordable = Math.max(0, Math.floor(effective / price))
 

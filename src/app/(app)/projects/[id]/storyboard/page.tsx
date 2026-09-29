@@ -35,7 +35,7 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
   const { data: project } = await supabase
     .from('projects')
     .select(
-      'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target, mix_voice_gain_db, mix_music_gain_db, mix_duck_depth_db, mix_duck_bypass, music_muted, export_motion, export_transition, caption_mode, caption_style, caption_position, loudness_preset'
+      'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target, mix_voice_gain_db, mix_music_gain_db, mix_duck_depth_db, mix_duck_bypass, music_muted, music_style_prompt, export_motion, export_transition, caption_mode, caption_style, caption_position, loudness_preset'
     )
     .eq('id', projectId)
     .eq('user_id', user.id)
@@ -112,7 +112,11 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
           footer={<StoryboardFooter />}
           sideColumn={<InspectPanel />}
         >
-          <StoryboardMain language={project.language} initialExports={exportsData} />
+          <StoryboardMain
+            language={project.language}
+            initialExports={exportsData}
+            initialMusicStylePrompt={project.music_style_prompt}
+          />
         </WorkbenchShell>
       </PlaybackProvider>
     </StoryboardProvider>

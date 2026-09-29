@@ -23,7 +23,7 @@ import {
 import { claimGeneration, peekGenerationPayload, persistGenerationPayload, settleGeneration } from '@/lib/generations/claim'
 import { assertWithinAllowance, reserveUsage, settleUsage } from '@/lib/usage'
 import { quoteElevenLabsCall } from '@/lib/usage/quote'
-import { liveVoiceoverCommittedCredits } from '@/lib/voiceover/committed'
+import { liveAudioCommittedCredits } from '@/lib/voiceover/committed'
 import { concatMp3, measureDurationSec } from '@/lib/voiceover/audio'
 import { wordBoundaries, wordsFromStoredAlignment } from '@/lib/storyboard/motion'
 import {
@@ -51,13 +51,13 @@ const ALIGN = 'align_voiceover' as const
 // Shared: project, script, the spend gate
 // ---------------------------------------------------------------------------------------
 
-type VoiceoverProject = { id: string; language: string | null }
+export type VoiceoverProject = { id: string; language: string | null }
 
-type Refusal =
+export type Refusal =
   | { ok: false; status: 400 | 404 | 409 | 422 | 500; error: string; code?: string; credits?: number; shotId?: string }
   | { ok: false; status: 402; error: string; requiredCredits: number; balanceCredits: number }
 
-async function loadEditableProject(
+export async function loadEditableProject(
   supabase: SupabaseServerClient,
   projectId: string,
   userId: string
@@ -97,7 +97,7 @@ export function scriptHash(text: string): string {
  * user has committed to in-flight storyboard work (images and voiceovers). A 402 here
  * writes nothing at all.
  */
-async function gate(
+export async function gate(
   supabase: SupabaseServerClient,
   userId: string,
   price: number,
@@ -107,7 +107,7 @@ async function gate(
   const balance = await deps.getBalance(userId)
   const imagePrice = creditsFor({ step: STEP, operation: 'generate_image', quantity: 1 })
   const committed =
-    (await countLiveImageClaims(supabase, userId)) * imagePrice + (await liveVoiceoverCommittedCredits(supabase, userId))
+    (await countLiveImageClaims(supabase, userId)) * imagePrice + (await liveAudioCommittedCredits(supabase, userId))
   const effective = Math.max(0, balance - committed)
   if (effective < price) {
     return {
@@ -181,7 +181,7 @@ async function linkVoiceover(
 
 // Storage writes never overwrite. A retry re-writing an object an earlier run already
 // stored (same attempt, same bytes) is detected by the storage error's status code.
-async function putObject(
+export async function putObject(
   supabase: SupabaseServerClient,
   path: string,
   body: Buffer | string,
@@ -194,13 +194,13 @@ async function putObject(
   return error.message
 }
 
-async function getObject(supabase: SupabaseServerClient, path: string): Promise<Buffer | null> {
+export async function getObject(supabase: SupabaseServerClient, path: string): Promise<Buffer | null> {
   const { data, error } = await supabase.storage.from('artifacts').download(path)
   if (error || !data) return null
   return Buffer.from(await data.arrayBuffer())
 }
 
-function errorMessage(err: unknown): string {
+export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : 'Unexpected error'
 }
 

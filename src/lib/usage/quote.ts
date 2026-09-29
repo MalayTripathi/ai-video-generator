@@ -157,8 +157,8 @@ export function quoteOpenAiImageCall(params: {
 
 /**
  * The pre-flight quote for an ElevenLabs call. Exact, like the image quote: text-to-speech
- * bills the characters sent, and forced alignment bills the audio's measured length -
- * both known before the call.
+ * bills the characters sent, forced alignment the audio's measured length, and music the
+ * length requested - all known before the call.
  */
 export function quoteElevenLabsCall(
   params: { model: string; characters: number } | { model: string; audioSeconds: number }

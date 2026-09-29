@@ -79,6 +79,13 @@ test.describe('computeCost', () => {
     expect(result.unit).toBe('seconds')
   })
 
+  test('elevenlabs music: per minute of the requested length, keyed by model', () => {
+    const result = computeCost('elevenlabs', 'music_v1', { input_tokens: 0, output_tokens: 0, audio_seconds: 90 })
+    expect(result.unit).toBe('seconds')
+    expect(result.quantity).toBe(90)
+    expect(result.estimatedCost).toBeCloseTo(1.5 * ELEVENLABS_RATES.musicPerMinuteUsd.music_v1, 9)
+  })
+
   test('elevenlabs: an unknown text-to-speech model returns a null cost', () => {
     const result = computeCost('elevenlabs', 'not-a-model', { input_tokens: 0, output_tokens: 0, characters: 10 })
     expect(result.estimatedCost).toBeNull()

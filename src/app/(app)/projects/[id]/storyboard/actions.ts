@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { stepIndex } from '@/lib/config/pipeline'
+import { MUSIC_STYLE_PROMPT_EDIT_MAX_CHARS } from '@/lib/config/storyboard'
 import { filmDuration, filmSeconds, isRetimeAllowed, retimeBounds } from '@/lib/storyboard/timeline'
 import type { Motion, Transition } from '@/lib/config/enums'
 import { isSplitAllowed, parseMotion, parseTransition } from '@/lib/storyboard/motion'
@@ -249,6 +250,114 @@ export async function setVoiceoverMutedForUser(
   const { error } = await supabase
     .from('projects')
     .update({ voiceover_muted: muted, updated_at: new Date().toISOString() })
+    .eq('id', projectId)
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+// Music (Storyboard D). All free: each diffs against the stored value first, and an edit
+// that changes nothing writes nothing.
+
+type MusicRow = {
+  music_path: string | null
+  music_style_prompt: string | null
+  music_loop: boolean
+  music_muted: boolean | null
+}
+
+async function musicRow(supabase: SupabaseServerClient, projectId: string): Promise<MusicRow | null> {
+  const { data } = await supabase
+    .from('projects')
+    .select('music_path, music_style_prompt, music_loop, music_muted')
+    .eq('id', projectId)
+    .maybeSingle()
+  return data
+}
+
+/** The style prompt, saved on blur. Empty saves as null, so the placeholder shows again. */
+export async function saveMusicStylePromptForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string,
+  prompt: string
+): Promise<TimelineEditResult> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error }
+  const next = prompt.replace(/\s+/g, ' ').trim()
+  if (next.length > MUSIC_STYLE_PROMPT_EDIT_MAX_CHARS) return { success: false, error: 'That style prompt is too long' }
+  const row = await musicRow(supabase, projectId)
+  if (!row) return { success: false, error: 'Project not found' }
+  const value = next === '' ? null : next
+  if ((row.music_style_prompt ?? null) === value) return { success: true, unchanged: true }
+  const { error } = await supabase
+    .from('projects')
+    .update({ music_style_prompt: value, updated_at: new Date().toISOString() })
+    .eq('id', projectId)
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+export async function setMusicMutedForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string,
+  muted: boolean
+): Promise<TimelineEditResult> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error }
+  const row = await musicRow(supabase, projectId)
+  if (!row) return { success: false, error: 'Project not found' }
+  if ((row.music_muted ?? false) === muted) return { success: true, unchanged: true }
+  const { error } = await supabase
+    .from('projects')
+    .update({ music_muted: muted, updated_at: new Date().toISOString() })
+    .eq('id', projectId)
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+/** Loop to fit (free): the film loops the music with a crossfade until the picture ends. */
+export async function setMusicLoopForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string,
+  loop: boolean
+): Promise<TimelineEditResult> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error }
+  const row = await musicRow(supabase, projectId)
+  if (!row) return { success: false, error: 'Project not found' }
+  if (!row.music_path) return { success: false, error: 'There is no music to loop' }
+  if (row.music_loop === loop) return { success: true, unchanged: true }
+  const { error } = await supabase
+    .from('projects')
+    .update({ music_loop: loop, updated_at: new Date().toISOString() })
+    .eq('id', projectId)
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+/** Remove nulls the current-music columns. The file stays in storage; the style prompt is kept. */
+export async function removeMusicForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string
+): Promise<TimelineEditResult> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error }
+  const row = await musicRow(supabase, projectId)
+  if (!row) return { success: false, error: 'Project not found' }
+  if (!row.music_path) return { success: true, unchanged: true }
+  const { error } = await supabase
+    .from('projects')
+    .update({
+      music_path: null,
+      music_duration_sec: null,
+      music_source: null,
+      music_generated_at: null,
+      music_loop: false,
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', projectId)
   if (error) return { success: false, error: error.message }
   return { success: true }
@@ -529,6 +638,30 @@ export async function setVoiceoverMuted(projectId: string, muted: boolean): Prom
   const { supabase, user } = await currentUser()
   if (!user) return NOT_AUTHENTICATED
   return setVoiceoverMutedForUser(supabase, user.id, projectId, muted)
+}
+
+export async function saveMusicStylePrompt(projectId: string, prompt: string): Promise<TimelineEditResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return NOT_AUTHENTICATED
+  return saveMusicStylePromptForUser(supabase, user.id, projectId, prompt)
+}
+
+export async function setMusicMuted(projectId: string, muted: boolean): Promise<TimelineEditResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return NOT_AUTHENTICATED
+  return setMusicMutedForUser(supabase, user.id, projectId, muted)
+}
+
+export async function setMusicLoop(projectId: string, loop: boolean): Promise<TimelineEditResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return NOT_AUTHENTICATED
+  return setMusicLoopForUser(supabase, user.id, projectId, loop)
+}
+
+export async function removeMusic(projectId: string): Promise<TimelineEditResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return NOT_AUTHENTICATED
+  return removeMusicForUser(supabase, user.id, projectId)
 }
 
 export async function saveShotMotion(

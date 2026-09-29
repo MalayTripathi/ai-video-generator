@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import sharp from 'sharp'
@@ -50,7 +50,7 @@ test('renders the film at the asked size and length, with an audio stream, capti
     }
     const noMix = { mix_voice_gain_db: null, mix_music_gain_db: null, mix_duck_depth_db: null, mix_duck_bypass: null, music_muted: null }
     const stored = { caption_mode: 'both' }
-    const timeline = buildFilmTimeline(toFilmInput({ aspectRatio: '9:16', shots, read, mix: noMix, settings: stored }))
+    const timeline = buildFilmTimeline(toFilmInput({ aspectRatio: '9:16', shots, read, music: null, mix: noMix, settings: stored }))
     const settings = resolveExportSettings(stored, { hasVoiceover: true, aspectRatio: '9:16' })
     const plan = buildRenderPlan(timeline, settings, { size: { width: 180, height: 320 }, fps: 30, crf: 28, upscale: 2 })
     // The join at 2.0s falls between words, so it dissolves.
@@ -75,6 +75,58 @@ test('renders the film at the asked size and length, with an audio stream, capti
 
     expect(await readFile(out.srt!, 'utf8')).toContain('00:00:00,100 --> 00:00:01,000\nHello there')
     expect(await readFile(out.chaptersTxt!, 'utf8')).toBe('0:00 Opening\n0:02 Close\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// Music (Storyboard D): a 1.5s tone under a 4s picture. Looped, it still sounds at 3s;
+// unlooped it has faded out by then. Read with ffmpeg's volumedetect on the rendered file.
+test('renders the music bed looped to fit, and leaves it out past its end when not looped', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'export-render-music-'))
+  try {
+    await sharp({ create: { width: 360, height: 640, channels: 3, background: '#27ae60' } }).png().toFile(path.join(dir, 'a.png'))
+    const music = path.join(dir, 'music.m4a')
+    await runFfmpeg(bin!, ['-f', 'lavfi', '-i', 'sine=frequency=220:duration=1.5', '-c:a', 'aac', music])
+    const shots = [
+      { id: 's1', order_index: 0, duration_sec: 2, section_label: null, image_path: 'a' },
+      { id: 's2', order_index: 1, duration_sec: 2, section_label: null, image_path: 'a' },
+    ]
+    const noMix = { mix_voice_gain_db: null, mix_music_gain_db: 0, mix_duck_depth_db: null, mix_duck_bypass: null }
+    const settings = resolveExportSettings({}, { hasVoiceover: false, aspectRatio: '9:16' })
+
+    async function renderWith(loop: boolean) {
+      const timeline = buildFilmTimeline(
+        toFilmInput({
+          aspectRatio: '9:16',
+          shots,
+          read: null,
+          music: { path: 'music', durationSec: 1.5, loop, muted: false },
+          mix: noMix,
+          settings: {},
+        })
+      )
+      const plan = buildRenderPlan(timeline, settings, { size: { width: 180, height: 320 }, fps: 30, crf: 28, upscale: 2 })
+      const workDir = path.join(dir, loop ? 'looped' : 'plain')
+      await mkdir(workDir, { recursive: true })
+      const out = await renderExport({
+        plan,
+        inputs: { images: new Map([['a', path.join(dir, 'a.png')]]), voice: null, music },
+        workDir,
+        ffmpeg: bin!,
+        fontsDir: null,
+        onProgress: () => {},
+      })
+      const probed = await probe(bin!, out.mp4)
+      expect(probed.hasAudio).toBe(true)
+      expect(Math.abs(probed.durationSec! - 4)).toBeLessThanOrEqual(0.1)
+      const { stderr } = await runFfmpeg(bin!, ['-ss', '2.9', '-t', '0.4', '-i', out.mp4, '-af', 'volumedetect', '-vn', '-f', 'null', '-'])
+      const mean = /mean_volume: (-?[\d.]+|-inf) dB/.exec(stderr)?.[1]
+      return mean === undefined || mean === '-inf' ? -Infinity : Number(mean)
+    }
+
+    expect(await renderWith(true)).toBeGreaterThan(-45)
+    expect(await renderWith(false)).toBeLessThan(-60)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

@@ -43,7 +43,7 @@ import {
   type MotionSegment,
 } from '../actions'
 import { useImageStatusPoll } from './use-image-status-poll'
-import type { ImageStatusData, ShotImageStatus, StoryboardShot, VoiceoverStatus } from './types'
+import type { ImageStatusData, MusicStatus, ShotImageStatus, StoryboardShot, VoiceoverStatus } from './types'
 
 export type ActionSource = 'lane' | 'inspect'
 
@@ -98,6 +98,8 @@ type StoryboardContextValue = {
   // Voiceover (C1). The lane's state rides on the images status poll; refreshStatus re-reads
   // it at once. Staleness and order are computed from the read's spans against the shots.
   voiceover: VoiceoverStatus
+  // Music (D). Rides on the same poll.
+  music: MusicStatus
   refreshStatus: () => Promise<void>
   voiceoverStaleness: VoiceoverStaleness | null
   voiceoverOrderDiffers: boolean
@@ -296,6 +298,7 @@ export function StoryboardProvider({
 
   const voiceover = data.voiceover
   const spans = voiceover.current?.spans ?? null
+  const music = data.music
 
   // With a voiceover, script order is the order it was read in (the server recomputes the
   // same writes); without one, the Storyboard's own order is cleared.
@@ -494,6 +497,16 @@ export function StoryboardProvider({
     [laneShots, statusById]
   )
   const framesReady = frameReadiness.total > 0 && frameReadiness.ready === frameReadiness.total
+  // The current music as the film reads it; its mute rides on the music status, like the
+  // voiceover's.
+  const musicPath = music.current?.path ?? null
+  const musicDurationSec = music.current?.durationSec ?? 0
+  const musicLoop = music.current?.loop ?? false
+  const musicMuted = music.current?.muted ?? false
+  const currentMusic = useMemo(
+    () => (musicPath ? { path: musicPath, durationSec: musicDurationSec, loop: musicLoop, muted: musicMuted } : null),
+    [musicPath, musicDurationSec, musicLoop, musicMuted]
+  )
   const film = useMemo(
     () =>
       buildFilmTimeline(
@@ -501,11 +514,12 @@ export function StoryboardProvider({
           aspectRatio,
           shots: shots.map((s) => ({ ...s, image_path: statusById.get(s.id)?.imagePath ?? null })),
           read: currentRead,
+          music: currentMusic,
           mix,
           settings: exportSettings,
         })
       ),
-    [aspectRatio, shots, statusById, currentRead, mix, exportSettings]
+    [aspectRatio, shots, statusById, currentRead, currentMusic, mix, exportSettings]
   )
   const filmHash = useMemo(() => hashFilm(film), [film])
   const resolvedExport = useMemo(
@@ -668,6 +682,7 @@ export function StoryboardProvider({
       setBinned,
       restoreScriptOrder,
       voiceover,
+      music,
       refreshStatus: refresh,
       voiceoverStaleness: staleness,
       voiceoverOrderDiffers: orderDiffers,
@@ -722,6 +737,7 @@ export function StoryboardProvider({
       setBinned,
       restoreScriptOrder,
       voiceover,
+      music,
       refresh,
       staleness,
       orderDiffers,

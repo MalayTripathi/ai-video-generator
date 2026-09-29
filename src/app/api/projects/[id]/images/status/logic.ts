@@ -6,7 +6,7 @@ import { STATUS_POLL_INTERVAL_MS, STORYBOARD_SIGNED_URL_EXPIRES_S } from '@/lib/
 import { deriveImageState, type ImageState } from '@/lib/storyboard/image-state'
 import { countLiveImageClaims, storyboardThumbPath } from '../logic'
 import { isLiveClaim } from '@/lib/generations/claim'
-import { liveVoiceoverCommittedCredits } from '@/lib/voiceover/committed'
+import { liveAudioCommittedCredits } from '@/lib/voiceover/committed'
 import { type WordBoundary } from '@/lib/storyboard/motion'
 import { type VoiceoverSpan } from '@/lib/storyboard/voiceover'
 import { currentRead } from '@/lib/export/film-input'
@@ -61,9 +61,32 @@ export type VoiceoverStatus = {
   current: CurrentVoiceover | null
 }
 
+/** The project's current music, when there is one. */
+export type CurrentMusic = {
+  /** The stored file (projects.music_path) - what the film timeline names; audioUrl is its signed URL. */
+  path: string
+  audioUrl: string | null
+  durationSec: number
+  source: 'generated' | 'uploaded'
+  generatedAt: string
+  loop: boolean
+  muted: boolean
+}
+
+export type MusicStatus = {
+  /** none: nothing yet; generating: a run is in flight; failed: the latest run didn't land. */
+  state: 'none' | 'generating' | 'failed' | 'present'
+  startedAt: string | null
+  failedAt: string | null
+  /** The in-flight or failed run's requested length, for the "writing N seconds" line. */
+  attemptSec: number | null
+  current: CurrentMusic | null
+}
+
 export type ImageStatusData = {
   shots: ShotImageStatus[]
   voiceover: VoiceoverStatus
+  music: MusicStatus
   pollIntervalMs: number
   /** When the signed URLs above expire - the page re-signs before this. */
   expiresAt: string
@@ -129,7 +152,7 @@ export async function loadImageStatuses(params: {
   const { data: project } = await supabase
     .from('projects')
     .select(
-      'id, audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words'
+      'id, audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words, music_path, music_duration_sec, music_source, music_generated_at, music_loop, music_muted'
     )
     .eq('id', projectId)
     .eq('user_id', userId)
@@ -153,7 +176,7 @@ export async function loadImageStatuses(params: {
       .select('operation, state, started_at, queued_at, updated_at, payload')
       .eq('project_id', projectId)
       .eq('step', 'storyboard')
-      .in('operation', ['voiceover', 'align_voiceover']),
+      .in('operation', ['voiceover', 'align_voiceover', 'background_music']),
   ])
   if (shotsResult.error) return { ok: false, status: 500, error: shotsResult.error.message }
   if (claimsResult.error) return { ok: false, status: 500, error: claimsResult.error.message }
@@ -164,7 +187,7 @@ export async function loadImageStatuses(params: {
     supabase,
     projectId,
     shotRows.map((shot) => shot.image_path),
-    project.audio_path ? [project.audio_path] : []
+    [project.audio_path, project.music_path].filter((p): p is string => p !== null)
   )
 
   const claimByShot = new Map((claimsResult.data ?? []).map((row) => [row.shot_id, row]))
@@ -184,10 +207,17 @@ export async function loadImageStatuses(params: {
     }
   })
 
+  const audioClaims = voiceoverClaimsResult.data ?? []
   const voiceover = deriveVoiceoverStatus(
     project,
-    voiceoverClaimsResult.data ?? [],
+    audioClaims.filter((row) => row.operation !== 'background_music'),
     project.audio_path ? (urlByPath.get(project.audio_path) ?? null) : null,
+    now
+  )
+  const music = deriveMusicStatus(
+    project,
+    audioClaims.find((row) => row.operation === 'background_music') ?? null,
+    project.music_path ? (urlByPath.get(project.music_path) ?? null) : null,
     now
   )
 
@@ -195,7 +225,7 @@ export async function loadImageStatuses(params: {
   try {
     const price = creditsFor({ step: 'storyboard', operation: 'generate_image', quantity: 1 })
     const committed =
-      (await countLiveImageClaims(supabase, userId)) * price + (await liveVoiceoverCommittedCredits(supabase, userId))
+      (await countLiveImageClaims(supabase, userId)) * price + (await liveAudioCommittedCredits(supabase, userId))
     balanceCredits = Math.max(0, (await getBalance(userId)) - committed)
   } catch (err) {
     console.error(`[images/status] balance unreadable for project ${projectId}:`, err)
@@ -206,6 +236,7 @@ export async function loadImageStatuses(params: {
     data: {
       shots,
       voiceover,
+      music,
       pollIntervalMs: STATUS_POLL_INTERVAL_MS,
       expiresAt: new Date(now + STORYBOARD_SIGNED_URL_EXPIRES_S * 1000).toISOString(),
       balanceCredits,
@@ -303,5 +334,51 @@ export function deriveVoiceoverStatus(
   if (latest && (latest.state === 'failed' || latest.state === 'generating')) {
     return { ...base, state: 'failed', ...describe(latest), failedAt: latest.updated_at }
   }
+  return base
+}
+
+type MusicProjectRow = {
+  music_path: string | null
+  music_duration_sec: number | null
+  music_source: string | null
+  music_generated_at: string | null
+  music_loop: boolean
+  music_muted: boolean | null
+}
+
+/**
+ * The music lane's state, from the project's current-music columns plus its one claim row.
+ * In flight wins; then a failed run newer than the current music (an upload writes no
+ * claim, so a later upload supersedes an older failure); then the music itself.
+ */
+export function deriveMusicStatus(
+  project: MusicProjectRow,
+  claim: VoiceoverClaimRow | null,
+  audioUrl: string | null,
+  now: number
+): MusicStatus {
+  const current: CurrentMusic | null =
+    project.music_path && project.music_duration_sec !== null && project.music_generated_at
+      ? {
+          path: project.music_path,
+          audioUrl,
+          durationSec: Number(project.music_duration_sec),
+          source: project.music_source === 'uploaded' ? 'uploaded' : 'generated',
+          generatedAt: project.music_generated_at,
+          loop: project.music_loop,
+          muted: project.music_muted ?? false,
+        }
+      : null
+  const base: MusicStatus = { state: current ? 'present' : 'none', startedAt: null, failedAt: null, attemptSec: null, current }
+  if (!claim) return base
+
+  const p = (claim.payload ?? {}) as Record<string, unknown>
+  const attemptSec = typeof p.requestedSec === 'number' ? p.requestedSec : null
+  if (claim.state === 'generating' && isLiveClaim(claim, 'background_music', now)) {
+    return { ...base, state: 'generating', startedAt: claim.started_at, attemptSec }
+  }
+  const unsettled = claim.state === 'failed' || claim.state === 'generating'
+  const newerThanMusic = !current || claim.updated_at > current.generatedAt
+  if (unsettled && newerThanMusic) return { ...base, state: 'failed', failedAt: claim.updated_at, attemptSec }
   return base
 }

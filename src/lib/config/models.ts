@@ -20,6 +20,12 @@ if (process.env.VOICEOVER_PROVIDER && process.env.VOICEOVER_PROVIDER !== 'eleven
   console.error(`[models] VOICEOVER_PROVIDER="${process.env.VOICEOVER_PROVIDER}" is not implemented; using elevenlabs`)
 }
 
+// Provider selection for Step 4 background music - same shape as the voiceover selector.
+const musicProvider = 'elevenlabs' as const
+if (process.env.MUSIC_PROVIDER && process.env.MUSIC_PROVIDER !== 'elevenlabs') {
+  console.error(`[models] MUSIC_PROVIDER="${process.env.MUSIC_PROVIDER}" is not implemented; using elevenlabs`)
+}
+
 // Video-model registry: duration bounds per model, for the Step 2 duration stepper to
 // clamp against once it's built. This registry will grow - adding a model is one entry
 // here, not edits scattered across several places. Seconds are fractional (real clip
@@ -138,6 +144,15 @@ export type ModelsConfig = {
     provider: 'elevenlabs'
     model: string
   }
+  music: {
+    provider: 'elevenlabs'
+    model: string
+  }
+  musicPrompt: {
+    provider: 'anthropic'
+    model: string
+    maxTokens: number
+  }
   // Future steps (video prompts) each get their own section here as they're
   // implemented - keep this type and the object below in sync.
 }
@@ -219,6 +234,19 @@ export const modelsConfig: ModelsConfig = {
     // eleven_v3 is required: scripts carry inline audio tags ([slowly], [warmly]) that
     // older models would read aloud as words.
     model: process.env.ELEVENLABS_VOICEOVER_MODEL ?? 'eleven_v3',
+  },
+  music: {
+    provider: musicProvider,
+    // Instrumental only - the request always sets force_instrumental.
+    model: process.env.ELEVENLABS_MUSIC_MODEL ?? 'music_v1',
+  },
+  musicPrompt: {
+    provider: 'anthropic',
+    // Haiku in every environment, like camera: one short line of instruments, mood and
+    // tempo is mechanical summarising, fired once per project and free to the user.
+    model: process.env.CLAUDE_MUSIC_PROMPT_MODEL ?? 'claude-haiku-4-5-20251001',
+    // Small ceiling for the same reason as camera: reserveUsage reserves all of it.
+    maxTokens: Number(process.env.CLAUDE_MUSIC_PROMPT_MAX_TOKENS) || 128,
   },
 }
 

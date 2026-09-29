@@ -38,7 +38,7 @@ function shots(durations: number[], overrides: Partial<FilmShot>[] = []): FilmSh
 }
 
 function film(list: FilmShot[], settings: Partial<StoredExportSettings> = {}, read: Parameters<typeof toFilmInput>[0]['read'] = null) {
-  return buildFilmTimeline(toFilmInput({ aspectRatio: '9:16', shots: list, read, mix: NO_MIX, settings }))
+  return buildFilmTimeline(toFilmInput({ aspectRatio: '9:16', shots: list, read, music: null, mix: NO_MIX, settings }))
 }
 
 test.describe('export settings resolution', () => {
@@ -175,6 +175,9 @@ test.describe('render plan', () => {
     voiceover_words: null,
     total_duration_sec: null,
     voiceover_muted: false,
+    music_path: null,
+    music_duration_sec: null,
+    music_loop: false,
     user_id: 'u',
     ...NO_MIX,
     ...NONE,
@@ -242,7 +245,7 @@ test.describe('render plan', () => {
     expect(both.audio.voice).toEqual({ path: 'v.mp3', gainDb: 0 })
   })
 
-  test('the duck becomes a piecewise gain expression (music arrives with D)', () => {
+  test('the duck becomes a piecewise gain expression', () => {
     expect(duckExpr([])).toBe('1')
     const expr = duckExpr([
       { t: 1, db: 0 },

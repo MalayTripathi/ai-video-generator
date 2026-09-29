@@ -111,12 +111,17 @@ export async function runJob(
       voice = path.join(workDir, `voice${path.extname(plan.audio.voice.path) || '.mp3'}`)
       await download(db, plan.audio.voice.path, voice)
     }
+    let music: string | null = null
+    if (plan.audio.music) {
+      music = path.join(workDir, `music${path.extname(plan.audio.music.path) || '.mp3'}`)
+      await download(db, plan.audio.music.path, music)
+    }
 
     let lastWrite = 0
     let lastPct = 0
     const outputs = await renderExport({
       plan,
-      inputs: { images, voice, music: null },
+      inputs: { images, voice, music },
       workDir,
       ffmpeg: deps.ffmpeg,
       fontsDir: deps.fontsDir,

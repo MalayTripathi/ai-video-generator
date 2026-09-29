@@ -1,14 +1,15 @@
 'use client'
 
 import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { dbToGain, duckAt, type FilmTimeline } from '@/lib/storyboard/film'
+import { dbToGain, duckAt, musicEndFadeAt, musicPlayGainAt, type FilmTimeline } from '@/lib/storyboard/film'
 import { useStoryboard } from './storyboard-context'
 
 // The one player (canvas 15h): a single clock shared by the timeline playhead, the Preview
 // player and the mini player. Its state lives in a small external store, so a tick re-renders
 // only what reads the time - never the lane. Audio is Web Audio: the voiceover buffer plays
-// through a gain node set from the mix; the music chain arrives with Storyboard D and is
-// ducked from the film's deterministic envelope.
+// through a gain node set from the mix; the music plays each pass of the film's schedule
+// (Loop to fit repeats, crossfades) into a bus whose gain follows the mix, the film's
+// deterministic duck and the end fade - the same schedule the export renders.
 
 export type PlaybackState = {
   t: number
@@ -39,6 +40,11 @@ class PlaybackEngine {
   private voiceSource: AudioBufferSourceNode | null = null
   private voiceUrl: string | null = null
   private voiceLoad = 0
+  private musicBus: GainNode | null = null
+  private musicBuffer: AudioBuffer | null = null
+  private musicSources: { source: AudioBufferSourceNode; gain: GainNode; play: number }[] = []
+  private musicUrl: string | null = null
+  private musicLoad = 0
   private clockStart = 0
   private clockFrom = 0
   private raf: number | null = null
@@ -63,17 +69,31 @@ class PlaybackEngine {
     return this.audioClock && this.ctx ? this.ctx.currentTime : performance.now() / 1000
   }
 
-  configure(film: FilmTimeline, canPlay: boolean, voiceUrl: string | null) {
+  configure(film: FilmTimeline, canPlay: boolean, voiceUrl: string | null, musicUrl: string | null) {
+    const scheduleChanged = !sameMusicSchedule(this.film, film)
     this.film = film
     this.canPlay = canPlay
     if (!canPlay && this.state.playing) this.pause()
     if (this.state.t > film.totalSec) this.set({ t: film.totalSec })
     this.applyGains()
+    let restart = false
     if (voiceUrl !== this.voiceUrl) {
       this.voiceUrl = voiceUrl
       this.voiceBuffer = null
-      this.stopSources()
+      restart = true
       if (this.ctx) void this.loadVoice()
+    }
+    if (musicUrl !== this.musicUrl) {
+      this.musicUrl = musicUrl
+      this.musicBuffer = null
+      restart = true
+      if (this.ctx) void this.loadMusic()
+    }
+    // A new file, or a new music schedule (loop toggled, picture retimed, mute): replay from
+    // the current moment so what sounds is always the current film.
+    if (restart || scheduleChanged) {
+      this.stopSources()
+      if (this.state.playing && !this.state.scrubbing) this.startSources(this.state.t)
     }
   }
 
@@ -92,8 +112,11 @@ class PlaybackEngine {
       })
       this.voiceGain = this.ctx.createGain()
       this.voiceGain.connect(this.ctx.destination)
+      this.musicBus = this.ctx.createGain()
+      this.musicBus.connect(this.ctx.destination)
       this.applyGains()
       void this.loadVoice()
+      void this.loadMusic()
     } catch {
       this.ctx = null
     }
@@ -116,20 +139,69 @@ class PlaybackEngine {
     }
   }
 
+  private async loadMusic() {
+    const url = this.musicUrl
+    const ctx = this.ctx
+    const load = ++this.musicLoad
+    if (!url || !ctx) return
+    try {
+      const res = await fetch(url)
+      const buffer = await ctx.decodeAudioData(await res.arrayBuffer())
+      if (load !== this.musicLoad) return
+      this.musicBuffer = buffer
+      if (this.state.playing && !this.state.scrubbing) this.startSources(this.state.t)
+    } catch {
+      // No music audio: the film plays without it.
+    }
+  }
+
   private applyGains() {
     const voice = this.film?.audio.voice
     if (this.voiceGain) this.voiceGain.gain.value = voice ? dbToGain(voice.gainDb) : 0
+    this.applyMusicGains(this.state.t)
+  }
+
+  // Set every frame while playing: the bus follows the mix, the duck and the end fade; each
+  // pass follows its own crossfades.
+  private applyMusicGains(t: number) {
+    const music = this.film?.audio.music
+    if (this.musicBus) this.musicBus.gain.value = this.musicGainAt(t)
+    for (const entry of this.musicSources) {
+      const play = music?.plays[entry.play]
+      entry.gain.gain.value = play ? musicPlayGainAt(play, t) : 0
+    }
   }
 
   private startSources(t: number) {
     this.stopSources()
     const ctx = this.ctx
-    if (!ctx || !this.voiceGain || !this.voiceBuffer || t >= this.voiceBuffer.duration) return
-    const source = ctx.createBufferSource()
-    source.buffer = this.voiceBuffer
-    source.connect(this.voiceGain)
-    source.start(0, t)
-    this.voiceSource = source
+    if (!ctx) return
+    if (this.voiceGain && this.voiceBuffer && t < this.voiceBuffer.duration) {
+      const source = ctx.createBufferSource()
+      source.buffer = this.voiceBuffer
+      source.connect(this.voiceGain)
+      source.start(0, t)
+      this.voiceSource = source
+    }
+    const music = this.film?.audio.music
+    if (music && this.musicBus && this.musicBuffer) {
+      const buffer = this.musicBuffer
+      music.plays.forEach((play, index) => {
+        const end = play.startSec + play.durationSec
+        if (end <= t) return
+        const gain = ctx.createGain()
+        gain.connect(this.musicBus!)
+        const source = ctx.createBufferSource()
+        source.buffer = buffer
+        source.connect(gain)
+        const offset = Math.max(0, t - play.startSec)
+        const length = Math.min(play.durationSec, buffer.duration) - offset
+        if (length <= 0) return
+        source.start(ctx.currentTime + Math.max(0, play.startSec - t), offset, length)
+        this.musicSources.push({ source, gain, play: index })
+      })
+    }
+    this.applyMusicGains(t)
   }
 
   private stopSources() {
@@ -140,12 +212,22 @@ class PlaybackEngine {
     }
     this.voiceSource?.disconnect()
     this.voiceSource = null
+    for (const { source, gain } of this.musicSources) {
+      try {
+        source.stop()
+      } catch {
+        // already stopped or never started
+      }
+      source.disconnect()
+      gain.disconnect()
+    }
+    this.musicSources = []
   }
 
-  /** The music's gain at film time t: its level plus the duck (used once D adds music). */
+  /** The music bus's gain at film time t: its level plus the duck, times the end fade. */
   musicGainAt(t: number): number {
     const music = this.film?.audio.music
-    return music ? dbToGain(music.gainDb + duckAt(this.film!.audio.duck, t)) : 0
+    return music ? dbToGain(music.gainDb + duckAt(this.film!.audio.duck, t)) * musicEndFadeAt(music, t) : 0
   }
 
   play() {
@@ -189,6 +271,7 @@ class PlaybackEngine {
           return
         }
         this.set({ t })
+        this.applyMusicGains(t)
       }
       this.raf = requestAnimationFrame(tick)
     }
@@ -230,7 +313,22 @@ class PlaybackEngine {
     void this.ctx?.close().catch(() => {})
     this.ctx = null
     this.voiceGain = null
+    this.musicBus = null
   }
+}
+
+// Whether two films play the same music passes - a change (a new file, Loop to fit, a
+// retimed picture, mute) restarts the music sources at the current moment.
+function sameMusicSchedule(a: FilmTimeline | null, b: FilmTimeline): boolean {
+  const x = a?.audio.music ?? null
+  const y = b.audio.music
+  if (!x || !y) return x === y
+  return (
+    x.path === y.path &&
+    x.endSec === y.endSec &&
+    x.plays.length === y.plays.length &&
+    x.plays.every((p, i) => p.startSec === y.plays[i].startSec && p.durationSec === y.plays[i].durationSec)
+  )
 }
 
 const PlaybackContext = createContext<PlaybackEngine | null>(null)
@@ -260,12 +358,13 @@ export function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 export function PlaybackProvider({ children }: { children: ReactNode }) {
-  const { film, framesReady, voiceover } = useStoryboard()
+  const { film, framesReady, voiceover, music } = useStoryboard()
   const [engine] = useState(() => new PlaybackEngine())
   const voiceUrl = voiceover.current?.audioUrl ?? null
+  const musicUrl = music.current?.audioUrl ?? null
   useEffect(() => {
-    engine.configure(film, framesReady, voiceUrl)
-  }, [engine, film, framesReady, voiceUrl])
+    engine.configure(film, framesReady, voiceUrl, musicUrl)
+  }, [engine, film, framesReady, voiceUrl, musicUrl])
 
   useEffect(() => () => engine.dispose(), [engine])
 

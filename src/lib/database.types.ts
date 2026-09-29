@@ -337,7 +337,13 @@ export type Database = {
           mix_duck_depth_db: number | null
           mix_music_gain_db: number | null
           mix_voice_gain_db: number | null
+          music_duration_sec: number | null
+          music_generated_at: string | null
+          music_loop: boolean
           music_muted: boolean | null
+          music_path: string | null
+          music_source: string | null
+          music_style_prompt: string | null
           source_text: string | null
           status: string
           template_source_id: string | null
@@ -377,7 +383,13 @@ export type Database = {
           mix_duck_depth_db?: number | null
           mix_music_gain_db?: number | null
           mix_voice_gain_db?: number | null
+          music_duration_sec?: number | null
+          music_generated_at?: string | null
+          music_loop?: boolean
           music_muted?: boolean | null
+          music_path?: string | null
+          music_source?: string | null
+          music_style_prompt?: string | null
           source_text?: string | null
           status?: string
           template_source_id?: string | null
@@ -417,7 +429,13 @@ export type Database = {
           mix_duck_depth_db?: number | null
           mix_music_gain_db?: number | null
           mix_voice_gain_db?: number | null
+          music_duration_sec?: number | null
+          music_generated_at?: string | null
+          music_loop?: boolean
           music_muted?: boolean | null
+          music_path?: string | null
+          music_source?: string | null
+          music_style_prompt?: string | null
           source_text?: string | null
           status?: string
           template_source_id?: string | null

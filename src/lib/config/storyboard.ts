@@ -134,6 +134,44 @@ export const VOICEOVER_SPOKEN_CHARS_PER_SEC = 15
 export const VOICEOVER_ETA_CHARS_PER_SEC = 60
 export const VOICEOVER_ALIGN_ETA_MS = 20_000
 
+// Music (Storyboard D). The model lives in models.ts; sizes, limits, fades and timings here.
+
+// The provider's accepted request length (music_length_ms 3,000-600,000). A request asks
+// for the picture's in-film length at the time of generating, clamped to these.
+export const MUSIC_MIN_SEC = 3
+export const MUSIC_MAX_SEC = 600
+
+// When the music is longer than the picture it fades out over this, ending at the
+// picture's end. A shorter piece fades the same way at its own end.
+export const MUSIC_END_FADE_SEC = 1.5
+
+// Loop to fit: each repeat overlaps the previous by this, with a linear crossfade.
+export const MUSIC_LOOP_CROSSFADE_SEC = 1
+
+// The derived style prompt is one line under this many characters.
+export const MUSIC_STYLE_PROMPT_MAX_CHARS = 150
+// A prompt the person writes may run longer than the derived line, up to this.
+export const MUSIC_STYLE_PROMPT_EDIT_MAX_CHARS = 500
+
+// One music request's timeout, and how long a started claim may run before it reads as
+// failed: the call at its full timeout plus the storage write, with margin.
+export const MUSIC_REQUEST_TIMEOUT_MS = 240_000
+export const MUSIC_STALE_AFTER_MS = MUSIC_REQUEST_TIMEOUT_MS + 90_000
+
+// The style-prompt derivation is one short Claude call.
+export const MUSIC_PROMPT_STALE_AFTER_MS = 120_000
+
+// Uploads: the file goes straight to Storage through a signed upload URL, so these are
+// checked when the URL is issued and again, with the duration read server-side, on the
+// stored object.
+export const MUSIC_UPLOAD_FORMATS: Record<string, string> = VOICEOVER_UPLOAD_FORMATS
+export const MUSIC_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+export const MUSIC_UPLOAD_MAX_SEC = 10 * 60
+
+// Display-only estimate for the generating state's progress line and ETA.
+export const MUSIC_ETA_BASE_MS = 25_000
+export const MUSIC_ETA_MS_PER_SEC = 450
+
 // Below this timeline-header width, Fit to voiceover collapses to its icon with a tooltip.
 export const FIT_COLLAPSE_BREAKPOINT_PX = 720
 

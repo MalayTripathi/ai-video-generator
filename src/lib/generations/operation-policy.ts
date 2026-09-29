@@ -2,6 +2,8 @@ import type { Operation } from '@/lib/config/pipeline'
 import {
   IMAGE_QUEUE_STALE_AFTER_MS,
   IMAGE_STALE_AFTER_MS,
+  MUSIC_PROMPT_STALE_AFTER_MS,
+  MUSIC_STALE_AFTER_MS,
   VOICEOVER_ALIGN_STALE_AFTER_MS,
   VOICEOVER_STALE_AFTER_MS,
 } from '@/lib/config/storyboard'
@@ -58,7 +60,20 @@ export const OPERATION_POLICY: Record<Operation, OperationPolicy> = {
     staleAfterMs: VOICEOVER_ALIGN_STALE_AFTER_MS,
     claimableFrom: { succeeded: 'always', failed: 'always' },
   },
-  background_music: DEFAULT_POLICY,
+  // Same shape as voiceover: one claim per project, Generate/Regenerate/Try again are
+  // new attempts, so both terminal states reclaim unconditionally.
+  background_music: {
+    staleAfterMs: MUSIC_STALE_AFTER_MS,
+    claimableFrom: { succeeded: 'always', failed: 'always' },
+  },
+  // Once per project: a succeeded row is never reclaimed, and a failed one only behind
+  // retry:true, which no caller passes - a failure leaves the field empty for the user,
+  // never an automatic second call. A crashed 'generating' row still ages out, and its
+  // reclaim replays any persisted payload.
+  derive_music_prompt: {
+    staleAfterMs: MUSIC_PROMPT_STALE_AFTER_MS,
+    claimableFrom: { succeeded: 'never', failed: 'retry' },
+  },
   // Like generate_shots: Regenerate All/Stale/single-row are normal, repeatable
   // actions against an already-succeeded project, not exceptional retries - reclaim
   // from 'succeeded' is allowed behind the same retry flag 'failed' already requires.
