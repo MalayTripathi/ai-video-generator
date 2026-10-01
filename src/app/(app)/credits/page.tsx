@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { getCurrentUser } from '@/lib/auth/current-user'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { TopBar } from '../dashboard/top-bar'
 import { parsePeriod } from '../usage/period'
@@ -16,9 +17,7 @@ export default async function CreditsPage({ searchParams }: { searchParams: Prom
   const period = parsePeriod(rawPeriod)
 
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
 
   if (!user) {
     redirect('/login')

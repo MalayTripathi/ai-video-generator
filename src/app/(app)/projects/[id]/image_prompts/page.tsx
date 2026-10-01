@@ -1,5 +1,6 @@
 import { notFound, redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { getCurrentUser } from '@/lib/auth/current-user'
 import { WorkbenchShell } from '@/components/workbench-shell'
 import { ProjectHeader } from '@/components/workbench/project-header'
 import { ImagePromptsFooter } from './_components/image-prompts-footer'
@@ -25,9 +26,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
   const { id: projectId } = await params
 
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
 
   if (!user) {
     redirect('/login')

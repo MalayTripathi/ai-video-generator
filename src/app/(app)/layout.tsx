@@ -1,15 +1,12 @@
 import type { ReactNode } from 'react'
-import { createClient } from '@/lib/supabase/server'
+import { getCurrentUser } from '@/lib/auth/current-user'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { Rail } from './dashboard/rail'
 import { RailFiguresProvider } from '@/components/rail-figures-context'
 import { loadRailFigures } from './rail-figures'
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
 
   // First place application code runs for a signed-in user (auth.users inserts
   // happen Supabase-side, no application code in that path) - guarantees every

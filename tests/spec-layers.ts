@@ -18,6 +18,7 @@ export const UI_SPECS = [
   'image-prompts-page.spec.ts',
   'image-prompts-supplementary.spec.ts',
   'new-project-intake.spec.ts',
+  'poll-visibility.spec.ts',
   'retry-partial-phase.spec.ts',
   'shot-deletion.spec.ts',
   'shot-editing.spec.ts',
@@ -38,6 +39,7 @@ export const UI_SPECS = [
 export const API_SPECS = [
   'advance-step.spec.ts',
   'agent-image-prompts.spec.ts',
+  'auth-session.spec.ts',
   'agent-turn-estimate.spec.ts',
   'agent-turn-ledger.spec.ts',
   'agent-turn.spec.ts',
@@ -54,6 +56,7 @@ export const API_SPECS = [
   'enums-drift.spec.ts',
   'export-logic.spec.ts',
   'export-render.spec.ts',
+  'export-worker-poll.spec.ts',
   'export-worker.spec.ts',
   'exports-route.spec.ts',
   'fixed-price-ledger.spec.ts',

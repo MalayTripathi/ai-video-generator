@@ -1,5 +1,6 @@
 import { notFound, redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { getCurrentUser } from '@/lib/auth/current-user'
 import { WorkbenchShell } from '@/components/workbench-shell'
 import { ProjectHeader } from '@/components/workbench/project-header'
 import { loadAgentMessages } from '@/lib/load-agent-messages'
@@ -24,9 +25,7 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
   const { id: projectId } = await params
 
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
 
   if (!user) {
     redirect('/login')

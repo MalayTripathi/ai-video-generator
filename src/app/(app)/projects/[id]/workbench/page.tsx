@@ -1,5 +1,6 @@
 import { notFound, redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { getCurrentUser } from '@/lib/auth/current-user'
 import { WorkbenchShell } from '@/components/workbench-shell'
 import { ShotsProvider } from './_components/shots-context'
 import { AssetsProvider } from './_components/assets-context'
@@ -56,9 +57,7 @@ export default async function WorkbenchPage({
   const activeTab: WorkbenchTab = tab === 'assets' || tab === 'script' ? tab : 'shots'
 
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
 
   if (!user) {
     redirect('/login')

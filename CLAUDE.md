@@ -238,6 +238,11 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   produces no error, and it is invisible in review.
 - Do not modify `src/proxy.ts` (Next.js 16's renamed `middleware.ts`) or
   `src/lib/supabase/*` unless the task is explicitly about session handling.
+  The proxy verifies with `getClaims()`; route handlers, server actions and the
+  `(app)` layout verify with `getUser()` (layout and pages via the `cache()`d
+  `getCurrentUser`, `src/lib/auth/current-user.ts`).
+- Every client poll loop pauses while the tab is hidden and polls once on return
+  (`usePageVisible`, `src/lib/hooks/use-page-visible.ts`).
 - Wizard state lives in the DB, not client state. Each step is a real URL
   (`/projects/[id]/workbench`, `/image_prompts`, `/storyboard`,
   `/video_prompts`, `/generation`, `/assembly`) so work is

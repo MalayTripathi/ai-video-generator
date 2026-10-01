@@ -24,10 +24,13 @@ export async function proxy(request: NextRequest) {
     }
   )
 
-  // getUser(), not getSession() — getSession() trusts the cookie's JWT
-  // as-is; getUser() revalidates it against Supabase's auth server.
-  // The one that matters for actually verifying the session is real.
-  await supabase.auth.getUser()
+  // getClaims(), not getSession() — getSession() trusts the cookie's JWT
+  // as-is; getClaims() refreshes an expired token (writing the new cookies
+  // via setAll above) and verifies the JWT's signature against the project's
+  // cached public key, with no round trip to the auth server. The proxy gates
+  // nothing; route handlers, server actions and pages still verify with
+  // getUser(), which asks the auth server.
+  await supabase.auth.getClaims()
 
   return supabaseResponse
 }
