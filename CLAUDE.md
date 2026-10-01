@@ -479,10 +479,14 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   build). Don't run `npx playwright install chromium`. Auth, fakes, and
   the live-call run guard are all covered in this section — read it before
   writing a spec.
-- **Test runs are tiered.** During a task, run the affected specs plus `@smoke` on the
-  dev server (`npm run test:dev -- <specs>`, `npm run test:smoke`); at task close, the
-  full suite on a production build (`npm run test:full`). `npm run test:failed` resumes
-  only the failures and `npm run test:report` merges every run into one report.
+- **Test runs are tiered.** During a task, run only the affected specs plus `@smoke` on
+  the dev server (`npm run test:dev -- <specs>`, `npm run test:smoke`). A run of over 150
+  tests is a full run, refused before global setup unless `PW_FULL_RUN_MODULE=<step>`
+  authorises it (`tests/run-guard/guard.ts`, ledger `tests/full-run-ledger.json`). Never
+  authorise one unless the task prompt explicitly says to. At most 2 per module (one Step
+  build): one at module close, reporting failures without fixing them; one confirming
+  run after Malay approves the fixes. Remaining failures go through `npm run test:failed`;
+  `npm run test:report` merges every run into one report.
   `@smoke` holds each protected rule once plus one happy path per page;
   `tests/smoke-manifest.ts` names the required members, `smoke-guard.spec.ts` enforces them.
 - **Every new spec declares its layer** in `tests/spec-layers.ts`: `api` (no browser —
