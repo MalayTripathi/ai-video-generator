@@ -35,12 +35,14 @@ async function editableProject(
   projectId: string,
   userId: string
 ): Promise<EditableProject | { error: string }> {
-  const { data: project } = await supabase
+  const { data: project, error } = await supabase
     .from('projects')
     .select('id, furthest_step')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
+  // A failed read is reported as a failed read, never as a missing project.
+  if (error) return { error: 'Could not load project' }
   if (!project) return { error: 'Project not found' }
   if (project.furthest_step >= stepIndex('video_prompts')) return { error: 'The storyboard is locked' }
   return { id: project.id }
@@ -265,13 +267,16 @@ type MusicRow = {
   music_muted: boolean | null
 }
 
-async function musicRow(supabase: SupabaseServerClient, projectId: string): Promise<MusicRow | null> {
-  const { data } = await supabase
+// The project's music columns, or why they can't be read - a failed read is reported as
+// such, never as a missing project.
+async function musicRow(supabase: SupabaseServerClient, projectId: string): Promise<MusicRow | { error: string }> {
+  const { data, error } = await supabase
     .from('projects')
     .select('music_path, music_style_prompt, music_loop, music_muted')
     .eq('id', projectId)
     .maybeSingle()
-  return data
+  if (error) return { error: 'Could not load project' }
+  return data ?? { error: 'Project not found' }
 }
 
 /** The style prompt, saved on blur. Empty saves as null, so the placeholder shows again. */
@@ -286,7 +291,7 @@ export async function saveMusicStylePromptForUser(
   const next = prompt.replace(/\s+/g, ' ').trim()
   if (next.length > MUSIC_STYLE_PROMPT_EDIT_MAX_CHARS) return { success: false, error: 'That style prompt is too long' }
   const row = await musicRow(supabase, projectId)
-  if (!row) return { success: false, error: 'Project not found' }
+  if ('error' in row) return { success: false, error: row.error }
   const value = next === '' ? null : next
   if ((row.music_style_prompt ?? null) === value) return { success: true, unchanged: true }
   const { error } = await supabase
@@ -306,7 +311,7 @@ export async function setMusicMutedForUser(
   const project = await editableProject(supabase, projectId, userId)
   if ('error' in project) return { success: false, error: project.error }
   const row = await musicRow(supabase, projectId)
-  if (!row) return { success: false, error: 'Project not found' }
+  if ('error' in row) return { success: false, error: row.error }
   if ((row.music_muted ?? false) === muted) return { success: true, unchanged: true }
   const { error } = await supabase
     .from('projects')
@@ -326,7 +331,7 @@ export async function setMusicLoopForUser(
   const project = await editableProject(supabase, projectId, userId)
   if ('error' in project) return { success: false, error: project.error }
   const row = await musicRow(supabase, projectId)
-  if (!row) return { success: false, error: 'Project not found' }
+  if ('error' in row) return { success: false, error: row.error }
   if (!row.music_path) return { success: false, error: 'There is no music to loop' }
   if (row.music_loop === loop) return { success: true, unchanged: true }
   const { error } = await supabase
@@ -346,7 +351,7 @@ export async function removeMusicForUser(
   const project = await editableProject(supabase, projectId, userId)
   if ('error' in project) return { success: false, error: project.error }
   const row = await musicRow(supabase, projectId)
-  if (!row) return { success: false, error: 'Project not found' }
+  if ('error' in row) return { success: false, error: row.error }
   if (!row.music_path) return { success: true, unchanged: true }
   const { error } = await supabase
     .from('projects')

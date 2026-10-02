@@ -33,6 +33,12 @@ async function voiceList() {
 }
 
 async function get(path, key) {
+  // Same kill switch as src/lib/providers/live-call-guard.ts: automated runs set it, and
+  // no provider request leaves the process while it is on - free endpoints included.
+  const block = process.env.BLOCK_PROVIDER_CALLS
+  if (block !== undefined && block !== '' && block !== '0') {
+    throw new Error('Blocked an ElevenLabs request: BLOCK_PROVIDER_CALLS is set.')
+  }
   const res = await fetch(`https://api.elevenlabs.io${path}`, { headers: { 'xi-api-key': key } })
   return { status: res.status, body: await res.json().catch(() => null) }
 }

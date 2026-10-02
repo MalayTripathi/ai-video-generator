@@ -7,6 +7,7 @@ import type { AspectRatio } from '@/lib/config/enums'
 import type { PromptShot } from './types'
 import { isEdited, isStale, isUngenerated } from './derive-image-prompts-phase'
 import { AgentLocksContext } from '@/components/workbench/agent-locks-context'
+import { usePageVisible } from '@/lib/hooks/use-page-visible'
 import { checkImagePromptsAffordability } from '../actions'
 
 export type Outcome =
@@ -156,12 +157,21 @@ export function ImagePromptsProvider({
     setGaveUp(false)
   }
 
+  // Paused while the tab is hidden; refreshes once on return. Attempts live in a ref, reset
+  // only when a new external generation starts, so hiding and showing the tab never
+  // restarts the give-up count (hidden time simply doesn't count toward it).
+  const pollAttempts = useRef(0)
   useEffect(() => {
-    if (!externalGenerating) return
-    let attempts = 0
+    if (externalGenerating) pollAttempts.current = 0
+  }, [externalGenerating])
+  const visible = usePageVisible(() => {
+    if (externalGenerating) router.refresh()
+  })
+  useEffect(() => {
+    if (!externalGenerating || !visible) return
     const timer = setInterval(() => {
-      attempts += 1
-      if (attempts > POLL_MAX_ATTEMPTS) {
+      pollAttempts.current += 1
+      if (pollAttempts.current > POLL_MAX_ATTEMPTS) {
         clearInterval(timer)
         setGaveUp(true)
         setOutcome({
@@ -175,7 +185,7 @@ export function ImagePromptsProvider({
       router.refresh()
     }, POLL_INTERVAL_MS)
     return () => clearInterval(timer)
-  }, [externalGenerating, router])
+  }, [externalGenerating, visible, router])
 
   const agentLocks = useMemo(
     () => ({

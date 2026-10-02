@@ -101,15 +101,18 @@ async function projectExistsForUser(
   supabase: SupabaseServerClient,
   projectId: string,
   userId: string
-): Promise<boolean> {
-  const { data } = await supabase
+): Promise<'found' | 'missing' | 'failed'> {
+  const { data, error } = await supabase
     .from('projects')
     .select('id')
     .eq('id', projectId)
     .eq('user_id', userId)
-    .single()
-
-  return data !== null
+    .maybeSingle()
+  if (error) {
+    console.error(`[image-prompts] project read failed for ${projectId}:`, error.message)
+    return 'failed'
+  }
+  return data ? 'found' : 'missing'
 }
 
 export type ImagePromptsBalanceGate =
@@ -374,8 +377,12 @@ export async function runImagePromptGeneration(
   // Loaded before the claim, same rationale as shots/logic.ts's loadProjectForClaim: a
   // vanished/unowned project returns 404 without needing to interpret an RLS/FK error
   // off the claim INSERT.
+  // A failed read is a server error, never a 404 - only a missing row is.
   const exists = await projectExistsForUser(supabase, projectId, userId)
-  if (!exists) {
+  if (exists === 'failed') {
+    return { ok: false, status: 500, error: 'Could not load project' }
+  }
+  if (exists === 'missing') {
     return { ok: false, status: 404, error: 'Project not found' }
   }
 

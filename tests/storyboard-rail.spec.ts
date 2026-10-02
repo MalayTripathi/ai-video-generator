@@ -75,7 +75,10 @@ test('the rail updates after a shot settles, with no router.refresh()', async ({
     await context.addCookies([cookie])
     const rscRequests: string[] = []
     page.on('request', (req) => {
-      if (req.headers()['rsc'] === '1') rscRequests.push(req.url())
+      // A production build prefetches in-view <Link> targets (the step indicator) with
+      // their own RSC requests; those are not a refresh. Any other RSC request is.
+      const headers = req.headers()
+      if (headers['rsc'] === '1' && !headers['next-router-prefetch']) rscRequests.push(req.url())
     })
 
     await page.goto(`/projects/${projectId}/storyboard`)

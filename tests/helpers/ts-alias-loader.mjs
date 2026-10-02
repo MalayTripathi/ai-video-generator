@@ -5,21 +5,30 @@
 // by plain Node - has to be resolved by hand here instead.
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const srcRoot = path.resolve(process.cwd(), 'src')
 
+function withTsExtension(filePath) {
+  if (existsSync(filePath + '.ts')) return filePath + '.ts'
+  if (existsSync(filePath + '.tsx')) return filePath + '.tsx'
+  if (existsSync(path.join(filePath, 'index.ts'))) return path.join(filePath, 'index.ts')
+  return filePath
+}
+
 export async function resolve(specifier, context, nextResolve) {
   if (specifier.startsWith('@/')) {
-    let filePath = path.join(srcRoot, specifier.slice(2))
-    if (existsSync(filePath + '.ts')) {
-      filePath += '.ts'
-    } else if (existsSync(filePath + '.tsx')) {
-      filePath += '.tsx'
-    } else if (existsSync(path.join(filePath, 'index.ts'))) {
-      filePath = path.join(filePath, 'index.ts')
-    }
+    const filePath = withTsExtension(path.join(srcRoot, specifier.slice(2)))
     return { url: pathToFileURL(filePath).href, shortCircuit: true }
+  }
+  // An extensionless relative import between .ts sources (`./motion`), which the bundler
+  // resolves and plain Node does not.
+  if ((specifier.startsWith('./') || specifier.startsWith('../')) && context.parentURL?.startsWith('file:')) {
+    const base = path.resolve(path.dirname(fileURLToPath(context.parentURL)), specifier)
+    if (!path.extname(base) && !existsSync(base)) {
+      const filePath = withTsExtension(base)
+      if (filePath !== base) return { url: pathToFileURL(filePath).href, shortCircuit: true }
+    }
   }
   return nextResolve(specifier, context)
 }

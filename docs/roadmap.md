@@ -51,12 +51,31 @@ are not lost.
   shot it was for once that shot is gone - discovered backfilling the credit ledger,
   where one such row's `shot_id` was already null with no way to recover which shot
   it belonged to. Not fixed here.
-- **Suite flakiness under parallel execution.** `agent-chat-panel.spec.ts` and
-  `shot-editing.spec.ts` both fail intermittently when the full suite runs
-  `fullyParallel`, and pass reliably run in isolation. Pre-existing, unrelated to
-  the credit ledger. Worth recording because it means "the suite is green" is
-  currently a judgement call for whoever reports it — a failure in either file
-  needs a solo re-run before it's counted as a real regression.
+- **UI tests' fixed 5s/10s waits flake when concurrency is raised on this machine.**
+  Tests that wait on a save, a server action or a `router.refresh()` (seen in
+  `agent-chat-panel`, `shot-editing`, `shot-deletion`, `camera-derivation`) assume the
+  server answers within Playwright's default 5s expect, or a 10s wait. On the 2-core dev
+  machine, more than 2 `ui` + 4 `api` workers oversubscribes the CPU and the single-process
+  Next server: the action completes (screenshots show "Saved"), just after the wait
+  expires. Stable at the configured defaults; any failure in these files at higher
+  `PW_UI_WORKERS`/`PW_API_WORKERS` needs a solo re-run before it counts as a regression.
+  The fix is not longer waits - it is waiting on the response itself, or keeping
+  concurrency matched to the machine.
+- **A failed project query renders as "not found".** Pages and routes load the project
+  with `const { data: project } = await supabase.from('projects')...single()` and ignore
+  `error`, so a transient Supabase failure becomes `notFound()` / a 404 instead of an error
+  (e.g. `projects/[id]/workbench/page.tsx`, `api/projects/[id]/agent/turn-credits/route.ts`).
+  Seen intermittently in Playwright runs (a workbench 404 for a project the test had just
+  seeded; `turn-credits` and export routes failing the same way). During the same runs,
+  hosted Supabase returned a Cloudflare 502, the runner saw windows of `fetch failed`,
+  and the CPU was oversubscribed - any of which fails the query. Each individual 404 was
+  never tied to its failing query (the diagnostic log added to catch it never fired), so
+  treat the mechanism as strongly indicated, not proven. Fix: distinguish a query error
+  from an absent row (by error code, never message) and render an error state for the former.
+- **`exports-route.spec.ts`'s "cancel is allowed only while queued" never checks its
+  create call.** It reads `data.id` from `POST /exports` without asserting the 201, so a
+  failed create surfaces as a misleading 404 from `/exports/undefined/cancel` rather than
+  as the create failure it is. Assert the create's status first.
 - **Shot generation's `runShotGeneration` (`shots/logic.ts`) has no guard on
   `project.source_text` being non-empty before the paid Claude call** - found while
   auditing every `gateway.createMessage` call site for the camera-derivation empty-input

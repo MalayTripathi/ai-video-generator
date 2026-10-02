@@ -99,11 +99,23 @@ async function chooseOption(scope: Page | Locator, comboboxName: string, optionN
   await scope.getByRole('option', { name: optionName, exact: true }).click()
 }
 
-test.describe('shot card editing', () => {
-  test('clicking a collapsed card expands it', async ({ page }) => {
-    const projectId = await seedProject()
-    await seedShot(projectId)
+// One two-shot project per worker, shared by the tests below that only look and click:
+// expanding a card is client state, gone with each test's fresh browser context, so none
+// of them can see another's effects. A test that writes anything seeds its own project.
+const readOnlyTest = test.extend<object, { cardProject: string }>({
+  cardProject: [
+    async ({}, use) => {
+      const projectId = await seedProject()
+      await seedShot(projectId)
+      await seedShot(projectId)
+      await use(projectId)
+    },
+    { scope: 'worker' },
+  ],
+})
 
+test.describe('shot card editing', () => {
+  readOnlyTest('clicking a collapsed card expands it', async ({ page, cardProject: projectId }) => {
     await page.goto(`/projects/${projectId}/workbench`)
 
     const card = page.getByTestId('shot-card').first()
@@ -115,10 +127,10 @@ test.describe('shot card editing', () => {
   // canvas: "08 Workbench" / "09A Card at rest" - the expanded card's container is
   // border:1px solid var(--accent), distinct from the resting border-subtle and the
   // failed border-status-failed-line.
-  test('the expanded card carries the accent border; a collapsed card does not', async ({ page }) => {
-    const projectId = await seedProject()
-    await seedShot(projectId)
-
+  readOnlyTest('the expanded card carries the accent border; a collapsed card does not', async ({
+    page,
+    cardProject: projectId,
+  }) => {
     await page.goto(`/projects/${projectId}/workbench`)
 
     const card = page.getByTestId('shot-card').first()
@@ -128,11 +140,10 @@ test.describe('shot card editing', () => {
     await expect(card).toHaveClass(/\bborder-accent\b/)
   })
 
-  test('expanding a card collapses whichever other card was open (accordion)', async ({ page }) => {
-    const projectId = await seedProject()
-    await seedShot(projectId)
-    await seedShot(projectId)
-
+  readOnlyTest('expanding a card collapses whichever other card was open (accordion)', async ({
+    page,
+    cardProject: projectId,
+  }) => {
     await page.goto(`/projects/${projectId}/workbench`)
     const cards = page.getByTestId('shot-card')
 

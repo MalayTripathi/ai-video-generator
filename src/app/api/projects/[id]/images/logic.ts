@@ -97,12 +97,14 @@ export async function runImagesRequest(params: {
     return { ok: false, status: 500, error: 'Storyboard image provider is not implemented.' }
   }
 
-  const { data: project } = await supabase
+  const { data: project, error: projectError } = await supabase
     .from('projects')
     .select('id')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
+  // A failed read is a server error, never a 404 - only a missing row is.
+  if (projectError) return { ok: false, status: 500, error: projectError.message }
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
 
   const { data: shots, error: shotsError } = await supabase
@@ -229,12 +231,14 @@ export async function runImagesContinuation(params: {
 }): Promise<{ ok: true; generationIds: string[] } | { ok: false; status: 404 | 500; error: string }> {
   const { supabase, payload } = params
 
-  const { data: project } = await supabase
+  const { data: project, error: projectError } = await supabase
     .from('projects')
     .select('id')
     .eq('id', payload.projectId)
     .eq('user_id', payload.userId)
     .maybeSingle()
+  // A failed read is a server error, never a 404 - only a missing row is.
+  if (projectError) return { ok: false, status: 500, error: projectError.message }
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
 
   const { generations, error } = await listQueuedGenerations(supabase, {

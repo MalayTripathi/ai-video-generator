@@ -56,7 +56,7 @@ test.describe('storyboard page access and shell', () => {
     await expect(page.getByTestId('storyboard-main')).toHaveCount(0)
   })
 
-  test('once reached it shows the storyboard timeline inside the real shell', async ({ page }) => {
+  test('once reached it shows the storyboard timeline inside the real shell', { tag: '@smoke' }, async ({ page }) => {
     const projectId = await seed({ furthestStep: stepIndex('storyboard'), currentStep: 'storyboard' })
 
     await page.goto(`/projects/${projectId}/storyboard`)

@@ -146,12 +146,14 @@ export async function createElementForUser(
     return { success: false, error: 'Invalid element type' }
   }
 
-  const { data: project } = await supabase
+  const { data: project, error: projectError } = await supabase
     .from('projects')
     .select('id')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
+  // A failed read is reported as a failed read, never as a missing project.
+  if (projectError) return { success: false, error: 'Could not load project' }
   if (!project) return { success: false, error: 'Project not found' }
 
   const trimmedDescription = description?.trim() || null

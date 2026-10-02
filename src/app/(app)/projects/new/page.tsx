@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { getCurrentUser } from '@/lib/auth/current-user'
 import { TopBar } from '@/app/(app)/dashboard/top-bar'
 import { IntakeForm } from './_components/intake-form'
 import { PreviewPane } from './_components/preview-pane'
@@ -7,9 +8,7 @@ import type { TemplateProject } from './types'
 
 export default async function NewProjectPage() {
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
 
   if (!user) {
     redirect('/login')

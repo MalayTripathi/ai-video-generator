@@ -118,7 +118,7 @@ test.describe('credit_ledger unique dedupe_key index', () => {
 })
 
 test.describe('credit_ledger RLS', () => {
-  test('an authenticated client sees only its own rows', async () => {
+  test('an authenticated client sees only its own rows', { tag: '@smoke' }, async () => {
     const { error: primaryError } = await admin
       .from('credit_ledger')
       .insert(validAdjustment({ dedupe_key: `rls-select-primary:${crypto.randomUUID()}` }))
@@ -141,7 +141,7 @@ test.describe('credit_ledger RLS', () => {
     expect(rows!.every((r) => r.user_id === primary.user.id)).toBe(true)
   })
 
-  test('an authenticated client cannot insert, update, or delete', async () => {
+  test('an authenticated client cannot insert, update, or delete', { tag: '@smoke' }, async () => {
     const scopedToPrimary = createClient(SUPABASE_URL, ANON_KEY, {
       auth: { autoRefreshToken: false, persistSession: false },
     })

@@ -1,5 +1,8 @@
 import OpenAI, { toFile } from 'openai'
 import { IMAGE_SDK_TIMEOUT_MS } from '@/lib/config/storyboard'
+import { assertProviderCallAllowed, guardedFetch, ImageLiveCallsBlockedError } from '@/lib/providers/live-call-guard'
+
+export { ImageLiveCallsBlockedError }
 
 export interface ReferenceImageResult {
   imageBuffer: Buffer
@@ -38,26 +41,11 @@ export interface ImageGateway {
   }): Promise<StoryboardImageResult>
 }
 
-export class ImageLiveCallsBlockedError extends Error {
-  constructor() {
-    super(
-      'Blocked a real, billed OpenAI image call: live calls outside production ' +
-        'require ALLOW_REAL_OPENAI_IMAGES=1, and this flag is set by the developer only.'
-    )
-    this.name = 'ImageLiveCallsBlockedError'
-  }
-}
-
-// Mirrors assertLiveCallsAllowed (src/lib/claude.ts) exactly - this is the first
-// non-Claude paid call in the codebase, and it gets the same safety net. Never set,
-// export, or add ALLOW_REAL_OPENAI_IMAGES anywhere in this repo's own env files, npm
-// scripts, test config, or CI - whether to spend money on a live call is the
-// developer's decision alone.
+// The Anthropic guard's twin (src/lib/providers/live-call-guard.ts). Never set, export, or
+// add ALLOW_REAL_OPENAI_IMAGES anywhere in this repo's own env files, npm scripts, test
+// config, or CI - whether to spend money on a live call is the developer's decision alone.
 export function assertLiveImageCallsAllowed(): void {
-  if (process.env.NODE_ENV === 'production') return
-  if (process.env.ALLOW_REAL_OPENAI_IMAGES === '1') return
-
-  throw new ImageLiveCallsBlockedError()
+  assertProviderCallAllowed('openai')
 }
 
 export function createImageGateway(): ImageGateway {
@@ -73,7 +61,7 @@ export function createImageGateway(): ImageGateway {
       // partially generated response would be a silent second charge. This route's
       // own "one call, no retry" rule already forbids retrying at a higher level;
       // this just makes sure the SDK doesn't do it invisibly underneath that.
-      const client = new OpenAI({ maxRetries: 0, timeout: 120_000 })
+      const client = new OpenAI({ maxRetries: 0, timeout: 120_000, fetch: guardedFetch('openai') })
 
       const response = await client.images.generate({
         model: params.model,
@@ -110,7 +98,7 @@ export function createImageGateway(): ImageGateway {
 
       // maxRetries: 0 for the same silent-second-charge reason as above. The timeout comes
       // from storyboard.ts, where the claim's stale window is derived from it.
-      const client = new OpenAI({ maxRetries: 0, timeout: IMAGE_SDK_TIMEOUT_MS })
+      const client = new OpenAI({ maxRetries: 0, timeout: IMAGE_SDK_TIMEOUT_MS, fetch: guardedFetch('openai') })
 
       const response =
         params.references.length > 0

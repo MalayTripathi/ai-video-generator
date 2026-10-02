@@ -88,7 +88,7 @@ async function readShots(projectId: string) {
 }
 
 test.describe('image prompt generation', () => {
-  test('writes image_prompt for the requested shots and clears image_prompt_stale', async () => {
+  test('writes image_prompt for the requested shots and clears image_prompt_stale', { tag: '@smoke' }, async () => {
     const user = primary.user
     const projectId = await insertProject(user.id)
     const shots = await insertShots(projectId, [{ shot_key: 'b2c3d' }, { shot_key: 'f4g5h' }])
@@ -530,7 +530,7 @@ test.describe('image prompt generation', () => {
     expect(result.balanceCredits).toBe(1)
   })
 
-  test('a refused balance check is the first gate: no generations row, no usage row, no ledger write, no provider call', async () => {
+  test('a refused balance check is the first gate: no generations row, no usage row, no ledger write, no provider call', { tag: '@smoke' }, async () => {
     const user = primary.user
     const projectId = await insertProject(user.id)
     const shots = await insertShots(projectId, [{ shot_key: 'b2c3d' }, { shot_key: 'f4g5h' }])

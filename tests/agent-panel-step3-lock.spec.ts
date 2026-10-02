@@ -27,12 +27,15 @@ async function seed(count = 2) {
     .single()
   expect(error).toBeNull()
   const projectId = project!.id as string
-  for (const [step, operation] of [
-    ['workbench', 'generate_shots'],
-    ['image_prompts', 'write_image_prompts'],
-  ] as const) {
-    await admin.from('generations').insert({ project_id: projectId, step, operation, shot_id: null, state: 'succeeded' })
-  }
+  const { error: generationsError } = await admin.from('generations').insert(
+    (
+      [
+        ['workbench', 'generate_shots'],
+        ['image_prompts', 'write_image_prompts'],
+      ] as const
+    ).map(([step, operation]) => ({ project_id: projectId, step, operation, shot_id: null, state: 'succeeded' }))
+  )
+  expect(generationsError).toBeNull()
   const { error: shotsError } = await admin.from('shots').insert(
     Array.from({ length: count }, (_, i) => ({
       project_id: projectId,

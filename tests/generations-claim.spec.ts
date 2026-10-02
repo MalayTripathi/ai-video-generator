@@ -22,7 +22,7 @@ async function insertProject(userId: string) {
 const IDENTITY = { step: 'workbench', operation: 'generate_shots', shotId: null, elementId: null } as const
 
 test.describe('generations claim primitives', () => {
-  test('two concurrent claims on a fresh identity: exactly one claims, the other is blocked as already_generating', async () => {
+  test('two concurrent claims on a fresh identity: exactly one claims, the other is blocked as already_generating', { tag: '@smoke' }, async () => {
     const user = primary.user
     {
       const projectId = await insertProject(user.id)
@@ -39,7 +39,7 @@ test.describe('generations claim primitives', () => {
     }
   })
 
-  test('two raw inserts with shot_id null for the same (project, step, operation) collide on NULLS NOT DISTINCT', async () => {
+  test('two raw inserts with shot_id null for the same (project, step, operation) collide on NULLS NOT DISTINCT', { tag: '@smoke' }, async () => {
     const user = primary.user
     {
       const projectId = await insertProject(user.id)

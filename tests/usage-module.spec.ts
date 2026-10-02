@@ -27,7 +27,7 @@ async function insertGeneration(projectId: string) {
 const MODEL = 'claude-haiku-4-5-20251001'
 
 test.describe('reserveUsage / settleUsage', () => {
-  test('reserveUsage throws when the insert violates a CHECK constraint, and writes no row', async () => {
+  test('reserveUsage throws when the insert violates a CHECK constraint, and writes no row', { tag: '@smoke' }, async () => {
     const user = primary.user
     {
       const projectId = await insertProject(user.id)
@@ -58,7 +58,7 @@ test.describe('reserveUsage / settleUsage', () => {
     }
   })
 
-  test('settleUsage does not throw when its UPDATE fails, and the row stays pending', async () => {
+  test('settleUsage does not throw when its UPDATE fails, and the row stays pending', { tag: '@smoke' }, async () => {
     const user = primary.user
     {
       const projectId = await insertProject(user.id)

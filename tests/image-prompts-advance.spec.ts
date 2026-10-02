@@ -86,7 +86,7 @@ async function readProject(projectId: string) {
 }
 
 test.describe('runAdvanceToImagePrompts', () => {
-  test('sufficient balance advances the step and returns the required credits', async () => {
+  test('sufficient balance advances the step and returns the required credits', { tag: '@smoke' }, async () => {
     const { user } = await createTestSession()
     try {
       const projectId = await seedProject(user.id)
@@ -112,7 +112,7 @@ test.describe('runAdvanceToImagePrompts', () => {
     }
   })
 
-  test('insufficient balance returns 402, reports the numbers, and never calls advanceStep', async () => {
+  test('insufficient balance returns 402, reports the numbers, and never calls advanceStep', { tag: '@smoke' }, async () => {
     const { user } = await createTestSession()
     try {
       const projectId = await seedProject(user.id)

@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { parseRailFigures, useRailFigures } from '@/components/rail-figures-context'
+import { usePageVisible } from '@/lib/hooks/use-page-visible'
 import { isInFlight } from '@/lib/storyboard/timeline'
 import { useSignedUrlRefresh } from '../../workbench/_components/use-signed-url-refresh'
 import type { ImageStatusData } from './types'
 
 // Polls the images status endpoint while any frame is queued or generating (or the
 // voiceover or music is being made - its state rides on the same response, one poll for both), at the
-// interval the endpoint itself names, and stops the moment none is. `refresh()` fetches at
+// interval the endpoint itself names, and stops the moment none is - or while the tab is
+// hidden, polling once on return. `refresh()` fetches at
 // once - every action calls it, which also restarts the chain. Client state only: nothing
 // here touches the router. When a poll shows a shot that was in flight has settled, the
 // rail's spend figures (carried on every status response) are pushed to the rail store -
@@ -94,14 +96,17 @@ export function useImageStatusPoll(projectId: string, initial: ImageStatusData) 
     data.shots.some((s) => isInFlight(s.state)) ||
     data.voiceover.state === 'generating' ||
     data.music.state === 'generating'
+  const visible = usePageVisible(() => {
+    if (polling) void refresh()
+  })
 
   // One timer per response: each new `data` (or failure) re-arms it, so the chain runs
   // exactly as long as something is in flight.
   useEffect(() => {
-    if (!polling) return
+    if (!polling || !visible) return
     const timer = setTimeout(() => void refresh(), data.pollIntervalMs)
     return () => clearTimeout(timer)
-  }, [polling, data, failures, refresh])
+  }, [polling, visible, data, failures, refresh])
 
   useEffect(() => {
     const live = controllers.current

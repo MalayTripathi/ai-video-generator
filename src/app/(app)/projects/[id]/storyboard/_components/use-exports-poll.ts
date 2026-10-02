@@ -1,10 +1,12 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { usePageVisible } from '@/lib/hooks/use-page-visible'
 import type { ExportsData } from '@/app/api/projects/[id]/exports/logic'
 
 // Polls the export history only while an export is queued or rendering, at the interval
-// the endpoint names, and stops the moment none is. `refresh()` fetches at once - every
+// the endpoint names, and stops the moment none is - or while the tab is hidden, polling
+// once on return. `refresh()` fetches at once - every
 // export action calls it, which also restarts the chain. Client state only: nothing here
 // touches the router. Only the newest request's answer is ever applied.
 export function useExportsPoll(projectId: string, initial: ExportsData) {
@@ -29,11 +31,14 @@ export function useExportsPoll(projectId: string, initial: ExportsData) {
   }, [projectId])
 
   const active = data.rows.some((row) => row.status === 'queued' || row.status === 'rendering')
+  const visible = usePageVisible(() => {
+    if (active) void refresh()
+  })
   useEffect(() => {
-    if (!active) return
+    if (!active || !visible) return
     const timer = setTimeout(() => void refresh(), data.pollIntervalMs)
     return () => clearTimeout(timer)
-  }, [active, data, failures, refresh])
+  }, [active, visible, data, failures, refresh])
 
   return { data, active, refresh }
 }

@@ -185,15 +185,16 @@ async function loadProjectForClaim(
   supabase: SupabaseServerClient,
   projectId: string,
   userId: string
-): Promise<ClaimedProject | null> {
-  const { data } = await supabase
+): Promise<{ project: ClaimedProject | null; failed: boolean }> {
+  const { data, error } = await supabase
     .from('projects')
     .select('source_text, video_type, language, duration_target, title')
     .eq('id', projectId)
     .eq('user_id', userId)
-    .single()
+    .maybeSingle()
+  if (error) console.error(`[shots] project read failed for ${projectId}:`, error.message)
 
-  return data
+  return { project: data, failed: error !== null }
 }
 
 const BLOCKED_REASON_MESSAGES: Record<BlockedReason, string> = {
@@ -576,7 +577,11 @@ export async function runShotGeneration(params: {
 }): Promise<ShotGenerationResult> {
   const { gateway, supabase, projectId, userId, retry, messageId, onSettled, attemptId, recordFixedSpend } = params
 
-  const project = await loadProjectForClaim(supabase, projectId, userId)
+  // A failed read is a server error, never a 404 - only a missing row is.
+  const { project, failed } = await loadProjectForClaim(supabase, projectId, userId)
+  if (failed) {
+    return { ok: false, status: 500, error: 'Could not load project' }
+  }
   if (!project) {
     return { ok: false, status: 404, error: 'Project not found' }
   }

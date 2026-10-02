@@ -811,7 +811,7 @@ test.describe('write_image_prompts (image-prompts route) - fixed-price ledger wi
     expect(rows.length).toBe(1)
   })
 
-  test('insufficient balance returns 402, with no provider call, no ledger row, and no usage row', async () => {
+  test('insufficient balance returns 402, with no provider call, no ledger row, and no usage row', { tag: '@smoke' }, async () => {
     const { user } = await createTestSession()
     try {
       const projectId = await seedProject(user.id)
@@ -958,7 +958,9 @@ test.describe('balance across a mixed sequence (gate 11)', () => {
           return successMessage({ shot_size: 'wide', shot_size_origin: 'auto' }, 'derive_camera')
         },
       }
-      const { shotId: firstShot } = await seedShot(projectId)
+      // Placed after the generation's own shots (order_index 0 and 1): the shared
+      // seedShot counter starts at 0 in a fresh worker and would collide with them.
+      const { shotId: firstShot } = await seedShot(projectId, { order_index: 2 })
       const camera1 = await runCameraDerivation({
         gateway: cameraGateway,
         supabase: admin,
@@ -971,7 +973,7 @@ test.describe('balance across a mixed sequence (gate 11)', () => {
       })
       expect(camera1.ok).toBe(true)
 
-      const { shotId: secondShot } = await seedShot(projectId)
+      const { shotId: secondShot } = await seedShot(projectId, { order_index: 3 })
       const camera2 = await runCameraDerivation({
         gateway: cameraGateway,
         supabase: admin,

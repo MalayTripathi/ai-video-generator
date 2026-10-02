@@ -25,7 +25,7 @@
  */
 export default async function globalTeardown() {
   try {
-    const { admin } = await import('./supabase-test-session')
+    const { admin, pruneClaimedUsers } = await import('./supabase-test-session')
     const { primary, secondary } = await import('./fixed-users')
     const fixedUserIds = [primary.user.id, secondary.user.id]
 
@@ -58,6 +58,11 @@ export default async function globalTeardown() {
     } else {
       console.log(`[global-teardown] deleted ${projectsCount ?? 0} project(s) for the fixed test users`)
     }
+
+    // Last, so a pool problem can never skip the fixed users' cleanup above. Unclaimed
+    // pool users stay for the next run.
+    const pool = await pruneClaimedUsers()
+    console.log(`[global-teardown] fresh-user pool: ${pool.claimed} claimed, ${pool.unused} kept for the next run`)
   } catch (err) {
     console.error('[global-teardown] cleanup failed entirely - suite result is unaffected:', err)
   }

@@ -231,7 +231,7 @@ test.describe('shot generation state machine', () => {
     }
   })
 
-  test('recovery replays a pending payload without calling the gateway again, replacing any existing shots', async () => {
+  test('recovery replays a pending payload without calling the gateway again, replacing any existing shots', { tag: '@smoke' }, async () => {
     const user = primary.user
     {
       const projectId = await insertProject(user.id)

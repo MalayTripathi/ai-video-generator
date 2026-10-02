@@ -5,6 +5,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import type { DisplayShot } from './types'
 import { derivePhase, type Phase } from './derive-phase'
 import { stepIndex } from '@/lib/config/pipeline'
+import { usePageVisible } from '@/lib/hooks/use-page-visible'
 
 type ShotsContextValue = {
   projectId: string
@@ -216,12 +217,16 @@ export function ShotsProvider({
 
   // Poll while generating so a tab that never fired its own POST (e.g. loaded mid-generation
   // from another tab/device) discovers completion. workbench/page.tsx is a server component
-  // that re-reads the project row on every refresh - no separate GET route needed.
+  // that re-reads the project row on every refresh - no separate GET route needed. Paused
+  // while the tab is hidden; refreshes once on return.
+  const visible = usePageVisible(() => {
+    if (phase === 'generating') router.refresh()
+  })
   useEffect(() => {
-    if (phase !== 'generating') return
+    if (phase !== 'generating' || !visible) return
     const interval = setInterval(() => router.refresh(), 3000)
     return () => clearInterval(interval)
-  }, [phase, router])
+  }, [phase, visible, router])
 
   return (
     <ShotsContext.Provider

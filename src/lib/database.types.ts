@@ -763,7 +763,43 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      credit_balances: {
+        Row: {
+          balance: number | null
+          entries: number | null
+          user_id: string | null
+        }
+        Relationships: []
+      }
+      credit_ledger_monthly: {
+        Row: {
+          credits: number | null
+          entries: number | null
+          kind: string | null
+          month: string | null
+          operation: string | null
+          project_id: string | null
+          step: string | null
+          user_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "credit_ledger_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      usage_monthly_spend: {
+        Row: {
+          month: string | null
+          settled_cost: number | null
+          user_id: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       [_ in never]: never

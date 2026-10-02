@@ -30,7 +30,7 @@ test.describe('insertUserMessage', () => {
     expect(result.outcome === 'inserted' && result.message.client_id).toBe(clientId)
   })
 
-  test('a repeated (project_id, client_id) is detected as a duplicate and returns the original row untouched', async () => {
+  test('a repeated (project_id, client_id) is detected as a duplicate and returns the original row untouched', { tag: '@smoke' }, async () => {
     const projectId = await insertProject(primary.user.id)
     const clientId = crypto.randomUUID()
 

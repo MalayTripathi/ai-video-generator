@@ -135,31 +135,55 @@ export function storyboardThumbUrl(urlByPath: Map<string, string>, imagePath: st
   return urlByPath.get(storyboardThumbPath(imagePath)) ?? urlByPath.get(imagePath) ?? null
 }
 
+// The project columns the voiceover and music lanes derive from. A page that has already
+// read its project for this user selects these too and passes the row in.
+export const IMAGE_STATUS_PROJECT_COLUMNS =
+  'audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words, music_path, music_duration_sec, music_source, music_generated_at, music_loop, music_muted' as const
+
+type StatusProjectRow = VoiceoverProjectRow & MusicProjectRow & { music_path: string | null }
+
 /**
  * Per-shot storyboard image state for one project, cheap enough to poll: two narrow
  * selects, a pure derivation, ONE batched signing call for every full image and thumbnail,
  * and the balance the case-2 banner needs. imagePath is present for every state, so a
- * failed regenerate still shows the image it was replacing.
+ * failed regenerate still shows the image it was replacing. Every read that doesn't need
+ * another's answer runs at once; the child reads are RLS-scoped to the project's owner, so
+ * running them beside the ownership read exposes nothing. `project` is a row the caller
+ * already read for this user (with IMAGE_STATUS_PROJECT_COLUMNS) - the poll never passes it.
  */
 export async function loadImageStatuses(params: {
   supabase: SupabaseServerClient
   projectId: string
   userId: string
   getBalance: typeof getBalanceType
+  project?: StatusProjectRow
 }): Promise<ImageStatusResult> {
   const { supabase, projectId, userId, getBalance } = params
 
-  const { data: project } = await supabase
-    .from('projects')
-    .select(
-      'id, audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words, music_path, music_duration_sec, music_source, music_generated_at, music_loop, music_muted'
-    )
-    .eq('id', projectId)
-    .eq('user_id', userId)
-    .maybeSingle()
-  if (!project) return { ok: false, status: 404, error: 'Project not found' }
+  const loadBalance = async (): Promise<number | null> => {
+    try {
+      const price = creditsFor({ step: 'storyboard', operation: 'generate_image', quantity: 1 })
+      const [liveImages, liveAudio, balance] = await Promise.all([
+        countLiveImageClaims(supabase, userId),
+        liveAudioCommittedCredits(supabase, userId),
+        getBalance(userId),
+      ])
+      return Math.max(0, balance - (liveImages * price + liveAudio))
+    } catch (err) {
+      console.error(`[images/status] balance unreadable for project ${projectId}:`, err)
+      return null
+    }
+  }
 
-  const [shotsResult, claimsResult, voiceoverClaimsResult] = await Promise.all([
+  const [projectResult, shotsResult, claimsResult, voiceoverClaimsResult, balanceCredits] = await Promise.all([
+    params.project
+      ? { data: params.project, error: null }
+      : supabase
+          .from('projects')
+          .select(IMAGE_STATUS_PROJECT_COLUMNS)
+          .eq('id', projectId)
+          .eq('user_id', userId)
+          .maybeSingle(),
     supabase
       .from('shots')
       .select('id, image_path, image_stale')
@@ -177,7 +201,11 @@ export async function loadImageStatuses(params: {
       .eq('project_id', projectId)
       .eq('step', 'storyboard')
       .in('operation', ['voiceover', 'align_voiceover', 'background_music']),
+    loadBalance(),
   ])
+  if (projectResult.error) return { ok: false, status: 500, error: projectResult.error.message }
+  const project = projectResult.data
+  if (!project) return { ok: false, status: 404, error: 'Project not found' }
   if (shotsResult.error) return { ok: false, status: 500, error: shotsResult.error.message }
   if (claimsResult.error) return { ok: false, status: 500, error: claimsResult.error.message }
   if (voiceoverClaimsResult.error) return { ok: false, status: 500, error: voiceoverClaimsResult.error.message }
@@ -220,16 +248,6 @@ export async function loadImageStatuses(params: {
     project.music_path ? (urlByPath.get(project.music_path) ?? null) : null,
     now
   )
-
-  let balanceCredits: number | null = null
-  try {
-    const price = creditsFor({ step: 'storyboard', operation: 'generate_image', quantity: 1 })
-    const committed =
-      (await countLiveImageClaims(supabase, userId)) * price + (await liveAudioCommittedCredits(supabase, userId))
-    balanceCredits = Math.max(0, (await getBalance(userId)) - committed)
-  } catch (err) {
-    console.error(`[images/status] balance unreadable for project ${projectId}:`, err)
-  }
 
   return {
     ok: true,

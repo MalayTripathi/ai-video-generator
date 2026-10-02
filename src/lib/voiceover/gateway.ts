@@ -1,7 +1,12 @@
 import { VOICEOVER_REQUEST_TIMEOUT_MS } from '@/lib/config/storyboard'
+import { assertProviderCallAllowed, guardedFetch, VoiceoverLiveCallsBlockedError } from '@/lib/providers/live-call-guard'
 
-// The one place ElevenLabs is called. Server-side only: the key never reaches a client.
+export { VoiceoverLiveCallsBlockedError }
+
+// The one place ElevenLabs is called, always through guardedFetch. Server-side only: the key never reaches a client.
 // Tests inject hand-written fakes instead of this (tests/helpers/voiceover-fakes.ts).
+
+const providerFetch = guardedFetch('elevenlabs')
 
 const API_BASE = 'https://api.elevenlabs.io'
 const OUTPUT_FORMAT = 'mp3_44100_128'
@@ -25,16 +30,6 @@ export interface VoiceoverGateway {
   align(params: { audio: Buffer; mime: string; fileName: string; text: string }): Promise<AlignResult>
 }
 
-export class VoiceoverLiveCallsBlockedError extends Error {
-  constructor() {
-    super(
-      'Blocked a real, billed ElevenLabs call: live calls outside production require ' +
-        'ALLOW_REAL_ELEVENLABS=1, and this flag is set by the developer only.'
-    )
-    this.name = 'VoiceoverLiveCallsBlockedError'
-  }
-}
-
 /** A non-2xx answer from the provider. Carries the status; never matched by message. */
 export class VoiceoverProviderError extends Error {
   readonly status: number
@@ -45,14 +40,11 @@ export class VoiceoverProviderError extends Error {
   }
 }
 
-// Mirrors assertLiveImageCallsAllowed (src/lib/images/gateway.ts) exactly. Never set,
-// export, or add ALLOW_REAL_ELEVENLABS anywhere in this repo's own env files, npm scripts,
-// test config, or CI - whether to spend money on a live call is the developer's decision
-// alone.
+// The Anthropic guard's twin (src/lib/providers/live-call-guard.ts). Never set, export, or
+// add ALLOW_REAL_ELEVENLABS anywhere in this repo's own env files, npm scripts, test
+// config, or CI - whether to spend money on a live call is the developer's decision alone.
 export function assertLiveVoiceoverCallsAllowed(): void {
-  if (process.env.NODE_ENV === 'production') return
-  if (process.env.ALLOW_REAL_ELEVENLABS === '1') return
-  throw new VoiceoverLiveCallsBlockedError()
+  assertProviderCallAllowed('elevenlabs')
 }
 
 function apiKey(): string {
@@ -75,7 +67,7 @@ export function createVoiceoverGateway(): VoiceoverGateway {
       }
 
       // One request, no retry: a retried request is a second charge.
-      const res = await fetch(
+      const res = await providerFetch(
         `${API_BASE}/v1/text-to-speech/${encodeURIComponent(params.voiceId)}/with-timestamps?output_format=${OUTPUT_FORMAT}`,
         {
           method: 'POST',
@@ -106,7 +98,7 @@ export function createVoiceoverGateway(): VoiceoverGateway {
       const form = new FormData()
       form.append('file', new Blob([new Uint8Array(params.audio)], { type: params.mime }), params.fileName)
       form.append('text', params.text)
-      const res = await fetch(`${API_BASE}/v1/forced-alignment`, {
+      const res = await providerFetch(`${API_BASE}/v1/forced-alignment`, {
         method: 'POST',
         headers: { 'xi-api-key': apiKey() },
         body: form,

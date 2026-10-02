@@ -34,3 +34,6 @@ delete process.env.ALLOW_REAL_OPENAI_IMAGES
 // Same reasoning, for the ElevenLabs voiceover live-call guard (src/lib/voiceover/gateway.ts's
 // assertLiveVoiceoverCallsAllowed).
 delete process.env.ALLOW_REAL_ELEVENLABS
+// .env.local must not be able to lift the provider block either: whatever it says, an
+// automated run keeps it on (playwright.config.ts sets it before this file loads).
+process.env.BLOCK_PROVIDER_CALLS = '1'

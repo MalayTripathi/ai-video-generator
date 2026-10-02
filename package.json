@@ -8,7 +8,14 @@
     "start": "next start",
     "lint": "eslint",
     "types:db": "supabase gen types typescript --linked > src/lib/database.types.ts",
-    "worker": "tsx worker/index.ts"
+    "worker": "tsx worker/index.ts",
+    "test:full": "PW_SERVER=prod PW_FULL_RUN_SCRIPT=1 playwright test",
+    "test:guard": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/run-guard/guard.test.mjs",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:dev": "playwright test",
+    "test:failed": "PW_SERVER=prod playwright test --last-failed",
+    "test:changed": "playwright test --only-changed",
+    "test:report": "playwright merge-reports --reporter html blob-report"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

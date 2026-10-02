@@ -181,7 +181,7 @@ test.describe('recordFixedSpend', () => {
     }
   })
 
-  test('calling recordFixedSpend twice with the same attemptId produces exactly one row and does not throw', async () => {
+  test('calling recordFixedSpend twice with the same attemptId produces exactly one row and does not throw', { tag: '@smoke' }, async () => {
     const { user } = await createTestSession()
     try {
       const attemptId = crypto.randomUUID()
@@ -370,7 +370,7 @@ test.describe('recordRefund', () => {
 })
 
 test.describe('module hygiene', () => {
-  test('no .update() or .delete() against credit_ledger anywhere in the module', async () => {
+  test('no .update() or .delete() against credit_ledger anywhere in the module', { tag: '@smoke' }, async () => {
     const contents = readFileSync(path.resolve(__dirname, '../src/lib/credits/ledger.ts'), 'utf8')
     expect(contents).not.toMatch(/\.update\(/)
     expect(contents).not.toMatch(/\.delete\(/)

@@ -153,7 +153,7 @@ async function center(page: Page, locator: ReturnType<Page['locator']>) {
 }
 
 test.describe('storyboard editing - retime', () => {
-  test('a boundary drag shows the tooltip and pending Total, snaps to 0.1s, and saves only film_duration_sec on drop', async ({
+  test('a boundary drag shows the tooltip and pending Total, snaps to 0.1s, and saves only film_duration_sec on drop', { tag: '@smoke' }, async ({
     page,
   }) => {
     const { projectId, ids } = await seed([{ state: 'ready' }, { state: 'ready' }, { state: 'ready' }])

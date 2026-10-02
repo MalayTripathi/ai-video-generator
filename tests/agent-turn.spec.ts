@@ -1109,7 +1109,7 @@ async function readAgentTurnGeneration(projectId: string) {
 }
 
 test.describe('runAgentTurn', () => {
-  test('one tool call then a final reply: 2 gateway calls, shot mutated, reply persisted', async () => {
+  test('one tool call then a final reply: 2 gateway calls, shot mutated, reply persisted', { tag: '@smoke' }, async () => {
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId)
     const shotNumber = (await readShot(shotId)).order_index + 1
