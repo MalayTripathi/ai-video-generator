@@ -62,12 +62,14 @@ export async function loadEditableProject(
   projectId: string,
   userId: string
 ): Promise<VoiceoverProject | Refusal> {
-  const { data: project } = await supabase
+  const { data: project, error } = await supabase
     .from('projects')
     .select('id, language, furthest_step')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
+  // A failed read is a server error, never a 404 - only a missing row is.
+  if (error) return { ok: false, status: 500, error: error.message }
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
   if (project.furthest_step >= stepIndex('video_prompts')) {
     return { ok: false, status: 409, error: 'The storyboard is locked', code: 'locked' }

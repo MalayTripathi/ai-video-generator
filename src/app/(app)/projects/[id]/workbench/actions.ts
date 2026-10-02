@@ -25,15 +25,7 @@ import {
   type ElementDeleteResult,
 } from '@/lib/elements/write'
 import type { ElementType } from '@/lib/config/enums'
-import { creditsFor } from '@/lib/config/credits'
 import type { DisplayElement } from './_components/types'
-// The balance module is a pure read on the ordinary authenticated client - safe to
-// import here even though this file is dynamically imported directly by some
-// Playwright specs (tests/shot-deletion.spec.ts) outside Next's server bundle. The
-// ledger's write functions and the signup-grant bootstrap both transitively pull in
-// the service-role client's 'server-only' guard and must never be imported here for
-// that reason.
-import { getBalance } from '@/lib/credits/balance'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -80,13 +72,22 @@ async function loadOwnedShot(supabase: SupabaseServerClient, shotId: string, use
 // adding a fourth site that recomputes stepIndex('storyboard') inline at each call site.
 // A separate query, not the embedded projects!inner join, mirroring deleteShotForUser's
 // own shape.
-async function isWorkbenchLockedForProject(supabase: SupabaseServerClient, projectId: string): Promise<boolean> {
-  const { data: project } = await supabase.from('projects').select('furthest_step').eq('id', projectId).single()
-  return !!project && project.furthest_step >= stepIndex('storyboard')
+//
+// Returns why a write must be refused, or null when the workbench is open. A failed read
+// refuses (fails closed) with its own message - never "locked", never silently open.
+async function workbenchLockRefusal(supabase: SupabaseServerClient, projectId: string): Promise<string | null> {
+  const { data: project, error } = await supabase
+    .from('projects')
+    .select('furthest_step')
+    .eq('id', projectId)
+    .maybeSingle()
+  if (error) return PROJECT_READ_FAILED_MESSAGE
+  return project && project.furthest_step >= stepIndex('storyboard') ? SHOTS_LOCKED_MESSAGE : null
 }
 
 const SHOTS_LOCKED_MESSAGE =
   "This project's workbench is locked - later steps have already started, so shots can no longer be changed here."
+const PROJECT_READ_FAILED_MESSAGE = 'Could not load project'
 
 export async function updateShotVoiceOver(shotId: string, value: string): Promise<ShotFieldSaveResult> {
   const field: ShotField = 'voice_over'
@@ -98,8 +99,9 @@ export async function updateShotVoiceOver(shotId: string, value: string): Promis
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
-  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
-    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  const lockRefusal = await workbenchLockRefusal(supabase, shot.project_id)
+  if (lockRefusal) {
+    return { field, success: false, error: lockRefusal }
   }
 
   const trimmed = value.trim()
@@ -160,8 +162,9 @@ export async function updateShotVisualDescription(
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
-  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
-    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  const lockRefusal = await workbenchLockRefusal(supabase, shot.project_id)
+  if (lockRefusal) {
+    return { field, success: false, error: lockRefusal }
   }
 
   const trimmed = value.trim()
@@ -197,8 +200,9 @@ export async function updateShotDuration(shotId: string, value: number): Promise
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
-  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
-    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  const lockRefusal = await workbenchLockRefusal(supabase, shot.project_id)
+  if (lockRefusal) {
+    return { field, success: false, error: lockRefusal }
   }
 
   const rounded = Math.round(value * 10) / 10
@@ -241,8 +245,9 @@ async function updateCameraField(field: CameraField, shotId: string, value: stri
 
   const shot = await loadOwnedShot(supabase, shotId, user.id)
   if (!shot) return { field, success: false, error: 'Shot not found' }
-  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
-    return { field, success: false, error: SHOTS_LOCKED_MESSAGE }
+  const lockRefusal = await workbenchLockRefusal(supabase, shot.project_id)
+  if (lockRefusal) {
+    return { field, success: false, error: lockRefusal }
   }
 
   const originColumn = CAMERA_ORIGIN_COLUMN[field]
@@ -294,8 +299,9 @@ export async function saveDialogueLine(input: {
     .eq('projects.user_id', user.id)
     .maybeSingle()
   if (!shot) return { success: false, error: 'Shot not found' }
-  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
-    return { success: false, error: SHOTS_LOCKED_MESSAGE }
+  const lockRefusal = await workbenchLockRefusal(supabase, shot.project_id)
+  if (lockRefusal) {
+    return { success: false, error: lockRefusal }
   }
 
   const trimmedLine = input.line.trim()
@@ -359,8 +365,9 @@ export async function deleteDialogueLine(id: string, shotId: string): Promise<Di
     .eq('projects.user_id', user.id)
     .maybeSingle()
   if (!shot) return { success: false, error: 'Shot not found' }
-  if (await isWorkbenchLockedForProject(supabase, shot.project_id)) {
-    return { success: false, error: SHOTS_LOCKED_MESSAGE }
+  const lockRefusal = await workbenchLockRefusal(supabase, shot.project_id)
+  if (lockRefusal) {
+    return { success: false, error: lockRefusal }
   }
 
   const { error: deleteError } = await supabase
@@ -427,11 +434,13 @@ export async function deleteShotForUser(
     .maybeSingle()
   if (!shot) return { success: false, error: 'Shot not found' }
 
-  const { data: project } = await supabase
+  const { data: project, error: lockReadError } = await supabase
     .from('projects')
     .select('furthest_step')
     .eq('id', shot.project_id)
-    .single()
+    .maybeSingle()
+  // Fails closed: a failed read refuses the delete rather than letting it through unlocked.
+  if (lockReadError) return { success: false, error: PROJECT_READ_FAILED_MESSAGE }
   if (project && project.furthest_step >= stepIndex('storyboard')) {
     return {
       success: false,
@@ -508,7 +517,7 @@ function toDisplayElement(element: {
   }
 }
 
-// Same threshold as every other shot mutation in this file (isWorkbenchLockedForProject,
+// Same threshold as every other shot mutation in this file (workbenchLockRefusal,
 // site #1 of the three canonical, independently-duplicated lock sites - see
 // deleteShotForUser's comment above) - binding is shot content, not element content, so it
 // does not get the Assets tab's exemption from the lock.
@@ -536,8 +545,9 @@ export async function bindElementToShotForUser(
 ): Promise<ElementBindResult> {
   const shot = await loadOwnedShot(supabase, shotId, userId)
   if (!shot) return { success: false, error: 'Shot not found', reason: 'not_found' }
-  if (surface === 'workbench' && (await isWorkbenchLockedForProject(supabase, shot.project_id))) {
-    return { success: false, error: SHOTS_LOCKED_MESSAGE }
+  const lockRefusal = surface === 'workbench' ? await workbenchLockRefusal(supabase, shot.project_id) : null
+  if (lockRefusal) {
+    return { success: false, error: lockRefusal }
   }
 
   const element = await loadOwnedElement(supabase, elementId, userId)
@@ -590,8 +600,9 @@ export async function unbindElementFromShotForUser(
 ): Promise<ElementUnbindResult> {
   const shot = await loadOwnedShot(supabase, shotId, userId)
   if (!shot) return { success: false, error: 'Shot not found' }
-  if (surface === 'workbench' && (await isWorkbenchLockedForProject(supabase, shot.project_id))) {
-    return { success: false, error: SHOTS_LOCKED_MESSAGE }
+  const lockRefusal = surface === 'workbench' ? await workbenchLockRefusal(supabase, shot.project_id) : null
+  if (lockRefusal) {
+    return { success: false, error: lockRefusal }
   }
 
   // No separate element-ownership check needed: the delete is scoped to shot_id, already
@@ -668,27 +679,6 @@ export async function getProjectElements(projectId: string): Promise<GetProjectE
   if (!user) return { success: false, error: 'Not authenticated' }
 
   return getProjectElementsForUser(supabase, projectId, user.id)
-}
-
-// Read-only affordance check for the Assets tab's Generate controls: the per-element
-// price (never hardcoded - CLAUDE.md) plus whether the user's current balance covers
-// it. This never reserves, spends, or writes anything - runElementReferenceGeneration
-// (the actual paid call) still runs its own balance gate independently; this is purely
-// so the UI can disable Generate proactively instead of only reacting to a 402.
-export async function getElementGenerateAffordability(): Promise<{
-  generateCredits: number
-  hasInsufficientBalance: boolean
-}> {
-  const generateCredits = creditsFor({ step: 'workbench', operation: 'generate_element_reference', quantity: 1 })
-
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) return { generateCredits, hasInsufficientBalance: true }
-
-  const balance = await getBalance(user.id)
-  return { generateCredits, hasInsufficientBalance: balance < generateCredits }
 }
 
 // Recovers one broken reference image without refetching the whole batch.

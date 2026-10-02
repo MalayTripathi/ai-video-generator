@@ -7,7 +7,7 @@ import { loadAgentMessages } from '@/lib/load-agent-messages'
 import { stepIndex } from '@/lib/config/pipeline'
 import { ASPECT_RATIOS, type AspectRatio } from '@/lib/config/enums'
 import { getBalance } from '@/lib/credits/balance'
-import { loadImageStatuses } from '@/app/api/projects/[id]/images/status/logic'
+import { loadImageStatuses, IMAGE_STATUS_PROJECT_COLUMNS } from '@/app/api/projects/[id]/images/status/logic'
 import { loadExports, type ExportsData } from '@/app/api/projects/[id]/exports/logic'
 import { STATUS_POLL_INTERVAL_MS } from '@/lib/config/storyboard'
 import { StoryboardProvider } from './_components/storyboard-context'
@@ -31,15 +31,20 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
     redirect('/login')
   }
 
-  const { data: project } = await supabase
+  // One project read serves the page and the image-status first paint (its voiceover and
+  // music lanes), so loadImageStatuses doesn't re-read it.
+  const { data: project, error: projectError } = await supabase
     .from('projects')
     .select(
-      'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target, mix_voice_gain_db, mix_music_gain_db, mix_duck_depth_db, mix_duck_bypass, music_muted, music_style_prompt, export_motion, export_transition, caption_mode, caption_style, caption_position, loudness_preset'
+      `id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target, mix_voice_gain_db, mix_music_gain_db, mix_duck_depth_db, mix_duck_bypass, music_style_prompt, export_motion, export_transition, caption_mode, caption_style, caption_position, loudness_preset, ${IMAGE_STATUS_PROJECT_COLUMNS}`
     )
     .eq('id', projectId)
     .eq('user_id', user.id)
-    .single()
+    .maybeSingle()
 
+  if (projectError) {
+    throw new Error(`Could not load project ${projectId}: ${projectError.message}`)
+  }
   if (!project) {
     notFound()
   }
@@ -50,24 +55,24 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
     redirect(`/projects/${projectId}/${project.current_step}`)
   }
 
-  const { data: shotsRows } = await supabase
-    .from('shots')
-    .select(STORYBOARD_SHOT_COLUMNS)
-    .eq('project_id', projectId)
-    .order('order_index', { ascending: true })
-  const shots = shotsRows ?? []
-
-  const status = await loadImageStatuses({ supabase, projectId, userId: user.id, getBalance })
+  // Everything below needs only the verified project, not each other - one wave. The agent
+  // history numbers turns by shot, so it waits on the shots read inside its own chain.
+  // A real Promise (not the query builder), so the two consumers share one execution.
+  const shotsPromise = Promise.resolve(
+    supabase.from('shots').select(STORYBOARD_SHOT_COLUMNS).eq('project_id', projectId).order('order_index', { ascending: true })
+  ).then(({ data }) => data ?? [])
+  const [shots, status, exportsResult, agentMessages] = await Promise.all([
+    shotsPromise,
+    loadImageStatuses({ supabase, projectId, userId: user.id, getBalance, project }),
+    // Export history's first paint, from the same function its poll reads.
+    loadExports({ supabase, projectId, userId: user.id, projectVerified: true }),
+    loadAgentMessages(supabase, projectId, shotsPromise),
+  ])
   if (!status.ok) {
     if (status.status === 404) notFound()
     throw new Error(status.error)
   }
-
-  // Export history's first paint, from the same function its poll reads.
-  const exportsResult = await loadExports({ supabase, projectId, userId: user.id })
   const exportsData: ExportsData = exportsResult.ok ? exportsResult.data : { rows: [], pollIntervalMs: STATUS_POLL_INTERVAL_MS }
-
-  const agentMessages = await loadAgentMessages(supabase, projectId, shots)
 
   // Edit-lock: closes once the next step has started, mirroring how Step 3 closes at the
   // storyboard.

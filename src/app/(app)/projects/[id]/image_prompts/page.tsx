@@ -9,9 +9,9 @@ import { PromptList } from './_components/prompt-list'
 import type { PromptShot } from './_components/types'
 import { shouldAutoGenerate } from './_components/derive-image-prompts-phase'
 import { AssetsProvider } from '../workbench/_components/assets-context'
-import { getElementGenerateAffordability } from '../workbench/actions'
+import { getElementGenerateAffordability } from '../workbench/affordability'
 import { getProjectElementsForUser, type ElementGroup } from '@/lib/elements/read'
-import { buildAgentMessages } from '@/lib/build-agent-messages'
+import { AGENT_MESSAGE_COLUMNS, buildAgentMessages } from '@/lib/build-agent-messages'
 import { stepIndex } from '@/lib/config/pipeline'
 import { creditsFor } from '@/lib/config/credits'
 import { getBalance } from '@/lib/credits/balance'
@@ -20,7 +20,23 @@ import type { Tables } from '@/lib/database.types'
 import { signStoryboardImages, storyboardThumbUrl } from '@/app/api/projects/[id]/images/status/logic'
 
 type ElementRow = Pick<Tables<'elements'>, 'id' | 'name' | 'type' | 'status' | 'reference_image_path'>
-type ShotRow = Tables<'shots'> & { shot_elements: { elements: ElementRow | null }[] }
+// Only the columns Step 3 renders, plus what the header (durations) and the agent panel
+// (shot_key, order_index) read - these rows are also serialized to the client shell.
+const IMAGE_PROMPTS_SHOT_COLUMNS =
+  'id, order_index, shot_key, image_prompt, image_prompt_stale, image_prompt_edited, image_path, image_stale, duration_sec, duration_locked'
+type ShotRow = Pick<
+  Tables<'shots'>,
+  | 'id'
+  | 'order_index'
+  | 'shot_key'
+  | 'image_prompt'
+  | 'image_prompt_stale'
+  | 'image_prompt_edited'
+  | 'image_path'
+  | 'image_stale'
+  | 'duration_sec'
+  | 'duration_locked'
+> & { shot_elements: { elements: ElementRow | null }[] }
 
 export default async function ImagePromptsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: projectId } = await params
@@ -32,27 +48,27 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
     redirect('/login')
   }
 
-  const { data: project } = await supabase
-    .from('projects')
-    .select(
-      'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target'
+  const shotsPromise = Promise.resolve(
+    supabase
+      .from('shots')
+      .select(`${IMAGE_PROMPTS_SHOT_COLUMNS}, shot_elements(elements(id, name, type, status, reference_image_path))`)
+      .eq('project_id', projectId)
+      .order('order_index', { ascending: true })
+  ).then(({ data }) => (data ?? []) as unknown as ShotRow[])
+  const frameUrlsPromise = shotsPromise.then((rows) =>
+    signStoryboardImages(
+      supabase,
+      projectId,
+      rows.map((row) => row.image_path)
     )
-    .eq('id', projectId)
-    .eq('user_id', user.id)
-    .single()
-
-  if (!project) {
-    notFound()
-  }
-
-  // View-gate only: a user whose furthest_step hasn't reached this page yet must not see
-  // it. Nothing here locks editing once the project has moved on - Step 3 stays live.
-  if (project.furthest_step < stepIndex('image_prompts')) {
-    redirect(`/projects/${projectId}/${project.current_step}`)
-  }
-
+  )
+  // The project row gates the page (404 / redirect), but no read below needs its data -
+  // they key on projectId and are RLS-scoped to the owner - so all of them run in one
+  // wave with it, and the gate is applied once they land.
   const [
-    { data: shotsRows },
+    { data: project, error: projectError },
+    shotRows,
+    frameUrls,
     elementsResult,
     affordability,
     { data: generation },
@@ -61,10 +77,17 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
     { data: creditLedgerRows },
   ] = await Promise.all([
     supabase
-      .from('shots')
-      .select('*, shot_elements(elements(id, name, type, status, reference_image_path))')
-      .eq('project_id', projectId)
-      .order('order_index', { ascending: true }),
+      .from('projects')
+      .select(
+        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target'
+      )
+      .eq('id', projectId)
+      .eq('user_id', user.id)
+      .maybeSingle(),
+    shotsPromise,
+    // Each card shows its Storyboard frame: one batched signing call, started as soon as the
+    // shots land rather than after every other read.
+    frameUrlsPromise,
     // The same grouped-and-signed read the Workbench uses: signed reference thumbnails
     // for the tiles, and the element list behind the picker.
     getProjectElementsForUser(supabase, projectId, user.id),
@@ -79,7 +102,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
       .maybeSingle(),
     supabase
       .from('messages')
-      .select('*')
+      .select(AGENT_MESSAGE_COLUMNS)
       .eq('project_id', projectId)
       .order('created_at', { ascending: true }),
     supabase.from('usage').select('message_id, estimated_cost').eq('project_id', projectId).neq('status', 'pending'),
@@ -91,22 +114,30 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
       .eq('operation', 'agent_turn'),
   ])
 
+  // A failed read is an error (the error boundary), never a 404 - only a missing row is.
+  if (projectError) {
+    throw new Error(`Could not load project ${projectId}: ${projectError.message}`)
+  }
+  if (!project) {
+    notFound()
+  }
+
+  // View-gate only: a user whose furthest_step hasn't reached this page yet must not see
+  // it. Nothing here locks editing once the project has moved on - Step 3 stays live.
+  if (project.furthest_step < stepIndex('image_prompts')) {
+    redirect(`/projects/${projectId}/${project.current_step}`)
+  }
+
+
   const elementGroups: ElementGroup[] = elementsResult.success ? elementsResult.groups : []
   const elementsExpiresAt = elementsResult.success ? elementsResult.expires_at : new Date().toISOString()
   if (!elementsResult.success) {
     console.error(`[image-prompts] Failed to load elements for project ${projectId}:`, elementsResult.error)
   }
 
-  const shotRows = (shotsRows ?? []) as unknown as ShotRow[]
   // ProjectHeader and the shell read the raw rows; the client provider gets only what
   // Step 3 renders.
   const shots = shotRows
-  // Each card shows its Storyboard frame: one batched signing call for the whole page.
-  const frameUrls = await signStoryboardImages(
-    supabase,
-    projectId,
-    shotRows.map((row) => row.image_path)
-  )
   const promptShots: PromptShot[] = shotRows.map((row) => ({
     id: row.id,
     order_index: row.order_index,

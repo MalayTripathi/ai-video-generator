@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { createClient } from '@supabase/supabase-js'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
-import { sumBalance, aggregateCreditsPeriod, type ProjectMeta } from '../src/app/(app)/credits/aggregate'
+import { aggregateCreditsPeriod, type ProjectMeta } from '../src/app/(app)/credits/aggregate'
 import type { LedgerRow } from '../src/app/(app)/credits/data'
 import { operationUnitLabel } from '../src/app/(app)/credits/operation-unit-label'
 import { readFileSync, readdirSync } from 'node:fs'
@@ -23,17 +23,6 @@ function row(overrides: Partial<LedgerRow> & Pick<LedgerRow, 'kind'>): LedgerRow
     ...overrides,
   }
 }
-
-test.describe('sumBalance', () => {
-  test('sums delta across every kind, unlike the period aggregation which filters to spend', () => {
-    const rows = [
-      row({ kind: 'signup_grant', delta: 5000 }),
-      row({ kind: 'spend', delta: -17 }),
-      row({ kind: 'refund', delta: 17 }),
-    ]
-    expect(sumBalance(rows)).toBe(5000)
-  })
-})
 
 test.describe('aggregateCreditsPeriod', () => {
   test('groups spend rows by step, then by operation within - leaf credits and percentages sum to the period total', () => {

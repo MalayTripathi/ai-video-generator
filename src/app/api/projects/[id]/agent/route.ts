@@ -24,13 +24,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const { data: project } = await supabase
+  const { data: project, error: projectError } = await supabase
     .from('projects')
     .select('id, furthest_step')
     .eq('id', projectId)
     .eq('user_id', user.id)
-    .single()
+    .maybeSingle()
 
+  // A failed read is a server error, never a 404 - only a missing row is.
+  if (projectError) {
+    console.error(`[project] read failed for ${projectId}:`, projectError.message)
+    return NextResponse.json({ error: 'Could not load project' }, { status: 500 })
+  }
   if (!project) {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 })
   }

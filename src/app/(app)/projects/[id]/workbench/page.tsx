@@ -10,8 +10,8 @@ import { ShotsTab } from './_components/shots-tab'
 import { AssetsTab } from './_components/assets-tab'
 import { ScriptTab } from './_components/script-tab'
 import { WorkbenchFooter } from './_components/workbench-footer'
-import { buildAgentMessages } from '@/lib/build-agent-messages'
-import { getElementGenerateAffordability } from './actions'
+import { AGENT_MESSAGE_COLUMNS, buildAgentMessages } from '@/lib/build-agent-messages'
+import { getElementGenerateAffordability } from './affordability'
 import { getProjectElementsForUser, type ElementGroup } from '@/lib/elements/read'
 import type { DisplayDialogueLine, DisplayShot } from './_components/types'
 import type { Tables } from '@/lib/database.types'
@@ -19,7 +19,27 @@ import { durationConfig, type DurationTarget } from '@/lib/config/duration'
 import type { CameraOrigin } from '@/lib/config/enums'
 
 type ElementRow = Pick<Tables<'elements'>, 'id' | 'name' | 'type' | 'status' | 'reference_image_path'>
-type ShotRow = Tables<'shots'> & { shot_elements: { elements: ElementRow | null }[] }
+// Only the columns the shot cards render - the full row also carries image, film and
+// video fields this step never reads.
+const WORKBENCH_SHOT_COLUMNS =
+  'id, order_index, shot_key, section_label, voice_over, visual_description, duration_sec, duration_locked, shot_size, shot_size_origin, camera_angle, camera_angle_origin, camera_movement, camera_movement_origin'
+type ShotRow = Pick<
+  Tables<'shots'>,
+  | 'id'
+  | 'order_index'
+  | 'shot_key'
+  | 'section_label'
+  | 'voice_over'
+  | 'visual_description'
+  | 'duration_sec'
+  | 'duration_locked'
+  | 'shot_size'
+  | 'shot_size_origin'
+  | 'camera_angle'
+  | 'camera_angle_origin'
+  | 'camera_movement'
+  | 'camera_movement_origin'
+> & { shot_elements: { elements: ElementRow | null }[] }
 type ShotDialogueRow = Pick<
   Tables<'shot_dialogue'>,
   'id' | 'shot_id' | 'element_id' | 'line' | 'order_index'
@@ -63,20 +83,11 @@ export default async function WorkbenchPage({
     redirect('/login')
   }
 
-  const { data: project } = await supabase
-    .from('projects')
-    .select(
-      'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target'
-    )
-    .eq('id', projectId)
-    .eq('user_id', user.id)
-    .single()
-
-  if (!project) {
-    notFound()
-  }
-
+  // The project row gates the page (404 / redirect), but no read below needs its data -
+  // they key on projectId and are RLS-scoped to the owner - so all of them run in one
+  // wave with it, and the gate is applied once they land.
   const [
+    { data: project, error: projectError },
     { data: shotsRows },
     elementsResult,
     affordability,
@@ -87,8 +98,16 @@ export default async function WorkbenchPage({
     { data: creditLedgerRows },
   ] = await Promise.all([
     supabase
+      .from('projects')
+      .select(
+        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target'
+      )
+      .eq('id', projectId)
+      .eq('user_id', user.id)
+      .maybeSingle(),
+    supabase
       .from('shots')
-      .select('*, shot_elements(elements(id, name, type, status, reference_image_path))')
+      .select(`${WORKBENCH_SHOT_COLUMNS}, shot_elements(elements(id, name, type, status, reference_image_path))`)
       .eq('project_id', projectId)
       .order('order_index', { ascending: true }),
     // Same grouped-and-signed read the Assets tab's client-driven refresh reuses (see
@@ -104,7 +123,7 @@ export default async function WorkbenchPage({
       .order('order_index', { ascending: true }),
     supabase
       .from('messages')
-      .select('*')
+      .select(AGENT_MESSAGE_COLUMNS)
       .eq('project_id', projectId)
       .order('created_at', { ascending: true }),
     supabase
@@ -130,6 +149,15 @@ export default async function WorkbenchPage({
       .eq('kind', 'spend')
       .eq('operation', 'agent_turn'),
   ])
+
+  // A failed read is an error (the error boundary), never a 404 - only a missing row is.
+  if (projectError) {
+    throw new Error(`Could not load project ${projectId}: ${projectError.message}`)
+  }
+  if (!project) {
+    notFound()
+  }
+
 
   const elementGroups: ElementGroup[] = elementsResult.success ? elementsResult.groups : []
   const elementsExpiresAt = elementsResult.success ? elementsResult.expires_at : new Date().toISOString()

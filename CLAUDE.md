@@ -241,8 +241,16 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   The proxy verifies with `getClaims()`; route handlers, server actions and the
   `(app)` layout verify with `getUser()` (layout and pages via the `cache()`d
   `getCurrentUser`, `src/lib/auth/current-user.ts`).
-- Every client poll loop pauses while the tab is hidden and polls once on return
-  (`usePageVisible`, `src/lib/hooks/use-page-visible.ts`).
+- **Data access.** Independent reads run in parallel; a read waits only on the read it
+  depends on. No `select('*')` on a page, layout or poll endpoint — name the columns.
+  Aggregates are computed in Postgres (a `security_invoker` view or a `(count)` embed),
+  never by summing fetched rows in JS. Never read the same row twice in one request,
+  except a re-read after a write; claimed spend paths keep every read their
+  CLAIM → RECOVER → PERSIST → SETTLE order needs. Every client poll loop has an interval,
+  pauses while the tab is hidden and polls once on return (`usePageVisible`,
+  `src/lib/hooks/use-page-visible.ts`).
+- Every task's closure report states the Supabase round trips for each page or route it
+  touched. TTFB is measured at module close only.
 - Wizard state lives in the DB, not client state. Each step is a real URL
   (`/projects/[id]/workbench`, `/image_prompts`, `/storyboard`,
   `/video_prompts`, `/generation`, `/assembly`) so work is

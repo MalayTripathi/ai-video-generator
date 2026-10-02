@@ -82,6 +82,7 @@ test('a second export while one is active is refused with 409', async ({ request
 test('cancel is allowed only while queued', async ({ request }) => {
   const projectId = await seed()
   const res = await request.post(`/api/projects/${projectId}/exports`)
+  expect(res.status()).toBe(201)
   const { data } = await res.json()
 
   // Once a worker has claimed it, cancel is refused and the row is untouched.
@@ -104,6 +105,7 @@ test('cancel is allowed only while queued', async ({ request }) => {
 test('retry on a failed export creates a new row with the same settings snapshot', async ({ request }) => {
   const projectId = await seed({ settings: { caption_mode: 'srt', export_motion: 'static' } })
   const res = await request.post(`/api/projects/${projectId}/exports`)
+  expect(res.status()).toBe(201)
   const { data } = await res.json()
 
   // Retry is for failed exports only.
