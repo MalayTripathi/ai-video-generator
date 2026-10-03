@@ -4,6 +4,9 @@ import { getBalance } from '@/lib/credits/balance'
 import { tryLoadRailFigures } from '@/app/(app)/rail-figures'
 import { loadImageStatuses } from './logic'
 
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
 // Polled by the Storyboard page for per-shot image state (ready / stale / queued /
 // generating / failed / not generated), with freshly signed image URLs on every call. A
 // plain JSON read - never router.refresh().

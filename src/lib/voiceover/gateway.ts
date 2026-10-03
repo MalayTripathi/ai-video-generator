@@ -1,4 +1,4 @@
-import { VOICEOVER_REQUEST_TIMEOUT_MS } from '@/lib/config/storyboard'
+import { VOICEOVER_REQUEST_TIMEOUT_MS, VOICEOVER_SYNTH_TIMEOUT_MS } from '@/lib/config/storyboard'
 import { assertProviderCallAllowed, guardedFetch, VoiceoverLiveCallsBlockedError } from '@/lib/providers/live-call-guard'
 
 export { VoiceoverLiveCallsBlockedError }
@@ -66,7 +66,8 @@ export function createVoiceoverGateway(): VoiceoverGateway {
         console.warn(`[voiceover] LIVE call outside production — provider=elevenlabs model=${params.model} chars=${params.text.length}`)
       }
 
-      // One request, no retry: a retried request is a second charge.
+      // One request, no retry here: a retried request is a second charge. The worker retries
+      // only a 429, which is refused before any audio is made.
       const res = await providerFetch(
         `${API_BASE}/v1/text-to-speech/${encodeURIComponent(params.voiceId)}/with-timestamps?output_format=${OUTPUT_FORMAT}`,
         {
@@ -77,7 +78,7 @@ export function createVoiceoverGateway(): VoiceoverGateway {
             model_id: params.model,
             ...(params.languageCode ? { language_code: params.languageCode } : {}),
           }),
-          signal: AbortSignal.timeout(VOICEOVER_REQUEST_TIMEOUT_MS),
+          signal: AbortSignal.timeout(VOICEOVER_SYNTH_TIMEOUT_MS),
         }
       )
       if (!res.ok) throw await failure(res)

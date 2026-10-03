@@ -13,6 +13,7 @@ import { modelsConfig } from '@/lib/config/models'
 import {
   CONTINUATION_CHAIN_LIMIT,
   IMAGE_CONCURRENCY,
+  IMAGE_HANDOFF_TIMEOUT_MS,
   IMAGE_STALE_AFTER_MS,
   RUN_TIME_BUDGET_MS,
   STORYBOARD_IMAGE_SIZES,
@@ -26,6 +27,7 @@ import {
   markGenerationStarted,
   peekGenerationPayload,
   persistGenerationPayload,
+  releaseQueuedGenerations,
   settleGeneration,
 } from '@/lib/generations/claim'
 import { assertWithinAllowance, reserveUsage, settleUsage } from '@/lib/usage'
@@ -222,6 +224,40 @@ export function parseContinuationPayload(raw: unknown, projectId: string): Conti
     projectId,
     generationIds: v.generationIds as string[],
     chainDepth: v.chainDepth,
+  }
+}
+
+// A background run calling the images route to continue itself sends this header. It
+// carries no user session, so the shared secret is its only credential.
+export const INTERNAL_SECRET_HEADER = 'x-images-internal-secret'
+
+/**
+ * The hand-off a run uses to pass its unreached shots to a fresh invocation of the images
+ * route. Resolves true only on the continuation's 202. A missing secret is a deploy
+ * misconfiguration: it is logged as an error and refused, so the worker releases the
+ * shots failed and retryable rather than leaving them queued.
+ */
+export function createContinueRun(params: {
+  origin: string
+  secret: string | undefined
+  fetchImpl?: typeof fetch
+  timeoutMs?: number
+}): (payload: ContinuationPayload) => Promise<boolean> {
+  return async (payload) => {
+    if (!params.secret) {
+      console.error(
+        `[images] IMAGES_INTERNAL_SECRET is not set - ${payload.generationIds.length} shot(s) of project ${payload.projectId} cannot continue past this run and are released for retry`
+      )
+      return false
+    }
+    const res = await (params.fetchImpl ?? fetch)(`${params.origin}/api/projects/${payload.projectId}/images`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', [INTERNAL_SECRET_HEADER]: params.secret },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(params.timeoutMs ?? IMAGE_HANDOFF_TIMEOUT_MS),
+    })
+    if (res.status !== 202) console.error(`[images] continuation refused with status ${res.status}`)
+    return res.status === 202
   }
 }
 
@@ -572,48 +608,68 @@ export async function runImageWorker(
   const aspectRatio = project?.aspect_ratio
   if (!aspectRatio || !(ASPECT_RATIOS as readonly string[]).includes(aspectRatio)) {
     // Nothing can be generated without a size - release every claim, uncharged.
-    await abandon(supabase, generationIds, 'Project not found or has no valid aspect ratio')
-    result.abandoned = [...generationIds]
+    result.abandoned = await release(supabase, projectId, generationIds, 'Project not found or has no valid aspect ratio')
     return result
   }
   const size = STORYBOARD_IMAGE_SIZES[aspectRatio as AspectRatio]
 
-  // A small pool: each lane takes the next id until the list is exhausted or the run's
-  // time budget is spent. What's left is handed on.
-  let next = 0
+  // Passes the unreached ids to a fresh run, or - at the chain limit, or when the hand-off
+  // is refused - releases them failed, uncharged and retryable.
+  const handOn = async (remaining: string[]): Promise<void> => {
+    if (chainDepth < chainLimit) {
+      let accepted = false
+      try {
+        accepted = await deps.continueRun({ userId, projectId, generationIds: remaining, chainDepth: chainDepth + 1 })
+      } catch (err) {
+        console.error('[images] continuation hand-off failed', err)
+      }
+      if (accepted) {
+        result.continued = remaining
+        return
+      }
+    } else {
+      console.warn(`[images] chain limit reached for project ${projectId}; releasing ${remaining.length} unreached shot(s)`)
+    }
+    result.abandoned = await release(supabase, projectId, remaining, 'Not reached before the run ended')
+  }
+
+  // A small pool: each lane takes the next id until the list is exhausted. At the budget
+  // the untaken ids are handed on at once, while the lanes drain what's in flight - so the
+  // hand-off never waits on a slow shot near the route's maxDuration.
+  const state: { next: number; handoff: Promise<void> | null } = { next: 0, handoff: null }
+  const takeRemaining = (): string[] => {
+    const remaining = generationIds.slice(state.next)
+    state.next = generationIds.length
+    return remaining
+  }
+  const timer = setTimeout(() => {
+    if (state.next < generationIds.length) state.handoff = handOn(takeRemaining())
+  }, budget)
+
   const lanes = Array.from({ length: Math.min(concurrency, generationIds.length) }, async () => {
-    while (next < generationIds.length && Date.now() - runStart < budget) {
-      const id = generationIds[next++]
+    while (state.next < generationIds.length && Date.now() - runStart < budget) {
+      const id = generationIds[state.next++]
       result.outcomes[id] = await processShot(deps, { userId, projectId, size }, id)
     }
   })
   await Promise.all(lanes)
+  clearTimeout(timer)
 
-  const remaining = generationIds.slice(next)
-  if (remaining.length === 0) return result
-
-  if (chainDepth < chainLimit) {
-    let accepted = false
-    try {
-      accepted = await deps.continueRun({ userId, projectId, generationIds: remaining, chainDepth: chainDepth + 1 })
-    } catch (err) {
-      console.error('[images] continuation hand-off failed', err)
-    }
-    if (accepted) {
-      result.continued = remaining
-      return result
-    }
-  }
-
-  await abandon(supabase, remaining, 'Not reached before the run ended')
-  result.abandoned = remaining
+  // The lanes stopped at the budget before the timer fired (a busy event loop).
+  if (state.handoff === null && state.next < generationIds.length) state.handoff = handOn(takeRemaining())
+  if (state.handoff !== null) await state.handoff
   return result
 }
 
-// Settles never-started claims as failed. Nothing was reserved or charged for them.
-async function abandon(supabase: SupabaseServerClient, generationIds: string[], reason: string): Promise<void> {
-  for (const id of generationIds) {
-    const { error } = await settleGeneration(supabase, id, { success: false, error: reason })
-    if (error) console.error(`[images] failed to release claim ${id}`, error)
-  }
+// Releases never-started claims, failed. Nothing was reserved or charged for them. Only
+// rows still queued are touched - see releaseQueuedGenerations.
+async function release(
+  supabase: SupabaseServerClient,
+  projectId: string,
+  generationIds: string[],
+  reason: string
+): Promise<string[]> {
+  const { released, error } = await releaseQueuedGenerations(supabase, { projectId, generationIds, error: reason })
+  if (error) console.error(`[images] failed to release ${generationIds.length} queued claim(s)`, error)
+  return released
 }

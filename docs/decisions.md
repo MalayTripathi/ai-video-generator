@@ -294,8 +294,9 @@ first, and the loser is refused with `already_generating` uniformly regardless o
 it was racing from — this reproduces the old single-atomic-UPDATE claim's behaviour exactly,
 since any race loser's follow-up read would always see the winner's `'generating'` write.
 
-`STALE_AFTER_MS` is 15 minutes, tied to the real gateway's 600s SDK timeout plus margin, so a
-crashed or killed request self-heals rather than wedging the project.
+`generate_shots`'s window is its route's 300s `maxDuration` plus 30s: the request cannot
+outlive its route, so a killed one self-heals within seconds of the kill rather than wedging
+the project. `STALE_AFTER_MS` (15 minutes) is only the default for operations with no route yet.
 
 ## The chars/4 estimate bias
 *Supports: the `estimateInputTokens` paragraph in `## Generations and usage`. (Audit item 85.)*
@@ -434,11 +435,13 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   is excluded from `generations` cost accounting — agent turns write `usage`
   rows only; the accepted consequence is that a browser refresh mid-turn can
   double-bill one turn (cents, versus dollars for a double-fired Step 6 clip).
-- **`OPERATION_POLICY` — why it exists.** `STALE_AFTER_MS` is currently one
-  global constant of 15 minutes, correct for a long paid shot-generation job
-  and catastrophic for a chat turn: a wedged turn would lock the agent for
-  15 minutes. Operations need per-operation stale windows. The module lands
-  in C4.
+- **`OPERATION_POLICY` — why it exists.** One global 15-minute window was
+  catastrophic for a chat turn (a wedged turn would lock the agent for 15
+  minutes), so each operation has its own. A window sits just past the
+  `maxDuration` of the route that holds its claim (ceiling + 30s,
+  `CLAIM_STALE_MARGIN_MS`): longer, so a live run is never reclaimed mid-call
+  and charged twice; no longer, so a killed run is retryable quickly. Vercel
+  Hobby caps every route at 300s.
 - **Agent-turn stale window — 180s, not 60s.** 60s was considered and
   rejected: it was derived from UI patience rather than worst-case turn
   duration, and an 8-iteration Sonnet turn routinely exceeds it, leaving a
@@ -1331,7 +1334,7 @@ a partial afford is an ordinary outcome rather than an error.
 
 **Why `generations.queued_at`.** A batch waits behind a small concurrency pool, and one
 stale window cannot serve both a waiting claim and a running one. Sized for a running call
-(SDK timeout plus a minute), it would expire claims still legitimately queued; sized for a
+(the route's 300s plus 30s), it would expire claims still legitimately queued; sized for a
 queue, a hung call would read "generating" for hours. The marker lets each claim age
 against the window that fits it. It is set at claim, cleared (with `started_at` re-stamped)
 by `markGenerationStarted`, and that update is conditional on the exact `queued_at` the
@@ -1339,13 +1342,19 @@ worker was handed - the ownership check that keeps a stale reclaim and a slow wo
 both running the same shot.
 
 **Why the run continues itself.** A background run lives inside one route invocation and so
-is bounded by `maxDuration` (800s); a 75-shot project at three in parallel cannot finish in
-one. Each run stops starting shots at its time budget, drains what is in flight, and posts
-the unreached claims back to the same route. The continuation carries no user session, so
-its credential is the `IMAGES_INTERNAL_SECRET` header. It resumes only claims that are
-still queued in the named project of the named user, and never re-runs the gate - those
-shots were already paid for in the sense that matters, the in-flight count. A chain limit
-bounds the whole thing; shots left at the limit settle failed and uncharged.
+is bounded by `maxDuration` (300s on Vercel Hobby); a 75-shot project at three in parallel
+cannot finish in one. Each run stops starting shots at its 150s budget and posts the
+unreached claims back to the same route at once, while it drains what is in flight - a
+hand-off left until after the drain could be killed with the function near 300s, stranding
+the batch queued. The cost is a brief overlap of up to six provider calls. The continuation
+carries no user session, so its credential is the `IMAGES_INTERNAL_SECRET` header; a missing
+secret is logged as an error and the shots are released failed and retryable, never left
+queued. It resumes only claims that are still queued in the named project of the named user,
+and never re-runs the gate - those shots were already paid for in the sense that matters,
+the in-flight count. A chain limit (16) bounds the whole thing; shots left at the limit, or
+after a refused hand-off, settle failed and uncharged. That release is conditional on the
+row still being queued, so a hand-off that timed out after the next run accepted it cannot
+fail a shot that run has started.
 
 **RECOVER charges under the stored attempt id.** The payload is `{ path, attemptId }`.
 Recovery relinks the stored object and writes the ledger row with the original attempt id,
@@ -1359,6 +1368,19 @@ shape. `gpt-image-1-mini`'s fixed 2:3 portrait would have needed a crop that thr
 the edges of every frame.
 
 ## Storyboard music: the derivation claim, the loop schedule, and two ffmpeg inputs
+
+**Music and upload alignment stay inside their 300s route.** Each is one provider request
+with no retry (music 240s, alignment 150s, each bounded by `AbortSignal.timeout` including
+the body), plus the storage write and row writes, inside 300s with margin. A timeout is an
+ordinary failure: usage settles failed at its quote, no ledger row, the claim is released in
+the same `finally`, and the lane shows Retry. The voiceover's parts run two at a time for the
+same reason - a 4-part read in sequence cannot fit 300s, and more at once would trip the
+ElevenLabs concurrent-request limit. Two waves of a 110s synthesis timeout fit, and no
+attempt starts past a deadline sized so the last one still finishes in time. A 429 is
+retried after a backoff (it is refused before any audio is made, so no second charge);
+past the last backoff the part fails, uncharged and resumable. The parts' PERSISTs share
+one promise chain, so each write carries every part landed so far and two writes never
+drop a paid part.
 
 **The style prompt is derived once per project, guarded by a claim.** `derive_music_prompt`
 fires only from the Music card's first user expand while the field is empty - never on

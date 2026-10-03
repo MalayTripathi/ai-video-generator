@@ -5,6 +5,9 @@ import { mintAttemptId, recordFixedSpend } from '@/lib/credits/ledger'
 import { CAMERA_FIELD_NAMES, type CameraFieldName } from '@/lib/prompts/camera-derivation'
 import { runCameraDerivation } from './logic'
 
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
 function parseCameraFieldName(value: unknown): CameraFieldName | null {
   return typeof value === 'string' && (CAMERA_FIELD_NAMES as readonly string[]).includes(value)
     ? (value as CameraFieldName)

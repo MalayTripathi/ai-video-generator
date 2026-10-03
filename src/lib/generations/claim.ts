@@ -248,6 +248,30 @@ export async function markGenerationStarted(
 }
 
 /**
+ * Settles still-queued claims failed: work that never started, so nothing was reserved
+ * or charged. Conditional on the row still being queued, so a claim another run has
+ * already started (markGenerationStarted cleared its queued_at) is never touched - a
+ * hand-off that timed out after the next run accepted it cannot fail that run's shots.
+ * Payload is left as-is for RECOVER, like any failed settle.
+ */
+export async function releaseQueuedGenerations(
+  supabase: SupabaseServerClient,
+  params: { projectId: string; generationIds: string[]; error: string }
+): Promise<{ released: string[]; error: string | null }> {
+  if (params.generationIds.length === 0) return { released: [], error: null }
+  const { data, error } = await supabase
+    .from('generations')
+    .update({ state: 'failed', error: params.error, queued_at: null, updated_at: new Date().toISOString() })
+    .in('id', params.generationIds)
+    .eq('project_id', params.projectId)
+    .eq('state', 'generating')
+    .not('queued_at', 'is', null)
+    .select('id')
+  if (error) return { released: [], error: error.message }
+  return { released: (data ?? []).map((r) => r.id), error: null }
+}
+
+/**
  * The still-queued claims among `generationIds`, scoped to one project and one
  * (step, operation). Read-only - used to validate a continuation run's hand-off, which
  * resumes existing claims and never claims anything itself.

@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { uploadReferenceImageForUser, removeReferenceImageForUser } from '@/lib/elements/reference'
 
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
 // sharp is a native binary and cannot run on the Edge runtime.
 export const runtime = 'nodejs'
 

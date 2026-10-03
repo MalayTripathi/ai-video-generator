@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createExport, loadExports } from './logic'
 
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
 // The export history (GET, polled only while an export is queued or rendering) and
 // "Export slideshow" (POST). Export is free: no balance gate.
 

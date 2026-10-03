@@ -8,6 +8,9 @@ import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { parseImagePromptsInstruction } from '@/lib/prompts/image-prompts'
 import { runImagePromptGeneration } from './logic'
 
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
 // shotIds is the request's explicit write scope - see CLAUDE.md's "scope is never
 // inferred, defaulted, or widened server-side" principle (established for camera
 // fields, applied here to which shots). Required and validated before any DB read or

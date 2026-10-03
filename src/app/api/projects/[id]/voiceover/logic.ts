@@ -6,13 +6,16 @@ import type { Json, Tables } from '@/lib/database.types'
 import type { getBalance as getBalanceType } from '@/lib/credits/balance'
 import type { ensureSignupGrant as ensureSignupGrantType } from '@/lib/credits/signup-grant'
 import type { mintAttemptId as mintAttemptIdType, recordFixedSpend as recordFixedSpendType } from '@/lib/credits/ledger'
-import type { VoiceoverGateway } from '@/lib/voiceover/gateway'
+import { VoiceoverProviderError, type VoiceoverGateway } from '@/lib/voiceover/gateway'
 import { creditsFor } from '@/lib/config/credits'
 import { findVoice, modelsConfig } from '@/lib/config/models'
 import { ELEVENLABS_ALIGNMENT_MODEL, type UsageBreakdown } from '@/lib/config/pricing'
 import {
   VOICEOVER_ALIGN_STALE_AFTER_MS,
+  VOICEOVER_ATTEMPT_DEADLINE_MS,
+  VOICEOVER_CHUNK_CONCURRENCY,
   VOICEOVER_CHUNK_MAX_CHARS,
+  VOICEOVER_RATE_LIMIT_BACKOFF_MS,
   VOICEOVER_MAX_SCRIPT_CHARS,
   VOICEOVER_STALE_AFTER_MS,
   VOICEOVER_UPLOAD_FORMATS,
@@ -217,7 +220,8 @@ export type GeneratePayload = {
   scriptHash: string
   chars: number
   credits: number
-  parts: GeneratePart[]
+  /** Indexed by chunk. Chunks are read concurrently, so a failed read can leave a hole. */
+  parts: (GeneratePart | null)[]
 }
 
 function readGeneratePayload(payload: Json | null): GeneratePayload | null {
@@ -313,6 +317,18 @@ export type VoiceoverWorkerDeps = {
   supabase: SupabaseServerClient // service role
   gateway: VoiceoverGateway
   recordFixedSpend: typeof recordFixedSpendType
+  /** Test seams - production always uses the storyboard.ts values. */
+  chunkConcurrency?: number
+  rateLimitBackoffMs?: readonly number[]
+  attemptDeadlineMs?: number
+}
+
+/** A part not reached before the last moment an attempt may start. Nothing was reserved. */
+export class VoiceoverDeadlineError extends Error {
+  constructor(part: number) {
+    super(`Part ${part} was not reached in time`)
+    this.name = 'VoiceoverDeadlineError'
+  }
 }
 
 export type WorkerOutcome = { ok: true } | { ok: false; error: string }
@@ -358,24 +374,48 @@ export async function runVoiceoverWorker(
 
     const audios: (Buffer | null)[] = chunks.map(() => null)
     const alignments: (CharacterAlignment | null)[] = chunks.map(() => null)
-    const parts = [...payload.parts]
+    const parts: (GeneratePart | null)[] = chunks.map((_, k) => payload.parts[k] ?? null)
 
+    // RECOVER: a part already paid for and stored is never read again.
     for (let k = 0; k < chunks.length; k++) {
-      // RECOVER: a part already paid for and stored is never read again.
       const stored = parts[k]
-      if (stored) {
-        const audio = await getObject(supabase, stored.path)
-        const alignmentJson = await getObject(supabase, stored.alignmentPath)
-        if (audio && alignmentJson) {
-          audios[k] = audio
-          alignments[k] = JSON.parse(alignmentJson.toString('utf8')) as CharacterAlignment
-          continue
-        }
-        console.error(`[voiceover] stored part ${k + 1} of ${generationId} is unreadable; reading it again`)
-        parts.length = k
+      if (!stored) continue
+      const audio = await getObject(supabase, stored.path)
+      const alignmentJson = await getObject(supabase, stored.alignmentPath)
+      if (audio && alignmentJson) {
+        audios[k] = audio
+        alignments[k] = JSON.parse(alignmentJson.toString('utf8')) as CharacterAlignment
+        continue
       }
+      console.error(`[voiceover] stored part ${k + 1} of ${generationId} is unreadable; reading it again`)
+      parts[k] = null
+    }
 
+    // Every part's PERSIST goes through one chain, so the writes land in order and each
+    // carries every part landed so far - two concurrent writes can never drop a paid part.
+    let persistChain: Promise<string | null> = Promise.resolve(null)
+    const persistParts = (): Promise<string | null> => {
+      persistChain = persistChain.then(async () => {
+        const { error } = await persistGenerationPayload(supabase, generationId, {
+          ...payload,
+          parts: [...parts],
+        } as unknown as Json)
+        return error
+      })
+      return persistChain
+    }
+
+    // The missing parts are read a few at a time (VOICEOVER_CHUNK_CONCURRENCY), and no
+    // attempt starts past the deadline, so the whole read fits the route's maxDuration.
+    // Each part is reserved, stored, persisted and settled on its own.
+    const concurrency = deps.chunkConcurrency ?? VOICEOVER_CHUNK_CONCURRENCY
+    const backoffs = deps.rateLimitBackoffMs ?? VOICEOVER_RATE_LIMIT_BACKOFF_MS
+    const deadline = deps.attemptDeadlineMs ?? VOICEOVER_ATTEMPT_DEADLINE_MS
+    const elapsed = () => Date.now() - startedAt
+
+    const readPart = async (k: number): Promise<void> => {
       const chunk = chunks[k]
+      if (elapsed() > deadline) throw new VoiceoverDeadlineError(k + 1)
       const { estimatedCost, quotedBreakdown } = quoteElevenLabsCall({ model: payload.model, characters: chunk.text.length })
       await assertWithinAllowance({ supabase, userId, quotedCost: estimatedCost })
       const { usageId } = await reserveUsage({
@@ -395,13 +435,26 @@ export async function runVoiceoverWorker(
       let measured: UsageBreakdown | null = null
       let caught: unknown = null
       try {
-        // ONE call per part, no retry.
-        const result = await gateway.synthesize({
-          text: chunk.text,
-          voiceId: payload.voiceId,
-          model: payload.model,
-          languageCode: payload.languageCode,
-        })
+        // ONE call per part; only a 429 - refused before any audio is made - is retried,
+        // after a backoff, and only while the retry can still start before the deadline.
+        let result: Awaited<ReturnType<VoiceoverGateway['synthesize']>>
+        for (let attempt = 0; ; attempt++) {
+          try {
+            result = await gateway.synthesize({
+              text: chunk.text,
+              voiceId: payload.voiceId,
+              model: payload.model,
+              languageCode: payload.languageCode,
+            })
+            break
+          } catch (err) {
+            const wait = backoffs[attempt]
+            const rateLimited = err instanceof VoiceoverProviderError && err.status === 429
+            if (!rateLimited || wait === undefined || elapsed() + wait > deadline) throw err
+            console.warn(`[voiceover] part ${k + 1} of ${generationId} rate limited; retrying in ${wait}ms`)
+            await new Promise((resolve) => setTimeout(resolve, wait))
+          }
+        }
         measured = { input_tokens: 0, output_tokens: 0, characters: chunk.text.length }
 
         // Stored before it's checked, so paid audio is never lost to a later failure.
@@ -417,12 +470,9 @@ export async function runVoiceoverWorker(
         const alignmentError = await putObject(supabase, alignmentPath, JSON.stringify(alignment), 'application/json')
         if (alignmentError) throw new Error(`Could not store the alignment (${alignmentError})`)
 
-        // PERSIST each part as it lands, so a failure later in the chain resumes here free.
+        // PERSIST each part as it lands, so a failure elsewhere in the read resumes here free.
         parts[k] = { path: partPath, alignmentPath, durationSec }
-        const { error: persistError } = await persistGenerationPayload(supabase, generationId, {
-          ...payload,
-          parts,
-        } as unknown as Json)
+        const persistError = await persistParts()
         if (persistError) throw new Error(`Read stored but could not be recorded safely (${persistError})`)
 
         audios[k] = result.audio
@@ -443,7 +493,25 @@ export async function runVoiceoverWorker(
       }
     }
 
-    const durations = parts.map((p) => p.durationSec)
+    // A small pool. A failed part never stops the others: every part still in flight
+    // finishes (and persists) before the claim settles, so none strands another's paid audio.
+    const missing = chunks.map((_, k) => k).filter((k) => audios[k] === null)
+    const failures: unknown[] = []
+    let nextPart = 0
+    const lanes = Array.from({ length: Math.min(concurrency, missing.length) }, async () => {
+      while (nextPart < missing.length) {
+        const k = missing[nextPart++]
+        try {
+          await readPart(k)
+        } catch (err) {
+          failures.push(err)
+        }
+      }
+    })
+    await Promise.all(lanes)
+    if (failures.length > 0) throw failures[0]
+
+    const durations = (parts as GeneratePart[]).map((p) => p.durationSec)
     const merged = mergeAlignments(script.text, chunks, alignments as CharacterAlignment[], durations)
     const spans = buildSpans(script, merged)
     const totalSec = durations.reduce((a, b) => a + b, 0)

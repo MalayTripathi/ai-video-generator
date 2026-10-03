@@ -11,7 +11,7 @@ import { refusalResponse } from '../respond'
 
 export const runtime = 'nodejs'
 // Must stay a literal; mirrors VOICEOVER_ROUTE_MAX_DURATION_S (src/lib/config/storyboard.ts).
-export const maxDuration = 800
+export const maxDuration = 300
 
 // Step two of an upload: measure the stored file, price it per minute, gate (402 before
 // any claim), claim, then align it to the script in the background. Charged on success

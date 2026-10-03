@@ -2,14 +2,24 @@ import { test, expect } from '@playwright/test'
 import { OPERATIONS, type Operation } from '../src/lib/config/pipeline'
 import { OPERATION_POLICY, getOperationPolicy, STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
 import {
+  CLAIM_STALE_MARGIN_MS,
   IMAGE_QUEUE_STALE_AFTER_MS,
   IMAGE_STALE_AFTER_MS,
+  MUSIC_PROMPT_ROUTE_MAX_DURATION_S,
   MUSIC_PROMPT_STALE_AFTER_MS,
+  MUSIC_ROUTE_MAX_DURATION_S,
   MUSIC_STALE_AFTER_MS,
   VOICEOVER_ALIGN_STALE_AFTER_MS,
   VOICEOVER_ROUTE_MAX_DURATION_S,
   VOICEOVER_STALE_AFTER_MS,
 } from '../src/lib/config/storyboard'
+
+// A window must outlast the route that holds its claim (a live run is never reclaimed) by
+// no more than the margin (a killed run is retryable quickly).
+function expectJustPast(windowMs: number, routeMaxDurationS: number) {
+  expect(windowMs).toBeGreaterThan(routeMaxDurationS * 1000)
+  expect(windowMs).toBeLessThanOrEqual(routeMaxDurationS * 1000 + CLAIM_STALE_MARGIN_MS)
+}
 
 const DEFAULT_POLICY_OPS: Operation[] = [
   'write_video_prompts',
@@ -30,19 +40,18 @@ test.describe('OPERATION_POLICY', () => {
     const align = getOperationPolicy('align_voiceover')
     expect(align.staleAfterMs).toBe(VOICEOVER_ALIGN_STALE_AFTER_MS)
     expect(align.claimableFrom).toEqual({ succeeded: 'always', failed: 'always' })
-    // Both windows must fit inside the route's own maxDuration.
-    expect(vo.staleAfterMs).toBeLessThan(VOICEOVER_ROUTE_MAX_DURATION_S * 1000)
-    expect(align.staleAfterMs).toBeLessThan(VOICEOVER_ROUTE_MAX_DURATION_S * 1000)
+    expectJustPast(vo.staleAfterMs, VOICEOVER_ROUTE_MAX_DURATION_S)
+    expectJustPast(align.staleAfterMs, VOICEOVER_ROUTE_MAX_DURATION_S)
   })
 
   test('background_music: its own window, reclaimable from either terminal state; derive_music_prompt: once per project', () => {
     const music = getOperationPolicy('background_music')
     expect(music.staleAfterMs).toBe(MUSIC_STALE_AFTER_MS)
     expect(music.claimableFrom).toEqual({ succeeded: 'always', failed: 'always' })
-    // The music route's maxDuration is the same literal as the voiceover routes'.
-    expect(music.staleAfterMs).toBeLessThan(VOICEOVER_ROUTE_MAX_DURATION_S * 1000)
+    expectJustPast(music.staleAfterMs, MUSIC_ROUTE_MAX_DURATION_S)
     const derive = getOperationPolicy('derive_music_prompt')
     expect(derive.staleAfterMs).toBe(MUSIC_PROMPT_STALE_AFTER_MS)
+    expectJustPast(derive.staleAfterMs, MUSIC_PROMPT_ROUTE_MAX_DURATION_S)
     // Never reclaimed once it succeeded; a failure only behind retry:true, which no caller passes.
     expect(derive.claimableFrom).toEqual({ succeeded: 'never', failed: 'retry' })
   })
@@ -54,9 +63,9 @@ test.describe('OPERATION_POLICY', () => {
     expect(policy.claimableFrom.failed).toBe('always')
   })
 
-  test('generate_shots: default window, claimable from succeeded only with retry (regenerate-all)', () => {
+  test('generate_shots: window just past its 300s route, claimable from succeeded only with retry (regenerate-all)', () => {
     const policy = getOperationPolicy('generate_shots')
-    expect(policy.staleAfterMs).toBe(STALE_AFTER_MS)
+    expectJustPast(policy.staleAfterMs, 300)
     expect(policy.claimableFrom.succeeded).toBe('retry')
     expect(policy.claimableFrom.failed).toBe('retry')
   })
@@ -65,9 +74,9 @@ test.describe('OPERATION_POLICY', () => {
   // project whose prompts already exist, not exceptional retries - so, like generate_shots, a
   // succeeded row is reclaimable behind the same retry flag a failed one needs (see the
   // write_image_prompts entry in operation-policy.ts). A request without retry is still refused.
-  test('write_image_prompts: default window, claimable from succeeded only with retry (regenerate)', () => {
+  test('write_image_prompts: window just past its 300s route, claimable from succeeded only with retry (regenerate)', () => {
     const policy = getOperationPolicy('write_image_prompts')
-    expect(policy.staleAfterMs).toBe(STALE_AFTER_MS)
+    expectJustPast(policy.staleAfterMs, 300)
     expect(policy.claimableFrom.succeeded).toBe('retry')
     expect(policy.claimableFrom.failed).toBe('retry')
   })
@@ -80,8 +89,15 @@ test.describe('OPERATION_POLICY', () => {
     expect(policy.staleAfterMs).toBe(IMAGE_STALE_AFTER_MS)
     expect(policy.queuedStaleAfterMs).toBe(IMAGE_QUEUE_STALE_AFTER_MS)
     expect(policy.queuedStaleAfterMs!).toBeGreaterThan(policy.staleAfterMs)
+    expectJustPast(policy.staleAfterMs, 300)
     expect(policy.claimableFrom.succeeded).toBe('always')
     expect(policy.claimableFrom.failed).toBe('always')
+  })
+
+  test('generate_element_reference: window just past its 300s route, claimable unconditionally', () => {
+    const policy = getOperationPolicy('generate_element_reference')
+    expectJustPast(policy.staleAfterMs, 300)
+    expect(policy.claimableFrom).toEqual({ succeeded: 'always', failed: 'always' })
   })
 
   test('every other operation is identical to pre-change behaviour: default window, never/retry', () => {

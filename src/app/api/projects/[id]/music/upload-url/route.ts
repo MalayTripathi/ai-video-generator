@@ -4,6 +4,9 @@ import { mintAttemptId } from '@/lib/credits/ledger'
 import { runMusicUploadUrlRequest } from '../logic'
 import { refusalResponse } from '../../voiceover/respond'
 
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
 // Step one of a music upload: a signed URL the browser uploads the file to directly.
 // Free; nothing is claimed or charged.
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {

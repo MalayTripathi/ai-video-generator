@@ -2,7 +2,9 @@ import { test, expect } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { runShotGeneration } from '../src/app/api/projects/[id]/shots/logic'
-import { STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
+import { getOperationPolicy } from '../src/lib/generations/operation-policy'
+
+const SHOTS_STALE_AFTER_MS = getOperationPolicy('generate_shots').staleAfterMs
 import { successMessage, truncatedMessage, throwingGateway } from './helpers/claude-fakes'
 import type { ClaudeGateway } from '../src/lib/claude'
 
@@ -131,7 +133,7 @@ test.describe('shot generation state machine', () => {
     const user = primary.user
     {
       const projectId = await insertProject(user.id)
-      const notYetStale = new Date(Date.now() - (STALE_AFTER_MS - 5 * 60 * 1000)).toISOString()
+      const notYetStale = new Date(Date.now() - (SHOTS_STALE_AFTER_MS - 60 * 1000)).toISOString()
       await seedGeneration(projectId, { state: 'generating', started_at: notYetStale })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 
@@ -150,7 +152,7 @@ test.describe('shot generation state machine', () => {
     const user = primary.user
     {
       const projectId = await insertProject(user.id)
-      const staleTimestamp = new Date(Date.now() - (STALE_AFTER_MS + 5 * 60 * 1000)).toISOString()
+      const staleTimestamp = new Date(Date.now() - (SHOTS_STALE_AFTER_MS + 60 * 1000)).toISOString()
       await seedGeneration(projectId, { state: 'generating', started_at: staleTimestamp })
       const { gateway, getCallCount } = countingGateway(successMessage(VALID_WRITE_SHOTS_INPUT))
 

@@ -21,7 +21,7 @@ import {
 } from '../src/app/(app)/projects/[id]/storyboard/actions'
 import { grantAndReadBalance, realRecordFixedSpend } from './helpers/ledger-child'
 import { SAMPLE_SECONDS, sampleAudio } from './helpers/voiceover-fakes'
-import { successMusicGateway, throwingMusicGateway } from './helpers/music-fakes'
+import { successMusicGateway, throwingMusicGateway, timeoutMusicGateway } from './helpers/music-fakes'
 import { scriptedGateway, successMessage, throwingGateway } from './helpers/claude-fakes'
 import type { getBalance as getBalanceType } from '../src/lib/credits/balance'
 import type { ensureSignupGrant as ensureSignupGrantType } from '../src/lib/credits/signup-grant'
@@ -200,6 +200,30 @@ test.describe('music - generate', () => {
     const status = await loadImageStatuses({ supabase: admin, projectId, userId: primary.user.id, getBalance: readBalance })
     if (!status.ok) throw new Error('status failed')
     expect(status.data.music).toMatchObject({ state: 'failed', attemptSec: 10 })
+  })
+
+  test('a compose past the provider timeout settles usage failed, writes no ledger row, and releases the claim for Retry', async () => {
+    const projectId = await seedProject(primary.user.id)
+    await seedShots(projectId, [10])
+    const req = await request(primary.user.id, projectId, priceFor(10))
+    if (!req.ok) throw new Error('request failed')
+    const gateway = timeoutMusicGateway()
+    const outcome = await runMusicWorker(deps(gateway), { userId: primary.user.id, projectId, generationId: req.generationId })
+    expect(outcome.ok).toBe(false)
+    expect(gateway.composeCalls).toHaveLength(1)
+
+    const after = await rows(projectId)
+    expect(after.usage).toEqual([expect.objectContaining({ operation: 'background_music', status: 'failed' })])
+    expect(after.ledger).toHaveLength(0)
+    expect(after.gens[0]).toMatchObject({ state: 'failed' })
+
+    const status = await loadImageStatuses({ supabase: admin, projectId, userId: primary.user.id, getBalance: readBalance })
+    if (!status.ok) throw new Error('status failed')
+    expect(status.data.music).toMatchObject({ state: 'failed', attemptSec: 10 })
+
+    // Released at once, not after a stale window: Retry claims straight away.
+    const again = await request(primary.user.id, projectId, priceFor(10))
+    expect(again.ok).toBe(true)
   })
 
   test('with no style prompt nothing is claimed', async () => {

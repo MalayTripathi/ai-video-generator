@@ -8,7 +8,10 @@ import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { SIGNUP_GRANT_CREDITS, creditsFor } from '../src/lib/config/credits'
 import {
+  CLAIM_STALE_MARGIN_MS,
+  CONTINUATION_CHAIN_LIMIT,
   IMAGES_ROUTE_MAX_DURATION_S,
+  IMAGE_HANDOFF_TIMEOUT_MS,
   IMAGE_QUEUE_STALE_AFTER_MS,
   IMAGE_SDK_TIMEOUT_MS,
   IMAGE_STALE_AFTER_MS,
@@ -17,10 +20,11 @@ import {
   STORYBOARD_SIGNED_URL_EXPIRES_S,
   STORYBOARD_THUMB_WIDTH,
 } from '../src/lib/config/storyboard'
-import { claimGeneration } from '../src/lib/generations/claim'
+import { claimGeneration, markGenerationStarted, releaseQueuedGenerations } from '../src/lib/generations/claim'
 import { deriveImageState } from '../src/lib/storyboard/image-state'
 import { successImageGateway, throwingImageGateway } from './helpers/openai-fakes'
 import {
+  createContinueRun,
   runImageWorker,
   runImagesContinuation,
   runImagesRequest,
@@ -271,9 +275,20 @@ test.describe('storyboard images - config', () => {
     }
   })
 
-  test('the stale window exceeds the SDK timeout, and budget + stale window fits the route', () => {
-    expect(IMAGE_STALE_AFTER_MS).toBeGreaterThan(IMAGE_SDK_TIMEOUT_MS)
-    expect(RUN_TIME_BUDGET_MS + IMAGE_STALE_AFTER_MS).toBeLessThan(IMAGES_ROUTE_MAX_DURATION_S * 1000)
+  test('budget + one shot fits the route; both windows sit just past what they protect', () => {
+    const ceilingMs = IMAGES_ROUTE_MAX_DURATION_S * 1000
+    expect(IMAGES_ROUTE_MAX_DURATION_S).toBeLessThanOrEqual(300)
+    // A shot started at the budget's last moment: the SDK call plus encode, upload and writes.
+    expect(RUN_TIME_BUDGET_MS + IMAGE_SDK_TIMEOUT_MS + 30_000).toBeLessThanOrEqual(ceilingMs)
+    // A started shot can live until its run is killed - never read as dead before that.
+    expect(IMAGE_STALE_AFTER_MS).toBeGreaterThan(ceilingMs)
+    expect(IMAGE_STALE_AFTER_MS).toBeLessThanOrEqual(ceilingMs + CLAIM_STALE_MARGIN_MS)
+    // A queued shot waits at most one budget + hand-off per run in the chain.
+    const queuedCeilingMs = (CONTINUATION_CHAIN_LIMIT + 1) * (RUN_TIME_BUDGET_MS + IMAGE_HANDOFF_TIMEOUT_MS)
+    expect(IMAGE_QUEUE_STALE_AFTER_MS).toBeGreaterThan(queuedCeilingMs)
+    expect(IMAGE_QUEUE_STALE_AFTER_MS).toBeLessThanOrEqual(queuedCeilingMs + CLAIM_STALE_MARGIN_MS)
+    expect(RUN_TIME_BUDGET_MS).toBe(150_000)
+    expect(CONTINUATION_CHAIN_LIMIT).toBe(16)
     const route = readFileSync(path.resolve(__dirname, '../src/app/api/projects/[id]/images/route.ts'), 'utf8')
     expect(route).toContain(`export const maxDuration = ${IMAGES_ROUTE_MAX_DURATION_S}`)
   })
@@ -595,30 +610,168 @@ test.describe('storyboard images - continuation', () => {
     expect(resumed.ok).toBe(false)
   })
 
-  test('at the chain limit the unreached shots settle failed and are never charged', async () => {
+  test('at the chain limit the unreached shots settle failed, are never charged, and stay retryable', async () => {
     const projectId = await seedProject(primary.user.id)
     const shotIds = await seedShots(projectId, 2)
     const req = await request(primary.user.id, projectId, shotIds)
     if (!req.ok) throw new Error('request failed')
     let handedOn = false
 
+    // The production chain limit - no override.
     const run = await runImageWorker(
       deps(successImageGateway(), {
         runTimeBudgetMs: 0,
-        chainLimit: 2,
         continueRun: async () => {
           handedOn = true
           return true
         },
       }),
-      { userId: primary.user.id, projectId, generationIds: req.data.generationIds, chainDepth: 2 }
+      { userId: primary.user.id, projectId, generationIds: req.data.generationIds, chainDepth: CONTINUATION_CHAIN_LIMIT }
     )
 
     expect(handedOn).toBe(false)
-    expect(run.abandoned).toEqual(req.data.generationIds)
+    expect(run.abandoned.sort()).toEqual([...req.data.generationIds].sort())
     expect((await claims(projectId)).every((c) => c.state === 'failed')).toBe(true)
     expect(await usageRows(projectId)).toHaveLength(0)
     expect(await ledgerRows(projectId)).toHaveLength(0)
+
+    // Retry claims them again at once.
+    const again = await request(primary.user.id, projectId, shotIds)
+    expect(again.ok && again.data.claimed.length).toBe(2)
+    await releaseClaims(projectId)
+  })
+
+  test('the hand-off fires at the budget while a shot is still in flight, which finishes in-run', async () => {
+    const projectId = await seedProject(primary.user.id)
+    const shotIds = await seedShots(projectId, 3)
+    const req = await request(primary.user.id, projectId, shotIds)
+    if (!req.ok) throw new Error('request failed')
+
+    // The provider call holds until the hand-off has fired (5s fallback so a regression
+    // fails instead of hanging).
+    const inner = successImageGateway()
+    let release: () => void = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+      setTimeout(resolve, 5000)
+    })
+    let pendingCalls = 0
+    const gateway: ImageWorkerDeps['gateway'] = {
+      ...inner,
+      async generateStoryboardImage(params) {
+        pendingCalls++
+        await held
+        pendingCalls--
+        return inner.generateStoryboardImage(params)
+      },
+    }
+    const handoffs: { payload: ContinuationPayload; inFlight: number }[] = []
+    const run = await runImageWorker(
+      deps(gateway, {
+        concurrency: 1,
+        runTimeBudgetMs: 1500,
+        continueRun: async (payload) => {
+          handoffs.push({ payload, inFlight: pendingCalls })
+          release()
+          return true
+        },
+      }),
+      { userId: primary.user.id, projectId, generationIds: req.data.generationIds, chainDepth: 0 }
+    )
+
+    const [firstGen, ...rest] = req.data.generationIds
+    expect(handoffs).toHaveLength(1)
+    expect(handoffs[0].inFlight).toBe(1)
+    expect(handoffs[0].payload).toMatchObject({ generationIds: rest, chainDepth: 1 })
+    expect(run.continued).toEqual(rest)
+    expect(run.outcomes[firstGen]).toBe('succeeded')
+    expect(await ledgerRows(projectId)).toHaveLength(1)
+    await releaseClaims(projectId)
+  })
+
+  test('a missing hand-off secret fails loudly and releases the unreached shots failed and retryable', async () => {
+    const projectId = await seedProject(primary.user.id)
+    const shotIds = await seedShots(projectId, 2)
+    const req = await request(primary.user.id, projectId, shotIds)
+    if (!req.ok) throw new Error('request failed')
+
+    let fetched = false
+    const continueRun = createContinueRun({
+      origin: 'http://127.0.0.1:1',
+      secret: undefined,
+      fetchImpl: async () => {
+        fetched = true
+        return new Response(null, { status: 202 })
+      },
+    })
+    const logged: string[] = []
+    const originalError = console.error
+    console.error = (...args: unknown[]) => {
+      logged.push(args.map(String).join(' '))
+    }
+    let run
+    try {
+      run = await runImageWorker(deps(successImageGateway(), { runTimeBudgetMs: 0, continueRun }), {
+        userId: primary.user.id,
+        projectId,
+        generationIds: req.data.generationIds,
+        chainDepth: 0,
+      })
+    } finally {
+      console.error = originalError
+    }
+
+    expect(fetched).toBe(false)
+    expect(logged.some((line) => line.includes('IMAGES_INTERNAL_SECRET is not set'))).toBe(true)
+    expect(run.continued).toEqual([])
+    expect(run.abandoned.sort()).toEqual([...req.data.generationIds].sort())
+    const rows = await claims(projectId)
+    expect(rows.every((c) => c.state === 'failed' && c.queued_at === null)).toBe(true)
+    expect(await ledgerRows(projectId)).toHaveLength(0)
+
+    const again = await request(primary.user.id, projectId, shotIds)
+    expect(again.ok && again.data.claimed.length).toBe(2)
+    await releaseClaims(projectId)
+  })
+
+  test('a hand-off answered with anything but 202 counts as refused', async () => {
+    const continueRun = createContinueRun({
+      origin: 'http://127.0.0.1:1',
+      secret: 'test-secret',
+      fetchImpl: async () => new Response(null, { status: 500 }),
+    })
+    const originalError = console.error
+    console.error = () => {}
+    try {
+      expect(
+        await continueRun({ userId: crypto.randomUUID(), projectId: crypto.randomUUID(), generationIds: ['x'], chainDepth: 1 })
+      ).toBe(false)
+    } finally {
+      console.error = originalError
+    }
+  })
+
+  test('releasing queued claims never touches one another run has already started', async () => {
+    const projectId = await seedProject(primary.user.id)
+    const shotIds = await seedShots(projectId, 2)
+    const req = await request(primary.user.id, projectId, shotIds)
+    if (!req.ok) throw new Error('request failed')
+    const [startedGen, queuedGen] = req.data.generationIds
+    const startedRow = (await claims(projectId)).find((c) => c.id === startedGen)!
+    const start = await markGenerationStarted(admin, startedGen, startedRow.queued_at!)
+    expect(start.started).toBe(true)
+
+    const { released, error } = await releaseQueuedGenerations(admin, {
+      projectId,
+      generationIds: [startedGen, queuedGen],
+      error: 'Not reached before the run ended',
+    })
+    expect(error).toBeNull()
+    expect(released).toEqual([queuedGen])
+    const rows = await claims(projectId)
+    expect(rows.find((c) => c.id === startedGen)!.state).toBe('generating')
+    expect(rows.find((c) => c.id === queuedGen)!.state).toBe('failed')
+    await releaseClaims(projectId)
   })
 })
 

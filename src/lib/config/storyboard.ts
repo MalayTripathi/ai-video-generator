@@ -18,29 +18,38 @@ export const STORYBOARD_IMAGE_SIZES: Record<AspectRatio, string> = {
 // The provider SDK's own request timeout for one image call.
 export const IMAGE_SDK_TIMEOUT_MS = 120_000
 
-// How long a started image claim may run before it reads as failed (and becomes
-// reclaimable). Must exceed the SDK timeout plus reference download, encode, upload and
-// the row writes, with margin - the worker also refuses to link or charge a shot past
-// this point, so the display and the charge can never disagree.
-export const IMAGE_STALE_AFTER_MS = IMAGE_SDK_TIMEOUT_MS + 60_000
+// Every claim's stale window is its route's maxDuration plus this: longer than the
+// longest a live run can last (so a live run is never reclaimed), and no longer than
+// clock skew and the settle writes need (so a killed run is retryable quickly).
+export const CLAIM_STALE_MARGIN_MS = 30_000
 
 // Route maxDuration for /api/projects/[id]/images, in seconds (Next's segment config
 // must be a literal in the route file itself - this is the value it mirrors, checked by
-// a test).
-export const IMAGES_ROUTE_MAX_DURATION_S = 800
+// a test). Vercel Hobby's ceiling.
+export const IMAGES_ROUTE_MAX_DURATION_S = 300
 
-// One background run stops starting new shots after this, then drains what's in flight
-// and hands the rest to a continuation. Budget + one full stale window stays under the
-// route's maxDuration, so a shot started at the last moment still finishes in-run.
-export const RUN_TIME_BUDGET_MS = 600_000
+// How long a started image claim may run before it reads as failed (and becomes
+// reclaimable). A started shot can live until its run is killed at the route's
+// maxDuration, so the window sits just past that.
+export const IMAGE_STALE_AFTER_MS = IMAGES_ROUTE_MAX_DURATION_S * 1000 + CLAIM_STALE_MARGIN_MS
+
+// One background run stops starting new shots after this and hands the rest to a
+// continuation at once, while its in-flight shots drain. Budget + one shot (SDK timeout
+// plus encode, upload and writes) stays under the route's maxDuration.
+export const RUN_TIME_BUDGET_MS = 150_000
+
+// The hand-off request to the continuation run. Past this it counts as refused, and the
+// shots it carried that are still queued are released, uncharged and retryable.
+export const IMAGE_HANDOFF_TIMEOUT_MS = 15_000
 
 // How many times a batch may hand itself to a continuation run. Shots still queued when
 // this is reached are settled failed, uncharged.
-export const CONTINUATION_CHAIN_LIMIT = 8
+export const CONTINUATION_CHAIN_LIMIT = 16
 
-// The longest a claim can legitimately sit queued: every run in the chain spending its
-// full budget plus a stale window. Past this, a queued claim reads as failed.
-export const IMAGE_QUEUE_STALE_AFTER_MS = (CONTINUATION_CHAIN_LIMIT + 1) * (RUN_TIME_BUDGET_MS + IMAGE_STALE_AFTER_MS)
+// The longest a claim can legitimately sit queued: every run in the chain reaching its
+// budget and handing off. Past this, a queued claim reads as failed.
+export const IMAGE_QUEUE_STALE_AFTER_MS =
+  (CONTINUATION_CHAIN_LIMIT + 1) * (RUN_TIME_BUDGET_MS + IMAGE_HANDOFF_TIMEOUT_MS) + CLAIM_STALE_MARGIN_MS
 
 // Parallel provider calls per run. Kept low: a low-tier OpenAI account's images-per-
 // minute limit is small, and a 429 settles the shot failed and uncharged.
@@ -100,19 +109,46 @@ export const VOICEOVER_MAX_CHUNKS = 4
 
 export const VOICEOVER_MAX_SCRIPT_CHARS = VOICEOVER_CHUNK_MAX_CHARS * VOICEOVER_MAX_CHUNKS
 
-// The provider request timeout for one text-to-speech or alignment call.
+// The provider request timeout for one alignment call.
 export const VOICEOVER_REQUEST_TIMEOUT_MS = 150_000
 
-// How long a started voiceover claim may run before it reads as failed: every chunk at
-// its full timeout plus storage writes, with margin.
-export const VOICEOVER_STALE_AFTER_MS = VOICEOVER_MAX_CHUNKS * (VOICEOVER_REQUEST_TIMEOUT_MS + 30_000) + 60_000
-
-// The same for an uploaded read's alignment: one call.
-export const VOICEOVER_ALIGN_STALE_AFTER_MS = VOICEOVER_REQUEST_TIMEOUT_MS + 90_000
-
 // Route maxDuration for the voiceover routes, in seconds (mirrors the literal in each
-// route file; the stale windows above must fit inside it).
-export const VOICEOVER_ROUTE_MAX_DURATION_S = 800
+// route file). Vercel Hobby's ceiling.
+export const VOICEOVER_ROUTE_MAX_DURATION_S = 300
+
+// How many parts of one read are synthesised at once. Kept under the ElevenLabs plan's
+// concurrent-request limit; a 4-part read runs in two waves.
+export const VOICEOVER_CHUNK_CONCURRENCY = 2
+
+// The provider request timeout for one text-to-speech call. Two waves of it, plus the
+// part writes and the finish, fit the route's maxDuration.
+export const VOICEOVER_SYNTH_TIMEOUT_MS = 110_000
+
+// A 429 (concurrent-request limit) is refused before any audio is made, so it is retried
+// after each of these waits in turn; past the last, the part fails, uncharged and resumable.
+export const VOICEOVER_RATE_LIMIT_BACKOFF_MS = [2_000, 5_000, 10_000] as const
+
+// Reserved after a synthesis attempt inside the route's maxDuration: storing and
+// persisting the part, then joining, storing and linking the whole read, plus the request
+// phase that ran before the worker started.
+const VOICEOVER_PART_WRITES_MS = 15_000
+const VOICEOVER_FINISH_MS = 20_000
+const VOICEOVER_REQUEST_PHASE_MS = 10_000
+
+// No synthesis attempt (first try or a 429 retry) starts later than this after the worker
+// starts, so the slowest one still finishes inside the route's maxDuration. A part not
+// reached by then fails, uncharged and resumable.
+export const VOICEOVER_ATTEMPT_DEADLINE_MS =
+  VOICEOVER_ROUTE_MAX_DURATION_S * 1000 -
+  VOICEOVER_SYNTH_TIMEOUT_MS -
+  VOICEOVER_PART_WRITES_MS -
+  VOICEOVER_FINISH_MS -
+  VOICEOVER_REQUEST_PHASE_MS
+
+// How long a started voiceover or alignment claim may run before it reads as failed:
+// just past the route's maxDuration, so a live read is never reclaimed.
+export const VOICEOVER_STALE_AFTER_MS = VOICEOVER_ROUTE_MAX_DURATION_S * 1000 + CLAIM_STALE_MARGIN_MS
+export const VOICEOVER_ALIGN_STALE_AFTER_MS = VOICEOVER_ROUTE_MAX_DURATION_S * 1000 + CLAIM_STALE_MARGIN_MS
 
 // Uploads: what may be aligned. The file goes straight to Storage through a signed upload
 // URL, so these are checked when the URL is issued and again on the stored object.
@@ -153,13 +189,19 @@ export const MUSIC_STYLE_PROMPT_MAX_CHARS = 150
 // A prompt the person writes may run longer than the derived line, up to this.
 export const MUSIC_STYLE_PROMPT_EDIT_MAX_CHARS = 500
 
-// One music request's timeout, and how long a started claim may run before it reads as
-// failed: the call at its full timeout plus the storage write, with margin.
-export const MUSIC_REQUEST_TIMEOUT_MS = 240_000
-export const MUSIC_STALE_AFTER_MS = MUSIC_REQUEST_TIMEOUT_MS + 90_000
+// Route maxDuration for the music routes, in seconds (mirrors the literal in each route
+// file). Vercel Hobby's ceiling; the style-prompt route has its own, shorter one.
+export const MUSIC_ROUTE_MAX_DURATION_S = 300
+export const MUSIC_PROMPT_ROUTE_MAX_DURATION_S = 60
 
-// The style-prompt derivation is one short Claude call.
-export const MUSIC_PROMPT_STALE_AFTER_MS = 120_000
+// One music request's timeout: with the request phase, a <=10 min mp3 upload and the row
+// writes it stays inside the route's maxDuration with margin. A started claim reads as
+// failed just past that maxDuration.
+export const MUSIC_REQUEST_TIMEOUT_MS = 240_000
+export const MUSIC_STALE_AFTER_MS = MUSIC_ROUTE_MAX_DURATION_S * 1000 + CLAIM_STALE_MARGIN_MS
+
+// The style-prompt derivation is one short Claude call, on its own route.
+export const MUSIC_PROMPT_STALE_AFTER_MS = MUSIC_PROMPT_ROUTE_MAX_DURATION_S * 1000 + CLAIM_STALE_MARGIN_MS
 
 // Uploads: the file goes straight to Storage through a signed upload URL, so these are
 // checked when the URL is issued and again, with the duration read server-side, on the

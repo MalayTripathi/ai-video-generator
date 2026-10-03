@@ -11,8 +11,9 @@ import { refusalResponse } from '../voiceover/respond'
 
 export const runtime = 'nodejs'
 // The music is composed in the background inside this invocation (after()). Must stay a
-// literal; MUSIC_STALE_AFTER_MS (src/lib/config/storyboard.ts) fits inside it.
-export const maxDuration = 800
+// literal (Vercel Hobby's 300s ceiling); mirrors MUSIC_ROUTE_MAX_DURATION_S
+// (src/lib/config/storyboard.ts), which MUSIC_STALE_AFTER_MS sits just past.
+export const maxDuration = 300
 
 // Generate the project's music: price from the picture's length, gate (402 before any
 // claim), claim, then compose in the background. The page learns the outcome from the

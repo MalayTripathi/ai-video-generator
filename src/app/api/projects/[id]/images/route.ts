@@ -8,6 +8,8 @@ import { mintAttemptId, recordFixedSpend } from '@/lib/credits/ledger'
 import { getBalance } from '@/lib/credits/balance'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import {
+  INTERNAL_SECRET_HEADER,
+  createContinueRun,
   parseContinuationPayload,
   runImageWorker,
   runImagesContinuation,
@@ -18,13 +20,10 @@ import {
 // sharp is a native binary and cannot run on the Edge runtime.
 export const runtime = 'nodejs'
 // The background run lives inside this invocation (after()), so it gets the route's full
-// duration. Must stay a literal here; mirrors IMAGES_ROUTE_MAX_DURATION_S in
-// src/lib/config/storyboard.ts, whose RUN_TIME_BUDGET_MS is sized to fit inside it.
-export const maxDuration = 800
-
-// A background run calling this same route to continue itself sends this header. It
-// carries no user session, so the shared secret is its only credential.
-const INTERNAL_SECRET_HEADER = 'x-images-internal-secret'
+// duration. Must stay a literal here (Vercel Hobby's 300s ceiling); mirrors
+// IMAGES_ROUTE_MAX_DURATION_S in src/lib/config/storyboard.ts, whose RUN_TIME_BUDGET_MS
+// is sized to fit inside it.
+export const maxDuration = 300
 
 function secretMatches(provided: string): boolean {
   const expected = process.env.IMAGES_INTERNAL_SECRET
@@ -58,19 +57,7 @@ function scheduleWorker(origin: string, run: ContinuationPayload) {
         gateway: createImageGateway(),
         mintAttemptId,
         recordFixedSpend,
-        continueRun: async (payload) => {
-          const secret = process.env.IMAGES_INTERNAL_SECRET
-          if (!secret) {
-            console.error('[images] IMAGES_INTERNAL_SECRET is not set - a batch cannot continue past one run')
-            return false
-          }
-          const res = await fetch(`${origin}/api/projects/${payload.projectId}/images`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', [INTERNAL_SECRET_HEADER]: secret },
-            body: JSON.stringify(payload),
-          })
-          return res.status === 202
-        },
+        continueRun: createContinueRun({ origin, secret: process.env.IMAGES_INTERNAL_SECRET }),
       },
       run
     )

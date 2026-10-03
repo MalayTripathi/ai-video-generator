@@ -3,7 +3,9 @@ import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { claimGeneration, markGenerationStarted } from '../src/lib/generations/claim'
 import { IMAGE_STALE_AFTER_MS } from '../src/lib/config/storyboard'
-import { STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
+import { getOperationPolicy } from '../src/lib/generations/operation-policy'
+
+const SHOTS_STALE_AFTER_MS = getOperationPolicy('generate_shots').staleAfterMs
 
 async function insertProject(userId: string) {
   const { data, error } = await admin
@@ -66,11 +68,11 @@ test.describe('generations claim primitives', () => {
     }
   })
 
-  test('a generating row older than STALE_AFTER_MS is reclaimable; one younger is not', async () => {
+  test('a generating row older than its stale window is reclaimable; one younger is not', async () => {
     const user = primary.user
     {
       const staleProjectId = await insertProject(user.id)
-      const staleTimestamp = new Date(Date.now() - (STALE_AFTER_MS + 5 * 60 * 1000)).toISOString()
+      const staleTimestamp = new Date(Date.now() - (SHOTS_STALE_AFTER_MS + 60 * 1000)).toISOString()
       await admin.from('generations').insert({
         project_id: staleProjectId,
         step: 'workbench',
@@ -89,7 +91,7 @@ test.describe('generations claim primitives', () => {
       expect(staleResult.outcome).toBe('claimed')
 
       const freshProjectId = await insertProject(user.id)
-      const freshTimestamp = new Date(Date.now() - (STALE_AFTER_MS - 5 * 60 * 1000)).toISOString()
+      const freshTimestamp = new Date(Date.now() - (SHOTS_STALE_AFTER_MS - 60 * 1000)).toISOString()
       await admin.from('generations').insert({
         project_id: freshProjectId,
         step: 'workbench',

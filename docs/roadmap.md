@@ -5,6 +5,12 @@ are not lost.
 
 ## Known bugs
 
+- **`agent_turn`'s 180s stale window is shorter than the agent route's 300s `maxDuration`.**
+  A live turn running past 180s reads as stale and can be reclaimed mid-flight. Left as is:
+  the agent lock was out of scope for the Hobby `maxDuration` work.
+- **A 150-shot storyboard batch outruns the image chain when frames are slow.** 17 runs of a
+  150s budget at three in parallel start 102-204 frames (120s-45s per frame); 150 fit only
+  if a frame averages <= ~73s. The rest settle failed, uncharged and retryable.
 - **Workbench (Step 2) — narration has no word budget per shot duration.** A 4 × 5s project
   produced a 46s voiceover. Cap narration per shot at about duration × speaking rate
   (words/sec in config), in both the Workbench shot generation and the agent paths.

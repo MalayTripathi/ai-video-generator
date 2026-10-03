@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { tryLoadRailFigures } from '@/app/(app)/rail-figures'
 
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
 // Read-only lookup of one agent turn's real credit spend, keyed on the triggering user
 // message's id - the same anchor the ledger write itself uses (see logic.ts's
 // recordTurnSpend call). RLS-scoped (no service-role): credit_ledger's own SELECT

@@ -10,10 +10,11 @@ import { runVoiceoverRequest, runVoiceoverWorker } from './logic'
 import { refusalResponse } from './respond'
 
 export const runtime = 'nodejs'
-// The read runs in the background inside this invocation (after()), every chunk of it.
-// Must stay a literal here; mirrors VOICEOVER_ROUTE_MAX_DURATION_S in
-// src/lib/config/storyboard.ts, which VOICEOVER_STALE_AFTER_MS fits inside.
-export const maxDuration = 800
+// The read runs in the background inside this invocation (after()), every chunk of it,
+// concurrently. Must stay a literal here (Vercel Hobby's 300s ceiling); mirrors
+// VOICEOVER_ROUTE_MAX_DURATION_S in src/lib/config/storyboard.ts, which
+// VOICEOVER_STALE_AFTER_MS sits just past.
+export const maxDuration = 300
 
 // Generate the project's voiceover: validate, price, gate (402 before any claim), claim,
 // then read in the background. The page learns the outcome from the status poll.

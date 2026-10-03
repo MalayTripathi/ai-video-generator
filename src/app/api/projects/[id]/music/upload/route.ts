@@ -3,6 +3,9 @@ import { createClient } from '@/lib/supabase/server'
 import { runMusicUploadRequest } from '../logic'
 import { refusalResponse } from '../../voiceover/respond'
 
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
 export const runtime = 'nodejs'
 
 // Step two of a music upload: read the stored file's duration server-side and link it as

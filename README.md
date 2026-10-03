@@ -31,6 +31,21 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 
 ## Deploy on Vercel
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The app deploys on the Hobby plan.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Fluid compute must be on** (`vercel.json` sets `"fluid": true`). Without it Hobby caps a
+  function at 60s, and the image, voiceover, music and alignment routes need up to 300s.
+- **Every route declares a literal `maxDuration` of at most 300** (Hobby's ceiling);
+  `tests/route-max-duration.spec.ts` enforces it.
+- **One region** (`vercel.json`: `sin1`), which Hobby allows.
+
+Required environment variables (see `.env.example` for the full list and defaults):
+
+- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
+- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`
+- `IMAGES_INTERNAL_SECRET` - any long random string. A storyboard image batch larger than one
+  150s run hands itself on to a fresh run with this secret; without it the unreached frames
+  are released failed (retryable) and the run logs an error.
+
+Never set an `ALLOW_REAL_*` variable on a deployment - production calls providers without
+it. Set `BLOCK_PROVIDER_CALLS=1` to stop all provider spend on a deployment.

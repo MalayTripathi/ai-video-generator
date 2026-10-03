@@ -30,3 +30,15 @@ export function throwingMusicGateway(): FakeMusicGateway {
     },
   }
 }
+
+/** A compose request that runs past the provider timeout (what AbortSignal.timeout raises). */
+export function timeoutMusicGateway(): FakeMusicGateway {
+  const composeCalls: ComposeCall[] = []
+  return {
+    composeCalls,
+    async compose(params) {
+      composeCalls.push({ ...params })
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+    },
+  }
+}

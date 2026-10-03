@@ -92,6 +92,7 @@ export const API_SPECS = [
   'shot-voiceover.spec.ts',
   'shots-generation-state-machine.spec.ts',
   'shots-validation.spec.ts',
+  'route-max-duration.spec.ts',
   'spec-layers.spec.ts',
   'storyboard-advance.spec.ts',
   'video-prompts-advance.spec.ts',

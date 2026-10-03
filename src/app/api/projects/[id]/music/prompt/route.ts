@@ -4,6 +4,7 @@ import { createClaudeGateway } from '@/lib/claude'
 import { runMusicPromptDerivation } from '../logic'
 
 export const runtime = 'nodejs'
+// Must stay a literal; mirrors MUSIC_PROMPT_ROUTE_MAX_DURATION_S (src/lib/config/storyboard.ts).
 export const maxDuration = 60
 
 // Derive the music style prompt - once per project (the claim guards it), free to the
