@@ -13,6 +13,11 @@ import {
   buildStoryboardContextBlock,
 } from '@/lib/prompts/agent-storyboard'
 import {
+  AGENT_VIDEO_PROMPTS_SYSTEM_PROMPT_V1,
+  AGENT_VIDEO_PROMPTS_TOOLS,
+  buildVideoPromptsContextBlock,
+} from '@/lib/prompts/agent-video-prompts'
+import {
   IMAGE_PROMPTS_INSTRUCTION_MAX_CHARS,
   expectedImagePromptsOutputTokens,
   type ImagePromptsHistoryEntry,
@@ -152,10 +157,22 @@ const STORYBOARD_CONFIG: AgentStepConfig = {
   async buildContextBlock() {
     return buildStoryboardContextBlock()
   },
-  lock: {
-    isLocked: (furthestStepIndex) => furthestStepIndex >= stepIndex('video_prompts'),
-    reply:
-      "This project's storyboard is locked because video prompts have already started, so I can no longer change anything here.",
+}
+
+// No tools, same as the storyboard's: video-prompt generation is not built yet.
+const VIDEO_PROMPTS_CONFIG: AgentStepConfig = {
+  step: 'video_prompts',
+  systemPrompt: AGENT_VIDEO_PROMPTS_SYSTEM_PROMPT_V1,
+  tools: AGENT_VIDEO_PROMPTS_TOOLS,
+  async dispatch(name) {
+    return {
+      kind: 'errored',
+      message: `No tool named "${name}" is available on this step`,
+      forModel: { error: 'unknown_tool' },
+    }
+  },
+  async buildContextBlock() {
+    return buildVideoPromptsContextBlock()
   },
 }
 
@@ -163,6 +180,7 @@ const CONFIGS: Record<AgentStep, AgentStepConfig> = {
   workbench: WORKBENCH_CONFIG,
   image_prompts: IMAGE_PROMPTS_CONFIG,
   storyboard: STORYBOARD_CONFIG,
+  video_prompts: VIDEO_PROMPTS_CONFIG,
 }
 
 /**

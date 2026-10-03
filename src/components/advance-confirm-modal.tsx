@@ -5,7 +5,8 @@ import { createPortal } from 'react-dom'
 import { InsufficientCreditsBanner } from '@/components/insufficient-credits-banner'
 
 // The one confirmation dialog for a footer button that advances the project to the next
-// step: the Workbench's "Generate image prompts" and Step 3's "Continue to storyboard".
+// step: the Workbench's "Generate image prompts", Step 3's "Continue to storyboard" and
+// the Storyboard's "Generate video prompts".
 // Copy is the caller's; the insufficient-balance state (Confirm disabled, Cancel enabled)
 // is shared - a second copy would drift, same as InsufficientCreditsBanner.
 export function AdvanceConfirmModal({
@@ -27,9 +28,9 @@ export function AdvanceConfirmModal({
   submitting: boolean
   title: string
   body: string
-  // A non-blocking caution shown under the body (Step 3: stale prompts that will be drawn
-  // as they are). It never disables Confirm.
-  warning?: string
+  // Non-blocking cautions shown under the body, one quoted block each (Step 3: stale
+  // prompts that will be drawn as they are). They never disable Confirm.
+  warning?: string | string[]
   bannerTitle: string
   confirmLabel: string
   requiredCredits: number
@@ -53,6 +54,7 @@ export function AdvanceConfirmModal({
   if (!open) return null
 
   const confirmDisabled = phase === 'insufficient' || submitting
+  const warnings = (Array.isArray(warning) ? warning : [warning]).filter((text): text is string => !!text)
 
   return createPortal(
     <div
@@ -72,15 +74,16 @@ export function AdvanceConfirmModal({
 
         <span className="text-small leading-[1.5] text-text-secondary">{body}</span>
 
-        {warning && (
+        {warnings.map((text) => (
           // Canvas 14F's quoted block (2px left rule on a tinted well), in the stale family.
           <div
+            key={text}
             role="note"
             className="rounded-control border-l-2 border-status-stale-fg bg-status-stale-bg px-[12px] py-[10px] text-small leading-[1.45] text-status-stale-fg"
           >
-            {warning}
+            {text}
           </div>
-        )}
+        ))}
 
         {phase === 'insufficient' && (
           <InsufficientCreditsBanner

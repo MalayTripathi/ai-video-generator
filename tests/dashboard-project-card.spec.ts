@@ -6,7 +6,7 @@ import { videoTypeLabel } from '../src/lib/video-type-labels'
 // Uses the fixed primary user; every assertion is scoped to the card of a project this
 // spec just created (located by its link's href), never to the user's whole dashboard.
 
-async function seedProject(opts: { status: string; furthestStep: number; shots: number }) {
+async function seedProject(opts: { status: string; furthestStep: number; shots: number; currentStep?: string }) {
   const { data: project, error } = await admin
     .from('projects')
     .insert({
@@ -17,7 +17,7 @@ async function seedProject(opts: { status: string; furthestStep: number; shots: 
       aspect_ratio: '9:16',
       duration_target: '30-60s',
       status: opts.status,
-      current_step: 'workbench',
+      current_step: opts.currentStep ?? 'workbench',
       furthest_step: opts.furthestStep,
     })
     .select('id')
@@ -49,6 +49,13 @@ async function filledColours(page: Page, projectId: string) {
 }
 
 test.describe('dashboard project card', () => {
+  test('a project at Step 5 opens on its video prompts page', async ({ page }) => {
+    const projectId = await seedProject({ status: 'in_progress', furthestStep: 5, shots: 2, currentStep: 'video_prompts' })
+    await page.goto('/dashboard')
+
+    await expect(card(page, projectId)).toHaveAttribute('href', `/projects/${projectId}/video_prompts`)
+  })
+
   test('a draft with no shots omits the shot segment', async ({ page }) => {
     const projectId = await seedProject({ status: 'draft', furthestStep: 2, shots: 0 })
     await page.goto('/dashboard')

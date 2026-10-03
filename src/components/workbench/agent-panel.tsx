@@ -20,6 +20,8 @@ const EXAMPLE_PROMPTS: Record<AgentStep, string[]> = {
   image_prompts: ['Make shot 2 feel colder', 'Rewrite every prompt, more cinematic'],
   // Step 4's agent has no tools yet, so there is nothing it can be asked to do.
   storyboard: [],
+  // Step 5's agent has no tools yet either.
+  video_prompts: [],
 }
 
 function LockIcon() {

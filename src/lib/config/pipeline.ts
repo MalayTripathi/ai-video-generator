@@ -49,7 +49,7 @@ export type Operation = (typeof OPERATIONS)[number]
 
 // The steps whose agent panel is wired (agent/steps.ts registers one config per entry).
 // Sent by the client with each turn and validated against this list server-side.
-export const AGENT_STEPS = ['workbench', 'image_prompts', 'storyboard'] as const satisfies readonly Step[]
+export const AGENT_STEPS = ['workbench', 'image_prompts', 'storyboard', 'video_prompts'] as const satisfies readonly Step[]
 
 export type AgentStep = (typeof AGENT_STEPS)[number]
 

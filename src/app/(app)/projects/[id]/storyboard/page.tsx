@@ -74,10 +74,6 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
   }
   const exportsData: ExportsData = exportsResult.ok ? exportsResult.data : { rows: [], pollIntervalMs: STATUS_POLL_INTERVAL_MS }
 
-  // Edit-lock: closes once the next step has started, mirroring how Step 3 closes at the
-  // storyboard.
-  const readOnly = project.furthest_step >= stepIndex('video_prompts')
-
   const aspectRatio: AspectRatio = (ASPECT_RATIOS as readonly string[]).includes(project.aspect_ratio)
     ? (project.aspect_ratio as AspectRatio)
     : '9:16'
@@ -86,7 +82,8 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
     <StoryboardProvider
       projectId={projectId}
       aspectRatio={aspectRatio}
-      readOnly={readOnly}
+      // Never frozen: the Storyboard stays editable after the project advances to Video Prompts.
+      readOnly={false}
       initialShots={shots}
       initialStatus={status.data}
       initialMix={{
@@ -110,10 +107,9 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
           project={project}
           agentStep="storyboard"
           agentMessages={agentMessages}
-          readOnly={readOnly}
           shots={shots}
           header={<ProjectHeader project={project} shots={shots} />}
-          footer={<StoryboardFooter />}
+          footer={<StoryboardFooter furthestStep={project.furthest_step} />}
           sideColumn={<InspectPanel />}
         >
           <StoryboardMain

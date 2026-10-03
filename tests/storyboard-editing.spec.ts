@@ -2,15 +2,18 @@ import { test, expect, type Page } from '@playwright/test'
 import sharp from 'sharp'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
-import { stepIndex, stepLabel } from '../src/lib/config/pipeline'
+import { stepIndex } from '../src/lib/config/pipeline'
 import { STORYBOARD_MAX_SHOT_SEC, STORYBOARD_MIN_SHOT_SEC } from '../src/lib/config/storyboard'
 import { VIDEO_MODELS, videoModelMaxSeconds } from '../src/lib/config/models'
+import { PRICE_TABLE } from '../src/lib/config/credits'
 
 // Storyboard B2: retime, reorder, bin, zoom and the playhead on the picture lane (canvas
 // 15b/15c). Every save is a real server action against a real row; the only stubs are a
 // forced save failure and a delayed save. Nothing here reaches an image or Claude provider.
 
 const NAVIGATION = { timeout: 45000 }
+// Read from the config, never restated: the Continue button prices the in-film shots.
+const VIDEO_PROMPT_PER_SHOT = PRICE_TABLE.video_prompts!.write_video_prompts!.credits
 const VIDEO_MODEL = 'Kling 2.1'
 // Kling 2.1's longest clip (10s). Storyboard lengths deliberately ignore it.
 const MODEL_MAX = videoModelMaxSeconds(VIDEO_MODELS[VIDEO_MODEL])
@@ -352,7 +355,7 @@ test.describe('storyboard editing - bin', () => {
 
     await expect(page.getByTestId('frames-ready')).toHaveText('2 of 3 frames ready')
     await expect(page.getByTestId('timeline-total')).toHaveText('Total 0:15 · provisional')
-    await expect(page.getByTestId('continue-label')).toHaveText(`Continue to ${stepLabel('video_prompts')} (3 clips)`)
+    await expect(page.getByTestId('generate-video-prompts')).toHaveText(`Generate Video Prompts — ${3 * VIDEO_PROMPT_PER_SHOT} Credits`)
     await expect(page.getByTestId('preview-locked-reason')).toContainText("hasn't been generated")
     await expect(page.getByTestId('bin-control')).toHaveCount(0)
     const zoomX = (await page.getByTestId('zoom-controls').boundingBox())!.x
@@ -366,7 +369,7 @@ test.describe('storyboard editing - bin', () => {
 
     await expect(page.getByTestId('frames-ready')).toHaveText('2 of 2 frames ready')
     await expect(page.getByTestId('timeline-total')).toHaveText('Total 0:09 · provisional')
-    await expect(page.getByTestId('continue-label')).toHaveText(`Continue to ${stepLabel('video_prompts')} (2 clips)`)
+    await expect(page.getByTestId('generate-video-prompts')).toHaveText(`Generate Video Prompts — ${2 * VIDEO_PROMPT_PER_SHOT} Credits`)
     // Every in-film frame is ready once the ungenerated shot is binned: Preview unlocks.
     await expect(page.getByTestId('preview-locked')).toHaveCount(0)
     await expect(page.getByTestId('preview-mix')).toBeVisible()
@@ -399,7 +402,7 @@ test.describe('storyboard editing - bin', () => {
 
     await expect(page.getByTestId('bin-control')).toHaveCount(0)
     await expect.poll(() => laneOrder(page)).toEqual(ids)
-    await expect(page.getByTestId('continue-label')).toHaveText(`Continue to ${stepLabel('video_prompts')} (3 clips)`)
+    await expect(page.getByTestId('generate-video-prompts')).toHaveText(`Generate Video Prompts — ${3 * VIDEO_PROMPT_PER_SHOT} Credits`)
     await expect.poll(async () => (await shotRows(projectId)).every((r) => r.binned_at === null)).toBe(true)
     // The image was kept throughout.
     expect((await row(projectId, ids[0])).image_path).not.toBeNull()
@@ -494,12 +497,12 @@ test.describe('storyboard editing - saves', () => {
     expect(rows.map((r) => r.film_order)).toEqual([1, 0])
     expect(rows.every((r) => !r.image_stale && !r.image_prompt_stale && !r.video_prompt_stale)).toBe(true)
 
-    // Another user's project is not found; a locked storyboard refuses.
+    // Another user's project is not found; a storyboard past its step is never frozen.
     expect((await saveFilmDurationForUser(admin, crypto.randomUUID(), projectId, ids[0], 5)).success).toBe(false)
-    const locked = await seed([{ state: 'not_generated' }], { furthestStep: stepIndex('video_prompts') })
-    const refused = await saveFilmDurationForUser(admin, uid, locked.projectId, locked.ids[0], 6)
-    expect(refused).toEqual({ success: false, error: 'The storyboard is locked' })
-    expect((await row(locked.projectId, locked.ids[0])).film_duration_sec).toBeNull()
+    const advanced = await seed([{ state: 'not_generated' }], { furthestStep: stepIndex('video_prompts') })
+    const saved = await saveFilmDurationForUser(admin, uid, advanced.projectId, advanced.ids[0], 6)
+    expect(saved).toEqual({ success: true })
+    expect((await row(advanced.projectId, advanced.ids[0])).film_duration_sec).toBe(6)
   })
 })
 

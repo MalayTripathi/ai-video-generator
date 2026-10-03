@@ -1,7 +1,6 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { stepIndex } from '@/lib/config/pipeline'
 import { MUSIC_STYLE_PROMPT_EDIT_MAX_CHARS } from '@/lib/config/storyboard'
 import { filmDuration, filmSeconds, isRetimeAllowed, retimeBounds } from '@/lib/storyboard/timeline'
 import type { Motion, Transition } from '@/lib/config/enums'
@@ -28,8 +27,8 @@ export type TimelineEditResult = { success: true; unchanged?: true } | { success
 
 type EditableProject = { id: string }
 
-// The project, if this user owns it and its Storyboard is still editable (the edit-lock
-// closes once the next step has started, as the page's readOnly does).
+// The project, if this user owns it. The Storyboard never freezes: it stays editable after
+// the project advances to Video Prompts.
 async function editableProject(
   supabase: SupabaseServerClient,
   projectId: string,
@@ -37,14 +36,13 @@ async function editableProject(
 ): Promise<EditableProject | { error: string }> {
   const { data: project, error } = await supabase
     .from('projects')
-    .select('id, furthest_step')
+    .select('id')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
   // A failed read is reported as a failed read, never as a missing project.
   if (error) return { error: 'Could not load project' }
   if (!project) return { error: 'Project not found' }
-  if (project.furthest_step >= stepIndex('video_prompts')) return { error: 'The storyboard is locked' }
   return { id: project.id }
 }
 

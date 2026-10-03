@@ -8,7 +8,6 @@ import type { ensureSignupGrant as ensureSignupGrantType } from '@/lib/credits/s
 import type { mintAttemptId as mintAttemptIdType, recordFixedSpend as recordFixedSpendType } from '@/lib/credits/ledger'
 import type { VoiceoverGateway } from '@/lib/voiceover/gateway'
 import { creditsFor } from '@/lib/config/credits'
-import { stepIndex } from '@/lib/config/pipeline'
 import { findVoice, modelsConfig } from '@/lib/config/models'
 import { ELEVENLABS_ALIGNMENT_MODEL, type UsageBreakdown } from '@/lib/config/pricing'
 import {
@@ -64,16 +63,13 @@ export async function loadEditableProject(
 ): Promise<VoiceoverProject | Refusal> {
   const { data: project, error } = await supabase
     .from('projects')
-    .select('id, language, furthest_step')
+    .select('id, language')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
   // A failed read is a server error, never a 404 - only a missing row is.
   if (error) return { ok: false, status: 500, error: error.message }
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
-  if (project.furthest_step >= stepIndex('video_prompts')) {
-    return { ok: false, status: 409, error: 'The storyboard is locked', code: 'locked' }
-  }
   return { id: project.id, language: project.language }
 }
 

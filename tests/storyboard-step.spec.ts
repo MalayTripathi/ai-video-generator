@@ -64,12 +64,12 @@ test.describe('storyboard page access and shell', () => {
     await expect(page.getByTestId('frames-ready')).toHaveText('0 of 1 frames ready')
 
     // The shell's own pieces, not copies: step indicator with Storyboard current, agent
-    // panel, and an inert footer button.
+    // panel, and the footer's advance button, disabled until every frame is ready.
     const indicator = page.getByTestId('step-indicator')
     await expect(indicator).toBeVisible()
     await expect(indicator.locator(`a[href="/projects/${projectId}/storyboard"]`)).toHaveCount(0)
     await expect(page.getByText('Agent', { exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: /Continue to Video Prompts/ })).toBeDisabled()
+    await expect(page.getByTestId('generate-video-prompts')).toBeDisabled()
     // No tools means nothing to suggest.
     await expect(page.getByRole('button', { name: 'Make shot 2 feel colder' })).toHaveCount(0)
   })
@@ -142,23 +142,9 @@ test.describe('storyboard agent config', () => {
     expect(usage).toEqual([{ step: 'storyboard', operation: 'agent_turn', status: 'succeeded' }])
   })
 
-  test('locks once video prompts have started, before any model call', async () => {
-    const projectId = await seed({ furthestStep: stepIndex('video_prompts'), currentStep: 'storyboard' })
-    const gateway = scriptedGateway([])
-
-    const result = await runAgentTurn({
-      config: getAgentStepConfig('storyboard'),
-      gateway,
-      supabase: admin,
-      projectId,
-      userId: primary.user.id,
-      content: 'anything',
-      clientId: crypto.randomUUID(),
-      attemptId: crypto.randomUUID(),
-      recordTurnSpend: async () => {},
-    })
-
-    expect(result.ok).toBe(true)
-    expect(gateway.getCallCount()).toBe(0)
+  test('never locks: the storyboard stays editable after video prompts have started', async () => {
+    // No freeze - the step carries no lock rule, so a turn on an advanced project runs as
+    // on any other.
+    expect(getAgentStepConfig('storyboard').lock).toBeUndefined()
   })
 })

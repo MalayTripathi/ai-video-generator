@@ -377,10 +377,11 @@ test.describe('storyboard motion - server actions', () => {
     const r = await row(projectId, ids[0])
     expect([r.motion, r.split_at, r.split_motion, r.transition_out]).toEqual(['static', null, null, 'cut'])
 
-    const locked = await seed({ furthestStep: stepIndex('video_prompts') })
-    expect(await saveShotMotionForUser(admin, uid, locked.projectId, locked.ids[0], 'a', 'static')).toEqual({
-      success: false,
-      error: 'The storyboard is locked',
+    // Never frozen: a project past the storyboard still saves.
+    const advanced = await seed({ furthestStep: stepIndex('video_prompts') })
+    expect(await saveShotMotionForUser(admin, uid, advanced.projectId, advanced.ids[0], 'a', 'pan_up')).toEqual({
+      success: true,
     })
+    expect((await row(advanced.projectId, advanced.ids[0])).motion).toBe('pan_up')
   })
 })

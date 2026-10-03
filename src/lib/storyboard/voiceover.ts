@@ -418,3 +418,12 @@ export function speechBars(spans: readonly VoiceoverSpan[], durationSec: number,
   }
   return bars
 }
+
+// Below this gap the voiceover counts as matching the picture: one step of the duration
+// stepper, the smallest change retiming can make, so a smaller gap could not be closed.
+const LENGTH_TOLERANCE_SEC = 0.1
+
+/** The voiceover runs longer or shorter than the picture by more than one retiming step. */
+export function voiceoverLengthDiffers(voiceoverSec: number, pictureSec: number): boolean {
+  return Math.abs(voiceoverSec - pictureSec) > LENGTH_TOLERANCE_SEC
+}

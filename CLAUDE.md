@@ -982,7 +982,7 @@ an edit on a revisited step (e.g. editing a shot's camera fields on the workbenc
 via its own save action and must not call `advanceStep`; if saving advanced the step,
 `current_step` would start tracking edits instead of navigation and lose its meaning.
 Unsaved edits may live in component state but must never reach the database without an
-explicit save. The agent is available on the workbench, image prompts and storyboard steps (`AGENT_STEPS`).
+explicit save. The agent is available on the workbench, image prompts, storyboard and video prompts steps (`AGENT_STEPS`).
 
 `advanceStep`'s first caller is the balance-gated Step 2 → Step 3 transition
 (`src/app/api/projects/[id]/image_prompts/advance/`). The step indicator
