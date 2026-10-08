@@ -101,6 +101,18 @@ export function timeoutAlignVoiceoverGateway(): FakeVoiceoverGateway {
   }
 }
 
+/** Alignment the provider refuses with a 4xx (e.g. 429), before any alignment is made. */
+export function rejectingAlignVoiceoverGateway(status: number): FakeVoiceoverGateway {
+  const gateway = successVoiceoverGateway()
+  return {
+    ...gateway,
+    async align(params) {
+      gateway.alignCalls.push({ text: params.text, mime: params.mime, bytes: params.audio.length })
+      throw new VoiceoverProviderError(status, 'rejected')
+    },
+  }
+}
+
 /**
  * Holds every synthesize call until `holdUntil` calls are in flight at once (or a short
  * fallback elapses, so a sequential pipeline fails the assertion instead of hanging), and

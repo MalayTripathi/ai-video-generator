@@ -24,6 +24,7 @@ import {
   rateLimitedVoiceoverGateway,
   sampleAudio,
   successVoiceoverGateway,
+  rejectingAlignVoiceoverGateway,
   throwingVoiceoverGateway,
   timeoutAlignVoiceoverGateway,
 } from './helpers/voiceover-fakes'
@@ -328,6 +329,7 @@ test.describe('voiceover - generate', () => {
     expect(outcome.ok).toBe(false)
     expect(gateway.synthesizeCalls).toHaveLength(3)
     const after = await rows(projectId)
+    expect(after.usage).toEqual([expect.objectContaining({ status: 'failed', estimated_cost: 0 })])
     expect(after.ledger).toHaveLength(0)
     expect(after.gens[0].state).toBe('failed')
     const retry = await generate(primary.user.id, projectId, successVoiceoverGateway())
@@ -471,6 +473,22 @@ test.describe('voiceover - upload and align', () => {
     const vo = await projectVoiceover(projectId)
     expect(vo.voiceover_alignment_path).toBe(alignmentPath)
     expect(vo.voiceover_words).toEqual(wordBoundaries(alignment))
+  })
+
+  test('an alignment the provider refuses with a 429 settles usage failed at $0, not the quote', async () => {
+    const projectId = await seedProject(primary.user.id)
+    await seedShots(projectId, ['The river rises.'])
+    const attemptId = await uploadSample(primary.user.id, projectId)
+    const price = creditsFor({ step: 'storyboard', operation: 'align_voiceover', quantity: SAMPLE_SECONDS })
+    const req = await requestAlign(primary.user.id, projectId, attemptId, price)
+    if (!req.ok) throw new Error('request failed')
+    await runAlignWorker(deps(rejectingAlignVoiceoverGateway(429)), {
+      userId: primary.user.id,
+      projectId,
+      generationId: req.generationId,
+      audio: req.audio,
+    })
+    expect((await rows(projectId)).usage).toEqual([expect.objectContaining({ status: 'failed', estimated_cost: 0 })])
   })
 
   test('a failed alignment is not charged and keeps the uploaded file', async () => {

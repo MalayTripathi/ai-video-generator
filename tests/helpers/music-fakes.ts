@@ -1,4 +1,4 @@
-import type { MusicGateway } from '../../src/lib/music/gateway'
+import { MusicProviderError, type MusicGateway } from '../../src/lib/music/gateway'
 import { sampleAudio } from './voiceover-fakes'
 
 // Hand-written MusicGateway fakes - no test ever reaches ElevenLabs. The audio is a real,
@@ -39,6 +39,18 @@ export function timeoutMusicGateway(): FakeMusicGateway {
     async compose(params) {
       composeCalls.push({ ...params })
       throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+    },
+  }
+}
+
+/** A compose request the provider refuses with a 4xx (e.g. 429), before any audio is made. */
+export function rejectingMusicGateway(status: number): FakeMusicGateway {
+  const composeCalls: ComposeCall[] = []
+  return {
+    composeCalls,
+    async compose(params) {
+      composeCalls.push({ ...params })
+      throw new MusicProviderError(status, 'rejected')
     },
   }
 }

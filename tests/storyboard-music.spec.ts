@@ -21,7 +21,7 @@ import {
 } from '../src/app/(app)/projects/[id]/storyboard/actions'
 import { grantAndReadBalance, realRecordFixedSpend } from './helpers/ledger-child'
 import { SAMPLE_SECONDS, sampleAudio } from './helpers/voiceover-fakes'
-import { successMusicGateway, throwingMusicGateway, timeoutMusicGateway } from './helpers/music-fakes'
+import { rejectingMusicGateway, successMusicGateway, throwingMusicGateway, timeoutMusicGateway } from './helpers/music-fakes'
 import { scriptedGateway, successMessage, throwingGateway } from './helpers/claude-fakes'
 import type { getBalance as getBalanceType } from '../src/lib/credits/balance'
 import type { ensureSignupGrant as ensureSignupGrantType } from '../src/lib/credits/signup-grant'
@@ -76,7 +76,7 @@ async function seedShots(projectId: string, durations: number[], narration: stri
 async function rows(projectId: string) {
   const [gens, usage, ledger] = await Promise.all([
     admin.from('generations').select('id, operation, state, payload').eq('project_id', projectId),
-    admin.from('usage').select('operation, status, provider, quantity, unit').eq('project_id', projectId),
+    admin.from('usage').select('operation, status, provider, quantity, unit, estimated_cost').eq('project_id', projectId),
     admin.from('credit_ledger').select('delta, operation, attempt_id').eq('project_id', projectId),
   ])
   return { gens: gens.data ?? [], usage: usage.data ?? [], ledger: ledger.data ?? [] }
@@ -200,6 +200,15 @@ test.describe('music - generate', () => {
     const status = await loadImageStatuses({ supabase: admin, projectId, userId: primary.user.id, getBalance: readBalance })
     if (!status.ok) throw new Error('status failed')
     expect(status.data.music).toMatchObject({ state: 'failed', attemptSec: 10 })
+  })
+
+  test('a compose the provider refuses with a 429 settles usage failed at $0, not the quote', async () => {
+    const projectId = await seedProject(primary.user.id)
+    await seedShots(projectId, [10])
+    const req = await request(primary.user.id, projectId, priceFor(10))
+    if (!req.ok) throw new Error('request failed')
+    await runMusicWorker(deps(rejectingMusicGateway(429)), { userId: primary.user.id, projectId, generationId: req.generationId })
+    expect((await rows(projectId)).usage).toEqual([expect.objectContaining({ status: 'failed', estimated_cost: 0 })])
   })
 
   test('a compose past the provider timeout settles usage failed, writes no ledger row, and releases the claim for Retry', async () => {
