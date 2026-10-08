@@ -60,10 +60,12 @@ export function ShotsFooter({
 // no advanceStep(). Nothing here can lead to a charge. The elements-without-a-reference
 // warning is about what generation would write, so it is not shown - the slot stays so
 // the button keeps its place on the right.
-export function GoToImagePromptsFooter({ href }: { href: string }) {
+export function GoToImagePromptsFooter({ href, note = null }: { href: string; note?: string | null }) {
   return (
     <>
-      <div className="text-small leading-[1.5] text-text-secondary" data-testid="workbench-footer-warning" />
+      <div className="text-small leading-[1.5] text-text-secondary" data-testid="workbench-footer-warning">
+        {note}
+      </div>
       <div className="flex flex-none gap-rc-sm">
         <Link href={href} className={PRIMARY_BUTTON_CLASSNAME}>
           Go to {stepLabel('image_prompts')}

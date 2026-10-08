@@ -1,40 +1,40 @@
 import type { ReactNode } from 'react'
+import { getCurrentUser } from '@/lib/auth/current-user'
 import { createClient } from '@/lib/supabase/server'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
+import { readBalance, type BalanceRead } from '@/lib/credits/balance'
 import { Rail } from './dashboard/rail'
-import { getUsageRows } from './usage/data'
-import { aggregateUsage } from './usage/aggregate'
-import { getLedgerRows } from './credits/data'
-import { aggregateCreditsPeriod } from './credits/aggregate'
+import { RailFiguresProvider } from '@/components/rail-figures-context'
+import { loadRailFigures } from './rail-figures'
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const user = await getCurrentUser()
 
-  // First place application code runs for a signed-in user (auth.users inserts
-  // happen Supabase-side, no application code in that path) - guarantees every
-  // balance read anywhere in the app finds a row, without any read needing to grant
-  // one itself. Never throws, so a transient failure here never breaks a page load.
-  if (user) await ensureSignupGrant(user.id)
+  // The rail's figures (seeding the client store the rail reads from) and the balance read
+  // that says whether this user has any ledger rows yet run together - neither needs the
+  // other. A grant isn't spend, so granting afterwards never changes the rail's figures.
+  let railFigures = { spendThisMonth: 0, creditsSpentThisMonth: 0 }
+  if (user) {
+    const supabase = await createClient()
+    const [ledger, figures] = await Promise.all([
+      readBalance(supabase, user.id).catch((): BalanceRead | null => null),
+      loadRailFigures(user.id),
+    ])
+    railFigures = figures
 
-  // Reuses the same aggregation path /usage itself uses, rather than a second query
-  // shape - just with an empty projects list, since the rail only needs settledTotal,
-  // not byProject. getUsageRows is request-memoized (React cache()), so a visit to
-  // /usage this same request doesn't re-run this query.
-  const rows = user ? await getUsageRows(user.id, 'this_month') : []
-  const spendThisMonth = aggregateUsage(rows, []).settledTotal
-
-  // Same pattern, against credit_ledger instead of usage - request-memoized via
-  // getLedgerRows, so a visit to /credits this same request reuses it too.
-  const creditsRows = user ? await getLedgerRows(user.id, 'this_month') : []
-  const creditsSpentThisMonth = aggregateCreditsPeriod(creditsRows, []).spentThisPeriod
+    // First place application code runs for a signed-in user (auth.users inserts happen
+    // Supabase-side, no application code in that path) - guarantees every balance read
+    // anywhere in the app finds a row. Only a user with no ledger rows (or an unreadable
+    // balance) needs it. Never throws, so a transient failure never breaks a page load.
+    if (!ledger || ledger.entries === 0) await ensureSignupGrant(user.id)
+  }
 
   return (
-    <div className="flex h-screen">
-      <Rail user={user ?? undefined} spendThisMonth={spendThisMonth} creditsSpentThisMonth={creditsSpentThisMonth} />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
-    </div>
+    <RailFiguresProvider initial={railFigures}>
+      <div className="flex h-screen">
+        <Rail user={user ?? undefined} />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">{children}</div>
+      </div>
+    </RailFiguresProvider>
   )
 }

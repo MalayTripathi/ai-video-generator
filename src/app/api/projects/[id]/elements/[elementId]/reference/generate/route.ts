@@ -6,6 +6,9 @@ import { getBalance } from '@/lib/credits/balance'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { runElementReferenceGeneration, type GenerationFailureCode } from './logic'
 
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
 // sharp is a native binary and cannot run on the Edge runtime.
 export const runtime = 'nodejs'
 

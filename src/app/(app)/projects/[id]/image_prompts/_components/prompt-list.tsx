@@ -3,7 +3,7 @@
 import { InsufficientCreditsBanner } from '@/components/insufficient-credits-banner'
 import { useImagePrompts } from './image-prompts-context'
 import { BatchBar } from './batch-bar'
-import { OutcomeBanner } from './outcome-banner'
+import { MissingPromptsBanner, OutcomeBanner } from './outcome-banner'
 import { ConfirmModal } from './confirm-modal'
 import { PromptCard } from './prompt-card'
 
@@ -21,6 +21,7 @@ export function PromptList() {
         />
       )}
       <OutcomeBanner />
+      <MissingPromptsBanner />
       <BatchBar />
       {shots.length === 0 ? (
         <div className="rounded-control border border-dashed border-border-strong p-rc-lg text-center text-small text-text-secondary">

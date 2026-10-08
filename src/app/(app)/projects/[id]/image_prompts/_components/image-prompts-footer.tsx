@@ -5,10 +5,11 @@ import { describeShotNumbers, isUngenerated } from './derive-image-prompts-phase
 import { StoryboardAction } from './storyboard-action'
 
 export function ImagePromptsFooter({ furthestStep }: { furthestStep: number }) {
-  const { shots, busyIds, externalGenerating, outcome } = useImagePrompts()
+  const { shots, busyIds, externalGenerating, outcome, settled, missingIds } = useImagePrompts()
 
   const numberById = new Map(shots.map((s) => [s.id, s.order_index + 1]))
   const ungenerated = shots.filter(isUngenerated)
+  const missingNumbers = missingIds.map((id) => numberById.get(id) ?? 0).filter((n) => n > 0)
 
   let note: string
   if (externalGenerating) {
@@ -22,6 +23,8 @@ export function ImagePromptsFooter({ furthestStep }: { furthestStep: number }) {
       outcome.unwrittenIds.length > 0
         ? `${describeShotNumbers(nums)} still ${nums.length === 1 ? 'needs' : 'need'} a prompt. Retry ${nums.length === 1 ? 'it' : 'those'} first.`
         : `${describeShotNumbers(nums)} still ${nums.length === 1 ? 'has its' : 'have their'} previous ${nums.length === 1 ? 'prompt' : 'prompts'}. You can retry ${nums.length === 1 ? 'it' : 'those'} first.`
+  } else if (settled && missingNumbers.length > 0) {
+    note = `${describeShotNumbers(missingNumbers)} ${missingNumbers.length === 1 ? 'needs' : 'need'} a prompt before the storyboard.`
   } else if (ungenerated.length > 0) {
     note = 'Some shots have no prompt yet.'
   } else {

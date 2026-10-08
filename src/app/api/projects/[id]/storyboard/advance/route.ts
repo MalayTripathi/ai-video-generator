@@ -4,6 +4,9 @@ import { getBalance } from '@/lib/credits/balance'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { runAdvanceToStoryboard } from './logic'
 
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id: projectId } = await params
 
@@ -32,6 +35,10 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
       { ok: false, error: result.error, requiredCredits: result.requiredCredits, balanceCredits: result.balanceCredits },
       { status: 402 }
     )
+  }
+
+  if (result.status === 422) {
+    return NextResponse.json({ ok: false, error: result.error, shotIds: result.shotIds }, { status: 422 })
   }
 
   return NextResponse.json({ ok: false, error: result.error }, { status: result.status })

@@ -158,7 +158,7 @@ test.describe('the Step 3 agent tool set', () => {
   })
 
   test('an unknown step is rejected rather than defaulted', () => {
-    expect(() => getAgentStepConfig('storyboard' as never)).toThrow()
+    expect(() => getAgentStepConfig('video_prompts' as never)).toThrow()
   })
 })
 

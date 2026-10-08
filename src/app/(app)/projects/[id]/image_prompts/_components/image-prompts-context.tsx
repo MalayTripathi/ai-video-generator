@@ -7,6 +7,7 @@ import type { AspectRatio } from '@/lib/config/enums'
 import type { PromptShot } from './types'
 import { isEdited, isStale, isUngenerated } from './derive-image-prompts-phase'
 import { AgentLocksContext } from '@/components/workbench/agent-locks-context'
+import { usePageVisible } from '@/lib/hooks/use-page-visible'
 import { checkImagePromptsAffordability } from '../actions'
 
 export type Outcome =
@@ -43,12 +44,17 @@ type ImagePromptsContextValue = {
   outcome: Outcome | null
   modal: PromptModal
   staleCount: number
+  // Nothing is being written or checked anywhere - the list shows its final state.
+  settled: boolean
+  // Shots with no image prompt, in list order. They block Continue to storyboard.
+  missingIds: string[]
   costFor: (shotCount: number) => number
   updateShotLocal: (shotId: string, patch: Partial<PromptShot>) => void
   regenerateOne: (shotId: string) => void
   regenerateAll: () => void
   regenerateStale: () => void
   retryOutcome: () => void
+  generateMissing: () => void
   confirmModal: () => void
   cancelModal: () => void
   dismissOutcome: () => void
@@ -76,8 +82,9 @@ function costFor(shotCount: number): number {
   return creditsFor({ step: 'image_prompts', operation: 'write_image_prompts', quantity: shotCount })
 }
 
-function clockTime(): string {
-  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+// When an outcome happened, as an ISO timestamp - the banner formats it at render time.
+function outcomeTime(): string {
+  return new Date().toISOString()
 }
 
 export function ImagePromptsProvider({
@@ -150,18 +157,27 @@ export function ImagePromptsProvider({
     setGaveUp(false)
   }
 
+  // Paused while the tab is hidden; refreshes once on return. Attempts live in a ref, reset
+  // only when a new external generation starts, so hiding and showing the tab never
+  // restarts the give-up count (hidden time simply doesn't count toward it).
+  const pollAttempts = useRef(0)
   useEffect(() => {
-    if (!externalGenerating) return
-    let attempts = 0
+    if (externalGenerating) pollAttempts.current = 0
+  }, [externalGenerating])
+  const visible = usePageVisible(() => {
+    if (externalGenerating) router.refresh()
+  })
+  useEffect(() => {
+    if (!externalGenerating || !visible) return
     const timer = setInterval(() => {
-      attempts += 1
-      if (attempts > POLL_MAX_ATTEMPTS) {
+      pollAttempts.current += 1
+      if (pollAttempts.current > POLL_MAX_ATTEMPTS) {
         clearInterval(timer)
         setGaveUp(true)
         setOutcome({
           kind: 'failed',
           code: 'timeout',
-          at: clockTime(),
+          at: outcomeTime(),
           retryIds: shotsRef.current.filter(isUngenerated).map((s) => s.id),
         })
         return
@@ -169,7 +185,7 @@ export function ImagePromptsProvider({
       router.refresh()
     }, POLL_INTERVAL_MS)
     return () => clearInterval(timer)
-  }, [externalGenerating, router])
+  }, [externalGenerating, visible, router])
 
   const agentLocks = useMemo(
     () => ({
@@ -192,8 +208,11 @@ export function ImagePromptsProvider({
       prev.map((s) => {
         const row = byId.get(s.id)
         if (!row) return s
+        // A changed prompt marks the drawn frame stale (the server sets image_stale too).
+        const changed = row.image_prompt !== s.image_prompt
         return {
           ...s,
+          frame: s.frame && changed ? { ...s.frame, stale: true } : s.frame,
           image_prompt: row.image_prompt,
           image_prompt_stale: row.image_prompt_stale,
           image_prompt_edited: row.image_prompt_edited,
@@ -266,7 +285,7 @@ export function ImagePromptsProvider({
             keptIds: failedIds.filter((id) => hadPrompt.has(id)),
             unwrittenIds: failedIds.filter((id) => !hadPrompt.has(id)),
             code: String(res.status),
-            at: clockTime(),
+            at: outcomeTime(),
           })
           return
         }
@@ -291,14 +310,14 @@ export function ImagePromptsProvider({
         return
       }
 
-      setOutcome({ kind: 'failed', code: String(res.status), at: clockTime(), retryIds: ids })
+      setOutcome({ kind: 'failed', code: String(res.status), at: outcomeTime(), retryIds: ids })
       // A 409 for any other reason means our view is out of date.
       if (res.status === 409) {
         spendUnlikely = true
         router.refresh()
       }
     } catch {
-      setOutcome({ kind: 'failed', code: 'network', at: clockTime(), retryIds: ids })
+      setOutcome({ kind: 'failed', code: 'network', at: outcomeTime(), retryIds: ids })
     } finally {
       inflightRef.current = false
       setBusyIds(new Set())
@@ -347,6 +366,13 @@ export function ImagePromptsProvider({
     void run(staleIds, true)
   }
 
+  const missingIds = shots.filter(isUngenerated).map((s) => s.id)
+
+  function generateMissing() {
+    if (missingIds.length === 0) return
+    void run(missingIds, true)
+  }
+
   function retryOutcome() {
     if (!outcome) return
     if (outcome.kind === 'partial') {
@@ -374,12 +400,15 @@ export function ImagePromptsProvider({
     outcome,
     modal,
     staleCount: staleIds.length,
+    settled: !checking && busyIds.size === 0 && !externalGenerating,
+    missingIds,
     costFor,
     updateShotLocal,
     regenerateOne,
     regenerateAll,
     regenerateStale,
     retryOutcome,
+    generateMissing,
     confirmModal,
     cancelModal: () => setModal(null),
     dismissOutcome: () => setOutcome(null),

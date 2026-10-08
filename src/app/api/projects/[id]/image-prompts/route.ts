@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { tryLoadRailFigures } from '@/app/(app)/rail-figures'
 import { createClient } from '@/lib/supabase/server'
 import { createClaudeGateway } from '@/lib/claude'
 import { mintAttemptId, recordFixedSpend } from '@/lib/credits/ledger'
@@ -6,6 +7,9 @@ import { getBalance } from '@/lib/credits/balance'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { parseImagePromptsInstruction } from '@/lib/prompts/image-prompts'
 import { runImagePromptGeneration } from './logic'
+
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
 
 // shotIds is the request's explicit write scope - see CLAUDE.md's "scope is never
 // inferred, defaulted, or widened server-side" principle (established for camera
@@ -74,8 +78,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     ensureSignupGrant,
   })
 
+  // A charged outcome (success, or a 422 that still saved some prompts) carries the rail's
+  // fresh spend figures, so a page without router.refresh() can update the rail from it.
   if (result.ok) {
-    return NextResponse.json(result.data, { status: result.status })
+    return NextResponse.json({ ...result.data, rail: await tryLoadRailFigures(user.id) }, { status: result.status })
   }
 
   if (result.status === 422) {
@@ -85,6 +91,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         ...(result.missingShotKeys ? { missingShotKeys: result.missingShotKeys } : {}),
         ...(result.failedShotKeys ? { failedShotKeys: result.failedShotKeys } : {}),
         ...(result.shots ? { shots: result.shots } : {}),
+        rail: await tryLoadRailFigures(user.id),
       },
       { status: result.status }
     )

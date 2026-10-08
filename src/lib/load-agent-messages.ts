@@ -1,8 +1,9 @@
 import type { createClient } from '@/lib/supabase/server'
 import type { AgentMessage } from '@/components/workbench/agent-message'
-import { buildAgentMessages } from '@/lib/build-agent-messages'
+import { AGENT_MESSAGE_COLUMNS, buildAgentMessages } from '@/lib/build-agent-messages'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
+type ShotNumbering = { shot_key: string; order_index: number }[]
 
 /**
  * The agent panel's persisted history for a project, ready to seed `AgentPanel`: the
@@ -13,12 +14,14 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 export async function loadAgentMessages(
   supabase: SupabaseServerClient,
   projectId: string,
-  shots: { shot_key: string; order_index: number }[]
+  // A pending read is fine: the history queries start at once and only the numbering
+  // waits on the shots.
+  shots: ShotNumbering | Promise<ShotNumbering>
 ): Promise<AgentMessage[]> {
   const [{ data: messageRows }, { data: usageRows }, { data: creditLedgerRows }] = await Promise.all([
     supabase
       .from('messages')
-      .select('*')
+      .select(AGENT_MESSAGE_COLUMNS)
       .eq('project_id', projectId)
       .order('created_at', { ascending: true }),
     supabase.from('usage').select('message_id, estimated_cost').eq('project_id', projectId).neq('status', 'pending'),
@@ -30,7 +33,7 @@ export async function loadAgentMessages(
       .eq('operation', 'agent_turn'),
   ])
 
-  const shotNumberByKey = new Map(shots.map((s) => [s.shot_key, s.order_index + 1]))
+  const shotNumberByKey = new Map((await shots).map((s) => [s.shot_key, s.order_index + 1]))
   const costByMessageId = new Map<string, number>()
   for (const u of usageRows ?? []) {
     if (!u.message_id) continue

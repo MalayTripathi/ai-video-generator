@@ -181,7 +181,7 @@ test.describe('recordFixedSpend', () => {
     }
   })
 
-  test('calling recordFixedSpend twice with the same attemptId produces exactly one row and does not throw', async () => {
+  test('calling recordFixedSpend twice with the same attemptId produces exactly one row and does not throw', { tag: '@smoke' }, async () => {
     const { user } = await createTestSession()
     try {
       const attemptId = crypto.randomUUID()
@@ -370,13 +370,13 @@ test.describe('recordRefund', () => {
 })
 
 test.describe('module hygiene', () => {
-  test('no .update() or .delete() against credit_ledger anywhere in the module', async () => {
+  test('no .update() or .delete() against credit_ledger anywhere in the module', { tag: '@smoke' }, async () => {
     const contents = readFileSync(path.resolve(__dirname, '../src/lib/credits/ledger.ts'), 'utf8')
     expect(contents).not.toMatch(/\.update\(/)
     expect(contents).not.toMatch(/\.delete\(/)
   })
 
-  test('exactly the agent/shots/camera/elements/image-prompts spend wiring imports this module - nothing else', async () => {
+  test('exactly the agent/shots/camera/elements/image-prompts/images spend wiring imports this module - nothing else', async () => {
     // Task 5 (wire agent_turn to the ledger) was this module's first legitimate
     // caller; Task 6 (wire generate_shots and derive_camera) added two more of the
     // same shape, plus a fourth (generate_element_reference, the first non-Claude
@@ -403,7 +403,13 @@ test.describe('module hygiene', () => {
     // client, no service-role in its import graph at all), so actions.ts no longer
     // has any reason to reference this module. video-prompts is also deliberately NOT
     // in this list - that route has no ledger wiring; if it ever imports this module,
-    // this test should catch it. Any importer beyond these ten means a second,
+    // this test should catch it. The storyboard images route (route.ts real, logic.ts
+    // type-only, same shape) makes twelve. The voiceover routes make sixteen: generate
+    // and align each import the real writer (route.ts) with a type-only logic.ts, and
+    // upload-url imports only mintAttemptId - it names the attempt an upload's alignment
+    // is later charged under. The music routes make nineteen, the same shape: generate imports the
+    // real writer (route.ts) with a type-only logic.ts, and upload-url imports only
+    // mintAttemptId (it names the stored file). Any importer beyond these means a second,
     // unreviewed call site.
     const srcDir = path.resolve(__dirname, '../src')
     const ownFile = path.resolve(__dirname, '../src/lib/credits/ledger.ts')
@@ -424,6 +430,15 @@ test.describe('module hygiene', () => {
       ),
       path.resolve(__dirname, '../src/app/api/projects/[id]/image-prompts/logic.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/image-prompts/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/images/logic.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/images/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/logic.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/align/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/upload-url/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/music/logic.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/music/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/music/upload-url/route.ts'),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []

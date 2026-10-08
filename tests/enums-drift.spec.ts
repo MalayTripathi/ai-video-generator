@@ -9,6 +9,16 @@ import {
   CAMERA_MOVEMENTS,
   CAMERA_ORIGINS,
   ELEMENT_TYPES,
+  MOTIONS,
+  TRANSITIONS,
+  VOICEOVER_SOURCES,
+  MUSIC_SOURCES,
+  EXPORT_MOTIONS,
+  CAPTION_MODES,
+  CAPTION_STYLES,
+  CAPTION_POSITIONS,
+  LOUDNESS_PRESETS,
+  EXPORT_STATUSES,
 } from '../src/lib/config/enums'
 import { STEPS, OPERATIONS, PROVIDERS } from '../src/lib/config/pipeline'
 import { MESSAGE_KINDS, TOOL_NAMES } from '../src/lib/config/messages'
@@ -102,6 +112,27 @@ test.describe('enum drift - projects columns', () => {
     expect(badError).not.toBeNull()
   })
 
+  test('accepts every VOICEOVER_SOURCES member (plus null) and rejects a bogus value', async () => {
+    await assertEnumDrift(
+      VOICEOVER_SOURCES,
+      (value) =>
+        admin
+          .from('projects')
+          .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: 'workbench', voiceover_source: value }),
+      () =>
+        admin.from('projects').insert({
+          user_id: primary.user.id,
+          title: 'Enum drift test',
+          current_step: 'workbench',
+          voiceover_source: 'not_a_real_source',
+        })
+    )
+    const { error: nullError } = await admin
+      .from('projects')
+      .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: 'workbench', voiceover_source: null })
+    expect(nullError).toBeNull()
+  })
+
   // current_step's vocabulary is STEPS exactly - intake is the pre-project screen and
   // never a stored value. This is the check that would have caught the 'script'
   // divergence, when the column had no CHECK constraint at all.
@@ -133,7 +164,7 @@ test.describe('enum drift - generations columns', () => {
   // under test varies while every other identity column stays fixed - STEPS/OPERATIONS
   // have no duplicate members by construction, so every row (plus the final bogus-value
   // row) has a distinct identity tuple even before accounting for the fresh project_id.
-  test('accepts every STEPS member as generations.step and rejects a bogus value', async () => {
+  test('accepts every STEPS member as generations.step and rejects a bogus value', { tag: '@smoke' }, async () => {
     const projectId = await insertProject()
     await assertEnumDrift(
       STEPS,
@@ -149,8 +180,8 @@ test.describe('enum drift - generations columns', () => {
   // derive_camera is deliberately excluded from generations_operation_check - no writer
   // ever claims a generations row for it (the terminal 'succeeded' state would block
   // every later description edit of the same shot - see CLAUDE.md), so widening the
-  // constraint to accept it would misleadingly imply a writer exists. OPERATIONS has 11
-  // members; this constraint only ever accepts 10 of them, by design. Accepting it here
+  // constraint to accept it would misleadingly imply a writer exists. OPERATIONS has 12
+  // members; this constraint only ever accepts 11 of them, by design. Accepting it here
   // would itself be the bug, so it's excluded from the accept-loop and asserted rejected
   // instead, turning that invariant into a regression test rather than silently
   // narrowing coverage.
@@ -391,6 +422,37 @@ test.describe('enum drift - shots columns', () => {
     })
     expect(badError).not.toBeNull()
   })
+
+  // Storyboard motion & transitions (B3): MOTIONS / TRANSITIONS mirror these CHECKs by hand.
+  for (const [column, values] of [
+    ['motion', MOTIONS],
+    ['split_motion', MOTIONS],
+    ['transition_out', TRANSITIONS],
+  ] as const) {
+    test(`accepts every ${column} member and rejects a bogus value`, async () => {
+      const projectId = await insertProject()
+      const insert = (value: string) => {
+        const { orderIndex, shotKey } = nextShotIdentity()
+        return admin
+          .from('shots')
+          .insert({ project_id: projectId, order_index: orderIndex, shot_key: shotKey, voice_over: 'x', [column]: value })
+      }
+      await assertEnumDrift(values, insert, () => insert(`not_a_real_${column}`))
+    })
+  }
+
+  test('split_at accepts a fraction strictly between 0 and 1 and rejects the ends', async () => {
+    const projectId = await insertProject()
+    const insert = (value: number) => {
+      const { orderIndex, shotKey } = nextShotIdentity()
+      return admin
+        .from('shots')
+        .insert({ project_id: projectId, order_index: orderIndex, shot_key: shotKey, voice_over: 'x', split_at: value })
+    }
+    expect((await insert(0.5)).error).toBeNull()
+    expect((await insert(0)).error).not.toBeNull()
+    expect((await insert(1)).error).not.toBeNull()
+  })
 })
 
 test.describe('enum drift - messages columns', () => {
@@ -469,5 +531,46 @@ test.describe('enum drift - elements columns', () => {
       type: 'not_a_real_type',
     })
     expect(badError).not.toBeNull()
+  })
+})
+
+// Export settings (Storyboard F): six nullable projects columns, and exports.status. Each
+// CHECK mirrors its enums.ts tuple by hand.
+test.describe('enum drift - export settings and exports', () => {
+  for (const [column, values] of [
+    ['export_motion', EXPORT_MOTIONS],
+    ['export_transition', TRANSITIONS],
+    ['caption_mode', CAPTION_MODES],
+    ['caption_style', CAPTION_STYLES],
+    ['caption_position', CAPTION_POSITIONS],
+    ['loudness_preset', LOUDNESS_PRESETS],
+    ['music_source', MUSIC_SOURCES],
+  ] as const) {
+    test(`accepts every projects.${column} member and rejects a bogus value`, async () => {
+      const insert = (value: string) =>
+        admin
+          .from('projects')
+          .insert({ user_id: primary.user.id, title: 'Enum drift test', current_step: 'workbench', [column]: value })
+      await assertEnumDrift(values, insert, () => insert(`not_a_real_${column}`))
+    })
+  }
+
+  test('accepts every EXPORT_STATUSES member and rejects a bogus value', async () => {
+    const projectIds: string[] = []
+    const insert = async (status: string) => {
+      // One project per row: queued/rendering are limited to one active export per project.
+      const projectId = await insertProject()
+      projectIds.push(projectId)
+      return admin.from('exports').insert({
+        user_id: primary.user.id,
+        project_id: projectId,
+        status,
+        settings: {},
+        film_hash: 'h',
+      })
+    }
+    await assertEnumDrift(EXPORT_STATUSES, insert, () => insert('not_a_real_status'))
+    // Leave nothing queued for a running worker.
+    await admin.from('exports').update({ status: 'cancelled' }).in('project_id', projectIds).in('status', ['queued', 'rendering'])
   })
 })

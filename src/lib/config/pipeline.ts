@@ -37,13 +37,19 @@ export const OPERATIONS = [
   // from storyboard/generate_image (the Step 4 frame render) - different price,
   // different reporting bucket, two different things that happen to both be images.
   'generate_element_reference',
+  // Aligning an uploaded voiceover to the script (forced alignment), at the storyboard.
+  // Priced per minute of audio, unlike voiceover's per-character generation.
+  'align_voiceover',
+  // Deriving the one-line music style prompt from the script, once per project, at the
+  // storyboard. Writes usage (and a claim) but is free to the user - no ledger row.
+  'derive_music_prompt',
 ] as const
 
 export type Operation = (typeof OPERATIONS)[number]
 
 // The steps whose agent panel is wired (agent/steps.ts registers one config per entry).
 // Sent by the client with each turn and validated against this list server-side.
-export const AGENT_STEPS = ['workbench', 'image_prompts', 'storyboard'] as const satisfies readonly Step[]
+export const AGENT_STEPS = ['workbench', 'image_prompts', 'storyboard', 'video_prompts'] as const satisfies readonly Step[]
 
 export type AgentStep = (typeof AGENT_STEPS)[number]
 
@@ -57,8 +63,8 @@ export type Provider = (typeof PROVIDERS)[number]
 
 export const STEP_OPERATIONS: Record<Step, readonly Operation[]> = {
   workbench: ['generate_shots', 'agent_turn', 'derive_camera', 'generate_element_reference'],
-  image_prompts: ['write_image_prompts', 'generate_image', 'agent_turn'],
-  storyboard: ['generate_image', 'voiceover', 'background_music', 'agent_turn'],
+  image_prompts: ['write_image_prompts', 'agent_turn'],
+  storyboard: ['generate_image', 'voiceover', 'align_voiceover', 'background_music', 'derive_music_prompt', 'agent_turn'],
   video_prompts: ['write_video_prompts'],
   generation: ['generate_clip'],
   assembly: ['merge'],
@@ -83,11 +89,13 @@ const OPERATION_LABELS: Record<Step, Partial<Record<Operation, string>>> = {
     derive_camera: 'Camera framing',
     generate_element_reference: 'Element reference image',
   },
-  image_prompts: { write_image_prompts: 'Prompt writing', generate_image: 'Image generation', agent_turn: 'Agent turn' },
+  image_prompts: { write_image_prompts: 'Prompt writing', agent_turn: 'Agent turn' },
   storyboard: {
     generate_image: 'Image generation',
     voiceover: 'Voiceover',
+    align_voiceover: 'Voiceover alignment',
     background_music: 'Background music',
+    derive_music_prompt: 'Music style',
     agent_turn: 'Agent turn',
   },
   video_prompts: { write_video_prompts: 'Prompt writing' },
@@ -123,4 +131,13 @@ export function stepLabel(step: Step): string {
 // value, so this maps the whole 7-step scale: workbench=2 ... assembly=7.
 export function stepIndex(step: Step): number {
   return STEPS.indexOf(step) + 2
+}
+
+// Length of the stepIndex scale: intake plus every Step (7).
+export const PROGRESS_STEP_COUNT = STEPS.length + 1
+
+// Inverse of stepIndex as a label, for a position on the 1..PROGRESS_STEP_COUNT scale.
+// Position 1 is intake, which has no Step and so no STEP_LABELS entry.
+export function progressStepLabel(position: number): string {
+  return position <= 1 ? 'Intake' : stepLabel(STEPS[Math.min(position, PROGRESS_STEP_COUNT) - 2])
 }

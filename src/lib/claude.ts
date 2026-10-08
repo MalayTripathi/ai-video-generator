@@ -1,4 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { assertProviderCallAllowed, guardedFetch, LiveCallsBlockedError } from '@/lib/providers/live-call-guard'
+
+export { LiveCallsBlockedError }
 
 export interface ClaudeGatewayHooks {
   /** Forwarded token-by-token as the SDK streams the response, before finalMessage()
@@ -32,21 +35,8 @@ function describeCall(params: Anthropic.MessageCreateParams): string {
   return `any of ${tools.length}: ${tools.map((t) => t.name).join(', ')}`
 }
 
-export class LiveCallsBlockedError extends Error {
-  constructor() {
-    super(
-      'Blocked a real, billed Anthropic call: live calls outside production ' +
-        'require ALLOW_REAL_CLAUDE=1, and this flag is set by the developer only.'
-    )
-    this.name = 'LiveCallsBlockedError'
-  }
-}
-
 export function assertLiveCallsAllowed(): void {
-  if (process.env.NODE_ENV === 'production') return
-  if (process.env.ALLOW_REAL_CLAUDE === '1') return
-
-  throw new LiveCallsBlockedError()
+  assertProviderCallAllowed('anthropic')
 }
 
 export function createClaudeGateway(): ClaudeGateway {
@@ -63,7 +53,7 @@ export function createClaudeGateway(): ClaudeGateway {
       // maxRetries: 0 is deliberate - an SDK-level retry on a partially
       // generated response is a silent second charge. Every retry in this
       // app is user-initiated and confirmed. Do not "fix" this later.
-      const client = new Anthropic({ maxRetries: 0, timeout: 600_000 })
+      const client = new Anthropic({ maxRetries: 0, timeout: 600_000, fetch: guardedFetch('anthropic') })
 
       // Always streams, even though most callers don't read the deltas: a long shot
       // generation can exceed any sane non-streaming timeout. hooks.onTextDelta, when

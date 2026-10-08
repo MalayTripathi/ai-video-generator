@@ -101,15 +101,18 @@ async function projectExistsForUser(
   supabase: SupabaseServerClient,
   projectId: string,
   userId: string
-): Promise<boolean> {
-  const { data } = await supabase
+): Promise<'found' | 'missing' | 'failed'> {
+  const { data, error } = await supabase
     .from('projects')
     .select('id')
     .eq('id', projectId)
     .eq('user_id', userId)
-    .single()
-
-  return data !== null
+    .maybeSingle()
+  if (error) {
+    console.error(`[image-prompts] project read failed for ${projectId}:`, error.message)
+    return 'failed'
+  }
+  return data ? 'found' : 'missing'
 }
 
 export type ImagePromptsBalanceGate =
@@ -186,7 +189,8 @@ type PipelineOutcome = {
  * tool input. Called from both the fresh-Claude-call path and the RECOVER path -
  * rawInput is either the live toolUseBlock.input or a stored generations.payload,
  * identical shape either way. Each shot's image_prompt, image_prompt_stale and
- * image_prompt_edited are written together in one .update() (a regeneration overwrites
+ * image_prompt_edited (plus image_stale, only when the text differs from what's stored)
+ * are written together in one .update() (a regeneration overwrites
  * any hand edit, so the edited flag always clears with it) - a shot Claude never returned (missingShotKeys)
  * or whose own .update() errors (failedShotKeys, tracked independently) never has
  * either column touched, so it keeps its prior value and stale flag exactly as before.
@@ -202,12 +206,29 @@ async function runImagePromptsPipeline(
   const targetShotKeys = scopedShots.map((s) => s.shot_key)
   const { validEntries, missingShotKeys } = resolveImagePromptResults(input.prompts, targetShotKeys)
 
+  // The stored text, read at write time (a hand edit may have landed while Claude was
+  // writing): a storyboard image is only marked stale by a prompt that actually changed.
+  const { data: storedRows, error: storedError } = await supabase
+    .from('shots')
+    .select('id, image_prompt')
+    .in('id', scopedShots.map((s) => s.id))
+  const storedById = new Map((storedRows ?? []).map((row) => [row.id, row.image_prompt]))
+
   const updateResults = await Promise.all(
     validEntries.map(async (entry) => {
+      const shotId = idByKey.get(entry.shot_key)!
+      // An unreadable stored value counts as changed - over-flagging only offers a
+      // regenerate; under-flagging would hide an out-of-date image.
+      const changed = storedError !== null || storedById.get(shotId) !== entry.image_prompt
       const { error } = await supabase
         .from('shots')
-        .update({ image_prompt: entry.image_prompt, image_prompt_stale: false, image_prompt_edited: false })
-        .eq('id', idByKey.get(entry.shot_key)!)
+        .update({
+          image_prompt: entry.image_prompt,
+          image_prompt_stale: false,
+          image_prompt_edited: false,
+          ...(changed ? { image_stale: true } : {}),
+        })
+        .eq('id', shotId)
       return { shotKey: entry.shot_key, error }
     })
   )
@@ -356,8 +377,12 @@ export async function runImagePromptGeneration(
   // Loaded before the claim, same rationale as shots/logic.ts's loadProjectForClaim: a
   // vanished/unowned project returns 404 without needing to interpret an RLS/FK error
   // off the claim INSERT.
+  // A failed read is a server error, never a 404 - only a missing row is.
   const exists = await projectExistsForUser(supabase, projectId, userId)
-  if (!exists) {
+  if (exists === 'failed') {
+    return { ok: false, status: 500, error: 'Could not load project' }
+  }
+  if (exists === 'missing') {
     return { ok: false, status: 404, error: 'Project not found' }
   }
 
@@ -409,6 +434,7 @@ export async function runImagePromptGeneration(
     supabase,
     identity: IMAGE_PROMPTS_IDENTITY(projectId),
     retry,
+    queued: false,
   })
 
   if (claim.outcome === 'error') {

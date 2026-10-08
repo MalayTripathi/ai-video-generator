@@ -4,7 +4,13 @@ import { describeToolActivity } from '@/lib/agent-activity-display'
 import { formatCost } from '@/lib/format-cost'
 import { formatCredits } from '@/lib/format-credits'
 
-type MessageRow = Tables<'messages'>
+// The columns the panel's history is rebuilt from - every `messages` column but project_id,
+// which every reader already filters on. Readers select exactly this.
+export const AGENT_MESSAGE_COLUMNS = 'id, role, kind, content, client_id, shot_key, tool_name, created_at'
+type MessageRow = Pick<
+  Tables<'messages'>,
+  'id' | 'role' | 'kind' | 'content' | 'client_id' | 'shot_key' | 'tool_name' | 'created_at'
+>
 
 /**
  * Reconstructs the agent panel's reload view from persisted `messages` rows, turn by

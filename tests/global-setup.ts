@@ -76,22 +76,25 @@ function buildStorageState(session: any, supabaseUrl: string) {
   }
 }
 
+const FULL_RUN_USER_POOL = 48
+
 export default async function globalSetup() {
-  if (process.env.ALLOW_REAL_CLAUDE === '1') {
+  // No automated run may make a real, billed provider call. playwright.config.ts sets
+  // BLOCK_PROVIDER_CALLS=1 for the runner and the server it starts; refuse to run without
+  // it, and refuse any ALLOW_REAL_* opt-out exported into this shell (any value at all).
+  // The only sanctioned live call is `npm run dev` with the flag exported by hand,
+  // outside Playwright entirely.
+  if (process.env.BLOCK_PROVIDER_CALLS !== '1') {
     throw new Error(
-      'ALLOW_REAL_CLAUDE=1 is set. This suite must never make a real, billed Anthropic call. ' +
-        'Unset ALLOW_REAL_CLAUDE before running the Playwright suite. The only sanctioned way to ' +
-        'make a live call is `npm run dev` with ALLOW_REAL_CLAUDE=1 exported by hand in your own ' +
-        'shell, outside Playwright entirely.'
+      'BLOCK_PROVIDER_CALLS is not 1. playwright.config.ts sets it for every run - run the suite ' +
+        'through that config, never a config that drops it.'
     )
   }
-
-  if (process.env.ALLOW_REAL_OPENAI_IMAGES === '1') {
+  const optOuts = Object.keys(process.env).filter((key) => key.startsWith('ALLOW_REAL_') && process.env[key])
+  if (optOuts.length > 0) {
     throw new Error(
-      'ALLOW_REAL_OPENAI_IMAGES=1 is set. This suite must never make a real, billed OpenAI image ' +
-        'call. Unset ALLOW_REAL_OPENAI_IMAGES before running the Playwright suite. The only ' +
-        'sanctioned way to make a live call is `npm run dev` with ALLOW_REAL_OPENAI_IMAGES=1 ' +
-        'exported by hand in your own shell, outside Playwright entirely.'
+      `${optOuts.join(', ')} is set. This suite must never make a real, billed provider call. ` +
+        'Unset it before running the Playwright suite.'
     )
   }
 
@@ -137,5 +140,25 @@ export default async function globalSetup() {
         session: { access_token: session.access_token, refresh_token: session.refresh_token },
       })
     )
+  }
+
+  // Full runs top the pool up to the fresh users the few global-per-user specs need (see
+  // createTestSession), in parallel and off the tests' own clock; users left unclaimed by
+  // an earlier run are reused, not recreated. Sessions are still minted per test, spread
+  // across the run under Supabase's auth rate limit. Sized to the fresh users
+  // a full run creates; a short pool only costs speed (the rest are minted on demand),
+  // and teardown logs the counts to keep it tuned. Targeted runs mint on demand instead.
+  const { pruneClaimedUsers, fillUserPool, sweepOrphanedTestUsers } = await import('./supabase-test-session')
+  await pruneClaimedUsers()
+  // A killed run never reaches its tests' cleanup or globalTeardown; this run does it.
+  try {
+    const swept = await sweepOrphanedTestUsers()
+    if (swept > 0) console.log(`[global-setup] swept ${swept} minted user(s) an earlier run left behind`)
+  } catch (err) {
+    console.error('[global-setup] orphaned-user sweep failed - continuing:', err)
+  }
+  if (process.env.PW_SERVER === 'prod') {
+    const created = await fillUserPool(FULL_RUN_USER_POOL)
+    console.log(`[global-setup] fresh-user pool: created ${created}, reused ${FULL_RUN_USER_POOL - created}`)
   }
 }

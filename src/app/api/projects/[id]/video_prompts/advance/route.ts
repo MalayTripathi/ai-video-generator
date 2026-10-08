@@ -1,0 +1,45 @@
+import { NextResponse } from 'next/server'
+import { createClient } from '@/lib/supabase/server'
+import { getBalance } from '@/lib/credits/balance'
+import { ensureSignupGrant } from '@/lib/credits/signup-grant'
+import { runAdvanceToVideoPrompts } from './logic'
+
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
+export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id: projectId } = await params
+
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) {
+    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+  }
+
+  const result = await runAdvanceToVideoPrompts({
+    supabase,
+    projectId,
+    userId: user.id,
+    getBalance,
+    ensureSignupGrant,
+  })
+
+  if (result.ok) {
+    return NextResponse.json({ ok: true, data: result.data }, { status: result.status })
+  }
+
+  if (result.status === 402) {
+    return NextResponse.json(
+      { ok: false, error: result.error, requiredCredits: result.requiredCredits, balanceCredits: result.balanceCredits },
+      { status: 402 }
+    )
+  }
+
+  if (result.status === 422) {
+    return NextResponse.json({ ok: false, error: result.error, reason: result.reason, shotIds: result.shotIds }, { status: 422 })
+  }
+
+  return NextResponse.json({ ok: false, error: result.error }, { status: result.status })
+}

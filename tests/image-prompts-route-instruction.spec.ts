@@ -62,18 +62,18 @@ async function seedProject() {
 test.describe('POST /api/projects/[id]/image-prompts - instruction validation', () => {
   const UNKNOWN_SHOT = '00000000-0000-4000-8000-000000000000'
 
-  test('a non-string instruction is a 400 before any read or spend', async ({ page }) => {
+  test('a non-string instruction is a 400 before any read or spend', async ({ request }) => {
     const projectId = await seedProject()
-    const res = await page.request.post(`/api/projects/${projectId}/image-prompts`, {
+    const res = await request.post(`/api/projects/${projectId}/image-prompts`, {
       data: { shotIds: [UNKNOWN_SHOT], instruction: 5 },
     })
     expect(res.status()).toBe(400)
     expect((await res.json()).error).toMatch(/instruction/i)
   })
 
-  test('an over-long instruction is a 400 naming the limit', async ({ page }) => {
+  test('an over-long instruction is a 400 naming the limit', async ({ request }) => {
     const projectId = await seedProject()
-    const res = await page.request.post(`/api/projects/${projectId}/image-prompts`, {
+    const res = await request.post(`/api/projects/${projectId}/image-prompts`, {
       data: { shotIds: [UNKNOWN_SHOT], instruction: 'x'.repeat(IMAGE_PROMPTS_INSTRUCTION_MAX_CHARS + 1) },
     })
     expect(res.status()).toBe(400)
@@ -83,11 +83,11 @@ test.describe('POST /api/projects/[id]/image-prompts - instruction validation', 
   })
 
   test('a valid, blank or absent instruction passes validation and reaches the runner (which refuses the unknown shot)', async ({
-    page,
+    request,
   }) => {
     const projectId = await seedProject()
     for (const instruction of ['make it feel colder', '   ', undefined]) {
-      const res = await page.request.post(`/api/projects/${projectId}/image-prompts`, {
+      const res = await request.post(`/api/projects/${projectId}/image-prompts`, {
         data: { shotIds: [UNKNOWN_SHOT], ...(instruction === undefined ? {} : { instruction }) },
       })
       // The runner's own scope check - proof the request got past route validation.

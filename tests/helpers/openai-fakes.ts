@@ -20,36 +20,92 @@ async function fakeImageBuffer(): Promise<Buffer> {
   return cachedFakeImageBuffer
 }
 
+export type StoryboardCall = { prompt: string; model: string; quality: string; size: string; referenceCount: number }
+
+const DEFAULT_STORYBOARD_USAGE = { input_tokens: 80, image_input_tokens: 0, output_tokens: 1200 }
+
+// A real PNG at exactly the requested WxH, so a test can assert the stored image keeps
+// the generation size (and so its aspect ratio) end to end.
+async function fakeImageAt(size: string): Promise<Buffer> {
+  const [width, height] = size.split('x').map(Number)
+  return sharp({ create: { width, height, channels: 3, background: { r: 100, g: 150, b: 200 } } })
+    .png()
+    .toBuffer()
+}
+
+type FakeImageGateway = ImageGateway & {
+  getCallCount: () => number
+  /** Storyboard calls only, in order, with what each was asked for. */
+  getStoryboardCalls: () => StoryboardCall[]
+}
+
 /** A fake ImageGateway that succeeds once per call and counts how many times it was
- * invoked - the "exactly one provider call" assertion every generate-reference test
- * needs. Mirrors claude-fakes.ts's shape (successMessage/throwingGateway), adapted for
- * the fact every scenario here cares about call count, not just the result shape. */
+ * invoked - the "exactly one provider call" assertion every generate test needs.
+ * Mirrors claude-fakes.ts's shape (successMessage/throwingGateway), adapted for the fact
+ * every scenario here cares about call count, not just the result shape. `storyboardUsage`
+ * may be a function of the call, to report image-input tokens only when references were
+ * passed. */
 export function successImageGateway(
   usage: { input_tokens: number; output_tokens: number } = DEFAULT_USAGE,
-  imageBuffer?: Buffer
-): ImageGateway & { getCallCount: () => number } {
+  imageBuffer?: Buffer,
+  storyboardUsage:
+    | { input_tokens: number; image_input_tokens: number; output_tokens: number }
+    | ((call: StoryboardCall) => { input_tokens: number; image_input_tokens: number; output_tokens: number }) =
+    DEFAULT_STORYBOARD_USAGE
+): FakeImageGateway {
   let callCount = 0
+  const storyboardCalls: StoryboardCall[] = []
   return {
     async generateReferenceImage() {
       callCount++
       return { imageBuffer: imageBuffer ?? (await fakeImageBuffer()), usage }
     },
+    async generateStoryboardImage(params) {
+      callCount++
+      const call = {
+        prompt: params.prompt,
+        model: params.model,
+        quality: params.quality,
+        size: params.size,
+        referenceCount: params.references.length,
+      }
+      storyboardCalls.push(call)
+      return {
+        imageBuffer: await fakeImageAt(params.size),
+        usage: typeof storyboardUsage === 'function' ? storyboardUsage(call) : storyboardUsage,
+      }
+    },
     getCallCount: () => callCount,
+    getStoryboardCalls: () => [...storyboardCalls],
   }
 }
 
 /** A fake ImageGateway whose call always throws - simulates a hard API/network
  * failure. Pass an Error instance (e.g. ImageLiveCallsBlockedError) to throw it
  * directly rather than wrapping a message in a plain Error. */
-export function throwingImageGateway(
-  error: Error | string = 'simulated OpenAI image failure'
-): ImageGateway & { getCallCount: () => number } {
+export function throwingImageGateway(error: Error | string = 'simulated OpenAI image failure'): FakeImageGateway {
   let callCount = 0
+  const storyboardCalls: StoryboardCall[] = []
+  const fail = () => {
+    throw typeof error === 'string' ? new Error(error) : error
+  }
   return {
     async generateReferenceImage() {
       callCount++
-      throw typeof error === 'string' ? new Error(error) : error
+      return fail()
+    },
+    async generateStoryboardImage(params) {
+      callCount++
+      storyboardCalls.push({
+        prompt: params.prompt,
+        model: params.model,
+        quality: params.quality,
+        size: params.size,
+        referenceCount: params.references.length,
+      })
+      return fail()
     },
     getCallCount: () => callCount,
+    getStoryboardCalls: () => [...storyboardCalls],
   }
 }

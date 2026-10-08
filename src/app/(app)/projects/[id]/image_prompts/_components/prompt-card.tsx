@@ -6,7 +6,8 @@ import { useImagePrompts } from './image-prompts-context'
 import { isEdited, isStale, isUngenerated } from './derive-image-prompts-phase'
 import { useFieldSave } from '../../workbench/_components/use-field-save'
 import { SaveStatusIndicator } from '../../workbench/_components/save-status-indicator'
-import { PromptEditor } from './prompt-editor'
+import { EditedChip } from '@/components/edited-chip'
+import { PromptEditor } from '@/components/prompt-editor'
 import { PromptReferences } from './prompt-references'
 import { RegenerateButton } from './regenerate-button'
 import type { PromptShot } from './types'
@@ -27,8 +28,10 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
     checking,
     externalGenerating,
     outcome,
+    settled,
     costFor,
     regenerateOne,
+    updateShotLocal,
   } = useImagePrompts()
 
   const save = useFieldSave()
@@ -40,7 +43,14 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
   const kept = outcome?.kind === 'partial' && outcome.keptIds.includes(shot.id)
   const plate = PLATE_SIZE[aspectRatio]
 
-  const borderClass = busy ? 'border-status-active-line' : kept ? 'border-status-failed-line' : 'border-border-subtle'
+  // A shot with no prompt blocks the storyboard; once the list has settled it takes the
+  // failed treatment (14E's card border), with its text box open to write one.
+  const missing = ungenerated && settled
+  const borderClass = busy
+    ? 'border-status-active-line'
+    : kept || missing
+      ? 'border-status-failed-line'
+      : 'border-border-subtle'
   const disabledReason = externalGenerating
     ? 'Prompts are being written in another window'
     : busyIds.size > 0
@@ -54,12 +64,43 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
       aria-busy={busy}
       className={`grid flex-none grid-cols-[auto_1fr] gap-rc-sm rounded-frame border bg-bg-canvas p-[14px_16px] ${borderClass}`}
     >
-      <div
-        className="flex items-center justify-center rounded-control border border-border-subtle bg-bg-inset font-mono text-mono text-text-quiet"
-        style={{ width: plate.w, height: plate.h }}
-      >
-        {aspectRatio}
-      </div>
+      {shot.frame ? (
+        // The shot's Storyboard frame, display only. Dimmed with a Stale chip once a later
+        // edit has made it out of date.
+        <div
+          data-testid="prompt-frame"
+          data-stale={shot.frame.stale ? 'true' : 'false'}
+          className={`relative overflow-hidden rounded-control border ${
+            shot.frame.stale ? 'border-status-stale-line' : 'border-border-subtle'
+          }`}
+          style={{ width: plate.w, height: plate.h }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element -- signed, short-lived storage URL */}
+          <img
+            src={shot.frame.url}
+            alt={`Shot ${shot.order_index + 1} storyboard frame`}
+            loading="lazy"
+            decoding="async"
+            className={`block h-full w-full object-cover ${shot.frame.stale ? 'opacity-50' : ''}`}
+          />
+          {shot.frame.stale && (
+            <span
+              data-testid="prompt-frame-stale"
+              className="absolute left-[5px] top-[5px] rounded-badge border border-status-stale-line bg-status-stale-bg px-[5px] text-chip font-medium uppercase tracking-label text-status-stale-fg"
+            >
+              Stale
+            </span>
+          )}
+        </div>
+      ) : (
+        <div
+          data-testid="prompt-frame-placeholder"
+          className="flex items-center justify-center rounded-control border border-border-subtle bg-bg-inset font-mono text-mono text-text-quiet"
+          style={{ width: plate.w, height: plate.h }}
+        >
+          {aspectRatio}
+        </div>
+      )}
 
       <div className={`flex min-w-0 flex-col gap-[9px] ${busy ? 'opacity-[0.72]' : ''}`}>
         <div className="flex min-w-0 items-center gap-[9px]">
@@ -71,11 +112,7 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
               Stale
             </span>
           )}
-          {edited && (
-            <span className="flex-none rounded-badge bg-status-edited-bg px-2 py-[3px] text-chip font-medium text-status-edited-fg">
-              Edited by you
-            </span>
-          )}
+          {edited && <EditedChip />}
           {updated && (
             <span className="flex flex-none items-center gap-[5px] text-meta text-status-done-fg">
               <CheckIcon />
@@ -121,13 +158,18 @@ export const PromptCard = memo(function PromptCard({ shot }: { shot: PromptShot 
               </span>
             )}
           </div>
-        ) : ungenerated ? (
-          <div className="flex min-h-[58px] items-center rounded-control border border-dashed border-border-strong px-rc-sm py-[10px] text-small text-text-tertiary">
-            No prompt yet
-          </div>
         ) : (
           <div className="flex flex-col gap-[5px]">
-            <PromptEditor shotId={shot.id} value={shot.image_prompt ?? ''} run={save.run} />
+            <PromptEditor
+              shotId={shot.id}
+              value={shot.image_prompt ?? ''}
+              run={save.run}
+              missing={missing}
+              // A saved hand edit marks the drawn frame stale (the action sets image_stale).
+              onSaved={(id, patch) =>
+                updateShotLocal(id, shot.frame ? { ...patch, frame: { ...shot.frame, stale: true } } : patch)
+              }
+            />
             {save.status === 'failed' && save.error && (
               <span className="text-meta text-status-failed-fg">{save.error}</span>
             )}

@@ -547,18 +547,28 @@ test.describe('agent chat panel', () => {
     await seedShot(projectId)
 
     // Enough turns to overflow the panel's height so there's somewhere to scroll from.
+    // One batch insert. Every row carries its own created_at, 1ms apart in conversation
+    // order: rows written by one statement would otherwise share now(), and the panel
+    // orders by created_at alone.
+    const conversation: { role: 'user' | 'assistant'; content: string }[] = []
     for (let i = 0; i < 20; i++) {
-      await admin.from('messages').insert({ project_id: projectId, role: 'user', content: `Turn ${i}: change something.` })
-      await admin.from('messages').insert({ project_id: projectId, role: 'assistant', kind: 'text', content: `Turn ${i}: done.` })
+      conversation.push({ role: 'user', content: `Turn ${i}: change something.` })
+      conversation.push({ role: 'assistant', content: `Turn ${i}: done.` })
     }
     // The LAST turn's own content, to assert it's the one actually in view.
-    await admin.from('messages').insert({ project_id: projectId, role: 'user', content: 'The very last message.' })
-    await admin.from('messages').insert({
-      project_id: projectId,
-      role: 'assistant',
-      kind: 'text',
-      content: 'The very last reply.',
-    })
+    conversation.push({ role: 'user', content: 'The very last message.' })
+    conversation.push({ role: 'assistant', content: 'The very last reply.' })
+    const base = Date.now() - conversation.length
+    const { error: messagesError } = await admin.from('messages').insert(
+      conversation.map((message, i) => ({
+        project_id: projectId,
+        role: message.role,
+        kind: 'text',
+        content: message.content,
+        created_at: new Date(base + i).toISOString(),
+      }))
+    )
+    expect(messagesError).toBeNull()
 
     await page.goto(`/projects/${projectId}/workbench`)
 

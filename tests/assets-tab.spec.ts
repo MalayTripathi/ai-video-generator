@@ -322,9 +322,11 @@ test.describe('Assets tab', () => {
     await expect(shotsTabLink).toHaveClass(/text-text-tertiary/)
     await expect(shotsTabLink).toBeEnabled()
 
-    // The new banner explains the split, only on the Assets side.
-    await expect(page.getByText('Shots view only')).toBeVisible()
-    await expect(page.getByText(/Assets stay editable/)).toBeVisible()
+    // No lock banner here (the Shots tab states the lock); the reference-image note moves
+    // from the page into the footer.
+    await expect(page.getByText('Shots view only')).toHaveCount(0)
+    await expect(page.getByText(/Reference images are optional/)).toHaveCount(1)
+    await expect(page.getByTestId('workbench-footer-warning')).toContainText('Reference images are optional')
 
     // Real writes still succeed, server-side, in this state: create, rename, delete.
     const propGroup = page.locator('[data-testid="element-group"][data-element-type="prop"]')

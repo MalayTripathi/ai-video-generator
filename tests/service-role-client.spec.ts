@@ -74,10 +74,24 @@ test.describe('service-role client isolation', () => {
     // the signup-grant bootstrap is also a write, split out of ledger.ts specifically so
     // a balance READ never has to import this client at all. Any OTHER importer means a
     // second RLS-bypassing call site nothing has reviewed for the user_id-scoping
-    // discipline this client demands.
+    // discipline this client demands. The storyboard images route is the third: its
+    // background run outlives the user's session, so it builds this client, having
+    // verified the user and project at entry, and every write in the worker is scoped by
+    // both (see images/logic.ts). The voiceover generate and align routes are the fourth
+    // and fifth, for the same reason and with the same discipline (voiceover/logic.ts).
+    // The exports logic is the sixth: exports has no authenticated write policy, so every
+    // export write goes through it, after the session client has verified ownership and
+    // scoped by that row's id; its one read is a queue-position count. The music generate
+    // route is the seventh, for the voiceover routes' reason and with their discipline
+    // (music/logic.ts).
     const expectedImporters = [
       path.resolve(__dirname, '../src/lib/credits/ledger.ts'),
       path.resolve(__dirname, '../src/lib/credits/signup-grant.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/images/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/align/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/exports/logic.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/music/route.ts'),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []

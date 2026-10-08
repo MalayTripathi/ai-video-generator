@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { tryLoadRailFigures } from '@/app/(app)/rail-figures'
+
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
 
 // Read-only lookup of one agent turn's real credit spend, keyed on the triggering user
 // message's id - the same anchor the ledger write itself uses (see logic.ts's
@@ -26,13 +30,18 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const { data: project } = await supabase
+  const { data: project, error: projectError } = await supabase
     .from('projects')
     .select('id')
     .eq('id', projectId)
     .eq('user_id', user.id)
-    .single()
+    .maybeSingle()
 
+  // A failed read is a server error, never a 404 - only a missing row is.
+  if (projectError) {
+    console.error(`[project] read failed for ${projectId}:`, projectError.message)
+    return NextResponse.json({ error: 'Could not load project' }, { status: 500 })
+  }
   if (!project) {
     return NextResponse.json({ error: 'Project not found' }, { status: 404 })
   }
@@ -47,5 +56,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     .limit(1)
 
   const credits = rows && rows.length > 0 ? -rows[0].delta : null
-  return NextResponse.json({ credits })
+  // Fresh rail figures too, so a page that doesn't router.refresh() after a turn (the
+  // storyboard) still updates the rail.
+  return NextResponse.json({ credits, rail: await tryLoadRailFigures(user.id) })
 }

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { WorkbenchStepIndicator } from '@/components/workbench/step-indicator'
 import { AgentPanel } from '@/components/workbench/agent-panel'
+import { SideColumnSwitch } from '@/components/side-column-switch'
 import type { AgentMessage } from '@/components/workbench/agent-message'
 import type { AgentStep } from '@/lib/config/pipeline'
 
@@ -15,6 +16,7 @@ export function WorkbenchShell({
   markShotsTouched,
   header,
   footer,
+  sideColumn,
   children,
 }: {
   project: { id: string; furthest_step: number }
@@ -27,6 +29,9 @@ export function WorkbenchShell({
   markShotsTouched?: (shotKeys: string[]) => void
   header: ReactNode
   footer?: ReactNode
+  // A step panel that takes the agent's column while its provider says so (see
+  // SideColumnSwitch). The agent stays mounted underneath.
+  sideColumn?: ReactNode
   children: ReactNode
 }) {
   return (
@@ -34,15 +39,20 @@ export function WorkbenchShell({
       <div className="flex-none border-b border-border-subtle px-rc-md py-rc-md">{header}</div>
       <WorkbenchStepIndicator projectId={project.id} furthestStep={project.furthest_step} />
       <div className="flex min-h-0 flex-1">
-        <AgentPanel
-          initialMessages={agentMessages}
-          projectId={project.id}
-          step={agentStep}
-          readOnly={readOnly}
-          shots={shots}
-          lockShot={lockShot}
-          unlockAllShots={unlockAllShots}
-          markShotsTouched={markShotsTouched}
+        <SideColumnSwitch
+          override={sideColumn}
+          agent={
+            <AgentPanel
+              initialMessages={agentMessages}
+              projectId={project.id}
+              step={agentStep}
+              readOnly={readOnly}
+              shots={shots}
+              lockShot={lockShot}
+              unlockAllShots={unlockAllShots}
+              markShotsTouched={markShotsTouched}
+            />
+          }
         />
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
       </div>

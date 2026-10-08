@@ -6,8 +6,8 @@ import { runAgentTurn } from '../src/app/api/projects/[id]/agent/logic'
 import { getAgentStepConfig } from '../src/app/api/projects/[id]/agent/steps'
 import { scriptedGateway, textMessage } from './helpers/claude-fakes'
 
-// Step 4 placeholder: access rules, the shell around an empty state, and an agent panel
-// that runs with no tools. Every agent call here is a hand-written fake or a mocked route.
+// Step 4: access rules, the real shell around the storyboard, and an agent panel that
+// runs with no tools. Every agent call here is a hand-written fake or a mocked route.
 
 const NAVIGATION = { timeout: 45000 }
 
@@ -39,7 +39,7 @@ async function seed(opts: { furthestStep: number; currentStep?: string }) {
   return projectId
 }
 
-test.describe('storyboard placeholder page', () => {
+test.describe('storyboard page access and shell', () => {
   test.setTimeout(120000)
 
   test('a project that has not reached the storyboard is sent back to its current step', async ({ page }) => {
@@ -53,22 +53,23 @@ test.describe('storyboard placeholder page', () => {
 
     await page.goto(`/projects/${projectId}/storyboard`)
     await expect(page).toHaveURL(`/projects/${projectId}/image_prompts`, NAVIGATION)
-    await expect(page.getByTestId('storyboard-placeholder')).toHaveCount(0)
+    await expect(page.getByTestId('storyboard-main')).toHaveCount(0)
   })
 
-  test('once reached it shows the coming-soon empty state inside the real shell', async ({ page }) => {
+  test('once reached it shows the storyboard timeline inside the real shell', { tag: '@smoke' }, async ({ page }) => {
     const projectId = await seed({ furthestStep: stepIndex('storyboard'), currentStep: 'storyboard' })
 
     await page.goto(`/projects/${projectId}/storyboard`)
-    await expect(page.getByRole('heading', { name: 'Storyboard is coming soon' })).toBeVisible(NAVIGATION)
+    await expect(page.getByTestId('storyboard-main')).toBeVisible(NAVIGATION)
+    await expect(page.getByTestId('frames-ready')).toHaveText('0 of 1 frames ready')
 
     // The shell's own pieces, not copies: step indicator with Storyboard current, agent
-    // panel, and an inert footer button.
+    // panel, and the footer's advance button, disabled until every frame is ready.
     const indicator = page.getByTestId('step-indicator')
     await expect(indicator).toBeVisible()
     await expect(indicator.locator(`a[href="/projects/${projectId}/storyboard"]`)).toHaveCount(0)
     await expect(page.getByText('Agent', { exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: /Continue to Video Prompts/ })).toBeDisabled()
+    await expect(page.getByTestId('generate-video-prompts')).toBeDisabled()
     // No tools means nothing to suggest.
     await expect(page.getByRole('button', { name: 'Make shot 2 feel colder' })).toHaveCount(0)
   })
@@ -93,7 +94,7 @@ test.describe('storyboard placeholder page', () => {
 
       await page.goto(`/projects/${projectId}/storyboard`)
       await expect(page.getByText('This page could not be found.')).toBeVisible(NAVIGATION)
-      await expect(page.getByTestId('storyboard-placeholder')).toHaveCount(0)
+      await expect(page.getByTestId('storyboard-main')).toHaveCount(0)
     })
   })
 })
@@ -141,23 +142,9 @@ test.describe('storyboard agent config', () => {
     expect(usage).toEqual([{ step: 'storyboard', operation: 'agent_turn', status: 'succeeded' }])
   })
 
-  test('locks once video prompts have started, before any model call', async () => {
-    const projectId = await seed({ furthestStep: stepIndex('video_prompts'), currentStep: 'storyboard' })
-    const gateway = scriptedGateway([])
-
-    const result = await runAgentTurn({
-      config: getAgentStepConfig('storyboard'),
-      gateway,
-      supabase: admin,
-      projectId,
-      userId: primary.user.id,
-      content: 'anything',
-      clientId: crypto.randomUUID(),
-      attemptId: crypto.randomUUID(),
-      recordTurnSpend: async () => {},
-    })
-
-    expect(result.ok).toBe(true)
-    expect(gateway.getCallCount()).toBe(0)
+  test('never locks: the storyboard stays editable after video prompts have started', async () => {
+    // No freeze - the step carries no lock rule, so a turn on an advanced project runs as
+    // on any other.
+    expect(getAgentStepConfig('storyboard').lock).toBeUndefined()
   })
 })

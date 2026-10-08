@@ -84,3 +84,44 @@ export type CameraOrigin = (typeof CAMERA_ORIGINS)[number]
 export const MODEL_REPORTABLE_CAMERA_ORIGINS = CAMERA_ORIGINS.filter(
   (v): v is Exclude<CameraOrigin, 'override'> => v !== 'override'
 )
+
+// projects.voiceover_source: how the current voiceover was made. Null when there is none.
+export const VOICEOVER_SOURCES = ['generated', 'uploaded'] as const
+export type VoiceoverSource = (typeof VOICEOVER_SOURCES)[number]
+
+export const MUSIC_SOURCES = ['generated', 'uploaded'] as const
+export type MusicSource = (typeof MUSIC_SOURCES)[number]
+
+// Storyboard motion & transitions (B3): render-only - the slideshow and preview play them;
+// they never feed Step 5 video prompts or any camera field. MOTIONS is the domain of
+// shots.motion and shots.split_motion, TRANSITIONS of shots.transition_out; each CHECK
+// is mirrored by hand and covered by tests/enums-drift.spec.ts.
+export const MOTIONS = ['push_in', 'pull_out', 'pan_left', 'pan_right', 'pan_up', 'pan_down', 'static'] as const
+
+export type Motion = (typeof MOTIONS)[number]
+
+export const TRANSITIONS = ['cut', 'dissolve'] as const
+
+export type Transition = (typeof TRANSITIONS)[number]
+
+// Export settings (Storyboard F). Each is a nullable projects column - null follows the film
+// default in storyboard.ts - and each CHECK is mirrored by hand, covered by enums-drift.
+// EXPORT_MOTIONS is the film-wide default motion: 'alternate' (the cycle) or one move.
+export const EXPORT_MOTIONS = ['alternate', ...MOTIONS] as const
+export type ExportMotion = (typeof EXPORT_MOTIONS)[number]
+
+export const CAPTION_MODES = ['off', 'srt', 'burned', 'both'] as const
+export type CaptionMode = (typeof CAPTION_MODES)[number]
+
+export const CAPTION_STYLES = ['reelcraft_default'] as const
+export type CaptionStyle = (typeof CAPTION_STYLES)[number]
+
+export const CAPTION_POSITIONS = ['bottom', 'middle'] as const
+export type CaptionPosition = (typeof CAPTION_POSITIONS)[number]
+
+export const LOUDNESS_PRESETS = ['streaming', 'podcast', 'broadcast'] as const
+export type LoudnessPreset = (typeof LOUDNESS_PRESETS)[number]
+
+// exports.status: one row per export job.
+export const EXPORT_STATUSES = ['queued', 'rendering', 'succeeded', 'failed', 'cancelled'] as const
+export type ExportStatus = (typeof EXPORT_STATUSES)[number]

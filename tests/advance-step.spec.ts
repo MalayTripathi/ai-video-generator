@@ -30,7 +30,7 @@ async function readProject(projectId: string) {
 }
 
 test.describe('advanceStep', () => {
-  test('forward advance sets both current_step and furthest_step', async () => {
+  test('forward advance sets both current_step and furthest_step', { tag: '@smoke' }, async () => {
     const user = primary.user
     const projectId = await insertProject(user.id, 'workbench', 2)
 

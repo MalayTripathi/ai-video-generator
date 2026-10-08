@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { computeCost } from '../src/lib/config/pricing'
+import { computeCost, ELEVENLABS_ALIGNMENT_MODEL, ELEVENLABS_RATES } from '../src/lib/config/pricing'
 
 test.describe('computeCost', () => {
   test('anthropic: computes cost from input/output tokens at the model rate', () => {
@@ -51,14 +51,44 @@ test.describe('computeCost', () => {
     expect(result.quantity).toBe(200)
   })
 
-  test('a still-stub provider (elevenlabs/fal) returns a null cost, no values yet', () => {
-    const result = computeCost('elevenlabs', 'eleven_v3', {
+  test('a still-stub provider (fal) returns a null cost, no values yet', () => {
+    const result = computeCost('fal', 'Kling 2.1', {
       input_tokens: 100,
       output_tokens: 100,
     })
     expect(result.estimatedCost).toBeNull()
     expect(result.appliedRates).toBeNull()
     expect(result.unit).toBe('unknown')
+  })
+
+  test('elevenlabs text-to-speech: priced per character at the model rate', () => {
+    const result = computeCost('elevenlabs', 'eleven_v3', { input_tokens: 0, output_tokens: 0, characters: 2000 })
+    expect(result.estimatedCost).toBeCloseTo(2000 * ELEVENLABS_RATES.perCharacterUsd.eleven_v3, 9)
+    expect(result.quantity).toBe(2000)
+    expect(result.unit).toBe('characters')
+  })
+
+  test('elevenlabs forced alignment: priced per minute of audio', () => {
+    const result = computeCost('elevenlabs', ELEVENLABS_ALIGNMENT_MODEL, {
+      input_tokens: 0,
+      output_tokens: 0,
+      audio_seconds: 90,
+    })
+    expect(result.estimatedCost).toBeCloseTo(1.5 * ELEVENLABS_RATES.alignmentPerMinuteUsd, 9)
+    expect(result.quantity).toBe(90)
+    expect(result.unit).toBe('seconds')
+  })
+
+  test('elevenlabs music: per minute of the requested length, keyed by model', () => {
+    const result = computeCost('elevenlabs', 'music_v1', { input_tokens: 0, output_tokens: 0, audio_seconds: 90 })
+    expect(result.unit).toBe('seconds')
+    expect(result.quantity).toBe(90)
+    expect(result.estimatedCost).toBeCloseTo(1.5 * ELEVENLABS_RATES.musicPerMinuteUsd.music_v1, 9)
+  })
+
+  test('elevenlabs: an unknown text-to-speech model returns a null cost', () => {
+    const result = computeCost('elevenlabs', 'not-a-model', { input_tokens: 0, output_tokens: 0, characters: 10 })
+    expect(result.estimatedCost).toBeNull()
   })
 
   test('openai: computes cost from input/output tokens at the model rate', () => {
@@ -71,6 +101,25 @@ test.describe('computeCost', () => {
     expect(result.quantity).toBe(2_000_000)
     expect(result.unit).toBe('tokens')
     expect(result.appliedRates).not.toBeNull()
+  })
+
+  // Reference images passed to the edit endpoint arrive inside input_tokens; their share
+  // (image_input_tokens) is billed at the image-input rate, the rest at the text rate.
+  test('openai: image input is split out and billed at the image-input rate', () => {
+    // gpt-image-2.5-flare: text 5.0, image input 8.0, output 30.0 per 1M
+    const result = computeCost('openai', 'gpt-image-2.5-flare', {
+      input_tokens: 3_000_000,
+      image_input_tokens: 2_000_000,
+      output_tokens: 1_000_000,
+    })
+    expect(result.estimatedCost).toBeCloseTo(1 * 5.0 + 2 * 8.0 + 1 * 30.0, 6)
+  })
+
+  test('openai: flare and sunburst are both priced, so the model can be swapped by env', () => {
+    for (const model of ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst']) {
+      const result = computeCost('openai', model, { input_tokens: 1_000_000, output_tokens: 1_000_000 })
+      expect(result.estimatedCost).toBeCloseTo(5.0 + 30.0, 6)
+    }
   })
 
   test('an unrecognized openai model returns a null cost, never a guess', () => {

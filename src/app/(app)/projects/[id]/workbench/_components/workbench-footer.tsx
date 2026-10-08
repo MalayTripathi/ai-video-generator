@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import { creditsFor } from '@/lib/config/credits'
 import { stepIndex } from '@/lib/config/pipeline'
 import { useShots } from './shots-context'
+import { REFERENCE_IMAGES_NOTE } from './assets-tab'
+import type { WorkbenchTab } from './workbench-tabs'
 import { ShotsFooter, GoToImagePromptsFooter } from './shots-footer'
 import { AdvanceConfirmModal } from '@/components/advance-confirm-modal'
 import { getProjectFurthestStep } from '../actions'
@@ -19,11 +21,22 @@ type ModalPhase = 'closed' | 'confirm' | 'submitting' | 'insufficient'
 // blocked on balance: a project that advanced but has no prompts (a failed generation)
 // still just navigates, and Step 3's own empty state and Regenerate All - behind the
 // route's real balance gate - handle regeneration from there.
-export function WorkbenchFooter({ projectId, furthestStep }: { projectId: string; furthestStep: number }) {
+export function WorkbenchFooter({
+  projectId,
+  furthestStep,
+  activeTab,
+}: {
+  projectId: string
+  furthestStep: number
+  activeTab: WorkbenchTab
+}) {
   const [advancedSince, setAdvancedSince] = useState(false)
+  const { readOnly } = useShots()
 
   if (furthestStep > stepIndex('workbench') || advancedSince) {
-    return <GoToImagePromptsFooter href={`/projects/${projectId}/image_prompts`} />
+    // Past the Storyboard the Assets tab's reference-image note lives here, not in the page.
+    const note = readOnly && activeTab === 'assets' ? REFERENCE_IMAGES_NOTE : null
+    return <GoToImagePromptsFooter href={`/projects/${projectId}/image_prompts`} note={note} />
   }
   return <GenerateImagePromptsFooter onAdvancedSince={() => setAdvancedSince(true)} />
 }

@@ -88,14 +88,15 @@ async function loadProjectForTurn(
   supabase: SupabaseServerClient,
   projectId: string,
   userId: string
-): Promise<ClaimedProject | null> {
-  const { data } = await supabase
+): Promise<{ project: ClaimedProject | null; failed: boolean }> {
+  const { data, error } = await supabase
     .from('projects')
     .select('furthest_step')
     .eq('id', projectId)
     .eq('user_id', userId)
-    .single()
-  return data
+    .maybeSingle()
+  if (error) console.error(`[agent] project read failed for ${projectId}:`, error.message)
+  return { project: data, failed: error !== null }
 }
 
 /**
@@ -164,7 +165,11 @@ export async function runAgentTurn(params: {
     }
   }
 
-  const project = await loadProjectForTurn(supabase, projectId, userId)
+  // A failed read is a server error, never a 404 - only a missing row is.
+  const { project, failed } = await loadProjectForTurn(supabase, projectId, userId)
+  if (failed) {
+    return { ok: false, status: 500, error: 'Could not load project' }
+  }
   if (!project) {
     return { ok: false, status: 404, error: 'Project not found' }
   }
@@ -304,6 +309,7 @@ export async function runAgentTurn(params: {
     // there is no "job" to protect from re-attempt, only a lock to release, so this is
     // always true and the policy is what actually gates reclaiming, not this flag.
     retry: true,
+    queued: false,
   })
 
   if (claim.outcome === 'error') {

@@ -38,9 +38,13 @@ export async function runAdvanceToImagePrompts({
     .select('id, furthest_step')
     .eq('id', projectId)
     .eq('user_id', userId)
-    .single()
+    .maybeSingle()
 
-  if (projectError || !project) {
+  // A failed read is a server error, never a 404 - only a missing row is.
+  if (projectError) {
+    return { ok: false, status: 500, error: projectError.message }
+  }
+  if (!project) {
     return { ok: false, status: 404, error: 'Project not found' }
   }
 

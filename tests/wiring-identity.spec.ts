@@ -65,7 +65,7 @@ function importLine(source: string, fromModule: string): string {
 }
 
 test.describe('wiring-identity - source-level guard against a type-compatible wrong function', () => {
-  test('agent/route.ts wires the real mintAttemptId/recordDynamicSpend into runAgentTurn', () => {
+  test('agent/route.ts wires the real mintAttemptId/recordDynamicSpend into runAgentTurn', { tag: '@smoke' }, () => {
     const source = read('src/app/api/projects/[id]/agent/route.ts')
     const imported = importLine(source, '@/lib/credits/ledger')
     expect(imported).toMatch(/\bmintAttemptId\b/)

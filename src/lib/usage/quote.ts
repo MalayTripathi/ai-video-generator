@@ -132,11 +132,16 @@ export function quoteOpenAiImageCall(params: {
   size: string
   quality: string
   estimatedInputTokens: number
+  /** Reference images passed as edit-endpoint input. 0 for a text-only generation. */
+  referenceCount: number
 }): { estimatedCost: number; quotedBreakdown: UsageBreakdown } {
-  const outputTokens = OPENAI_RATES.images[params.model]?.outputTokensBySize[params.size]?.[params.quality] ?? 0
+  const rates = OPENAI_RATES.images[params.model]
+  const outputTokens = rates?.outputTokensBySize[params.size]?.[params.quality] ?? 0
+  const imageInputTokens = (rates?.imageInputTokensPerReference ?? 0) * params.referenceCount
 
   const quotedBreakdown: UsageBreakdown = {
-    input_tokens: params.estimatedInputTokens,
+    input_tokens: params.estimatedInputTokens + imageInputTokens,
+    image_input_tokens: imageInputTokens,
     output_tokens: outputTokens,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
@@ -147,5 +152,21 @@ export function quoteOpenAiImageCall(params: {
   // Same fallback reasoning as quoteClaudeCall: an unrecognized model/size/quality
   // combination (outside OPENAI_RATES) would make estimatedCost null - fall back to 0
   // rather than blocking the call outright.
+  return { estimatedCost: estimatedCost ?? 0, quotedBreakdown }
+}
+
+/**
+ * The pre-flight quote for an ElevenLabs call. Exact, like the image quote: text-to-speech
+ * bills the characters sent, forced alignment the audio's measured length, and music the
+ * length requested - all known before the call.
+ */
+export function quoteElevenLabsCall(
+  params: { model: string; characters: number } | { model: string; audioSeconds: number }
+): { estimatedCost: number; quotedBreakdown: UsageBreakdown } {
+  const quotedBreakdown: UsageBreakdown =
+    'characters' in params
+      ? { input_tokens: 0, output_tokens: 0, characters: params.characters }
+      : { input_tokens: 0, output_tokens: 0, audio_seconds: params.audioSeconds }
+  const { estimatedCost } = computeCost('elevenlabs', params.model, quotedBreakdown)
   return { estimatedCost: estimatedCost ?? 0, quotedBreakdown }
 }

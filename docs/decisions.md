@@ -294,8 +294,9 @@ first, and the loser is refused with `already_generating` uniformly regardless o
 it was racing from — this reproduces the old single-atomic-UPDATE claim's behaviour exactly,
 since any race loser's follow-up read would always see the winner's `'generating'` write.
 
-`STALE_AFTER_MS` is 15 minutes, tied to the real gateway's 600s SDK timeout plus margin, so a
-crashed or killed request self-heals rather than wedging the project.
+`generate_shots`'s window is its route's 300s `maxDuration` plus 30s: the request cannot
+outlive its route, so a killed one self-heals within seconds of the kill rather than wedging
+the project. `STALE_AFTER_MS` (15 minutes) is only the default for operations with no route yet.
 
 ## The chars/4 estimate bias
 *Supports: the `estimateInputTokens` paragraph in `## Generations and usage`. (Audit item 85.)*
@@ -434,11 +435,13 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   is excluded from `generations` cost accounting — agent turns write `usage`
   rows only; the accepted consequence is that a browser refresh mid-turn can
   double-bill one turn (cents, versus dollars for a double-fired Step 6 clip).
-- **`OPERATION_POLICY` — why it exists.** `STALE_AFTER_MS` is currently one
-  global constant of 15 minutes, correct for a long paid shot-generation job
-  and catastrophic for a chat turn: a wedged turn would lock the agent for
-  15 minutes. Operations need per-operation stale windows. The module lands
-  in C4.
+- **`OPERATION_POLICY` — why it exists.** One global 15-minute window was
+  catastrophic for a chat turn (a wedged turn would lock the agent for 15
+  minutes), so each operation has its own. A window sits just past the
+  `maxDuration` of the route that holds its claim (ceiling + 30s,
+  `CLAIM_STALE_MARGIN_MS`): longer, so a live run is never reclaimed mid-call
+  and charged twice; no longer, so a killed run is retryable quickly. Vercel
+  Hobby caps every route at 300s.
 - **Agent-turn stale window — 180s, not 60s.** 60s was considered and
   rejected: it was derived from UI patience rather than worst-case turn
   duration, and an 8-iteration Sonnet turn routinely exceeds it, leaving a
@@ -1314,3 +1317,92 @@ the identical request. `use-agent-turn.ts` now maps those two statuses to "This 
 of date... Reload the page and try again". Nothing reloads automatically. Defaulting a
 missing `step` to the Workbench was rejected: the committed Step 3 page talked to this same
 route, so an old Step 3 tab would silently get the Workbench's tools.
+
+## Storyboard images: per-shot claims, the queued marker, and self-continuation
+
+**One claim, one reservation, one attempt id per shot.** Every other paid call claims once
+per request. Images claim once per shot because a shot is the unit a user retries, regenerates
+or is charged for, and one shot's failure must never hold another. The `generations`
+identity index already includes `shot_id`, so per-shot claims needed no schema change.
+
+**The gate subtracts in-flight claims.** The balance only drops when an image succeeds, so
+a batch that has been claimed but not yet charged is invisible to a plain balance read. The
+gate counts the user's live `storyboard/generate_image` claims (across projects) at the
+price and subtracts them before deciding how many shots it can claim. Shots are claimed in
+request order until that runs out; the rest stay unclaimed and read as "not generated", so
+a partial afford is an ordinary outcome rather than an error.
+
+**Why `generations.queued_at`.** A batch waits behind a small concurrency pool, and one
+stale window cannot serve both a waiting claim and a running one. Sized for a running call
+(the route's 300s plus 30s), it would expire claims still legitimately queued; sized for a
+queue, a hung call would read "generating" for hours. The marker lets each claim age
+against the window that fits it. It is set at claim, cleared (with `started_at` re-stamped)
+by `markGenerationStarted`, and that update is conditional on the exact `queued_at` the
+worker was handed - the ownership check that keeps a stale reclaim and a slow worker from
+both running the same shot.
+
+**Why the run continues itself.** A background run lives inside one route invocation and so
+is bounded by `maxDuration` (300s on Vercel Hobby); a 75-shot project at three in parallel
+cannot finish in one. Each run stops starting shots at its 150s budget and posts the
+unreached claims back to the same route at once, while it drains what is in flight - a
+hand-off left until after the drain could be killed with the function near 300s, stranding
+the batch queued. The cost is a brief overlap of up to six provider calls. The continuation
+carries no user session, so its credential is the `IMAGES_INTERNAL_SECRET` header; a missing
+secret is logged as an error and the shots are released failed and retryable, never left
+queued. It resumes only claims that are still queued in the named project of the named user,
+and never re-runs the gate - those shots were already paid for in the sense that matters,
+the in-flight count. A chain limit (16) bounds the whole thing; shots left at the limit, or
+after a refused hand-off, settle failed and uncharged. That release is conditional on the
+row still being queued, so a hand-off that timed out after the next run accepted it cannot
+fail a shot that run has started.
+
+**RECOVER charges under the stored attempt id.** The payload is `{ path, attemptId }`.
+Recovery relinks the stored object and writes the ledger row with the original attempt id,
+so the `dedupe_key` makes it idempotent: a crash between PERSIST and the ledger write is
+charged exactly once, whether or not the first write landed.
+
+**Why native sizes, not a crop.** The gpt-image-2.5 models accept any WxH in multiples of 16
+within documented pixel and ratio bounds, so each aspect ratio gets an exact size
+(1008x1792, 1792x1008, 1088x1088) and the stored image is already Step 6's first-frame
+shape. `gpt-image-1-mini`'s fixed 2:3 portrait would have needed a crop that throws away
+the edges of every frame.
+
+## Storyboard music: the derivation claim, the loop schedule, and two ffmpeg inputs
+
+**Music and upload alignment stay inside their 300s route.** Each is one provider request
+with no retry (music 240s, alignment 150s, each bounded by `AbortSignal.timeout` including
+the body), plus the storage write and row writes, inside 300s with margin. A timeout is an
+ordinary failure: usage settles failed at its quote, no ledger row, the claim is released in
+the same `finally`, and the lane shows Retry. The voiceover's parts run two at a time for the
+same reason - a 4-part read in sequence cannot fit 300s, and more at once would trip the
+ElevenLabs concurrent-request limit. Two waves of a 110s synthesis timeout fit, and no
+attempt starts past a deadline sized so the last one still finishes in time. A 429 is
+retried after a backoff (it is refused before any audio is made, so no second charge);
+past the last backoff the part fails, uncharged and resumable. The parts' PERSISTs share
+one promise chain, so each write carries every part landed so far and two writes never
+drop a paid part.
+
+**The style prompt is derived once per project, guarded by a claim.** `derive_music_prompt`
+fires only from the Music card's first user expand while the field is empty - never on
+render - and claims `(storyboard, derive_music_prompt)` with `succeeded: 'never'` and
+`failed: 'retry'` that no caller passes. A reload, a re-expand, a second tab or an emptied
+field all hit the claim and make no call; a failure leaves the field empty for the person
+rather than spending again on its own. It writes a `usage` row (the spend is real) and no
+ledger row (it is free to the user). The write into `projects` is conditional on the field
+still being null, so a prompt typed while the call ran is never overwritten.
+
+**Music is sized to the picture when it is made, and the film adapts afterwards.** A
+request asks for the in-film length, clamped to the provider's 3-600s. Afterwards the
+picture can change freely without regenerating anything: grown past the music, the card
+warns and offers Loop to fit; shrunk, the music fades out at the picture's end with no
+warning. Both behaviours are one pure function, `musicSchedule` (`film.ts`), which the
+preview and the export both read - loop passes overlap by a crossfade, the last is cut at
+the picture's end, and the loop flag is ignored when the music already covers the picture.
+
+**Why the export loops on two inputs, not one per pass or a split.** Splitting one input
+(`asplit`) into delayed, trimmed branches and mixing them stalls or truncates the mix in the
+ffmpeg this worker ships (6.1), and one `-i` per pass does not scale to a ten-minute
+picture. Because the crossfade is at most half the file, only neighbouring passes overlap:
+the even passes go on one input and the odd on another, each the file padded to two steps
+and looped with `aloop`, shaped by an expression built from the same passes the preview
+schedules. The worker passes the file `musicInputCount(plan)` times.

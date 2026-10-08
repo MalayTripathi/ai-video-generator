@@ -135,6 +135,7 @@ export async function runElementReferenceGeneration(params: {
       elementId,
     },
     retry: true,
+    queued: false,
   })
 
   if (claim.outcome === 'error') {
@@ -220,6 +221,7 @@ export async function runElementReferenceGeneration(params: {
       size,
       quality,
       estimatedInputTokens: estimateInputTokens({ texts: [prompt], tools: [] }),
+      referenceCount: 0,
     })
 
     const reserved = await reserveUsage({

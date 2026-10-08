@@ -9,6 +9,7 @@ import { useAgentTurn } from '@/app/(app)/projects/[id]/workbench/_components/us
 import { describeToolActivity } from '@/lib/agent-activity-display'
 import { formatCost } from '@/lib/format-cost'
 import { formatCredits } from '@/lib/format-credits'
+import { parseRailFigures, useRailFigures } from '@/components/rail-figures-context'
 import type { AgentStep } from '@/lib/config/pipeline'
 
 // Empty-state suggestions, per step: each must be something THAT step's agent can do (Step
@@ -19,6 +20,8 @@ const EXAMPLE_PROMPTS: Record<AgentStep, string[]> = {
   image_prompts: ['Make shot 2 feel colder', 'Rewrite every prompt, more cinematic'],
   // Step 4's agent has no tools yet, so there is nothing it can be asked to do.
   storyboard: [],
+  // Step 5's agent has no tools yet either.
+  video_prompts: [],
 }
 
 function LockIcon() {
@@ -67,6 +70,7 @@ export function AgentPanel({
   markShotsTouched?: (shotKeys: string[]) => void
 }) {
   const router = useRouter()
+  const { setFigures } = useRailFigures()
   const shotsCtx = useContext(ShotsContext)
   const locksCtx = useContext(AgentLocksContext)
   const readOnly = readOnlyProp ?? shotsCtx?.readOnly ?? false
@@ -225,8 +229,10 @@ export function AgentPanel({
             try {
               const res = await fetch(`/api/projects/${projectId}/agent/turn-credits?messageId=${messageId}`)
               if (res.ok) {
-                const { credits } = (await res.json()) as { credits: number | null }
-                if (credits !== null) creditAmount = `${formatCredits(credits)} cr`
+                const body = (await res.json()) as { credits: number | null; rail?: unknown }
+                if (body.credits !== null) creditAmount = `${formatCredits(body.credits)} cr`
+                const rail = parseRailFigures(body.rail)
+                if (rail) setFigures(rail)
               }
             } catch {
               // A failed lookup must never block the turn's own settle handling - the
@@ -239,7 +245,10 @@ export function AgentPanel({
         }
         unlockAllShots()
         if (touchedKeys.length > 0) markShotsTouched(touchedKeys)
-        router.refresh()
+        // The storyboard never re-renders from the server (its agent has no tools, and the
+        // rail figures arrived with the turn-credits lookup above). Other steps still rely
+        // on the refresh for their data and the rail.
+        if (step !== 'storyboard') router.refresh()
       },
     })
   }

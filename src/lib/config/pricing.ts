@@ -3,7 +3,7 @@ import type { Provider } from '@/lib/config/pipeline'
 // Single place edited when a rate changes. Bump by hand on any edit below -
 // raw_usage.rates on every settled `usage` row records the rate_version that
 // produced it, so a past row's cost stays reconstructable even after rates move.
-export const RATE_VERSION = '2026-09-13'
+export const RATE_VERSION = '2026-09-25'
 
 // Anthropic injects a fixed system-prompt overhead when tools are present, on top of
 // the tool schema JSON and the visible system/user text - this approximates that
@@ -16,6 +16,13 @@ export type UsageBreakdown = {
   output_tokens: number
   cache_creation_input_tokens?: number | null
   cache_read_input_tokens?: number | null
+  /** OpenAI images only: the part of input_tokens that was reference-image input, billed at
+   * the image-input rate. input_tokens stays the provider's total. */
+  image_input_tokens?: number | null
+  /** ElevenLabs text-to-speech only: characters sent (the provider bills per character). */
+  characters?: number | null
+  /** ElevenLabs forced alignment and music: seconds of audio aligned or generated (billed per minute). */
+  audio_seconds?: number | null
 }
 
 export type ClaudeRates = {
@@ -57,47 +64,97 @@ function perMillionToPerToken(ratePerMillion: number): number {
   return ratePerMillion / 1_000_000
 }
 
-// elevenlabs/fal below are stub shapes only - no values yet, and computeCost returns a
-// null estimatedCost for both until they're filled in.
+// fal below is a stub shape only - no values yet, and computeCost returns a null
+// estimatedCost for it until it's filled in.
 
-// OpenAI meters image generation as tokens, not a flat per-image fee: a given size is a
-// fixed output-token count per quality tier, times the model's output-token rate. Keyed
-// by OpenAI image model (not just size/quality) so a second image model's rates can
-// never collide with gpt-image-1-mini's in the same size/quality keys. Authority:
-// https://platform.openai.com/docs/pricing - image-input token rates are deliberately
-// omitted below, since this product never uploads an image for editing at the
-// workbench step. computeCost's `openai` branch reads textInputPerMTok/outputPerMTok
-// directly; outputTokensBySize is consumed by quoteOpenAiImageCall (usage/quote.ts) for
-// the pre-flight quote, not by computeCost.
+// OpenAI meters image generation as tokens, not a flat per-image fee. Keyed by OpenAI
+// image model so two models' size/quality keys can never collide. Authority:
+// https://developers.openai.com/api/docs/pricing (checked 2026-09-23). computeCost's
+// `openai` branch reads the three per-MTok rates; outputTokensBySize and
+// imageInputTokensPerReference are consumed only by quoteOpenAiImageCall
+// (usage/quote.ts) for the worst-case pre-flight quote.
 type OpenAiImageRates = {
   images: Record<
     string,
     {
       /** USD per 1M text input (prompt) tokens. */
       textInputPerMTok: number
+      /** USD per 1M image input (reference image) tokens. */
+      imageInputPerMTok: number
       /** USD per 1M output (generated image) tokens. */
       outputPerMTok: number
-      /** Fixed output-token count, keyed by size (e.g. '1024x1024') then quality (e.g. 'low'). */
+      /** Output-token count for the quote, keyed by size (e.g. '1024x1024') then quality (e.g. 'low'). */
       outputTokensBySize: Record<string, Record<string, number>>
+      /** Image-input tokens the quote reserves per reference image passed to the edit endpoint. */
+      imageInputTokensPerReference: number
     }
   >
 }
+
+// PLACEHOLDER quote ceilings for the gpt-image-2.5 family: OpenAI publishes no
+// output-token figure by size/quality for these models, so the numbers below are
+// deliberately high guesses, not measurements. A reservation is only guaranteed never to
+// be overrun if these exceed the real counts - recalibrate them from measured `usage`
+// rows (the /usage Anomalies delta) before relying on them.
+const GPT_IMAGE_2_5_QUOTE_CEILINGS = {
+  outputTokensBySize: {
+    '1008x1792': { low: 2500 },
+    '1792x1008': { low: 2500 },
+    '1088x1088': { low: 1600 },
+  },
+  imageInputTokensPerReference: 1500,
+}
+
 export const OPENAI_RATES: OpenAiImageRates = {
   images: {
     'gpt-image-1-mini': {
       textInputPerMTok: 2.0,
+      imageInputPerMTok: 2.5,
       outputPerMTok: 8.0,
       outputTokensBySize: {
         '1024x1024': { low: 272, medium: 1056, high: 4160 },
       },
+      // Element references are text-only generations; nothing is ever passed as input.
+      imageInputTokensPerReference: 0,
+    },
+    'gpt-image-2.5-flare': {
+      textInputPerMTok: 5.0,
+      imageInputPerMTok: 8.0,
+      outputPerMTok: 30.0,
+      ...GPT_IMAGE_2_5_QUOTE_CEILINGS,
+    },
+    'gpt-image-2.5-sunburst': {
+      textInputPerMTok: 5.0,
+      imageInputPerMTok: 8.0,
+      outputPerMTok: 30.0,
+      ...GPT_IMAGE_2_5_QUOTE_CEILINGS,
     },
   },
 }
 
+// ElevenLabs bills text-to-speech per character and forced alignment per minute of
+// audio. PLACEHOLDERS: $0.10 per 1K characters and $0.40 per hour are the published
+// API list prices at the time of writing, not a measurement against this account's
+// plan - recalibrate from real invoices before relying on them.
 type ElevenLabsRates = {
-  perCharacterUsd: number | null
+  /** USD per character of text-to-speech, keyed by model id. */
+  perCharacterUsd: Record<string, number>
+  /** USD per minute of forced alignment. */
+  alignmentPerMinuteUsd: number
+  /** USD per minute of generated music, keyed by model id. */
+  musicPerMinuteUsd: Record<string, number>
 }
-export const ELEVENLABS_RATES: ElevenLabsRates = { perCharacterUsd: null }
+// Music PLACEHOLDER: $0.15 per minute is the published pay-as-you-go figure at the time
+// of writing, applied to every music model until invoices say otherwise.
+export const ELEVENLABS_RATES: ElevenLabsRates = {
+  perCharacterUsd: { eleven_v3: 0.1 / 1000 },
+  alignmentPerMinuteUsd: 0.4 / 60,
+  musicPerMinuteUsd: { music_v1: 0.15, music_v2: 0.15, music_v2_5: 0.15 },
+}
+
+// The model name a usage row carries for a forced-alignment call - the endpoint has no
+// selectable model.
+export const ELEVENLABS_ALIGNMENT_MODEL = 'forced-alignment'
 
 /** Keyed by fal model name. A model uses exactly one of the two shapes, depending on how fal bills it. */
 type FalRates = {
@@ -106,13 +163,18 @@ type FalRates = {
 }
 export const FAL_RATES: FalRates = { perClipUsd: {}, perSecondUsd: {} }
 
-type OpenAiImageAppliedRates = { textInputPerMTok: number; outputPerMTok: number }
+type ElevenLabsAppliedRates =
+  | { perCharacterUsd: number }
+  | { alignmentPerMinuteUsd: number }
+  | { musicPerMinuteUsd: number }
+
+type OpenAiImageAppliedRates = { textInputPerMTok: number; imageInputPerMTok: number; outputPerMTok: number }
 
 export type CostResult = {
   estimatedCost: number | null
-  appliedRates: ClaudeRates | OpenAiImageAppliedRates | null
+  appliedRates: ClaudeRates | OpenAiImageAppliedRates | ElevenLabsAppliedRates | null
   quantity: number
-  unit: 'tokens' | 'unknown'
+  unit: 'tokens' | 'characters' | 'seconds' | 'unknown'
 }
 
 /**
@@ -128,16 +190,55 @@ export function computeCost(provider: Provider, model: string, breakdown: UsageB
       return { estimatedCost: null, appliedRates: null, quantity, unit: 'tokens' }
     }
 
+    // input_tokens is the provider's total; the reference-image share of it is billed at
+    // the image-input rate and only the remainder at the text rate.
+    const imageInputTokens = breakdown.image_input_tokens ?? 0
+    const textInputTokens = breakdown.input_tokens - imageInputTokens
     const estimatedCost =
-      breakdown.input_tokens * perMillionToPerToken(rates.textInputPerMTok) +
+      textInputTokens * perMillionToPerToken(rates.textInputPerMTok) +
+      imageInputTokens * perMillionToPerToken(rates.imageInputPerMTok) +
       breakdown.output_tokens * perMillionToPerToken(rates.outputPerMTok)
 
     return {
       estimatedCost,
-      appliedRates: { textInputPerMTok: rates.textInputPerMTok, outputPerMTok: rates.outputPerMTok },
+      appliedRates: {
+        textInputPerMTok: rates.textInputPerMTok,
+        imageInputPerMTok: rates.imageInputPerMTok,
+        outputPerMTok: rates.outputPerMTok,
+      },
       quantity,
       unit: 'tokens',
     }
+  }
+
+  if (provider === 'elevenlabs') {
+    // Forced alignment and music report seconds; text-to-speech reports characters.
+    const musicRate = ELEVENLABS_RATES.musicPerMinuteUsd[model]
+    if (musicRate !== undefined) {
+      const seconds = breakdown.audio_seconds ?? 0
+      return {
+        estimatedCost: (seconds / 60) * musicRate,
+        appliedRates: { musicPerMinuteUsd: musicRate },
+        quantity: seconds,
+        unit: 'seconds',
+      }
+    }
+    if (model === ELEVENLABS_ALIGNMENT_MODEL) {
+      const seconds = breakdown.audio_seconds ?? 0
+      const rate = ELEVENLABS_RATES.alignmentPerMinuteUsd
+      return {
+        estimatedCost: (seconds / 60) * rate,
+        appliedRates: { alignmentPerMinuteUsd: rate },
+        quantity: seconds,
+        unit: 'seconds',
+      }
+    }
+    const characters = breakdown.characters ?? 0
+    const rate = ELEVENLABS_RATES.perCharacterUsd[model]
+    if (rate === undefined) {
+      return { estimatedCost: null, appliedRates: null, quantity: characters, unit: 'characters' }
+    }
+    return { estimatedCost: characters * rate, appliedRates: { perCharacterUsd: rate }, quantity: characters, unit: 'characters' }
   }
 
   if (provider !== 'anthropic') {

@@ -5,6 +5,15 @@ are not lost.
 
 ## Known bugs
 
+- **`agent_turn`'s 180s stale window is shorter than the agent route's 300s `maxDuration`.**
+  A live turn running past 180s reads as stale and can be reclaimed mid-flight. Left as is:
+  the agent lock was out of scope for the Hobby `maxDuration` work.
+- **A 150-shot storyboard batch outruns the image chain when frames are slow.** 17 runs of a
+  150s budget at three in parallel start 102-204 frames (120s-45s per frame); 150 fit only
+  if a frame averages <= ~73s. The rest settle failed, uncharged and retryable.
+- **Workbench (Step 2) — narration has no word budget per shot duration.** A 4 × 5s project
+  produced a 46s voiceover. Cap narration per shot at about duration × speaking rate
+  (words/sec in config), in both the Workbench shot generation and the agent paths.
 - **`resolveElement` matches only on current name, so a renamed element gets duplicated on
   regeneration.** `resolveElement` (`src/app/api/projects/[id]/shots/logic.ts`) dedups
   purely by `lower(name)`. If a user renames an element (a character, or the project's
@@ -48,12 +57,31 @@ are not lost.
   shot it was for once that shot is gone - discovered backfilling the credit ledger,
   where one such row's `shot_id` was already null with no way to recover which shot
   it belonged to. Not fixed here.
-- **Suite flakiness under parallel execution.** `agent-chat-panel.spec.ts` and
-  `shot-editing.spec.ts` both fail intermittently when the full suite runs
-  `fullyParallel`, and pass reliably run in isolation. Pre-existing, unrelated to
-  the credit ledger. Worth recording because it means "the suite is green" is
-  currently a judgement call for whoever reports it — a failure in either file
-  needs a solo re-run before it's counted as a real regression.
+- **UI tests' fixed 5s/10s waits flake when concurrency is raised on this machine.**
+  Tests that wait on a save, a server action or a `router.refresh()` (seen in
+  `agent-chat-panel`, `shot-editing`, `shot-deletion`, `camera-derivation`) assume the
+  server answers within Playwright's default 5s expect, or a 10s wait. On the 2-core dev
+  machine, more than 2 `ui` + 4 `api` workers oversubscribes the CPU and the single-process
+  Next server: the action completes (screenshots show "Saved"), just after the wait
+  expires. Stable at the configured defaults; any failure in these files at higher
+  `PW_UI_WORKERS`/`PW_API_WORKERS` needs a solo re-run before it counts as a regression.
+  The fix is not longer waits - it is waiting on the response itself, or keeping
+  concurrency matched to the machine.
+- **A failed project query renders as "not found".** Pages and routes load the project
+  with `const { data: project } = await supabase.from('projects')...single()` and ignore
+  `error`, so a transient Supabase failure becomes `notFound()` / a 404 instead of an error
+  (e.g. `projects/[id]/workbench/page.tsx`, `api/projects/[id]/agent/turn-credits/route.ts`).
+  Seen intermittently in Playwright runs (a workbench 404 for a project the test had just
+  seeded; `turn-credits` and export routes failing the same way). During the same runs,
+  hosted Supabase returned a Cloudflare 502, the runner saw windows of `fetch failed`,
+  and the CPU was oversubscribed - any of which fails the query. Each individual 404 was
+  never tied to its failing query (the diagnostic log added to catch it never fired), so
+  treat the mechanism as strongly indicated, not proven. Fix: distinguish a query error
+  from an absent row (by error code, never message) and render an error state for the former.
+- **`exports-route.spec.ts`'s "cancel is allowed only while queued" never checks its
+  create call.** It reads `data.id` from `POST /exports` without asserting the 201, so a
+  failed create surfaces as a misleading 404 from `/exports/undefined/cancel` rather than
+  as the create failure it is. Assert the create's status first.
 - **Shot generation's `runShotGeneration` (`shots/logic.ts`) has no guard on
   `project.source_text` being non-empty before the paid Claude call** - found while
   auditing every `gateway.createMessage` call site for the camera-derivation empty-input
@@ -82,6 +110,9 @@ are not lost.
 
 ## Unbuilt product surface
 
+- **Launch blocker — Storage lifecycle.** Project delete (rows + storage) does not exist;
+  deleted/replaced shots leave images in storage. Remove superseded files of genuinely
+  deleted shots only; stale outputs are kept.
 - **Video-prompt generation (`write_video_prompts`, `step: 'video_prompts'`) has no
   route at all.** The old combined `/api/projects/[id]/prompts` route (which
   incorrectly generated both `image_prompt` and `video_prompt` in one call,
@@ -119,6 +150,9 @@ are not lost.
 
 ## Deferred decisions
 
+- **Export worker hosting.** `worker/` (Dockerfile included) runs as a standalone Node
+  service with ffmpeg and the service-role key; where it is hosted, and how many run, is
+  decided at deploy.
 - **Per-step model selection.** `projects.video_model` is a single column holding one
   model string, but model choice is per-step, not per-project: OpenAI for images,
   ElevenLabs for voiceover, fal.ai for clips. The schema needs to reflect that before Step
@@ -204,6 +238,8 @@ are not lost.
 - **Step 6 architecture:** cannot be request-response at any timeout (75 clips,
   minutes each). Needs async submit plus webhook or poll; `generations`'
   `external_id` and per-shot rows already support this.
+- **Step 6 must handle storyboard shots longer than the video model's max clip length**
+  (cut, extend, or multiple clips). Storyboard lengths run to 30s regardless of the model.
 - **Step 7:** ffmpeg needs a container service, not Vercel (binary size,
   memory, CPU).
 - **Before Step 7:** finished videos must be served as Supabase signed URLs
@@ -231,13 +267,8 @@ are not lost.
   - Whether timeline retiming writes back to `shots.duration_sec` or to a
     separate offset column.
   - Whether retiming sets `video_prompt_stale`.
-  - Whether a flag is needed for a stale generated image.
   - Whether Storyboard's three generations (image, voiceover, background
     music) are one claimed action or three independent ones.
-  - Whether the still-frame video is server-rendered or a client-side
-    preview.
-  - Whether Step 3's N per-shot image calls need the async submit-and-poll
-    architecture already flagged for Step 6.
 
 - **Agent-turn cost estimate is calibrated on Haiku only.** `AGENT_TURN_ESTIMATE`
   (`src/lib/usage/quote.ts`) was cut from 17 development turns. Production Sonnet may emit
@@ -281,3 +312,61 @@ are not lost.
     test was hardened, and never on its own; its cause is unexplained. Other
     `agent-chat-panel` tests still assert transient state from a single mocked response and
     could be hardened with `tests/helpers/agent-stream.ts`.
+- **Batch API (-50%) as a possible slow, cheap generation mode** for storyboard images.
+  Not used today: a batch can take up to 24h, and the storyboard reports arrival live.
+- **A fal image adapter.** `ELEMENT_IMAGE_PROVIDER=fal` and `STORYBOARD_IMAGE_PROVIDER=fal`
+  are config-only: no fal branch exists in `ImageGateway`. The images route refuses fal
+  before any claim; element generation ignores the setting and always calls OpenAI.
+- **`gpt-image-1-mini` shuts down on 1 Dec 2026** (OpenAI deprecations page; replacement
+  `gpt-image-2`). Element references use it by default - migrate the model, re-price
+  `generate_element_reference`, and lift the element quality guard's calibration.
+- **Production quality for storyboard images.** Low in every environment today, enforced
+  by a startup guard because the placeholder price is calibrated for low.
+- **Storyboard image quote ceilings are guesses.** OpenAI publishes no tokens-by-size
+  figure for the gpt-image-2.5 family, so `pricing.ts`'s output and per-reference input
+  ceilings are deliberately high placeholders. Recalibrate from measured `usage` rows; until
+  then a reservation is not guaranteed to be an upper bound.
+- **Two simultaneous image requests can both pass the gate.** Each reads balance minus
+  in-flight claims before claiming, so two tabs submitting in the same instant can commit
+  more than the balance. The ledger then goes negative by at most one batch; nothing else
+  breaks.
+- **An image finished after its stale window is kept, not linked.** It stays in storage
+  with its payload, uncharged, until the next Generate or Retry on that shot recovers it
+  (and charges it then). Unreachable unless upload plus writes take over a minute.
+- **Storyboard image production-bypass fix (Perf 2).** `assertLiveImageCallsAllowed()`
+  returns early under `NODE_ENV=production`, so a route test run against a production
+  server would reach OpenAI. Logic tests inject fakes and are unaffected.
+- **Move the other steps' rail updates to the rail store (with the Perf slice).** The
+  Workbench (`shots-context`, `shot-card`, `element-card`), Step 3
+  (`image-prompts-context`) and the agent panel off the Storyboard still refresh the rail
+  through `router.refresh()`. Push the figures into `rail-figures-context` from each paid
+  response instead, as the Storyboard does.
+- **Storyboard static controls to wire:** the music lane and Export. Each
+  carries a `// static until <feature>` comment at its component.
+- **The storyboard agent's context block still says "coming soon"**
+  (`src/lib/prompts/agent-storyboard.ts`). Rewrite (and bump its version) when the step
+  gets agent tools.
+- **15e's stale sub-line wants "prompt changed HH:MM",** but nothing records when a prompt
+  changed. The panel shows the drawn time and size instead.
+- **Split-marker drag on touch devices is untested.** The Storyboard's Motion-mode split
+  marker drags on pointer events with capture and `touch-none`; only mouse and keyboard
+  are covered by tests.
+
+## Storyboard polish
+
+Paid actions whose UI shows the process has begun before the balance check answers (the
+rule: a pending control only until the server accepts; a 402 leaves the prior state
+untouched). The Storyboard voiceover already follows it.
+
+- **Workbench (Step 2) — element reference Generate.** `element-card.tsx` sets
+  `imageOp: 'generating'` before the POST to `.../reference/generate`, which can 402; a
+  refused request briefly shows the element generating.
+- **Workbench / Image prompts / Storyboard — agent turn.** `use-agent-turn.ts` sets
+  `isRunning` (composer reads "Agent is working", input cleared, user bubble appended)
+  before the POST to `/agent`, whose balance gate can 402.
+- **Workbench (Step 2) — shot generation.** `shots-context.tsx` flips `generationState` to
+  `'generating'` (the skeleton) before the POST to `/shots`, on both the first-load trigger
+  and a confirmed retry. Not credit-gated yet, but it can 402 on the spend cap.
+- **Workbench (Step 2) — camera derivation.** `use-camera-derivation.ts` sets
+  `status: 'running'` and the pending fields' spinners before the POST to `.../camera`.
+  Not credit-gated yet, but it can 402 on the spend cap.

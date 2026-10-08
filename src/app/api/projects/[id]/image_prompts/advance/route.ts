@@ -4,6 +4,9 @@ import { getBalance } from '@/lib/credits/balance'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { runAdvanceToImagePrompts } from './logic'
 
+// Vercel Hobby caps a function at 300s; tests/route-max-duration.spec.ts enforces it.
+export const maxDuration = 300
+
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id: projectId } = await params
 

@@ -114,7 +114,7 @@ test.describe('updateShotImagePromptForUser', () => {
     expect(data!.furthest_step).toBe(4)
   })
 
-  test('saving is not advancing: current_step and furthest_step are untouched', async () => {
+  test('saving is not advancing: current_step and furthest_step are untouched', { tag: '@smoke' }, async () => {
     const projectId = await seedProject()
     const shotId = await seedShot(projectId)
 

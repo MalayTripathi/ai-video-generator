@@ -134,6 +134,71 @@ export type Database = {
           },
         ]
       }
+      exports: {
+        Row: {
+          chapters_path: string | null
+          created_at: string
+          duration_sec: number | null
+          error: string | null
+          film_hash: string
+          finished_at: string | null
+          id: string
+          mp4_path: string | null
+          progress: number
+          project_id: string
+          settings: Json
+          size_bytes: number | null
+          srt_path: string | null
+          started_at: string | null
+          status: string
+          user_id: string
+        }
+        Insert: {
+          chapters_path?: string | null
+          created_at?: string
+          duration_sec?: number | null
+          error?: string | null
+          film_hash: string
+          finished_at?: string | null
+          id?: string
+          mp4_path?: string | null
+          progress?: number
+          project_id: string
+          settings: Json
+          size_bytes?: number | null
+          srt_path?: string | null
+          started_at?: string | null
+          status?: string
+          user_id: string
+        }
+        Update: {
+          chapters_path?: string | null
+          created_at?: string
+          duration_sec?: number | null
+          error?: string | null
+          film_hash?: string
+          finished_at?: string | null
+          id?: string
+          mp4_path?: string | null
+          progress?: number
+          project_id?: string
+          settings?: Json
+          size_bytes?: number | null
+          srt_path?: string | null
+          started_at?: string | null
+          status?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "exports_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       generations: {
         Row: {
           created_at: string
@@ -144,6 +209,7 @@ export type Database = {
           operation: string
           payload: Json | null
           project_id: string
+          queued_at: string | null
           shot_id: string | null
           started_at: string | null
           state: string
@@ -159,6 +225,7 @@ export type Database = {
           operation: string
           payload?: Json | null
           project_id: string
+          queued_at?: string | null
           shot_id?: string | null
           started_at?: string | null
           state?: string
@@ -174,6 +241,7 @@ export type Database = {
           operation?: string
           payload?: Json | null
           project_id?: string
+          queued_at?: string | null
           shot_id?: string | null
           started_at?: string | null
           state?: string
@@ -252,13 +320,30 @@ export type Database = {
         Row: {
           aspect_ratio: string | null
           audio_path: string | null
+          caption_mode: string | null
+          caption_position: string | null
+          caption_style: string | null
           created_at: string
           current_step: string
           duration_target: string | null
+          export_motion: string | null
+          export_transition: string | null
           furthest_step: number
           id: string
           language: string | null
           language_code: string | null
+          loudness_preset: string | null
+          mix_duck_bypass: boolean | null
+          mix_duck_depth_db: number | null
+          mix_music_gain_db: number | null
+          mix_voice_gain_db: number | null
+          music_duration_sec: number | null
+          music_generated_at: string | null
+          music_loop: boolean
+          music_muted: boolean | null
+          music_path: string | null
+          music_source: string | null
+          music_style_prompt: string | null
           source_text: string | null
           status: string
           template_source_id: string | null
@@ -270,18 +355,41 @@ export type Database = {
           video_model: string | null
           video_type: string | null
           voice_id: string | null
+          voiceover_alignment_path: string | null
+          voiceover_generated_at: string | null
+          voiceover_muted: boolean
+          voiceover_source: string | null
+          voiceover_spans: Json | null
           voiceover_stale: boolean
+          voiceover_words: Json | null
         }
         Insert: {
           aspect_ratio?: string | null
           audio_path?: string | null
+          caption_mode?: string | null
+          caption_position?: string | null
+          caption_style?: string | null
           created_at?: string
           current_step?: string
           duration_target?: string | null
+          export_motion?: string | null
+          export_transition?: string | null
           furthest_step?: number
           id?: string
           language?: string | null
           language_code?: string | null
+          loudness_preset?: string | null
+          mix_duck_bypass?: boolean | null
+          mix_duck_depth_db?: number | null
+          mix_music_gain_db?: number | null
+          mix_voice_gain_db?: number | null
+          music_duration_sec?: number | null
+          music_generated_at?: string | null
+          music_loop?: boolean
+          music_muted?: boolean | null
+          music_path?: string | null
+          music_source?: string | null
+          music_style_prompt?: string | null
           source_text?: string | null
           status?: string
           template_source_id?: string | null
@@ -293,18 +401,41 @@ export type Database = {
           video_model?: string | null
           video_type?: string | null
           voice_id?: string | null
+          voiceover_alignment_path?: string | null
+          voiceover_generated_at?: string | null
+          voiceover_muted?: boolean
+          voiceover_source?: string | null
+          voiceover_spans?: Json | null
           voiceover_stale?: boolean
+          voiceover_words?: Json | null
         }
         Update: {
           aspect_ratio?: string | null
           audio_path?: string | null
+          caption_mode?: string | null
+          caption_position?: string | null
+          caption_style?: string | null
           created_at?: string
           current_step?: string
           duration_target?: string | null
+          export_motion?: string | null
+          export_transition?: string | null
           furthest_step?: number
           id?: string
           language?: string | null
           language_code?: string | null
+          loudness_preset?: string | null
+          mix_duck_bypass?: boolean | null
+          mix_duck_depth_db?: number | null
+          mix_music_gain_db?: number | null
+          mix_voice_gain_db?: number | null
+          music_duration_sec?: number | null
+          music_generated_at?: string | null
+          music_loop?: boolean
+          music_muted?: boolean | null
+          music_path?: string | null
+          music_source?: string | null
+          music_style_prompt?: string | null
           source_text?: string | null
           status?: string
           template_source_id?: string | null
@@ -316,7 +447,13 @@ export type Database = {
           video_model?: string | null
           video_type?: string | null
           voice_id?: string | null
+          voiceover_alignment_path?: string | null
+          voiceover_generated_at?: string | null
+          voiceover_muted?: boolean
+          voiceover_source?: string | null
+          voiceover_spans?: Json | null
           voiceover_stale?: boolean
+          voiceover_words?: Json | null
         }
         Relationships: [
           {
@@ -412,6 +549,7 @@ export type Database = {
       }
       shots: {
         Row: {
+          binned_at: string | null
           camera_angle: string | null
           camera_angle_origin: string
           camera_movement: string | null
@@ -419,18 +557,24 @@ export type Database = {
           created_at: string
           duration_locked: boolean
           duration_sec: number | null
+          film_duration_sec: number | null
+          film_order: number | null
           id: string
           image_path: string | null
           image_prompt: string | null
           image_prompt_edited: boolean
           image_prompt_stale: boolean
-          image_status: string
+          image_stale: boolean
+          motion: string | null
           order_index: number
           project_id: string
           section_label: string | null
           shot_key: string
           shot_size: string | null
           shot_size_origin: string
+          split_at: number | null
+          split_motion: string | null
+          transition_out: string | null
           updated_at: string
           video_path: string | null
           video_prompt: string | null
@@ -440,6 +584,7 @@ export type Database = {
           voice_over: string
         }
         Insert: {
+          binned_at?: string | null
           camera_angle?: string | null
           camera_angle_origin?: string
           camera_movement?: string | null
@@ -447,18 +592,24 @@ export type Database = {
           created_at?: string
           duration_locked?: boolean
           duration_sec?: number | null
+          film_duration_sec?: number | null
+          film_order?: number | null
           id?: string
           image_path?: string | null
           image_prompt?: string | null
           image_prompt_edited?: boolean
           image_prompt_stale?: boolean
-          image_status?: string
+          image_stale?: boolean
+          motion?: string | null
           order_index: number
           project_id: string
           section_label?: string | null
           shot_key: string
           shot_size?: string | null
           shot_size_origin?: string
+          split_at?: number | null
+          split_motion?: string | null
+          transition_out?: string | null
           updated_at?: string
           video_path?: string | null
           video_prompt?: string | null
@@ -468,6 +619,7 @@ export type Database = {
           voice_over: string
         }
         Update: {
+          binned_at?: string | null
           camera_angle?: string | null
           camera_angle_origin?: string
           camera_movement?: string | null
@@ -475,18 +627,24 @@ export type Database = {
           created_at?: string
           duration_locked?: boolean
           duration_sec?: number | null
+          film_duration_sec?: number | null
+          film_order?: number | null
           id?: string
           image_path?: string | null
           image_prompt?: string | null
           image_prompt_edited?: boolean
           image_prompt_stale?: boolean
-          image_status?: string
+          image_stale?: boolean
+          motion?: string | null
           order_index?: number
           project_id?: string
           section_label?: string | null
           shot_key?: string
           shot_size?: string | null
           shot_size_origin?: string
+          split_at?: number | null
+          split_motion?: string | null
+          transition_out?: string | null
           updated_at?: string
           video_path?: string | null
           video_prompt?: string | null
@@ -605,7 +763,43 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      credit_balances: {
+        Row: {
+          balance: number | null
+          entries: number | null
+          user_id: string | null
+        }
+        Relationships: []
+      }
+      credit_ledger_monthly: {
+        Row: {
+          credits: number | null
+          entries: number | null
+          kind: string | null
+          month: string | null
+          operation: string | null
+          project_id: string | null
+          step: string | null
+          user_id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "credit_ledger_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      usage_monthly_spend: {
+        Row: {
+          month: string | null
+          settled_cost: number | null
+          user_id: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       [_ in never]: never

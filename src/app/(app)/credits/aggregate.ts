@@ -3,7 +3,18 @@ import { displayTitle } from '@/lib/display-title'
 import { videoTypeLabel } from '@/lib/video-type-labels'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
 import { operationUnitLabel } from './operation-unit-label'
-import type { LedgerRow } from './data'
+
+/** What the aggregation reads: a single ledger row (entries defaults to 1), or a group
+ * of rows Postgres already summed (delta = their summed delta, entries = how many). Both
+ * produce identical figures, since every output is a sum and every count a sum of counts. */
+export type LedgerAggregateRow = {
+  kind: string
+  step: Step | null
+  operation: Operation | null
+  project_id: string | null
+  delta: number
+  entries?: number
+}
 
 export type ProjectMeta = {
   id: string
@@ -47,26 +58,20 @@ export type CreditsPeriodAggregation = {
   isEmpty: boolean
 }
 
-/** SUM(delta) over whatever rows it's given - the balance tile calls this with
- * all-time rows regardless of the active period tab, since a balance is a
- * present-moment fact, not a periodic one. */
-export function sumBalance(rows: { delta: number }[]): number {
-  return rows.reduce((sum, row) => sum + row.delta, 0)
-}
-
-function buildOperationBreakdown(rows: LedgerRow[], denominatorTotal: number): OperationBreakdownRow[] {
+function buildOperationBreakdown(rows: LedgerAggregateRow[], denominatorTotal: number): OperationBreakdownRow[] {
   const groups = new Map<string, { step: Step; operation: Operation; credits: number; count: number }>()
 
   for (const row of rows) {
     if (row.step === null || row.operation === null) continue
     const key = `${row.step}:${row.operation}`
     const credits = -row.delta
+    const count = row.entries ?? 1
     const existing = groups.get(key)
     if (existing) {
       existing.credits += credits
-      existing.count += 1
+      existing.count += count
     } else {
-      groups.set(key, { step: row.step, operation: row.operation, credits, count: 1 })
+      groups.set(key, { step: row.step, operation: row.operation, credits, count })
     }
   }
 
@@ -82,7 +87,7 @@ function buildOperationBreakdown(rows: LedgerRow[], denominatorTotal: number): O
     .sort((a, b) => b.credits - a.credits)
 }
 
-function buildStepBreakdown(rows: LedgerRow[], denominatorTotal: number): StepBreakdownGroup[] {
+function buildStepBreakdown(rows: LedgerAggregateRow[], denominatorTotal: number): StepBreakdownGroup[] {
   const operationRows = buildOperationBreakdown(rows, denominatorTotal)
 
   const bySteps = new Map<Step, OperationBreakdownRow[]>()
@@ -103,13 +108,13 @@ function buildStepBreakdown(rows: LedgerRow[], denominatorTotal: number): StepBr
 }
 
 /**
- * Aggregates a period's `credit_ledger` rows in memory, the same reasoning
- * usage/aggregate.ts documents for `usage`: a real GROUP BY needs `.rpc()`, which this
- * codebase forbids. Every output here is filtered to `kind === 'spend'` first - grants
- * and refunds move the balance but are never spend, so they must never appear in
- * spentThisPeriod, byStep, or byProject.
+ * Shapes a period's ledger totals for /credits. Postgres does the row-level GROUP BY (the
+ * credit_ledger_monthly view); this only rolls those few groups up by step and project.
+ * Every output here is filtered to `kind === 'spend'` first - grants and refunds move
+ * the balance but are never spend, so they must never appear in spentThisPeriod, byStep,
+ * or byProject.
  */
-export function aggregateCreditsPeriod(rows: LedgerRow[], projects: ProjectMeta[]): CreditsPeriodAggregation {
+export function aggregateCreditsPeriod(rows: LedgerAggregateRow[], projects: ProjectMeta[]): CreditsPeriodAggregation {
   const spendRows = rows.filter((row) => row.kind === 'spend')
 
   const spentThisPeriod = spendRows.reduce((sum, row) => sum + -row.delta, 0)
@@ -117,7 +122,7 @@ export function aggregateCreditsPeriod(rows: LedgerRow[], projects: ProjectMeta[
   const byStep = buildStepBreakdown(spendRows, spentThisPeriod)
 
   const projectMetaById = new Map(projects.map((project) => [project.id, project]))
-  const projectSpendRows = spendRows.filter((row): row is LedgerRow & { project_id: string } => row.project_id !== null)
+  const projectSpendRows = spendRows.filter((row): row is LedgerAggregateRow & { project_id: string } => row.project_id !== null)
   const projectIds = [...new Set(projectSpendRows.map((row) => row.project_id))]
 
   const byProject: ProjectBreakdownRow[] = projectIds

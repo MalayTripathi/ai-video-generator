@@ -12,7 +12,10 @@ const PROMPT = 'A stored image prompt long enough to stand for a real one on thi
 const IMAGE_PROMPTS = stepIndex('image_prompts')
 const STORYBOARD = stepIndex('storyboard')
 
-async function seed(userId: string, opts: { furthestStep: number; shots: number }) {
+async function seed(
+  userId: string,
+  opts: { furthestStep: number; shots: number; staleShots?: number[]; missingShots?: number[] }
+) {
   const { data: project, error } = await admin
     .from('projects')
     .insert({
@@ -45,8 +48,8 @@ async function seed(userId: string, opts: { furthestStep: number; shots: number 
       order_index: i,
       shot_key: `sf${i}${Math.random().toString(36).slice(2, 4)}`,
       voice_over: `Voice over ${i}`,
-      image_prompt: PROMPT,
-      image_prompt_stale: false,
+      image_prompt: opts.missingShots?.includes(i) ? null : PROMPT,
+      image_prompt_stale: opts.staleShots?.includes(i) ?? false,
     }))
   )
   expect(shotsError).toBeNull()
@@ -103,9 +106,22 @@ test.describe('Step 3 footer button', () => {
     await api.dispose()
   })
 
+  // The storyboard images route is stubbed too: confirming Continue calls it right after
+  // the advance, and the tests assert on that call rather than run image generation.
+  let imagesCalls: { shotIds: string[] }[] = []
+
   test.beforeEach(async ({ page }) => {
+    imagesCalls = []
     await page.route('**/api/projects/*/image-prompts', async (route) => {
       await route.fulfill({ status: 500, body: '{}' })
+    })
+    await page.route('**/api/projects/*/images', async (route) => {
+      imagesCalls.push(route.request().postDataJSON())
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, claimed: [], notGenerated: [], inFlight: [] }),
+      })
     })
   })
 
@@ -147,9 +163,70 @@ test.describe('Step 3 footer button', () => {
     await page.getByRole('dialog').getByRole('button', { name: 'Continue' }).click()
 
     await expect(page).toHaveURL(`/projects/${projectId}/storyboard`, NAVIGATION)
-    await expect(page.getByTestId('storyboard-placeholder')).toBeVisible(NAVIGATION)
+    await expect(page.getByTestId('storyboard-main')).toBeVisible(NAVIGATION)
     expect(await readProject(projectId)).toMatchObject({ current_step: 'storyboard', furthest_step: STORYBOARD })
     expect(await ledgerRowsFor(projectId)).toBe(0)
+
+    // Then every shot's image is requested, once.
+    const { data: shots } = await admin.from('shots').select('id').eq('project_id', projectId).order('order_index')
+    expect(imagesCalls).toEqual([{ shotIds: shots!.map((s) => s.id) }])
+  })
+
+  test('the confirmation warns about stale prompts without blocking, and the copy is true to Step 3', async ({
+    page,
+  }) => {
+    const projectId = await seed(primary.user.id, { furthestStep: IMAGE_PROMPTS, shots: 3, staleShots: [0, 2] })
+
+    await page.goto(`/projects/${projectId}/image_prompts`)
+    await page.getByRole('button', { name: /^Create Storyboard/ }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByRole('note')).toHaveText("2 image prompts are stale — they'll be drawn as they are.")
+    await expect(dialog).toContainText('Workbench shots become read-only. Image prompts stay editable.')
+    await expect(dialog.getByRole('button', { name: 'Continue' })).toBeEnabled()
+  })
+
+  test('with no stale prompts the confirmation carries no warning', async ({ page }) => {
+    const projectId = await seed(primary.user.id, { furthestStep: IMAGE_PROMPTS, shots: 2 })
+
+    await page.goto(`/projects/${projectId}/image_prompts`)
+    await page.getByRole('button', { name: /^Create Storyboard/ }).click()
+    await expect(page.getByRole('dialog')).toContainText('Continue to storyboard?')
+    await expect(page.getByRole('dialog').getByRole('note')).toHaveCount(0)
+  })
+
+  test('a shot with no prompt blocks Continue, says which, and clears once a prompt is written', async ({ page }) => {
+    const projectId = await seed(primary.user.id, { furthestStep: IMAGE_PROMPTS, shots: 3, missingShots: [1] })
+
+    await page.goto(`/projects/${projectId}/image_prompts`)
+    const button = page.getByRole('button', { name: /^Create Storyboard/ })
+    await expect(button).toBeDisabled(NAVIGATION)
+    await expect(page.getByText('Shot 2 needs a prompt before the storyboard.')).toBeVisible()
+
+    const banner = page.getByRole('alert').filter({ hasText: 'has no image prompt' })
+    await expect(banner).toContainText('1 shot has no image prompt')
+    await expect(banner).toContainText("Shot 2 can't be drawn without one.")
+    await expect(banner.getByRole('button', { name: /^Generate that one · \d+ credits?$/ })).toBeVisible()
+
+    // The empty text box is open, and saves on blur like any other.
+    const editor = page.getByPlaceholder('Write a prompt, or generate one.')
+    await expect(editor).toHaveCount(1)
+    await editor.fill('A hand-written prompt for the shot that had none.')
+    await editor.blur()
+
+    await expect(button).toBeEnabled()
+    await expect(banner).toHaveCount(0)
+    await expect(page.getByText('needs a prompt before the storyboard')).toHaveCount(0)
+    await expect
+      .poll(async () => {
+        const { data } = await admin
+          .from('shots')
+          .select('image_prompt')
+          .eq('project_id', projectId)
+          .eq('order_index', 1)
+          .single()
+        return data!.image_prompt
+      })
+      .toBe('A hand-written prompt for the shot that had none.')
   })
 
   test('an insufficient balance keeps Confirm disabled and Cancel enabled, and does not advance', async ({
@@ -200,6 +277,8 @@ test.describe('Step 3 footer button', () => {
     await expect(page).toHaveURL(`/projects/${projectId}/storyboard`, NAVIGATION)
     await expect(page.getByRole('dialog')).toHaveCount(0)
     expect(advanceCalls).toBe(0)
+    // Continuing a second time starts no image generation - nothing is charged again.
+    expect(imagesCalls).toEqual([])
     // advanceStep() is the sole writer of current_step: navigation alone never touches it.
     expect(await readProject(projectId)).toMatchObject({ current_step: 'image_prompts', furthest_step: STORYBOARD })
     expect(await ledgerRowsFor(projectId)).toBe(0)
@@ -275,9 +354,12 @@ test.describe('Step 3 footer button', () => {
       await page.getByRole('link', { name: 'Go to Storyboard' }).click()
 
       await expect(page).toHaveURL(`/projects/${projectId}/storyboard`, NAVIGATION)
-      await expect(page.getByTestId('storyboard-placeholder')).toBeVisible(NAVIGATION)
-      await expect(page.getByText('Not enough credits')).toHaveCount(0)
+      await expect(page.getByTestId('storyboard-main')).toBeVisible(NAVIGATION)
+      // Navigating raised no gate of its own: no confirm dialog, no refusal banner. The
+      // storyboard's own case-2 banner (frames it can't afford to finish) is expected here.
       await expect(page.getByRole('dialog')).toHaveCount(0)
+      await expect(page.getByText(/^Not enough credits to /)).toHaveCount(0)
+      await expect(page.getByText('Not enough credits for the last two frames')).toBeVisible()
       expect(advanceCalls).toBe(0)
     } finally {
       await deleteTestUser(user.id)

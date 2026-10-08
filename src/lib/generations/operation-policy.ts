@@ -1,4 +1,13 @@
 import type { Operation } from '@/lib/config/pipeline'
+import {
+  CLAIM_STALE_MARGIN_MS,
+  IMAGE_QUEUE_STALE_AFTER_MS,
+  IMAGE_STALE_AFTER_MS,
+  MUSIC_PROMPT_STALE_AFTER_MS,
+  MUSIC_STALE_AFTER_MS,
+  VOICEOVER_ALIGN_STALE_AFTER_MS,
+  VOICEOVER_STALE_AFTER_MS,
+} from '@/lib/config/storyboard'
 
 // Per-operation claim policy - replaces a single global STALE_AFTER_MS, which was
 // correct for a long paid shot-generation job and would be catastrophic for a chat
@@ -8,6 +17,9 @@ import type { Operation } from '@/lib/config/pipeline'
 export interface OperationPolicy {
   /** How old `started_at` must be before a 'generating' row is stale-reclaimable. */
   staleAfterMs: number
+  /** For an operation whose claims can wait queued behind a pool: how old `queued_at` must
+   * be before a still-queued row is stale. Absent for operations that never queue. */
+  queuedStaleAfterMs?: number
   claimableFrom: {
     /** 'never': blocked always. 'retry': blocked unless retry:true. 'always': reclaimed unconditionally. */
     succeeded: 'never' | 'retry' | 'always'
@@ -28,10 +40,16 @@ const DEFAULT_POLICY: OperationPolicy = {
 // patience - see docs/decisions.md's "Agent-turn stale window" entry.
 const AGENT_TURN_STALE_AFTER_MS = 180 * 1000
 
+// Claims taken inside a request on a 300s route (shots, image prompts, an element
+// reference - directly or from an agent turn): a run can't outlive the route, so the
+// window sits just past it and a killed run is retryable within seconds of the kill.
+const ROUTE_MAX_DURATION_S = 300
+const ROUTE_CLAIM_STALE_AFTER_MS = ROUTE_MAX_DURATION_S * 1000 + CLAIM_STALE_MARGIN_MS
+
 export const OPERATION_POLICY: Record<Operation, OperationPolicy> = {
   // Regenerate-all: claimable from 'succeeded' too, gated behind the same retry flag
   // 'failed' already requires.
-  generate_shots: { ...DEFAULT_POLICY, claimableFrom: { succeeded: 'retry', failed: 'retry' } },
+  generate_shots: { staleAfterMs: ROUTE_CLAIM_STALE_AFTER_MS, claimableFrom: { succeeded: 'retry', failed: 'retry' } },
   // A reusable mutex row, overwritten indefinitely - not a job record. Reclaimable from
   // either terminal state with no retry flag, since there is no "job" to resume, only a
   // lock to release.
@@ -39,20 +57,54 @@ export const OPERATION_POLICY: Record<Operation, OperationPolicy> = {
     staleAfterMs: AGENT_TURN_STALE_AFTER_MS,
     claimableFrom: { succeeded: 'always', failed: 'always' },
   },
-  voiceover: DEFAULT_POLICY,
-  background_music: DEFAULT_POLICY,
+  // One claim per project. Regenerate is a new attempt, so both terminal states reclaim
+  // unconditionally; the window sits just past the route's maxDuration.
+  voiceover: {
+    staleAfterMs: VOICEOVER_STALE_AFTER_MS,
+    claimableFrom: { succeeded: 'always', failed: 'always' },
+  },
+  align_voiceover: {
+    staleAfterMs: VOICEOVER_ALIGN_STALE_AFTER_MS,
+    claimableFrom: { succeeded: 'always', failed: 'always' },
+  },
+  // Same shape as voiceover: one claim per project, Generate/Regenerate/Try again are
+  // new attempts, so both terminal states reclaim unconditionally.
+  background_music: {
+    staleAfterMs: MUSIC_STALE_AFTER_MS,
+    claimableFrom: { succeeded: 'always', failed: 'always' },
+  },
+  // Once per project: a succeeded row is never reclaimed, and a failed one only behind
+  // retry:true, which no caller passes - a failure leaves the field empty for the user,
+  // never an automatic second call. A crashed 'generating' row still ages out, and its
+  // reclaim replays any persisted payload.
+  derive_music_prompt: {
+    staleAfterMs: MUSIC_PROMPT_STALE_AFTER_MS,
+    claimableFrom: { succeeded: 'never', failed: 'retry' },
+  },
   // Like generate_shots: Regenerate All/Stale/single-row are normal, repeatable
   // actions against an already-succeeded project, not exceptional retries - reclaim
   // from 'succeeded' is allowed behind the same retry flag 'failed' already requires.
-  write_image_prompts: { ...DEFAULT_POLICY, claimableFrom: { succeeded: 'retry', failed: 'retry' } },
+  write_image_prompts: { staleAfterMs: ROUTE_CLAIM_STALE_AFTER_MS, claimableFrom: { succeeded: 'retry', failed: 'retry' } },
   write_video_prompts: DEFAULT_POLICY,
-  generate_image: DEFAULT_POLICY,
+  // One claim per shot (storyboard's Step 4 image). Generate, Retry and Regenerate are all
+  // ordinary repeatable actions on the same slot, so reclaim needs no retry flag from
+  // either terminal state. Claims queue behind a concurrency pool, so a queued row ages
+  // against its own, longer window; a started one against the per-call window - the same
+  // threshold the status endpoint uses to show "failed".
+  generate_image: {
+    staleAfterMs: IMAGE_STALE_AFTER_MS,
+    queuedStaleAfterMs: IMAGE_QUEUE_STALE_AFTER_MS,
+    claimableFrom: { succeeded: 'always', failed: 'always' },
+  },
   // A reusable per-element claim slot, not a one-shot job record: regenerating a
   // reference is a legitimate, repeatable user action (the Generate button), and must
   // never be blocked by a prior claim in either terminal state. No retry flag needed -
   // same reasoning as agent_turn's mutex, just element-scoped instead of project-scoped
   // (see the generations.element_id migration).
-  generate_element_reference: { ...DEFAULT_POLICY, claimableFrom: { succeeded: 'always', failed: 'always' } },
+  generate_element_reference: {
+    staleAfterMs: ROUTE_CLAIM_STALE_AFTER_MS,
+    claimableFrom: { succeeded: 'always', failed: 'always' },
+  },
   generate_clip: DEFAULT_POLICY,
   merge: DEFAULT_POLICY,
   // derive_camera never actually claims a `generations` row (see pipeline.ts), but it

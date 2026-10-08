@@ -6,6 +6,8 @@ import { computeCost, type UsageBreakdown } from '@/lib/config/pricing'
 import { RATE_VERSION } from '@/lib/config/pricing'
 import { LiveCallsBlockedError } from '@/lib/claude'
 import { ImageLiveCallsBlockedError } from '@/lib/images/gateway'
+import { VoiceoverLiveCallsBlockedError, VoiceoverProviderError } from '@/lib/voiceover/gateway'
+import { MusicProviderError } from '@/lib/music/gateway'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -120,9 +122,14 @@ export async function settleUsage(params: {
     update.quantity = quantity
     update.unit = unit
     update.raw_usage = { breakdown: params.breakdown, rates: appliedRates }
-  } else if (params.error instanceof LiveCallsBlockedError || params.error instanceof ImageLiveCallsBlockedError) {
-    // NARROW, DELIBERATE EXCEPTION: LiveCallsBlockedError/ImageLiveCallsBlockedError are
-    // thrown by assertLiveCallsAllowed()/assertLiveImageCallsAllowed() before any
+  } else if (
+    params.error instanceof LiveCallsBlockedError ||
+    params.error instanceof ImageLiveCallsBlockedError ||
+    params.error instanceof VoiceoverLiveCallsBlockedError
+  ) {
+    // NARROW, DELIBERATE EXCEPTION: the three *LiveCallsBlockedError classes are thrown
+    // by assertLiveCallsAllowed()/assertLiveImageCallsAllowed()/
+    // assertLiveVoiceoverCallsAllowed() before any
     // request reaches the provider, so unlike every other unmeasured throw in the
     // branch below, these are PROVABLY unbilled, not just probably unbilled. Settling
     // at the pre-flight quote would inflate real spend with calls that never happened.
@@ -133,16 +140,20 @@ export async function settleUsage(params: {
     update.estimated_cost = 0
     update.raw_usage = { blocked: true, billed: false, reason: params.error.message }
   } else if (
-    (params.error instanceof APIError || params.error instanceof OpenAIApiError) &&
+    (params.error instanceof APIError ||
+      params.error instanceof OpenAIApiError ||
+      params.error instanceof VoiceoverProviderError ||
+      params.error instanceof MusicProviderError) &&
     typeof params.error.status === 'number' &&
     params.error.status < 500
   ) {
-    // SECOND, EQUALLY NARROW EXCEPTION: every 4xx (400/401/403/404/422/429) from either
+    // SECOND, EQUALLY NARROW EXCEPTION: every 4xx (400/401/403/404/422/429) from any
     // provider is that provider's own request-validation rejection, returned
-    // synchronously before the model/image ever runs - there is no partial-generation
-    // 4xx. This is as provably unbilled as the live-call-blocked case, just verified a
-    // different way (instanceof + status, never message text) - the OpenAI branch is
-    // the exact provider analog of the Anthropic one, not a new pattern. A 5xx or a
+    // synchronously before the model/image/audio ever runs - there is no
+    // partial-generation 4xx. This is as provably unbilled as the live-call-blocked case,
+    // just verified a different way (instanceof + status, never message text) - the
+    // OpenAI and ElevenLabs (voiceover, alignment, music) classes are the exact provider
+    // analogs of the Anthropic one, not a new pattern. A 5xx or a
     // status-less network/timeout error CAN occur after generation has started, so
     // those are not provably unbilled and fall through to the unverifiable branch
     // below - do not widen this to `status !== undefined` or any status, and do not

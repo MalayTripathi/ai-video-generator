@@ -12,12 +12,13 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 export type AdvanceToStoryboardResult =
   | { ok: true; status: 200; data: { requiredCredits: number } }
   | { ok: false; status: 404; error: string }
+  | { ok: false; status: 422; error: string; shotIds: string[] }
   | { ok: false; status: 402; error: string; requiredCredits: number; balanceCredits: number }
   | { ok: false; status: 500; error: string }
 
-// Pure balance-check-then-advanceStep gate: no provider call happens here, so there is
-// nothing to CLAIM/RECOVER/PERSIST/SETTLE and no credit_ledger write - the real spend is
-// recorded by the storyboard generation route when that is built.
+// Pure prompt-check, balance-check, then advanceStep gate: no provider call happens here,
+// so there is nothing to CLAIM/RECOVER/PERSIST/SETTLE and no credit_ledger write - the
+// client calls the images route next, which gates, claims and charges per image.
 export async function runAdvanceToStoryboard({
   supabase,
   projectId,
@@ -36,15 +37,19 @@ export async function runAdvanceToStoryboard({
     .select('id, furthest_step')
     .eq('id', projectId)
     .eq('user_id', userId)
-    .single()
+    .maybeSingle()
 
-  if (projectError || !project) {
+  // A failed read is a server error, never a 404 - only a missing row is.
+  if (projectError) {
+    return { ok: false, status: 500, error: projectError.message }
+  }
+  if (!project) {
     return { ok: false, status: 404, error: 'Project not found' }
   }
 
-  const { count: shotCount, error: shotsError } = await supabase
+  const { data: shots, error: shotsError } = await supabase
     .from('shots')
-    .select('id', { count: 'exact', head: true })
+    .select('id, image_prompt')
     .eq('project_id', projectId)
 
   if (shotsError) {
@@ -54,7 +59,7 @@ export async function runAdvanceToStoryboard({
   const required = creditsFor({
     step: 'storyboard',
     operation: 'generate_image',
-    quantity: shotCount ?? 0,
+    quantity: shots.length,
   })
 
   // A project that has already advanced to the storyboard owns this step: getting to it
@@ -63,6 +68,16 @@ export async function runAdvanceToStoryboard({
   if (project.furthest_step >= stepIndex('storyboard')) {
     await advanceStep(supabase, projectId, 'storyboard')
     return { ok: true, status: 200, data: { requiredCredits: required } }
+  }
+
+  // A shot with no image prompt can't be drawn, so the first advance - the one that
+  // starts image generation - refuses it (the second of three layers: Continue is
+  // disabled, the images route refuses too). Checked only here, past the
+  // already-advanced return above: navigating back to a step already reached is never
+  // blocked.
+  const withoutPrompt = shots.filter((s) => s.image_prompt === null || s.image_prompt.trim() === '').map((s) => s.id)
+  if (withoutPrompt.length > 0) {
+    return { ok: false, status: 422, error: 'Some shots have no image prompt', shotIds: withoutPrompt }
   }
 
   await ensureSignupGrant(userId)
