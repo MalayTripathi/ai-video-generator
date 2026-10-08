@@ -1,7 +1,7 @@
 import { createServiceRoleClient } from '@/lib/supabase/service-role'
 import { isUniqueViolation } from '@/lib/shot-key'
 import type { Step, Operation } from '@/lib/config/pipeline'
-import { creditsFor, usdToCredits, CREDIT_PRICE_VERSION } from '@/lib/config/credits'
+import { creditsFor, usdToCredits, CREDIT_PRICE_VERSION, type ImagePriceKey } from '@/lib/config/credits'
 
 // Write-only: spends and refunds. Every write in this module goes through the
 // service-role client (bypasses RLS - credit_ledger has no authenticated write
@@ -46,9 +46,9 @@ export function mintAttemptId(): string {
 }
 
 /**
- * Fixed-price spend. Prices via creditsFor - an unpriced (step, operation) pair
- * throws MissingCreditPriceError, deliberately left to propagate: a missing price
- * must surface, never silently charge nothing.
+ * Fixed-price spend. Prices via creditsFor - an unpriced (step, operation) pair, or an
+ * image operation without its `image` key, throws MissingCreditPriceError, deliberately
+ * left to propagate: a missing price must surface, never silently charge nothing.
  */
 export async function recordFixedSpend(params: {
   userId: string
@@ -59,8 +59,15 @@ export async function recordFixedSpend(params: {
   projectId: string | null
   messageId?: string | null
   shotKey?: string | null
+  /** The call actually made, for an image operation - see creditsFor. */
+  image?: ImagePriceKey
 }): Promise<void> {
-  const credits = creditsFor({ step: params.step, operation: params.operation, quantity: params.quantity })
+  const credits = creditsFor({
+    step: params.step,
+    operation: params.operation,
+    quantity: params.quantity,
+    image: params.image,
+  })
   const supabase = createServiceRoleClient()
 
   const { error } = await supabase.from('credit_ledger').insert({

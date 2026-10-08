@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { framePrice } from './helpers/prices'
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -6,7 +7,7 @@ import sharp from 'sharp'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { SIGNUP_GRANT_CREDITS, creditsFor } from '../src/lib/config/credits'
+import { CREDIT_PRICE_VERSION, SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
 import {
   CLAIM_STALE_MARGIN_MS,
   CONTINUATION_CHAIN_LIMIT,
@@ -41,7 +42,8 @@ import type { ensureSignupGrant as ensureSignupGrantType } from '../src/lib/cred
 // Every provider call below goes to a fake from tests/helpers/openai-fakes.ts. Nothing
 // here can reach OpenAI.
 
-const PRICE = creditsFor({ step: 'storyboard', operation: 'generate_image', quantity: 1 })
+// A 9:16, low-quality frame with no references - seedProject's default.
+const PRICE = framePrice()
 const PROMPT = 'A lone lighthouse on a basalt cliff at dusk, waves breaking below, warm window light.'
 
 // --- ledger writer: service-role + 'server-only', so it runs in a child process (same
@@ -190,7 +192,7 @@ async function claims(projectId: string) {
 async function ledgerRows(projectId: string) {
   const { data, error } = await admin
     .from('credit_ledger')
-    .select('delta, step, operation, attempt_id, dedupe_key, shot_key')
+    .select('delta, step, operation, attempt_id, dedupe_key, shot_key, price_version')
     .eq('project_id', projectId)
   expect(error).toBeNull()
   return data!
@@ -457,6 +459,81 @@ test.describe('storyboard images - worker', () => {
     expect((withRefUsage.raw_usage as { breakdown: { image_input_tokens: number } }).breakdown.image_input_tokens).toBe(300)
   })
 
+  test('each frame is charged on the references actually sent', async () => {
+    const projectId = await seedProject(primary.user.id)
+    const [withRef, withoutRef, lostRef] = await seedShots(projectId, 3)
+    await bindReference(primary.user.id, projectId, withRef)
+    await bindReference(primary.user.id, projectId, lostRef)
+    // lostRef's object is gone: it is left out of the call, so it is not charged for.
+    const { data: lost } = await admin
+      .from('shot_elements')
+      .select('elements(reference_image_path)')
+      .eq('shot_id', lostRef)
+      .single()
+    const lostPath = (lost!.elements as unknown as { reference_image_path: string }).reference_image_path
+    await admin.storage.from('artifacts').remove([lostPath])
+
+    await generate(primary.user.id, projectId, [withRef, withoutRef, lostRef], successImageGateway())
+
+    const shotKeyOf = new Map([
+      [withRef, 'bcdfg'],
+      [withoutRef, 'hjkmn'],
+      [lostRef, 'pqrst'],
+    ])
+    const deltaByKey = new Map((await ledgerRows(projectId)).map((r) => [r.shot_key, r.delta]))
+    expect(deltaByKey.get(shotKeyOf.get(withRef)!)).toBe(-framePrice({ referenceCount: 1 }))
+    expect(deltaByKey.get(shotKeyOf.get(withoutRef)!)).toBe(-framePrice())
+    expect(deltaByKey.get(shotKeyOf.get(lostRef)!)).toBe(-framePrice())
+    expect(framePrice({ referenceCount: 1 })).toBeGreaterThan(framePrice())
+  })
+
+  test("the call carries the project's image quality, and the charge is priced on it", async () => {
+    const projectId = await seedProject(primary.user.id, '16:9')
+    await admin.from('projects').update({ image_quality: 'high' }).eq('id', projectId)
+    const [shotId] = await seedShots(projectId, 1)
+    const gateway = successImageGateway()
+
+    await generate(primary.user.id, projectId, [shotId], gateway)
+    expect(gateway.getStoryboardCalls()).toEqual([
+      expect.objectContaining({ model: 'gpt-image-2.5-flare', quality: 'high', size: '1792x1008' }),
+    ])
+    const [row] = await ledgerRows(projectId)
+    expect(row.delta).toBe(-framePrice({ aspectRatio: '16:9', imageQuality: 'high' }))
+    expect(row.price_version).toBe(CREDIT_PRICE_VERSION)
+  })
+
+  test('IMAGE_QUALITY_DEV_CAP lowers the quality sent outside production, and the price follows it', async () => {
+    const projectId = await seedProject(primary.user.id)
+    await admin.from('projects').update({ image_quality: 'high' }).eq('id', projectId)
+    const [shotId] = await seedShots(projectId, 1)
+    const gateway = successImageGateway()
+
+    const previous = process.env.IMAGE_QUALITY_DEV_CAP
+    process.env.IMAGE_QUALITY_DEV_CAP = 'low'
+    try {
+      await generate(primary.user.id, projectId, [shotId], gateway)
+    } finally {
+      if (previous === undefined) delete process.env.IMAGE_QUALITY_DEV_CAP
+      else process.env.IMAGE_QUALITY_DEV_CAP = previous
+    }
+    expect(gateway.getStoryboardCalls()).toEqual([expect.objectContaining({ quality: 'low' })])
+    const [row] = await ledgerRows(projectId)
+    expect(row.delta).toBe(-framePrice({ imageQuality: 'low' }))
+    expect(framePrice({ imageQuality: 'low' })).toBeLessThan(framePrice({ imageQuality: 'high' }))
+  })
+
+  test('the status loader prices each shot on its own references', async () => {
+    const projectId = await seedProject(primary.user.id, '1:1')
+    const [withRef, withoutRef] = await seedShots(projectId, 2)
+    await bindReference(primary.user.id, projectId, withRef)
+    const result = await loadImageStatuses({ supabase: admin, projectId, userId: primary.user.id, getBalance: realGetBalance })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const byId = new Map(result.data.shots.map((sh) => [sh.shotId, sh.imageCredits]))
+    expect(byId.get(withRef)).toBe(framePrice({ aspectRatio: '1:1', referenceCount: 1 }))
+    expect(byId.get(withoutRef)).toBe(framePrice({ aspectRatio: '1:1' }))
+  })
+
   test('regenerating keeps every earlier image: each attempt writes a new object', async () => {
     const projectId = await seedProject(primary.user.id)
     const [shotId] = await seedShots(projectId, 1)
@@ -478,6 +555,8 @@ test.describe('storyboard images - worker', () => {
   })
 
   test('RECOVER relinks a persisted image with no provider call and never charges it twice', async () => {
+    // The call that was paid for, as PERSIST stores it beside the path.
+    const RECOVERED_PRICE = { model: 'gpt-image-2.5-flare', quality: 'low', size: '1008x1792', referenceCount: 1 } as const
     const projectId = await seedProject(primary.user.id)
     const [shotId] = await seedShots(projectId, 1)
 
@@ -499,7 +578,7 @@ test.describe('storyboard images - worker', () => {
         shot_id: shotId,
         element_id: null,
         state: 'generating',
-        payload: { path: storedPath, attemptId },
+        payload: { path: storedPath, attemptId, price: RECOVERED_PRICE },
         started_at: now,
         queued_at: now,
         updated_at: now,
@@ -515,6 +594,7 @@ test.describe('storyboard images - worker', () => {
       projectId,
       messageId: null,
       shotKey: 'bcdfg',
+      image: RECOVERED_PRICE,
     })
 
     const gateway = successImageGateway()
@@ -867,6 +947,9 @@ test.describe('storyboard images - thumbnails and signed status', () => {
     await generate(primary.user.id, projectId, [shotId], successImageGateway())
     const { image_path } = await shotRow(shotId)
 
+    // Read before the status call: parallel specs only ever spend primary's balance, so the
+    // ledger as it stood beforehand bounds the figure the status read computes after it.
+    const ledgerBefore = await realGetBalance(primary.user.id)
     const before = Date.now()
     const result = await status(projectId)
     expect(result.ok).toBe(true)
@@ -893,7 +976,7 @@ test.describe('storyboard images - thumbnails and signed status', () => {
     // is bounded by the ledger, never asserted exactly.
     expect(typeof result.data.balanceCredits).toBe('number')
     expect(result.data.balanceCredits!).toBeGreaterThanOrEqual(0)
-    expect(result.data.balanceCredits!).toBeLessThanOrEqual(await realGetBalance(primary.user.id))
+    expect(result.data.balanceCredits!).toBeLessThanOrEqual(ledgerBefore)
   })
 
   test('an image with no thumbnail still signs the full image, and thumbUrl is null', async () => {

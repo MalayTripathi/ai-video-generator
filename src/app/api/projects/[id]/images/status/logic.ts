@@ -1,10 +1,10 @@
 import type { createClient } from '@/lib/supabase/server'
 // Type-only: the route injects the real function, so a plain-Node test can pass a fake.
 import type { getBalance as getBalanceType } from '@/lib/credits/balance'
-import { creditsFor } from '@/lib/config/credits'
+import { pricedAspectRatio, storyboardImagePriceKey, usableReferencePaths } from '@/lib/images/price-key'
 import { STATUS_POLL_INTERVAL_MS, STORYBOARD_SIGNED_URL_EXPIRES_S } from '@/lib/config/storyboard'
 import { deriveImageState, type ImageState } from '@/lib/storyboard/image-state'
-import { countLiveImageClaims, storyboardThumbPath } from '../logic'
+import { liveImageCommittedCredits, storyboardImageCredits, storyboardThumbPath } from '../logic'
 import { isLiveClaim } from '@/lib/generations/claim'
 import { liveAudioCommittedCredits } from '@/lib/voiceover/committed'
 import { type WordBoundary } from '@/lib/storyboard/motion'
@@ -25,6 +25,8 @@ export type ShotImageStatus = {
   queuedAt: string | null
   /** When the current image was drawn: the settled claim's updated_at, when that claim left an image. */
   drawnAt: string | null
+  /** What drawing this frame costs now: the project's image quality and size, plus this shot's references. */
+  imageCredits: number
 }
 
 /** The project's current voiceover, when there is one. */
@@ -138,9 +140,10 @@ export function storyboardThumbUrl(urlByPath: Map<string, string>, imagePath: st
 // The project columns the voiceover and music lanes derive from. A page that has already
 // read its project for this user selects these too and passes the row in.
 export const IMAGE_STATUS_PROJECT_COLUMNS =
-  'audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words, music_path, music_duration_sec, music_source, music_generated_at, music_loop, music_muted' as const
+  'aspect_ratio, image_quality, audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words, music_path, music_duration_sec, music_source, music_generated_at, music_loop, music_muted' as const
 
-type StatusProjectRow = VoiceoverProjectRow & MusicProjectRow & { music_path: string | null }
+type StatusProjectRow = VoiceoverProjectRow &
+  MusicProjectRow & { music_path: string | null; aspect_ratio: string | null; image_quality: string }
 
 /**
  * Per-shot storyboard image state for one project, cheap enough to poll: two narrow
@@ -162,13 +165,12 @@ export async function loadImageStatuses(params: {
 
   const loadBalance = async (): Promise<number | null> => {
     try {
-      const price = creditsFor({ step: 'storyboard', operation: 'generate_image', quantity: 1 })
       const [liveImages, liveAudio, balance] = await Promise.all([
-        countLiveImageClaims(supabase, userId),
+        liveImageCommittedCredits(supabase, userId),
         liveAudioCommittedCredits(supabase, userId),
         getBalance(userId),
       ])
-      return Math.max(0, balance - (liveImages * price + liveAudio))
+      return Math.max(0, balance - (liveImages + liveAudio))
     } catch (err) {
       console.error(`[images/status] balance unreadable for project ${projectId}:`, err)
       return null
@@ -186,7 +188,7 @@ export async function loadImageStatuses(params: {
           .maybeSingle(),
     supabase
       .from('shots')
-      .select('id, image_path, image_stale')
+      .select('id, image_path, image_stale, shot_elements(elements(reference_image_path, deleted_at))')
       .eq('project_id', projectId)
       .order('order_index', { ascending: true }),
     supabase
@@ -218,6 +220,7 @@ export async function loadImageStatuses(params: {
     [project.audio_path, project.music_path].filter((p): p is string => p !== null)
   )
 
+  const aspectRatio = pricedAspectRatio(project.aspect_ratio)
   const claimByShot = new Map((claimsResult.data ?? []).map((row) => [row.shot_id, row]))
   const now = Date.now()
   const shots: ShotImageStatus[] = shotRows.map((shot) => {
@@ -232,6 +235,13 @@ export async function loadImageStatuses(params: {
       startedAt: claim?.started_at ?? null,
       queuedAt: claim?.queued_at ?? null,
       drawnAt: settled && shot.image_path ? claim.updated_at : null,
+      imageCredits: storyboardImageCredits(
+        storyboardImagePriceKey({
+          aspectRatio,
+          imageQuality: project.image_quality,
+          referenceCount: usableReferencePaths(shot.shot_elements).length,
+        })
+      ),
     }
   })
 

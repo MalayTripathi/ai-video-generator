@@ -32,7 +32,7 @@ async function seed(specs: Spec[]) {
       video_type: 'auto',
       duration_target: '30-60s',
       aspect_ratio: '9:16',
-      video_model: 'Kling 2.1',
+      video_model: 'wan-2.5',
       current_step: 'storyboard',
       furthest_step: stepIndex('storyboard'),
     })

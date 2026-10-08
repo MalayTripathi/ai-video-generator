@@ -93,7 +93,6 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
     <form action={createProjectFromIntake} className="flex flex-col gap-rc-lg">
       <input type="hidden" name="template_source_id" value={template?.id ?? ''} />
       <input type="hidden" name="language" value={template?.language ?? ''} />
-      <input type="hidden" name="video_model" value={template?.video_model ?? ''} />
 
       <div className="flex flex-col gap-rc-xs">
         <span className="text-label uppercase tracking-label text-text-tertiary">

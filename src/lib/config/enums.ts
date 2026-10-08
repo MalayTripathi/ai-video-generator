@@ -34,6 +34,17 @@ export const ASPECT_RATIOS = ['9:16', '16:9', '1:1'] as const
 
 export type AspectRatio = (typeof ASPECT_RATIOS)[number]
 
+// Project quality settings. 'custom' = the person chose model/resolution/quality by hand
+// rather than through a preset; the presets themselves are QUALITY_PRESETS (models.ts).
+export const QUALITY_PRESET_IDS = ['low', 'medium', 'high', 'custom'] as const
+export type QualityPresetId = (typeof QUALITY_PRESET_IDS)[number]
+
+export const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p'] as const
+export type VideoResolution = (typeof VIDEO_RESOLUTIONS)[number]
+
+export const IMAGE_QUALITIES = ['low', 'medium', 'high'] as const
+export type ImageQuality = (typeof IMAGE_QUALITIES)[number]
+
 export const SHOT_SIZES = ['wide', 'full', 'medium', 'close_up', 'extreme_close_up'] as const
 
 export type ShotSize = (typeof SHOT_SIZES)[number]

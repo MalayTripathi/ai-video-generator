@@ -5,7 +5,7 @@ import {
   STORYBOARD_MAX_SHOT_SEC,
   STORYBOARD_MIN_SHOT_SEC,
 } from '../src/lib/config/storyboard'
-import { VIDEO_MODELS, videoModelMaxSeconds } from '../src/lib/config/models'
+import { VIDEO_MODELS, videoModelBounds } from '../src/lib/config/models'
 import {
   blockTier,
   caseTwo,
@@ -165,11 +165,11 @@ test.describe('ETA', () => {
 test.describe('case 2 - not enough credits for the last N', () => {
   test('appears only when not-generated frames exist and the balance cannot cover them all', () => {
     const r = readiness(['ready', 'ready', 'ready', 'ready', 'not_generated', 'not_generated'])
-    expect(caseTwo(r, 30, 15)).toBeNull()
-    expect(caseTwo(r, null, 15)).toBeNull()
-    expect(caseTwo(readiness(['ready']), 0, 15)).toBeNull()
+    expect(caseTwo(r, 30, 30)).toBeNull()
+    expect(caseTwo(r, null, 30)).toBeNull()
+    expect(caseTwo(readiness(['ready']), 0, 0)).toBeNull()
 
-    const banner = caseTwo(r, 15, 15)
+    const banner = caseTwo(r, 15, 30)
     expect(banner).toEqual({
       title: 'Not enough credits for the last two frames',
       body: 'Four frames are drawn and kept. Finishing the other two needs 30 credits. You have 15 credits left.',
@@ -212,14 +212,14 @@ test.describe('retime bounds and snap', () => {
     expect(STORYBOARD_MIN_SHOT_SEC).toBe(1)
     expect(STORYBOARD_MAX_SHOT_SEC).toBe(30)
     expect(snapRetime(0.2, bounds)).toBe(1)
-    // Past Kling 2.1's 10s clip limit, up to the storyboard's own ceiling.
+    // Past Wan 2.5's 10s clip limit, up to the storyboard's own ceiling.
     expect(snapRetime(14.2, bounds)).toBe(14.2)
     expect(snapRetime(45, bounds)).toBe(30)
   })
 
-  test('a discrete model caps at its longest allowed value; a continuous one at durationMax', () => {
-    expect(videoModelMaxSeconds(VIDEO_MODELS['Kling 2.1'])).toBe(10)
-    expect(videoModelMaxSeconds(VIDEO_MODELS['mochi-1'])).toBe(5.4)
+  test('a discrete model spans its allowed values; a continuous one its durationMin..durationMax', () => {
+    expect(videoModelBounds(VIDEO_MODELS['wan-2.5'])).toEqual({ min: 5, max: 10 })
+    expect(videoModelBounds(VIDEO_MODELS['seedance-1.0-pro'])).toEqual({ min: 2, max: 12 })
   })
 
   test('a shot already past the ceiling (or under the floor) is never forced back by the bounds', () => {

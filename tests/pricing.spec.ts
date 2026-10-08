@@ -51,8 +51,8 @@ test.describe('computeCost', () => {
     expect(result.quantity).toBe(200)
   })
 
-  test('a still-stub provider (fal) returns a null cost, no values yet', () => {
-    const result = computeCost('fal', 'Kling 2.1', {
+  test('fal calls are not metered by computeCost yet (no clip is generated), so a null cost', () => {
+    const result = computeCost('fal', 'wan-3.0', {
       input_tokens: 100,
       output_tokens: 100,
     })
@@ -92,12 +92,12 @@ test.describe('computeCost', () => {
   })
 
   test('openai: computes cost from input/output tokens at the model rate', () => {
-    // gpt-image-1-mini: textInputPerMTok 2.0, outputPerMTok 8.0
-    const result = computeCost('openai', 'gpt-image-1-mini', {
+    // gpt-image-2.5-flare: textInputPerMTok 5.0, outputPerMTok 30.0
+    const result = computeCost('openai', 'gpt-image-2.5-flare', {
       input_tokens: 1_000_000,
       output_tokens: 1_000_000,
     })
-    expect(result.estimatedCost).toBeCloseTo(2.0 + 8.0, 6)
+    expect(result.estimatedCost).toBeCloseTo(5.0 + 30.0, 6)
     expect(result.quantity).toBe(2_000_000)
     expect(result.unit).toBe('tokens')
     expect(result.appliedRates).not.toBeNull()
@@ -115,18 +115,14 @@ test.describe('computeCost', () => {
     expect(result.estimatedCost).toBeCloseTo(1 * 5.0 + 2 * 8.0 + 1 * 30.0, 6)
   })
 
-  test('openai: flare and sunburst are both priced, so the model can be swapped by env', () => {
-    for (const model of ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst']) {
-      const result = computeCost('openai', model, { input_tokens: 1_000_000, output_tokens: 1_000_000 })
-      expect(result.estimatedCost).toBeCloseTo(5.0 + 30.0, 6)
-    }
+  test('openai: only registry image models are priced - sunburst, never registered, is not', () => {
+    expect(computeCost('openai', 'gpt-image-2.5-sunburst', { input_tokens: 1, output_tokens: 1 }).estimatedCost).toBeNull()
   })
 
   test('an unrecognized openai model returns a null cost, never a guess', () => {
-    // gpt-image-1 (the non-mini model) deliberately has no OPENAI_RATES entry - this
-    // repo never calls it, so it must behave as "unrecognized," not silently price at
-    // gpt-image-1-mini's rate.
-    const result = computeCost('openai', 'gpt-image-1', {
+    // gpt-image-1-mini (shut down 1 Dec 2026) no longer has an OPENAI_RATES entry - it must
+    // behave as "unrecognized," never be priced at another model's rate.
+    const result = computeCost('openai', 'gpt-image-1-mini', {
       input_tokens: 100,
       output_tokens: 100,
     })

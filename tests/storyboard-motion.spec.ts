@@ -33,7 +33,7 @@ async function seed(opts: SeedOptions = {}) {
       title: 'Storyboard motion',
       source_text: 'A short film.',
       aspect_ratio: '9:16',
-      video_model: 'Kling 2.1',
+      video_model: 'wan-2.5',
       current_step: 'storyboard',
       furthest_step: opts.furthestStep ?? stepIndex('storyboard'),
     })

@@ -1,28 +1,39 @@
 import { test, expect } from '@playwright/test'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { modelsConfig } from '../src/lib/config/models'
+import { IMAGE_MODELS } from '../src/lib/config/models'
+import { OPENAI_RATES } from '../src/lib/config/pricing'
 import { STEP_OPERATIONS, stepOperationLabel } from '../src/lib/config/pipeline'
-import { runImagesRequest } from '../src/app/api/projects/[id]/images/logic'
 
-// modelsConfig is evaluated once at import, so each env scenario loads models.ts fresh in
-// its own child process (models.ts has no imports, so plain Node type-stripping runs it).
+// modelsConfig (and isProduction) are evaluated once at import, so each env scenario loads
+// models.ts fresh in its own child process - through the repo's alias loader, since
+// models.ts imports its enums by an extensionless path plain Node can't resolve.
 const MODELS_URL = 'file://' + path.resolve(__dirname, '../src/lib/config/models.ts')
+const ALIAS_LOADER_URL = 'file://' + path.resolve(__dirname, 'helpers/ts-alias-loader.mjs')
 
-function loadStoryboardConfig(env: Record<string, string>): Promise<{ ok: boolean; value?: unknown; message?: string }> {
+// The image-model env vars this module used to read. Deleted from every child below, and
+// set to junk in one, to prove nothing reads them any more.
+const RETIRED_IMAGE_ENV_KEYS = [
+  'ELEMENT_IMAGE_PROVIDER',
+  'STORYBOARD_IMAGE_PROVIDER',
+  'OPENAI_ELEMENT_IMAGE_MODEL',
+  'OPENAI_STORYBOARD_IMAGE_MODEL',
+  'FALAI_ELEMENT_IMAGE_MODEL',
+  'FALAI_STORYBOARD_IMAGE_MODEL',
+]
+const CONFIG_ENV_KEYS = [...RETIRED_IMAGE_ENV_KEYS, 'IMAGE_QUALITY_DEV_CAP']
+
+/** Evaluates `expression` (with `m` = the models module) in a fresh child, under `env`. */
+function inModels(expression: string, env: Record<string, string>): Promise<{ ok: boolean; value?: unknown; message?: string }> {
   const script = `
+    require('node:module').register(${JSON.stringify(ALIAS_LOADER_URL)})
     import(${JSON.stringify(MODELS_URL)}).then(
-      (m) => process.stdout.write(JSON.stringify({ ok: true, value: m.modelsConfig.storyboardImages })),
+      (m) => process.stdout.write(JSON.stringify({ ok: true, value: ${expression} })),
       (err) => process.stdout.write(JSON.stringify({ ok: false, message: err.message }))
-    )
+    ).catch((err) => process.stdout.write(JSON.stringify({ ok: false, message: err.message })))
   `
   const childEnv: Record<string, string | undefined> = { ...process.env, ...env }
-  for (const key of [
-    'STORYBOARD_IMAGE_PROVIDER',
-    'OPENAI_STORYBOARD_IMAGE_MODEL',
-    'OPENAI_STORYBOARD_IMAGE_QUALITY',
-    'FALAI_STORYBOARD_IMAGE_MODEL',
-  ]) {
+  for (const key of CONFIG_ENV_KEYS) {
     if (!(key in env)) delete childEnv[key]
   }
   return new Promise((resolve, reject) => {
@@ -38,63 +49,77 @@ function loadStoryboardConfig(env: Record<string, string>): Promise<{ ok: boolea
   })
 }
 
-test.describe('storyboard image config', () => {
-  test('defaults: openai, gpt-image-2.5-flare, low', async () => {
-    const result = await loadStoryboardConfig({})
-    expect(result).toEqual({ ok: true, value: { provider: 'openai', model: 'gpt-image-2.5-flare', quality: 'low' } })
+// Every use x quality, resolved inside the child: "use:quality" -> "model/provider".
+const RESOLVE_ALL = `Object.fromEntries(['element_reference', 'storyboard_frame'].flatMap((use) =>
+  ['low', 'medium', 'high'].map((q) => { const r = m.resolveImageModel(use, q); return [use + ':' + q, r.id + '/' + r.provider] })))`
+
+test.describe('image model registry', () => {
+  test('every use and quality resolves to a model and its provider with no image env set', async () => {
+    const result = await inModels(RESOLVE_ALL, {})
+    expect(result.ok).toBe(true)
+    const resolved = result.value as Record<string, string>
+    expect(Object.keys(resolved)).toHaveLength(6)
+    for (const value of Object.values(resolved)) expect(value).toBe('gpt-image-2.5-flare/openai')
   })
 
-  test('the model is swapped by env alone (Sunburst), independent of the element model', async () => {
-    const result = await loadStoryboardConfig({
-      OPENAI_STORYBOARD_IMAGE_MODEL: 'gpt-image-2.5-sunburst',
-      OPENAI_ELEMENT_IMAGE_MODEL: 'gpt-image-1-mini',
-    })
-    expect(result.ok && (result.value as { model: string }).model).toBe('gpt-image-2.5-sunburst')
+  test('the retired image env vars are never read - setting them changes nothing', async () => {
+    const junk = Object.fromEntries(RETIRED_IMAGE_ENV_KEYS.map((key) => [key, key.includes('PROVIDER') ? 'fal' : 'gpt-image-1-mini']))
+    expect(await inModels(RESOLVE_ALL, junk)).toEqual(await inModels(RESOLVE_ALL, {}))
+    const config = await inModels('m.modelsConfig.elements', junk)
+    expect(config).toEqual({ ok: true, value: { size: '1024x1024' } })
   })
 
-  test('fal provider reads its own model variable', async () => {
-    const result = await loadStoryboardConfig({
-      STORYBOARD_IMAGE_PROVIDER: 'fal',
-      FALAI_STORYBOARD_IMAGE_MODEL: 'some-fal-model',
-    })
-    expect(result).toEqual({ ok: true, value: { provider: 'fal', model: 'some-fal-model', quality: 'low' } })
-  })
-
-  test('a quality other than low refuses to start - the price is calibrated for low only', async () => {
-    const result = await loadStoryboardConfig({ OPENAI_STORYBOARD_IMAGE_QUALITY: 'medium' })
-    expect(result.ok).toBe(false)
-    expect(result.message).toContain('OPENAI_STORYBOARD_IMAGE_QUALITY')
-  })
-
-  test('with fal selected, the images route refuses before touching the database', async () => {
-    const original = modelsConfig.storyboardImages.provider
-    modelsConfig.storyboardImages.provider = 'fal'
-    try {
-      const untouchable = new Proxy(
-        {},
+  test('each registered model carries its provider, its uses and its qualities, and has rates', async () => {
+    const result = await inModels(
+      "Object.values(m.IMAGE_MODELS).map((x) => ({ id: x.id, provider: x.provider, uses: x.uses, qualities: x.qualities, source: x.source }))",
+      {}
+    )
+    expect(result).toEqual({
+      ok: true,
+      value: [
         {
-          get() {
-            throw new Error('the database was touched')
-          },
-        }
-      ) as Parameters<typeof runImagesRequest>[0]['supabase']
-      const result = await runImagesRequest({
-        supabase: untouchable,
-        projectId: 'p',
-        userId: 'u',
-        shotIds: ['s'],
-        getBalance: async () => {
-          throw new Error('balance was read')
+          id: 'gpt-image-2.5-flare',
+          provider: 'openai',
+          uses: ['element_reference', 'storyboard_frame'],
+          qualities: ['low', 'medium', 'high'],
+          source: expect.stringMatching(/^https:\/\//),
         },
-        ensureSignupGrant: async () => {
-          throw new Error('grant was touched')
-        },
-      })
-      expect(result.ok).toBe(false)
-      if (!result.ok) expect(result.status).toBe(500)
-    } finally {
-      modelsConfig.storyboardImages.provider = original
-    }
+      ],
+    })
+    expect(Object.keys(OPENAI_RATES.images).sort()).toEqual(Object.keys(IMAGE_MODELS).sort())
+  })
+})
+
+test.describe('image quality dev cap', () => {
+  const sent = (env: Record<string, string>) =>
+    inModels("['low', 'medium', 'high'].map((q) => m.effectiveImageQuality(q))", env)
+
+  test('unset, every project quality is sent as asked', async () => {
+    expect(await sent({ NODE_ENV: 'development' })).toEqual({ ok: true, value: ['low', 'medium', 'high'] })
+  })
+
+  test('outside production it lowers the quality sent, never raises it', async () => {
+    expect(await sent({ NODE_ENV: 'development', IMAGE_QUALITY_DEV_CAP: 'medium' })).toEqual({
+      ok: true,
+      value: ['low', 'medium', 'medium'],
+    })
+    expect(await sent({ NODE_ENV: 'development', IMAGE_QUALITY_DEV_CAP: 'low' })).toEqual({
+      ok: true,
+      value: ['low', 'low', 'low'],
+    })
+  })
+
+  test('it never applies in production', async () => {
+    expect(await sent({ NODE_ENV: 'production', IMAGE_QUALITY_DEV_CAP: 'low' })).toEqual({
+      ok: true,
+      value: ['low', 'medium', 'high'],
+    })
+  })
+
+  test('an unrecognised cap fails loudly instead of being ignored', async () => {
+    const result = await sent({ NODE_ENV: 'development', IMAGE_QUALITY_DEV_CAP: 'ultra' })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('IMAGE_QUALITY_DEV_CAP')
   })
 })
 

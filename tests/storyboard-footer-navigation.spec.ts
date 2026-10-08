@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 import sharp from 'sharp'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
-import { PRICE_TABLE } from '../src/lib/config/credits'
+import { fixedCredits } from './helpers/prices'
 import { stepIndex } from '../src/lib/config/pipeline'
 
 // The Storyboard's footer button, mirroring image-prompts-footer-navigation.spec.ts. The
@@ -12,7 +12,7 @@ import { stepIndex } from '../src/lib/config/pipeline'
 const STORYBOARD = stepIndex('storyboard')
 const VIDEO_PROMPTS = stepIndex('video_prompts')
 // Read from the config, never restated: a re-priced step must not turn these red.
-const PER_SHOT = PRICE_TABLE.video_prompts!.write_video_prompts!.credits
+const PER_SHOT = fixedCredits('video_prompts', 'write_video_prompts')
 
 const NAVIGATION = { timeout: 45000 }
 

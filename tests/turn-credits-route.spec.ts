@@ -16,7 +16,7 @@ async function seedProject(userId: string) {
       video_type: 'auto',
       duration_target: '30-60s',
       current_step: 'workbench',
-      video_model: 'mochi-1',
+      video_model: 'wan-3.0',
       furthest_step: 2,
     })
     .select('id')

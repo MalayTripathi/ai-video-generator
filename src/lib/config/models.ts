@@ -1,17 +1,6 @@
+import { IMAGE_QUALITIES, type ImageQuality, type QualityPresetId, type VideoResolution } from './enums'
+
 const isProduction = process.env.NODE_ENV === 'production'
-
-// Provider selection for element reference images. A second provider (fal) can be
-// added later without touching call sites - they read modelsConfig.elements.provider,
-// never this env var directly.
-const elementImageProvider: 'openai' | 'fal' =
-  process.env.ELEMENT_IMAGE_PROVIDER === 'fal' ? 'fal' : 'openai'
-
-// Provider selection for Step 4 storyboard images - same shape as the element selector
-// above, and deliberately independent of it: the two may differ in model and quality
-// from day one. fal has no image gateway yet, so selecting it is refused by the images
-// route before any claim (see runImagesRequest).
-const storyboardImageProvider: 'openai' | 'fal' =
-  process.env.STORYBOARD_IMAGE_PROVIDER === 'fal' ? 'fal' : 'openai'
 
 // Provider selection for Step 4 voiceover. ElevenLabs is the only implementation; any
 // other value is refused by the voiceover routes before a claim.
@@ -26,79 +15,320 @@ if (process.env.MUSIC_PROVIDER && process.env.MUSIC_PROVIDER !== 'elevenlabs') {
   console.error(`[models] MUSIC_PROVIDER="${process.env.MUSIC_PROVIDER}" is not implemented; using elevenlabs`)
 }
 
-// Video-model registry: duration bounds per model, for the Step 2 duration stepper to
-// clamp against once it's built. This registry will grow - adding a model is one entry
-// here, not edits scattered across several places. Seconds are fractional (real clip
-// durations aren't whole numbers); frame counts and provider names must never appear in
-// user-facing strings - only `label` and durations in seconds are shown to users.
+// Video-model registry - the single source for every image-to-video model: its fal
+// endpoint, duration bounds, resolutions, audio and reference support, and per-second
+// price (FAL_RATES in pricing.ts is derived from `usdPerSecond` here, never hand-copied).
+// Adding a model is one entry here. Frame counts, endpoints and provider names must never
+// appear in user-facing strings - only `label`, `tier` and durations in seconds are shown.
 //
-// Keys must be the literal string a project's `video_model` column can hold - there is
-// no normalization layer between the DB value and this lookup (see
-// ProjectHeader.videoModelLabel, which looks the raw column value up directly). That's
-// why 'Kling 2.1' below is Title Case with a space rather than a kebab-case slug like
-// 'mochi-1' - it has to match the literal value old rows were backfilled with
-// (supabase/migrations/20260827105542_backfill_video_model_default.sql).
-export type VideoModelId = 'mochi-1' | 'Kling 2.1'
+// Keys are the literal string a project's `video_model` column holds - there is no
+// normalization layer, and the column has no CHECK (models change): it is validated in
+// application code against this registry (assertRegisteredVideoModel).
+//
+// Every value below comes from the model's own fal pages, listed in `source` (llms.txt
+// for prices, the queue OpenAPI schema for parameters), checked 2026-10-08.
+export const VIDEO_MODEL_IDS = [
+  'seedance-1.0-pro',
+  'seedance-2.0-mini',
+  'seedance-2.0-fast',
+  'wan-2.5',
+  'wan-3.0',
+  'kling-v3-standard',
+] as const
+export type VideoModelId = (typeof VIDEO_MODEL_IDS)[number]
+
+export type VideoModelTier = 'Budget' | 'Standard' | 'Premium'
+
+/** USD per second of output. `audioOn` is null when the model cannot generate audio. */
+export type VideoPerSecondRate = { audioOff: number; audioOn: number | null }
 
 type VideoModelBase = {
   id: VideoModelId
   label: string
+  tier: VideoModelTier
+  /** fal endpoint id. Server-side only - never rendered. */
+  endpoint: string
+  /** Output resolutions the request can pick; null when the provider states none. */
+  resolutions: readonly VideoResolution[] | null
+  audio:
+    | { mode: 'generated'; flag: string; priceImpact: 'none' | 'priced' | 'unknown' }
+    | { mode: 'input_only'; field: string }
+    | { mode: 'none' }
+  references:
+    | { supported: false }
+    // maxCount null = the schema sets no limit.
+    | { supported: true; field: string; maxCount: number | null; imagesPerReference: number }
+  /** Keyed by resolution; a model whose `resolutions` is null has a single 'any' rate. */
+  usdPerSecond: Partial<Record<VideoResolution | 'any', VideoPerSecondRate>>
+  source: readonly string[]
 }
 
 // Duration bounds are a discriminated union, not a min/max pair with an implied
-// continuous range - a model MUST say which kind it is. This exists because Kling 2.1's
-// real API takes exactly 5s or 10s, not a continuous range: the old min/max-only shape
-// let the 0.1s stepper produce a value (e.g. 7.3s) the provider would reject, and that
-// failure wouldn't surface until Step 7 (clip generation, the most expensive step),
-// after the user had already paid for everything upstream. A model can't be defined
-// without picking 'continuous' or 'discrete' - there is no way to omit `kind` and fall
-// back to a default the way an optional field would allow.
+// continuous range - a model MUST say which kind it is. A discrete model (e.g. Wan 2.5:
+// exactly 5s or 10s) would otherwise let the 0.1s stepper produce a value (7.3s) the
+// provider rejects, and that failure wouldn't surface until clip generation, the most
+// expensive step, after the user had already paid for everything upstream.
+// A range model also names its step: every fal model takes whole seconds only (a string
+// enum "2".."12" or an integer), so 7.3s is as unrenderable as it is on a discrete model.
 export type VideoModelConfig =
-  | (VideoModelBase & { kind: 'continuous'; durationMin: number; durationMax: number })
+  | (VideoModelBase & { kind: 'continuous'; durationMin: number; durationMax: number; durationStep: number })
   | (VideoModelBase & { kind: 'discrete'; allowedDurations: number[] })
 
+// Documentation links recorded as each entry's source - never requested by the app, so the
+// provider-host lint rule (which guards real calls) is disabled for these two lines only.
+const falSource = (endpoint: string): readonly string[] => [
+  // eslint-disable-next-line no-restricted-syntax
+  `https://fal.ai/models/${endpoint}/llms.txt`,
+  // eslint-disable-next-line no-restricted-syntax
+  `https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=${endpoint}`,
+]
+
+/** Same price with or without generated audio. */
+const flatAudio = (usd: number): VideoPerSecondRate => ({ audioOff: usd, audioOn: usd })
+/** The model cannot generate audio. */
+const silent = (usd: number): VideoPerSecondRate => ({ audioOff: usd, audioOn: null })
+
 export const VIDEO_MODELS: Record<VideoModelId, VideoModelConfig> = {
-  'mochi-1': { id: 'mochi-1', label: 'Mochi 1', kind: 'continuous', durationMin: 1.4, durationMax: 5.4 },
-  // Sourced from fal.ai's own API docs for fal-ai/kling-video/v2.1 (standard/pro/master
-  // all agree): `duration` is a two-value enum, 5 or 10 seconds - never anything between.
-  // This closes the "known gap" the old min/max-only shape left open (see CLAUDE.md).
-  'Kling 2.1': { id: 'Kling 2.1', label: 'Kling 2.1', kind: 'discrete', allowedDurations: [5, 10] },
+  // Priced from the page's token formula, (h x w x fps x duration) / 1024 at $2.5 per 1M
+  // tokens - not its "roughly $0.62 per 5s 1080p" headline. The page states no fps: 24 is
+  // assumed, at 864x480 / 1280x720 / 1920x1080.
+  'seedance-1.0-pro': {
+    id: 'seedance-1.0-pro',
+    label: 'Seedance 1.0 Pro',
+    tier: 'Budget',
+    endpoint: 'fal-ai/bytedance/seedance/v1/pro/image-to-video',
+    kind: 'continuous',
+    durationMin: 2,
+    durationMax: 12,
+    durationStep: 1,
+    resolutions: ['480p', '720p', '1080p'],
+    audio: { mode: 'none' },
+    references: { supported: false },
+    usdPerSecond: { '480p': silent(0.0243), '720p': silent(0.054), '1080p': silent(0.1215) },
+    source: falSource('fal-ai/bytedance/seedance/v1/pro/image-to-video'),
+  },
+  // The stated 720p rate is above the page's own token formula at 1280x720 ($0.1512/s);
+  // the stated (higher) rate is used.
+  'seedance-2.0-mini': {
+    id: 'seedance-2.0-mini',
+    label: 'Seedance 2.0 Mini',
+    tier: 'Standard',
+    endpoint: 'bytedance/seedance-2.0/mini/image-to-video',
+    kind: 'continuous',
+    durationMin: 4,
+    durationMax: 15,
+    durationStep: 1,
+    resolutions: ['480p', '720p'],
+    audio: { mode: 'generated', flag: 'generate_audio', priceImpact: 'none' },
+    references: { supported: false },
+    usdPerSecond: { '480p': flatAudio(0.0721), '720p': flatAudio(0.1547) },
+    source: falSource('bytedance/seedance-2.0/mini/image-to-video'),
+  },
+  // 480p is not stated: computed from the page's formula, 864x480 x 24fps / 1024 tokens
+  // per second at $0.0112 per 1K tokens.
+  'seedance-2.0-fast': {
+    id: 'seedance-2.0-fast',
+    label: 'Seedance 2.0 Fast',
+    tier: 'Premium',
+    endpoint: 'bytedance/seedance-2.0/fast/image-to-video',
+    kind: 'continuous',
+    durationMin: 4,
+    durationMax: 15,
+    durationStep: 1,
+    resolutions: ['480p', '720p'],
+    audio: { mode: 'generated', flag: 'generate_audio', priceImpact: 'none' },
+    references: { supported: false },
+    usdPerSecond: { '480p': flatAudio(0.1089), '720p': flatAudio(0.2419) },
+    source: falSource('bytedance/seedance-2.0/fast/image-to-video'),
+  },
+  'wan-2.5': {
+    id: 'wan-2.5',
+    label: 'Wan 2.5',
+    tier: 'Budget',
+    endpoint: 'fal-ai/wan-25-preview/image-to-video',
+    kind: 'discrete',
+    allowedDurations: [5, 10],
+    resolutions: ['480p', '720p', '1080p'],
+    audio: { mode: 'input_only', field: 'audio_url' },
+    references: { supported: false },
+    usdPerSecond: { '480p': silent(0.05), '720p': silent(0.1), '1080p': silent(0.15) },
+    source: falSource('fal-ai/wan-25-preview/image-to-video'),
+  },
+  // The audio flag is named `audio` (default on). The page's single price doesn't say
+  // whether audio changes it, so the stated rate is applied to both.
+  'wan-3.0': {
+    id: 'wan-3.0',
+    label: 'Wan 3.0',
+    tier: 'Budget',
+    endpoint: 'alibaba/wan-3.0/image-to-video',
+    kind: 'continuous',
+    durationMin: 2,
+    durationMax: 30,
+    durationStep: 1,
+    resolutions: ['480p', '720p', '1080p'],
+    audio: { mode: 'generated', flag: 'audio', priceImpact: 'unknown' },
+    references: { supported: false },
+    usdPerSecond: { '480p': flatAudio(0.05), '720p': flatAudio(0.1), '1080p': flatAudio(0.2) },
+    source: falSource('alibaba/wan-3.0/image-to-video'),
+  },
+  // No resolution parameter and no stated output resolution. `elements` has no maxItems in
+  // the schema; each element is one frontal image plus 1-3 reference images (field
+  // description only). Voice control ($0.154/s) is not used.
+  'kling-v3-standard': {
+    id: 'kling-v3-standard',
+    label: 'Kling 3 Standard',
+    tier: 'Standard',
+    endpoint: 'fal-ai/kling-video/v3/standard/image-to-video',
+    kind: 'continuous',
+    durationMin: 3,
+    durationMax: 15,
+    durationStep: 1,
+    resolutions: null,
+    audio: { mode: 'generated', flag: 'generate_audio', priceImpact: 'priced' },
+    references: { supported: true, field: 'elements', maxCount: null, imagesPerReference: 4 },
+    usdPerSecond: { any: { audioOff: 0.084, audioOn: 0.126 } },
+    source: falSource('fal-ai/kling-video/v3/standard/image-to-video'),
+  },
 }
 
-export const DEFAULT_VIDEO_MODEL: VideoModelId = 'mochi-1'
+export class UnknownVideoModelError extends Error {
+  constructor(id: string) {
+    super(`Video model "${id}" is not registered in VIDEO_MODELS.`)
+    this.name = 'UnknownVideoModelError'
+  }
+}
+
+export function isRegisteredVideoModel(id: string | null): id is VideoModelId {
+  return id !== null && Object.hasOwn(VIDEO_MODELS, id)
+}
+
+/** Every write of `projects.video_model` goes through this - an unknown value fails loudly. */
+export function assertRegisteredVideoModel(id: string): VideoModelId {
+  if (!isRegisteredVideoModel(id)) throw new UnknownVideoModelError(id)
+  return id
+}
 
 // Resolves a project's stored `video_model` string to its registry entry. Unlike
-// ProjectHeader.videoModelLabel (which must never blank a chip for an unregistered
-// value), a duration stepper needs real bounds to clamp against - silently falling back
-// to another model's bounds would be exactly the kind of wrong-ceiling data error that
-// could truncate a user's shot. So this fails loudly outside production (to catch a
-// missing registry entry during development) and degrades to `null` in production
-// (letting the caller render a disabled stepper instead of crashing the page).
+// ProjectHeader's chip (which hides itself for an unregistered value), a duration stepper
+// needs real bounds to clamp against - silently falling back to another model's bounds
+// would be exactly the kind of wrong-ceiling data error that could truncate a user's shot.
+// So this fails loudly outside production and degrades to `null` in production (letting
+// the caller render a disabled stepper instead of crashing the page).
 export function resolveVideoModel(id: string | null): VideoModelConfig | null {
   if (!id) return null
-  const config = VIDEO_MODELS[id as VideoModelId]
-  if (config) return config
+  if (isRegisteredVideoModel(id)) return VIDEO_MODELS[id]
   if (!isProduction) {
-    throw new Error(`Unrecognized video model id "${id}" is not registered in VIDEO_MODELS`)
+    throw new UnknownVideoModelError(id)
   }
   console.error(`[models] Unrecognized video model id "${id}" - no duration bounds available`)
   return null
 }
 
-// Whether `seconds` is a value the model can actually render - a continuous model
-// accepts anything inside its range, a discrete model accepts only its exact allowed
-// values. A saved duration that fails this is flagged amber and never silently
+// Whether `seconds` is a value the model can actually render - a range model accepts any
+// multiple of its step inside its range, a discrete model only its exact allowed values. A saved duration that fails this is flagged amber and never silently
 // corrected (see DurationStepper) - only the person resolves it.
 export function isDurationAllowed(config: VideoModelConfig, seconds: number): boolean {
-  return config.kind === 'continuous'
-    ? seconds >= config.durationMin && seconds <= config.durationMax
-    : config.allowedDurations.includes(seconds)
+  if (config.kind === 'discrete') return config.allowedDurations.includes(seconds)
+  const steps = seconds / config.durationStep
+  return seconds >= config.durationMin && seconds <= config.durationMax && Math.abs(steps - Math.round(steps)) < 1e-9
 }
 
-// The longest clip a model can render - a continuous model's upper bound, a discrete
-// model's longest allowed value. The Storyboard's retime ceiling reads this.
-export function videoModelMaxSeconds(config: VideoModelConfig): number {
-  return config.kind === 'continuous' ? config.durationMax : Math.max(...config.allowedDurations)
+/** Shortest and longest shot a model can render, derived from its allowed durations. */
+export function videoModelBounds(config: VideoModelConfig): { min: number; max: number } {
+  return config.kind === 'continuous'
+    ? { min: config.durationMin, max: config.durationMax }
+    : { min: Math.min(...config.allowedDurations), max: Math.max(...config.allowedDurations) }
+}
+
+// Quality presets, ordered by cost (cheapest first). A project's settings are one of these
+// or 'custom' (chosen by hand). New projects take `low` until intake offers a choice.
+export type QualityPreset = {
+  videoModel: VideoModelId
+  videoResolution: VideoResolution
+  imageQuality: ImageQuality
+}
+export const QUALITY_PRESETS: Record<Exclude<QualityPresetId, 'custom'>, QualityPreset> = {
+  low: { videoModel: 'wan-3.0', videoResolution: '480p', imageQuality: 'low' },
+  medium: { videoModel: 'seedance-2.0-mini', videoResolution: '720p', imageQuality: 'medium' },
+  high: { videoModel: 'wan-3.0', videoResolution: '1080p', imageQuality: 'high' },
+}
+export const DEFAULT_QUALITY_PRESET = 'low' as const
+
+// Image-model registry - the single source for which image models exist, which provider
+// serves each, what each is used for and at which qualities. Never chosen by env: the
+// model for a call is resolved from the use and the project's image quality
+// (resolveImageModel), and the provider follows from the model. Sizes: frames use
+// STORYBOARD_IMAGE_SIZES (storyboard.ts); element references are 1024x1024 - both meet
+// 2.5-flare's size rules (multiples of 16, 655,360-8,294,400 pixels in total). Every model
+// here has an OPENAI_RATES entry (pricing.ts), and only these do.
+export const IMAGE_USES = ['element_reference', 'storyboard_frame'] as const
+export type ImageUse = (typeof IMAGE_USES)[number]
+
+export type ImageModelConfig = {
+  id: string
+  label: string
+  /** The only image gateway is OpenAI's; a model on another provider needs its own first. */
+  provider: 'openai'
+  uses: readonly ImageUse[]
+  /** Qualities offered (xhigh and max are excluded). */
+  qualities: readonly ImageQuality[]
+  source: string
+}
+
+export const IMAGE_MODELS = {
+  'gpt-image-2.5-flare': {
+    id: 'gpt-image-2.5-flare',
+    label: 'GPT Image 2.5 Flare',
+    provider: 'openai',
+    uses: ['element_reference', 'storyboard_frame'],
+    qualities: IMAGE_QUALITIES,
+    source: 'https://developers.openai.com/api/docs/models/gpt-image-2.5-flare',
+  },
+} as const satisfies Record<string, ImageModelConfig>
+export type ImageModelId = keyof typeof IMAGE_MODELS
+
+export class NoImageModelError extends Error {
+  constructor(use: ImageUse, quality: ImageQuality) {
+    super(`No registered image model serves ${use} at ${quality} quality.`)
+    this.name = 'NoImageModelError'
+  }
+}
+
+/**
+ * The image model - and so the provider - for one call: the first registered model that
+ * serves this use at the quality the call sends. No env lookup.
+ */
+export function resolveImageModel(use: ImageUse, quality: ImageQuality): ImageModelConfig & { id: ImageModelId } {
+  for (const model of Object.values(IMAGE_MODELS) as (ImageModelConfig & { id: ImageModelId })[]) {
+    if (model.uses.includes(use) && model.qualities.includes(quality)) return model
+  }
+  throw new NoImageModelError(use, quality)
+}
+
+export class InvalidImageQualityError extends Error {
+  constructor(value: string, origin: string) {
+    super(`${origin} is "${value}", which is not one of ${IMAGE_QUALITIES.join(', ')}.`)
+    this.name = 'InvalidImageQualityError'
+  }
+}
+
+/** A project's stored `image_quality`, narrowed. The DB CHECK makes a miss a bug - it throws. */
+export function parseImageQuality(value: string): ImageQuality {
+  if ((IMAGE_QUALITIES as readonly string[]).includes(value)) return value as ImageQuality
+  throw new InvalidImageQualityError(value, 'projects.image_quality')
+}
+
+// The quality an image request actually sends - and is priced at. Outside production an
+// optional IMAGE_QUALITY_DEV_CAP lowers it (never raises it) to keep development spend
+// down; production always sends the project's own quality. Gate, provider call and ledger
+// all read this one function, so the charge always follows the quality actually used.
+export function effectiveImageQuality(projectQuality: ImageQuality): ImageQuality {
+  if (isProduction) return projectQuality
+  const cap = process.env.IMAGE_QUALITY_DEV_CAP
+  if (!cap) return projectQuality
+  const capIndex = (IMAGE_QUALITIES as readonly string[]).indexOf(cap)
+  if (capIndex === -1) throw new InvalidImageQualityError(cap, 'IMAGE_QUALITY_DEV_CAP')
+  return IMAGE_QUALITIES[Math.min(IMAGE_QUALITIES.indexOf(projectQuality), capIndex)]
 }
 
 export type ModelsConfig = {
@@ -117,27 +347,18 @@ export type ModelsConfig = {
     model: string
     maxTokens: number
   }
+  // Quality is not here: it is the project's own `image_quality`, through
+  // effectiveImageQuality.
+  // Element reference images. The model and provider come from resolveImageModel; the
+  // quality is the project's. Storyboard frames have no section: their size follows the
+  // project's aspect ratio (STORYBOARD_IMAGE_SIZES, storyboard.ts).
   elements: {
-    provider: 'openai' | 'fal'
-    model: string
-    quality: string
     size: '1024x1024'
-  }
-  // Size is not here: it follows the project's aspect ratio, from
-  // STORYBOARD_IMAGE_SIZES (src/lib/config/storyboard.ts).
-  storyboardImages: {
-    provider: 'openai' | 'fal'
-    model: string
-    quality: string
   }
   imagePrompts: {
     provider: 'anthropic'
     model: string
     maxTokens: number
-  }
-  video: {
-    provider: 'fal'
-    model: string
   }
   // Voices are not here: they are a per-language list, VOICEOVER_VOICES below.
   voiceover: {
@@ -191,32 +412,7 @@ export const modelsConfig: ModelsConfig = {
     maxTokens: Number(process.env.CLAUDE_AGENT_MAX_TOKENS) || 8192,
   },
   elements: {
-    // Low quality/1024x1024 is correct in both environments, permanently - like
-    // camera above, this sits outside the isProduction ternary on purpose. A
-    // reference image is a consistency anchor the model looks at, never a frame the
-    // viewer sees, so paying for more than the cheapest tier is waste in production
-    // exactly as it is in development.
-    provider: elementImageProvider,
-    // The provider decides which env var fills `model` - there is no separate
-    // per-provider model field. fal isn't implemented yet (FALAI_ELEMENT_IMAGE_MODEL
-    // is read so the env var audit is complete, but nothing consumes it until a fal
-    // ImageGateway branch exists).
-    model:
-      elementImageProvider === 'openai'
-        ? (process.env.OPENAI_ELEMENT_IMAGE_MODEL ?? 'gpt-image-1-mini')
-        : (process.env.FALAI_ELEMENT_IMAGE_MODEL ?? ''),
-    quality: process.env.OPENAI_ELEMENT_IMAGE_QUALITY ?? 'low',
     size: '1024x1024',
-  },
-  storyboardImages: {
-    provider: storyboardImageProvider,
-    // Same provider-decides-the-env-var rule as elements. fal is config-only until a fal
-    // ImageGateway branch exists.
-    model:
-      storyboardImageProvider === 'openai'
-        ? (process.env.OPENAI_STORYBOARD_IMAGE_MODEL ?? 'gpt-image-2.5-flare')
-        : (process.env.FALAI_STORYBOARD_IMAGE_MODEL ?? ''),
-    quality: process.env.OPENAI_STORYBOARD_IMAGE_QUALITY ?? 'low',
   },
   imagePrompts: {
     provider: 'anthropic',
@@ -224,10 +420,6 @@ export const modelsConfig: ModelsConfig = {
       process.env.CLAUDE_IMAGE_PROMPTS_MODEL ??
       (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
     maxTokens: Number(process.env.CLAUDE_IMAGE_PROMPTS_MAX_TOKENS) || 8192,
-  },
-  video: {
-    provider: 'fal',
-    model: process.env.FAL_VIDEO_MODEL ?? VIDEO_MODELS[DEFAULT_VIDEO_MODEL].id,
   },
   voiceover: {
     provider: voiceoverProvider,
@@ -248,29 +440,6 @@ export const modelsConfig: ModelsConfig = {
     // Small ceiling for the same reason as camera: reserveUsage reserves all of it.
     maxTokens: Number(process.env.CLAUDE_MUSIC_PROMPT_MAX_TOKENS) || 128,
   },
-}
-
-// generate_element_reference's credit price (PRICE_TABLE, src/lib/config/credits.ts)
-// is calibrated for gpt-image-1-mini at 'low' quality / 1024x1024 only - the price
-// can't see quality (keyed on step+operation), so a quality change here would
-// silently raise real provider cost while the charge stayed fixed. Fails at startup,
-// in every environment - a real cost-safety bug, not a dev-only concern.
-if (modelsConfig.elements.quality !== 'low') {
-  throw new Error(
-    `OPENAI_ELEMENT_IMAGE_QUALITY is "${modelsConfig.elements.quality}", but the ` +
-      `generate_element_reference credit price is calibrated for "low" only. Update ` +
-      `PRICE_TABLE (src/lib/config/credits.ts) before changing element image quality.`
-  )
-}
-
-// Same guard, for storyboard/generate_image: its PRICE_TABLE entry is calibrated for
-// 'low' quality only, and the price can't see quality.
-if (modelsConfig.storyboardImages.quality !== 'low') {
-  throw new Error(
-    `OPENAI_STORYBOARD_IMAGE_QUALITY is "${modelsConfig.storyboardImages.quality}", but the ` +
-      `storyboard generate_image credit price is calibrated for "low" only. Update ` +
-      `PRICE_TABLE (src/lib/config/credits.ts) before changing storyboard image quality.`
-  )
 }
 
 // Narration voices, four per language (two male, two female), picked by hand from the

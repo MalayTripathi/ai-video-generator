@@ -60,9 +60,11 @@ export type ActionError =
   | { source: ActionSource; kind: 'credits'; title: string; requiredCredits: number; balanceCredits: number | null }
   | { source: ActionSource; kind: 'error'; message: string }
 
-// Prices are read from credits.ts at the point of display, never copied from the canvas.
-export function imagePrice(quantity: number): number {
-  return creditsFor({ step: 'storyboard', operation: 'generate_image', quantity })
+// Prices are read from credits.ts at the point of display, never copied from the canvas. A
+// frame's price is computed server-side per shot (its project's image quality and size,
+// plus its own references) and arrives on its status, so a batch is the sum of its shots.
+export function imagePrice(statuses: readonly ShotImageStatus[]): number {
+  return statuses.reduce((sum, status) => sum + status.imageCredits, 0)
 }
 
 export function promptPrice(): number {
@@ -158,6 +160,8 @@ function emptyStatus(shotId: string): ShotImageStatus {
     startedAt: null,
     queuedAt: null,
     drawnAt: null,
+    // Unpriced until the next poll returns this shot; the server's gate prices it either way.
+    imageCredits: 0,
   }
 }
 
@@ -551,7 +555,7 @@ export function StoryboardProvider({
             source,
             kind: 'credits',
             title: shotIds.length === 1 ? 'Not enough credits to draw this frame' : 'Not enough credits to draw these frames',
-            requiredCredits: Number(body?.requiredCredits ?? imagePrice(shotIds.length)),
+            requiredCredits: Number(body?.requiredCredits ?? imagePrice(shotIds.map(statusFor))),
             balanceCredits: typeof body?.balanceCredits === 'number' ? body.balanceCredits : null,
           })
         } else if (!res.ok) {
@@ -569,7 +573,7 @@ export function StoryboardProvider({
         await refresh()
       }
     },
-    [projectId, readOnly, refresh, setFigures]
+    [projectId, readOnly, refresh, setFigures, statusFor]
   )
 
   const runPromptRegeneration = useCallback(

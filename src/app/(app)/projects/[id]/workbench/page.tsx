@@ -86,6 +86,18 @@ export default async function WorkbenchPage({
   // The project row gates the page (404 / redirect), but no read below needs its data -
   // they key on projectId and are RLS-scoped to the owner - so all of them run in one
   // wave with it, and the gate is applied once they land.
+  // A real Promise (not the query builder), so the Assets price can wait on its image
+  // quality without a second read.
+  const projectPromise = Promise.resolve(
+    supabase
+      .from('projects')
+      .select(
+        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, video_resolution, image_quality, duration_target'
+      )
+      .eq('id', projectId)
+      .eq('user_id', user.id)
+      .maybeSingle()
+  )
   const [
     { data: project, error: projectError },
     { data: shotsRows },
@@ -97,14 +109,7 @@ export default async function WorkbenchPage({
     { data: usageRows },
     { data: creditLedgerRows },
   ] = await Promise.all([
-    supabase
-      .from('projects')
-      .select(
-        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target'
-      )
-      .eq('id', projectId)
-      .eq('user_id', user.id)
-      .maybeSingle(),
+    projectPromise,
     supabase
       .from('shots')
       .select(`${WORKBENCH_SHOT_COLUMNS}, shot_elements(elements(id, name, type, status, reference_image_path))`)
@@ -115,7 +120,7 @@ export default async function WorkbenchPage({
     // shots/dialogue join below and the Assets tab's initial render, so there is no
     // second raw `elements` query.
     getProjectElementsForUser(supabase, projectId, user.id),
-    getElementGenerateAffordability(),
+    getElementGenerateAffordability(projectPromise.then(({ data }) => data?.image_quality ?? null)),
     supabase
       .from('shot_dialogue')
       .select('id, shot_id, element_id, line, order_index')

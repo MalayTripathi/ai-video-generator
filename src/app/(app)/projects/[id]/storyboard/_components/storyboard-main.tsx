@@ -48,8 +48,9 @@ export function StoryboardMain({
   // Binned shots are off the film: the counter, Preview lock, Export and Generate remaining
   // all read the lane alone.
   const statuses = laneShots.map((s) => statusFor(s.id))
-  const notGeneratedIds = statuses.filter((s) => s.state === 'not_generated').map((s) => s.shotId)
-  const banner = caseTwo(r, balanceCredits, imagePrice(1))
+  const notGenerated = statuses.filter((s) => s.state === 'not_generated')
+  const notGeneratedIds = notGenerated.map((s) => s.shotId)
+  const banner = caseTwo(r, balanceCredits, imagePrice(notGenerated))
   const laneError = actionError?.source === 'lane' ? actionError : null
 
   return (
@@ -96,7 +97,7 @@ export function StoryboardMain({
               balanceCredits={balanceCredits}
               action={{
                 label: 'Generate remaining',
-                credits: imagePrice(banner.shotCount),
+                credits: banner.requiredCredits,
                 onClick: () => void generate(notGeneratedIds, 'lane'),
                 disabled: readOnly || notGeneratedIds.some((id) => busyShotIds.has(id)),
               }}

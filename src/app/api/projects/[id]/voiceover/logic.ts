@@ -40,7 +40,7 @@ import {
   type VoiceoverScript,
   type VoiceoverSpan,
 } from '@/lib/storyboard/voiceover'
-import { countLiveImageClaims } from '../images/logic'
+import { liveImageCommittedCredits } from '../images/logic'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type GenerationRow = Tables<'generations'>
@@ -106,9 +106,8 @@ export async function gate(
 ): Promise<Refusal | null> {
   await deps.ensureSignupGrant(userId)
   const balance = await deps.getBalance(userId)
-  const imagePrice = creditsFor({ step: STEP, operation: 'generate_image', quantity: 1 })
   const committed =
-    (await countLiveImageClaims(supabase, userId)) * imagePrice + (await liveAudioCommittedCredits(supabase, userId))
+    (await liveImageCommittedCredits(supabase, userId)) + (await liveAudioCommittedCredits(supabase, userId))
   const effective = Math.max(0, balance - committed)
   if (effective < price) {
     return {

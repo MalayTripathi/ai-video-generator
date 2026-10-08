@@ -416,7 +416,6 @@ export function TimelineCard() {
   const total = laneTotalSeconds(laneShots)
   const bands = groupBands(laneShots)
   const ticks = rulerTicks(total)
-  const price = imagePrice(1)
   const zoom = STORYBOARD_ZOOM_STEPS[zoomIndex] ?? 1
   const zoomed = zoomIndex > 0
 
@@ -627,7 +626,7 @@ export function TimelineCard() {
                         selected={selectedShotId === shot.id}
                         busy={busyShotIds.has(shot.id)}
                         readOnly={readOnly}
-                        price={price}
+                        price={imagePrice([statusFor(shot.id)])}
                         now={now}
                         aspectRatio={aspectRatio}
                         onSelect={onSelect}

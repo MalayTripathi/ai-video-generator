@@ -109,5 +109,6 @@ export const API_SPECS = [
   'tool-schema-keywords.spec.ts',
   'turn-credits-route.spec.ts',
   'usage-module.spec.ts',
+  'video-models.spec.ts',
   'wiring-identity.spec.ts',
 ] as const

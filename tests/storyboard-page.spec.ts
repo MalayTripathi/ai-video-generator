@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
+import { framePrice } from './helpers/prices'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import sharp from 'sharp'
@@ -16,7 +17,8 @@ import { blockTier, LANE_GUTTER_PX, laneLayout } from '../src/lib/storyboard/tim
 // page.route, so nothing here can reach an image or Claude provider.
 
 const NAVIGATION = { timeout: 45000 }
-const IMAGE_PRICE = creditsFor({ step: 'storyboard', operation: 'generate_image', quantity: 1 })
+// A 9:16, low-quality frame with no references - how seed() builds every shot.
+const IMAGE_PRICE = framePrice()
 const PROMPT_PRICE = creditsFor({ step: 'image_prompts', operation: 'write_image_prompts', quantity: 1 })
 
 test.use({ viewport: { width: 1920, height: 1200 } })

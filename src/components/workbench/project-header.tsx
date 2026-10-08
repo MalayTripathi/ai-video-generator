@@ -1,16 +1,21 @@
 import { durationConfig, shotCountOverrun, type DurationTarget } from '@/lib/config/duration'
-import { VIDEO_MODELS, type VideoModelId } from '@/lib/config/models'
+import { VIDEO_MODELS, isRegisteredVideoModel, videoModelBounds } from '@/lib/config/models'
 import { videoTypeLabel } from '@/lib/video-type-labels'
 import { languageLabel } from '@/lib/language-labels'
 import { displayTitle } from '@/lib/display-title'
 import { formatDuration } from '@/lib/format-duration'
 
-function videoModelLabel(videoModel: string | null): string | null {
-  if (!videoModel) return null
-  // Falls back to the raw stored value for a row that predates the registry (e.g. the old
-  // 'Kling 2.1' placeholder default) - never blank a chip just because a model isn't
-  // (yet) registered.
-  return VIDEO_MODELS[videoModel as VideoModelId]?.label ?? videoModel
+// The model chip, from the registry: "Wan 3.0 · up to 30s/shot · 480p". The resolution is
+// left off for a model whose output resolution isn't selectable. An unregistered value
+// hides the chip - a raw stored string is never rendered.
+export function videoModelChipLabel(videoModel: string | null, videoResolution: string | null): string | null {
+  if (!isRegisteredVideoModel(videoModel)) return null
+  const config = VIDEO_MODELS[videoModel]
+  const parts = [config.label, `up to ${videoModelBounds(config).max}s/shot`]
+  if (config.resolutions !== null && videoResolution !== null && (config.resolutions as readonly string[]).includes(videoResolution)) {
+    parts.push(videoResolution)
+  }
+  return parts.join(' · ')
 }
 
 function LockIcon() {
@@ -47,6 +52,7 @@ export function ProjectHeader({
     aspect_ratio: string | null
     language: string | null
     video_model: string | null
+    video_resolution: string | null
     duration_target: string | null
   }
   shots: { duration_sec: number | null; duration_locked: boolean }[]
@@ -56,6 +62,8 @@ export function ProjectHeader({
       ? durationConfig[project.duration_target as DurationTarget]
       : null
   const targetLabel = tierConfig?.label ?? null
+
+  const modelChip = videoModelChipLabel(project.video_model, project.video_resolution)
 
   const totalSeconds = shots.reduce((sum, shot) => sum + (shot.duration_sec ?? 0), 0)
   const lockedCount = shots.filter((shot) => shot.duration_locked).length
@@ -121,7 +129,7 @@ export function ProjectHeader({
         {videoTypeLabel(project.video_type) && <Chip>{videoTypeLabel(project.video_type)}</Chip>}
         {project.aspect_ratio && <Chip>{project.aspect_ratio} · Locked</Chip>}
         {languageLabel(project.language) && <Chip>{languageLabel(project.language)}</Chip>}
-        {videoModelLabel(project.video_model) && <Chip accent>{videoModelLabel(project.video_model)}</Chip>}
+        {modelChip && <Chip accent>{modelChip}</Chip>}
       </div>
     </div>
   )

@@ -1,4 +1,6 @@
 import type { Step, Operation } from './pipeline'
+import type { ImageQuality, VideoResolution } from './enums'
+import { OPENAI_RATES, videoUsdPerSecond } from './pricing'
 
 // Single source of truth for every credit value in the product - no credit number
 // may appear anywhere else in the codebase. (durationConfig's estimatedCredits in
@@ -12,23 +14,31 @@ export const SIGNUP_GRANT_CREDITS = 5000
 
 // Stamped onto every credit_ledger row so a past row's price stays reconstructable
 // after this table changes later - same pattern as pricing.ts's RATE_VERSION.
-export const CREDIT_PRICE_VERSION = '2026-09-25'
+export const CREDIT_PRICE_VERSION = '2026-10-08'
+
+// Multiplier from provider cost to the credit price of a computed (image, video) price.
+export const CREDIT_MARGIN = 1.0 // placeholder
 
 /**
- * Converts a measured USD cost into credits, rounding up. Used only for agent_turn,
- * where the number of Claude calls in a turn isn't knowable in advance - round once
- * per user action (the summed total), never once per provider call.
+ * Converts a USD cost into credits, rounding up - once per user action (agent_turn's
+ * summed total; one image; one clip), never once per provider call.
  */
 export function usdToCredits(usd: number): number {
   if (usd === 0) return 0
-  return Math.max(1, Math.ceil(usd / USD_PER_CREDIT))
+  // Settle binary float noise before rounding up: $0.084 x 5 is 0.42000000000000004, which
+  // would otherwise round up to an extra credit. Any real excess (a micro-credit or more)
+  // still rounds up.
+  const credits = Math.round((usd / USD_PER_CREDIT) * 1e6) / 1e6
+  return Math.max(1, Math.ceil(credits))
 }
 
 // per_1k_chars: quantity is a character count; per_minute: quantity is seconds. Both
 // round up once, on the whole quantity.
 export type CreditUnit = 'per_shot' | 'per_element' | 'per_project' | 'per_1k_chars' | 'per_minute'
 
-type PriceEntry = { credits: number; unit: CreditUnit }
+// A fixed entry carries its credit number; an image entry is computed per image from the
+// provider's cost for that model/quality/size (imageCredits) and needs the price key.
+type PriceEntry = { kind: 'fixed'; credits: number; unit: CreditUnit } | { kind: 'image'; unit: CreditUnit }
 
 // Keyed on (step, operation), not operation alone: generate_image (storyboard's Step 4
 // frame render) and generate_element_reference (workbench's per-element reference
@@ -42,36 +52,32 @@ type PriceEntry = { credits: number; unit: CreditUnit }
 // must cause a lookup failure, not a silent default of zero.
 export const PRICE_TABLE: Partial<Record<Step, Partial<Record<Operation, PriceEntry>>>> = {
   workbench: {
-    generate_shots: { credits: 2, unit: 'per_shot' }, // measured
-    derive_camera: { credits: 3, unit: 'per_shot' }, // measured
-    // 3 credits derives from gpt-image-1-mini at low quality, 1024x1024: 272 output
-    // tokens at $8/1M tokens is roughly $0.0022, and usdToCredits rounds up to 3.
-    // Placeholder because published per-image figures for this model don't all
-    // reconcile with that arithmetic - see pricing.ts's OPENAI_RATES comment.
-    generate_element_reference: { credits: 3, unit: 'per_element' }, // placeholder
+    generate_shots: { kind: 'fixed', credits: 2, unit: 'per_shot' }, // measured
+    derive_camera: { kind: 'fixed', credits: 3, unit: 'per_shot' }, // measured
+    generate_element_reference: { kind: 'image', unit: 'per_element' },
   },
   image_prompts: {
-    write_image_prompts: { credits: 2, unit: 'per_shot' }, // placeholder
+    write_image_prompts: { kind: 'fixed', credits: 2, unit: 'per_shot' }, // placeholder
   },
   storyboard: {
-    generate_image: { credits: 15, unit: 'per_shot' }, // placeholder
+    generate_image: { kind: 'image', unit: 'per_shot' },
     // Generation is priced by the script's length; aligning an upload by the audio's.
-    voiceover: { credits: 8, unit: 'per_1k_chars' }, // placeholder
-    align_voiceover: { credits: 4, unit: 'per_minute' }, // placeholder
+    voiceover: { kind: 'fixed', credits: 8, unit: 'per_1k_chars' }, // placeholder
+    align_voiceover: { kind: 'fixed', credits: 4, unit: 'per_minute' }, // placeholder
     // Music is priced by the seconds requested (the picture's length, clamped).
-    background_music: { credits: 3, unit: 'per_minute' }, // placeholder
+    background_music: { kind: 'fixed', credits: 3, unit: 'per_minute' }, // placeholder
   },
   video_prompts: {
-    write_video_prompts: { credits: 2, unit: 'per_shot' }, // placeholder
+    write_video_prompts: { kind: 'fixed', credits: 2, unit: 'per_shot' }, // placeholder
   },
   assembly: {
-    merge: { credits: 20, unit: 'per_project' }, // placeholder
+    merge: { kind: 'fixed', credits: 20, unit: 'per_project' }, // placeholder
   },
 }
 
 export class MissingCreditPriceError extends Error {
-  constructor(step: Step, operation: Operation) {
-    super(`No fixed credit price for (${step}, ${operation}).`)
+  constructor(step: Step, operation: Operation, detail = 'no price entry') {
+    super(`No credit price for (${step}, ${operation}): ${detail}.`)
     this.name = 'MissingCreditPriceError'
   }
 }
@@ -104,8 +110,56 @@ export class InsufficientCreditsError extends Error {
   }
 }
 
+/** What an image's price depends on: the call actually made. */
+export type ImagePriceKey = {
+  model: string
+  quality: ImageQuality
+  size: string
+  /** Reference images sent as input to the call (0 for a text-only generation). */
+  referenceCount: number
+}
+
+export class UnpricedImageError extends Error {
+  constructor(key: ImagePriceKey) {
+    super(`No OpenAI image rate for ${key.model} at ${key.quality}, ${key.size}.`)
+    this.name = 'UnpricedImageError'
+  }
+}
+
 /**
- * Fixed-price lookup for a (step, operation) pair. Throws when no entry exists -
+ * Credits for ONE image: the provider's cost for that model/quality/size - output tokens at
+ * the output rate, each reference image's input tokens at the image-input rate, and the
+ * prompt allowance at the text-input rate - times CREDIT_MARGIN. Never hand-set.
+ */
+export function imageCredits(key: ImagePriceKey): number {
+  const rates = OPENAI_RATES.images[key.model]
+  const outputTokens = rates?.outputTokensBySize[key.size]?.[key.quality]
+  if (!rates || outputTokens === undefined) throw new UnpricedImageError(key)
+  const usd =
+    (outputTokens * rates.outputPerMTok +
+      key.referenceCount * rates.imageInputTokensPerReference * rates.imageInputPerMTok +
+      rates.promptTokenAllowance * rates.textInputPerMTok) /
+    1_000_000
+  return usdToCredits(usd * CREDIT_MARGIN)
+}
+
+/**
+ * Credits for one generated clip: fal's per-second price for the model/resolution/audio
+ * choice x seconds x CREDIT_MARGIN, rounded up once per clip. Not charged anywhere yet -
+ * clip generation is unbuilt.
+ */
+export function videoClipCredits(params: {
+  model: string
+  resolution: VideoResolution
+  audio: boolean
+  seconds: number
+}): number {
+  const { seconds, ...choice } = params
+  return usdToCredits(videoUsdPerSecond(choice) * seconds * CREDIT_MARGIN)
+}
+
+/**
+ * Price lookup for a (step, operation) pair. Throws when no entry exists -
  * never falls back to zero. `quantity` must always be supplied by the caller and
  * always derived server-side (project's shot count, 1 for a single regeneration,
  * number of elements actually generated, the script's character count, the audio's
@@ -116,14 +170,21 @@ export function creditsFor({
   step,
   operation,
   quantity,
+  image,
 }: {
   step: Step
   operation: Operation
   quantity: number
+  /** Required for an image entry - every image in `quantity` is priced on this key. */
+  image?: ImagePriceKey
 }): number {
   const entry = PRICE_TABLE[step]?.[operation]
   if (!entry) {
     throw new MissingCreditPriceError(step, operation)
+  }
+  if (entry.kind === 'image') {
+    if (!image) throw new MissingCreditPriceError(step, operation, 'an image price needs its model, quality and size')
+    return imageCredits(image) * quantity
   }
   switch (entry.unit) {
     case 'per_project':

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
+import { framePrice } from './helpers/prices'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
-import { creditsFor } from '../src/lib/config/credits'
 import { stepIndex } from '../src/lib/config/pipeline'
 
 // Step 3's footer button, mirroring workbench-footer-navigation.spec.ts. The prompt
@@ -129,7 +129,7 @@ test.describe('Step 3 footer button', () => {
     page,
   }) => {
     const projectId = await seed(primary.user.id, { furthestStep: IMAGE_PROMPTS, shots: 3 })
-    const credits = creditsFor({ step: 'storyboard', operation: 'generate_image', quantity: 3 })
+    const credits = 3 * framePrice()
     let advanceCalls = 0
     await page.route('**/api/projects/*/storyboard/advance', async (route) => {
       advanceCalls++

@@ -330,6 +330,7 @@ export type Database = {
           export_transition: string | null
           furthest_step: number
           id: string
+          image_quality: string
           language: string | null
           language_code: string | null
           loudness_preset: string | null
@@ -344,6 +345,7 @@ export type Database = {
           music_path: string | null
           music_source: string | null
           music_style_prompt: string | null
+          quality_preset: string
           source_text: string | null
           status: string
           template_source_id: string | null
@@ -353,6 +355,7 @@ export type Database = {
           updated_at: string
           user_id: string
           video_model: string | null
+          video_resolution: string
           video_type: string | null
           voice_id: string | null
           voiceover_alignment_path: string | null
@@ -376,6 +379,7 @@ export type Database = {
           export_transition?: string | null
           furthest_step?: number
           id?: string
+          image_quality?: string
           language?: string | null
           language_code?: string | null
           loudness_preset?: string | null
@@ -390,6 +394,7 @@ export type Database = {
           music_path?: string | null
           music_source?: string | null
           music_style_prompt?: string | null
+          quality_preset?: string
           source_text?: string | null
           status?: string
           template_source_id?: string | null
@@ -399,6 +404,7 @@ export type Database = {
           updated_at?: string
           user_id: string
           video_model?: string | null
+          video_resolution?: string
           video_type?: string | null
           voice_id?: string | null
           voiceover_alignment_path?: string | null
@@ -422,6 +428,7 @@ export type Database = {
           export_transition?: string | null
           furthest_step?: number
           id?: string
+          image_quality?: string
           language?: string | null
           language_code?: string | null
           loudness_preset?: string | null
@@ -436,6 +443,7 @@ export type Database = {
           music_path?: string | null
           music_source?: string | null
           music_style_prompt?: string | null
+          quality_preset?: string
           source_text?: string | null
           status?: string
           template_source_id?: string | null
@@ -445,6 +453,7 @@ export type Database = {
           updated_at?: string
           user_id?: string
           video_model?: string | null
+          video_resolution?: string
           video_type?: string | null
           voice_id?: string | null
           voiceover_alignment_path?: string | null

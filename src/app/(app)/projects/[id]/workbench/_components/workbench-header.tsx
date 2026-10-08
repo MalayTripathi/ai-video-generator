@@ -13,6 +13,7 @@ export function WorkbenchHeader({
     aspect_ratio: string | null
     language: string | null
     video_model: string | null
+    video_resolution: string | null
     duration_target: string | null
   }
 }) {

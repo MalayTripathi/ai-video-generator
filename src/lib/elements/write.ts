@@ -42,6 +42,8 @@ type OwnedElement = {
   type: ElementType
   status: string
   reference_image_path: string | null
+  /** The owning project's image quality - read through the ownership join, for pricing. */
+  project_image_quality: string
 }
 
 // Not found and wrong-owner collapse to the same null, same reasoning as loadOwnedShot in
@@ -56,13 +58,15 @@ export async function loadOwnedElement(
 ): Promise<OwnedElement | null> {
   const { data } = await supabase
     .from('elements')
-    .select('id, project_id, name, description, type, status, reference_image_path, projects!inner(user_id)')
+    .select('id, project_id, name, description, type, status, reference_image_path, projects!inner(user_id, image_quality)')
     .eq('id', elementId)
     .eq('projects.user_id', userId)
     .is('deleted_at', null)
     .maybeSingle()
 
   if (!data) return null
+  // A to-one embed; the typed client can't tell, so take the single row either way.
+  const project = (Array.isArray(data.projects) ? data.projects[0] : data.projects) as { image_quality: string }
   return {
     id: data.id,
     project_id: data.project_id,
@@ -71,6 +75,7 @@ export async function loadOwnedElement(
     type: data.type as ElementType,
     status: data.status,
     reference_image_path: data.reference_image_path,
+    project_image_quality: project.image_quality,
   }
 }
 

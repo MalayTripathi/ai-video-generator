@@ -21,6 +21,7 @@ async function fakeImageBuffer(): Promise<Buffer> {
 }
 
 export type StoryboardCall = { prompt: string; model: string; quality: string; size: string; referenceCount: number }
+export type ReferenceCall = { model: string; quality: string; size: string }
 
 const DEFAULT_STORYBOARD_USAGE = { input_tokens: 80, image_input_tokens: 0, output_tokens: 1200 }
 
@@ -37,6 +38,8 @@ type FakeImageGateway = ImageGateway & {
   getCallCount: () => number
   /** Storyboard calls only, in order, with what each was asked for. */
   getStoryboardCalls: () => StoryboardCall[]
+  /** Element-reference calls only, in order, with what each was asked for. */
+  getReferenceCalls: () => ReferenceCall[]
 }
 
 /** A fake ImageGateway that succeeds once per call and counts how many times it was
@@ -55,9 +58,11 @@ export function successImageGateway(
 ): FakeImageGateway {
   let callCount = 0
   const storyboardCalls: StoryboardCall[] = []
+  const referenceCalls: ReferenceCall[] = []
   return {
-    async generateReferenceImage() {
+    async generateReferenceImage(params) {
       callCount++
+      referenceCalls.push({ model: params.model, quality: params.quality, size: params.size })
       return { imageBuffer: imageBuffer ?? (await fakeImageBuffer()), usage }
     },
     async generateStoryboardImage(params) {
@@ -77,6 +82,7 @@ export function successImageGateway(
     },
     getCallCount: () => callCount,
     getStoryboardCalls: () => [...storyboardCalls],
+    getReferenceCalls: () => [...referenceCalls],
   }
 }
 
@@ -107,5 +113,6 @@ export function throwingImageGateway(error: Error | string = 'simulated OpenAI i
     },
     getCallCount: () => callCount,
     getStoryboardCalls: () => [...storyboardCalls],
+    getReferenceCalls: () => [],
   }
 }

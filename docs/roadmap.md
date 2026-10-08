@@ -314,18 +314,12 @@ are not lost.
     could be hardened with `tests/helpers/agent-stream.ts`.
 - **Batch API (-50%) as a possible slow, cheap generation mode** for storyboard images.
   Not used today: a batch can take up to 24h, and the storyboard reports arrival live.
-- **A fal image adapter.** `ELEMENT_IMAGE_PROVIDER=fal` and `STORYBOARD_IMAGE_PROVIDER=fal`
-  are config-only: no fal branch exists in `ImageGateway`. The images route refuses fal
-  before any claim; element generation ignores the setting and always calls OpenAI.
-- **`gpt-image-1-mini` shuts down on 1 Dec 2026** (OpenAI deprecations page; replacement
-  `gpt-image-2`). Element references use it by default - migrate the model, re-price
-  `generate_element_reference`, and lift the element quality guard's calibration.
-- **Production quality for storyboard images.** Low in every environment today, enforced
-  by a startup guard because the placeholder price is calibrated for low.
-- **Storyboard image quote ceilings are guesses.** OpenAI publishes no tokens-by-size
-  figure for the gpt-image-2.5 family, so `pricing.ts`'s output and per-reference input
-  ceilings are deliberately high placeholders. Recalibrate from measured `usage` rows; until
-  then a reservation is not guaranteed to be an upper bound.
+- **A fal image adapter.** `IMAGE_MODELS` (`models.ts`) holds OpenAI models only; a fal
+  image model needs an `ImageGateway` branch before it can be registered.
+- **Image token figures are not measured.** `pricing.ts` prices gpt-image-2.5 output from
+  OpenAI's calculator formula; the quote ceiling (2x that), `imageInputTokensPerReference`
+  and `promptTokenAllowance` are placeholders. Recalibrate from measured `usage` rows; until
+  then neither a price nor a reservation is guaranteed to bound the real cost.
 - **Two simultaneous image requests can both pass the gate.** Each reads balance minus
   in-flight claims before claiming, so two tabs submitting in the same instant can commit
   more than the balance. The ledger then goes negative by at most one batch; nothing else

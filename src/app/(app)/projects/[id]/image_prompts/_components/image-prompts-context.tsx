@@ -49,6 +49,8 @@ type ImagePromptsContextValue = {
   // Shots with no image prompt, in list order. They block Continue to storyboard.
   missingIds: string[]
   costFor: (shotCount: number) => number
+  /** Credits to draw these shots' Storyboard frames, each priced on its own references. */
+  frameCostFor: (shots: readonly PromptShot[]) => number
   updateShotLocal: (shotId: string, patch: Partial<PromptShot>) => void
   regenerateOne: (shotId: string) => void
   regenerateAll: () => void
@@ -94,6 +96,7 @@ export function ImagePromptsProvider({
   autoGenerate,
   initialInsufficient,
   aspectRatio,
+  frameCreditsByReferenceCount,
   children,
 }: {
   projectId: string
@@ -105,6 +108,9 @@ export function ImagePromptsProvider({
   // The first run was not started because the balance is short.
   initialInsufficient: { required: number; balance: number } | null
   aspectRatio: AspectRatio
+  // A Storyboard frame's price for 0, 1, 2 ... references, computed by the page on the
+  // project's image quality and size - the browser never prices an image itself.
+  frameCreditsByReferenceCount: number[]
   children: ReactNode
 }) {
   const router = useRouter()
@@ -388,7 +394,17 @@ export function ImagePromptsProvider({
     else void run(shotsRef.current.map((s) => s.id), true)
   }
 
+  // A bound element can't be deleted, so every bound element with an image is a reference.
+  function frameCostFor(forShots: readonly PromptShot[]): number {
+    const last = frameCreditsByReferenceCount.length - 1
+    return forShots.reduce((sum, shot) => {
+      const references = shot.elements.filter((el) => el.reference_image_path !== null).length
+      return sum + frameCreditsByReferenceCount[Math.min(references, last)]
+    }, 0)
+  }
+
   const value: ImagePromptsContextValue = {
+    frameCostFor,
     projectId,
     aspectRatio,
     shots,

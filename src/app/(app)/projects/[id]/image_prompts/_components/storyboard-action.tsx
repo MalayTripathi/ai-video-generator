@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { AdvanceConfirmModal } from '@/components/advance-confirm-modal'
-import { creditsFor } from '@/lib/config/credits'
 import { stepIndex, stepLabel } from '@/lib/config/pipeline'
 import { getProjectFurthestStep } from '../../workbench/actions'
 import { useImagePrompts } from './image-prompts-context'
@@ -49,7 +48,7 @@ function ContinueToStoryboardButton({
   onAdvancedSince: () => void
 }) {
   const router = useRouter()
-  const { projectId, shots, staleCount, missingIds } = useImagePrompts()
+  const { projectId, shots, staleCount, missingIds, frameCostFor } = useImagePrompts()
 
   // The furthest_step this page was rendered with can be stale (Back restores it from the
   // router cache with no request; another tab may have advanced the project). While showing
@@ -72,9 +71,9 @@ function ContinueToStoryboardButton({
   const [modalPhase, setModalPhase] = useState<ModalPhase>('closed')
   const [insufficient, setInsufficient] = useState<{ required: number; balance: number } | null>(null)
 
-  // Display-only, reactive to the live shot count; the route recomputes its own
-  // authoritative quantity from a fresh DB read.
-  const requiredCredits = creditsFor({ step: 'storyboard', operation: 'generate_image', quantity: shots.length })
+  // Display-only, reactive to the live shots and their bound references; the route
+  // recomputes its own authoritative figure from a fresh DB read.
+  const requiredCredits = frameCostFor(shots)
 
   function openModal() {
     setInsufficient(null)

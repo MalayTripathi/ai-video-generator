@@ -1,9 +1,11 @@
 import type { Provider } from '@/lib/config/pipeline'
+import type { VideoResolution } from '@/lib/config/enums'
+import { VIDEO_MODELS, isRegisteredVideoModel, type VideoPerSecondRate } from '@/lib/config/models'
 
 // Single place edited when a rate changes. Bump by hand on any edit below -
 // raw_usage.rates on every settled `usage` row records the rate_version that
 // produced it, so a past row's cost stays reconstructable even after rates move.
-export const RATE_VERSION = '2026-09-25'
+export const RATE_VERSION = '2026-10-08'
 
 // Anthropic injects a fixed system-prompt overhead when tools are present, on top of
 // the tool schema JSON and the visible system/user text - this approximates that
@@ -64,9 +66,6 @@ function perMillionToPerToken(ratePerMillion: number): number {
   return ratePerMillion / 1_000_000
 }
 
-// fal below is a stub shape only - no values yet, and computeCost returns a null
-// estimatedCost for it until it's filled in.
-
 // OpenAI meters image generation as tokens, not a flat per-image fee. Keyed by OpenAI
 // image model so two models' size/quality keys can never collide. Authority:
 // https://developers.openai.com/api/docs/pricing (checked 2026-09-23). computeCost's
@@ -83,51 +82,57 @@ type OpenAiImageRates = {
       imageInputPerMTok: number
       /** USD per 1M output (generated image) tokens. */
       outputPerMTok: number
-      /** Output-token count for the quote, keyed by size (e.g. '1024x1024') then quality (e.g. 'low'). */
+      /** Output tokens per image - what an image is priced at - keyed by size then quality. */
       outputTokensBySize: Record<string, Record<string, number>>
-      /** Image-input tokens the quote reserves per reference image passed to the edit endpoint. */
+      /** Worst-case output tokens the pre-flight quote reserves, same keys. Never below the price figure. */
+      quoteOutputTokensBySize: Record<string, Record<string, number>>
+      /** Image-input tokens per reference image passed to the edit endpoint. */
       imageInputTokensPerReference: number
+      /** Text-input tokens each image's price allows for its prompt. */
+      promptTokenAllowance: number
     }
   >
 }
 
-// PLACEHOLDER quote ceilings for the gpt-image-2.5 family: OpenAI publishes no
-// output-token figure by size/quality for these models, so the numbers below are
-// deliberately high guesses, not measurements. A reservation is only guaranteed never to
-// be overrun if these exceed the real counts - recalibrate them from measured `usage`
-// rows (the /usage Anomalies delta) before relying on them.
-const GPT_IMAGE_2_5_QUOTE_CEILINGS = {
-  outputTokensBySize: {
-    '1008x1792': { low: 2500 },
-    '1792x1008': { low: 2500 },
-    '1088x1088': { low: 1600 },
-  },
-  imageInputTokensPerReference: 1500,
+// Output tokens per image for the gpt-image-2.5 family. OpenAI prints no table for 2.5;
+// these come from the token calculator on its image-generation guide
+// (https://developers.openai.com/api/docs/guides/image-generation): quality base low 16,
+// medium 24, high 48 on the long side, the short side scaled by aspect ratio,
+// ceil(a x b x (2e6 + w x h) / 4e6). That formula reproduces the page's own 196-token
+// default (low, 1024x1024). The image-credit price reads them.
+const GPT_IMAGE_2_5_OUTPUT_TOKENS: Record<string, Record<string, number>> = {
+  '1024x1024': { low: 196, medium: 439, high: 1756 },
+  '1008x1792': { low: 138, medium: 320, high: 1234 },
+  '1792x1008': { low: 138, medium: 320, high: 1234 },
+  '1088x1088': { low: 204, medium: 459, high: 1834 },
+}
+
+// The pre-flight quote is a spend-cap reservation and must never be overrun, but OpenAI
+// says real consumption "can differ" from the calculator. Until measured usage rows say
+// otherwise, it reserves twice the calculator figure.
+const GPT_IMAGE_2_5_QUOTE_OUTPUT_TOKENS = Object.fromEntries(
+  Object.entries(GPT_IMAGE_2_5_OUTPUT_TOKENS).map(([size, byQuality]) => [
+    size,
+    Object.fromEntries(Object.entries(byQuality).map(([quality, tokens]) => [quality, tokens * 2])), // placeholder
+  ])
+)
+
+const GPT_IMAGE_2_5_TOKENS = {
+  outputTokensBySize: GPT_IMAGE_2_5_OUTPUT_TOKENS,
+  quoteOutputTokensBySize: GPT_IMAGE_2_5_QUOTE_OUTPUT_TOKENS,
+  imageInputTokensPerReference: 1500, // placeholder - replace with a measured figure
+  // About 1,600 characters at chars/4 - twice the stored frame prompts (~800 chars). No
+  // prompt length limit exists to bound it.
+  promptTokenAllowance: 400, // placeholder - replace with a measured figure
 }
 
 export const OPENAI_RATES: OpenAiImageRates = {
   images: {
-    'gpt-image-1-mini': {
-      textInputPerMTok: 2.0,
-      imageInputPerMTok: 2.5,
-      outputPerMTok: 8.0,
-      outputTokensBySize: {
-        '1024x1024': { low: 272, medium: 1056, high: 4160 },
-      },
-      // Element references are text-only generations; nothing is ever passed as input.
-      imageInputTokensPerReference: 0,
-    },
     'gpt-image-2.5-flare': {
       textInputPerMTok: 5.0,
       imageInputPerMTok: 8.0,
       outputPerMTok: 30.0,
-      ...GPT_IMAGE_2_5_QUOTE_CEILINGS,
-    },
-    'gpt-image-2.5-sunburst': {
-      textInputPerMTok: 5.0,
-      imageInputPerMTok: 8.0,
-      outputPerMTok: 30.0,
-      ...GPT_IMAGE_2_5_QUOTE_CEILINGS,
+      ...GPT_IMAGE_2_5_TOKENS,
     },
   },
 }
@@ -156,12 +161,40 @@ export const ELEVENLABS_RATES: ElevenLabsRates = {
 // selectable model.
 export const ELEVENLABS_ALIGNMENT_MODEL = 'forced-alignment'
 
-/** Keyed by fal model name. A model uses exactly one of the two shapes, depending on how fal bills it. */
-type FalRates = {
-  perClipUsd: Record<string, number>
-  perSecondUsd: Record<string, number>
+// fal per-second video rates, keyed by model then resolution - derived from VIDEO_MODELS
+// (models.ts), the registry each figure is sourced in, never copied by hand.
+// computeCost has no fal branch yet (no clip is generated anywhere); the price lives here
+// for videoUsdPerSecond and the video credit price.
+type FalRates = { perSecondUsd: Record<string, Partial<Record<VideoResolution | 'any', VideoPerSecondRate>>> }
+export const FAL_RATES: FalRates = {
+  perSecondUsd: Object.fromEntries(Object.values(VIDEO_MODELS).map((m) => [m.id, m.usdPerSecond])),
 }
-export const FAL_RATES: FalRates = { perClipUsd: {}, perSecondUsd: {} }
+
+export class UnpricedVideoError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'UnpricedVideoError'
+  }
+}
+
+/**
+ * fal's USD per second for one model / resolution / audio choice. Throws for a combination
+ * the model can't produce (an unregistered model, a resolution it doesn't offer, audio on a
+ * model that can't generate it) - never a silent zero.
+ */
+export function videoUsdPerSecond(params: { model: string; resolution: VideoResolution; audio: boolean }): number {
+  const { model, resolution, audio } = params
+  if (!isRegisteredVideoModel(model)) throw new UnpricedVideoError(`Video model "${model}" has no fal rate.`)
+  const config = VIDEO_MODELS[model]
+  if (config.resolutions !== null && !config.resolutions.includes(resolution)) {
+    throw new UnpricedVideoError(`${model} does not offer ${resolution}.`)
+  }
+  const rate = FAL_RATES.perSecondUsd[model][config.resolutions === null ? 'any' : resolution]
+  if (!rate) throw new UnpricedVideoError(`${model} has no rate for ${resolution}.`)
+  if (!audio) return rate.audioOff
+  if (rate.audioOn === null) throw new UnpricedVideoError(`${model} cannot generate audio.`)
+  return rate.audioOn
+}
 
 type ElevenLabsAppliedRates =
   | { perCharacterUsd: number }
@@ -180,7 +213,7 @@ export type CostResult = {
 /**
  * The single place a cost or credit number is computed from a provider's raw usage
  * report. Returns a null estimatedCost (never a guess) for an unknown model or a
- * provider with no rates configured yet (elevenlabs/fal - see the stubs above).
+ * provider whose calls it doesn't meter yet (fal - see FAL_RATES above).
  */
 export function computeCost(provider: Provider, model: string, breakdown: UsageBreakdown): CostResult {
   if (provider === 'openai') {

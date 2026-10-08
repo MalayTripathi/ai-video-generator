@@ -6,6 +6,5 @@ export type TemplateProject = {
   aspect_ratio: string | null
   duration_target: string | null
   language: string | null
-  video_model: string | null
   created_at: string
 }

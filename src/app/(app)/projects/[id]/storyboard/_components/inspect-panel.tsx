@@ -76,7 +76,7 @@ function InspectBody() {
   const [w, h] = STORYBOARD_IMAGE_SIZES[aspectRatio].split('x').map(Number)
   const dims = `${w} × ${h}`
   const sub = status.drawnAt ? `Drawn ${formatClockTime(status.drawnAt)} · ${dims}` : hasImage ? dims : 'Not drawn yet'
-  const imageCredits = imagePrice(1)
+  const imageCredits = imagePrice([status])
   const promptCredits = promptPrice()
   const imageDisabled = readOnly || inFlight || busyShotIds.has(shot.id)
   const imageLabel = status.imagePath ? 'Regenerate image' : 'Generate image'

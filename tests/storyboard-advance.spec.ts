@@ -1,15 +1,17 @@
 import { test, expect } from '@playwright/test'
+import { framePrice } from './helpers/prices'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { SIGNUP_GRANT_CREDITS, PRICE_TABLE } from '../src/lib/config/credits'
+import { SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
 import { runAdvanceToStoryboard } from '../src/app/api/projects/[id]/storyboard/advance/logic'
 import type { getBalance as getBalanceType } from '../src/lib/credits/balance'
 import type { ensureSignupGrant as ensureSignupGrantType } from '../src/lib/credits/signup-grant'
 
 // The per-shot price is read from the config, never restated here: a re-priced storyboard
 // must not turn these tests red for the wrong reason.
-const PER_SHOT = PRICE_TABLE.storyboard!.generate_image!.credits
+// A low-quality frame with no references - how every shot here is seeded.
+const PER_SHOT = framePrice()
 
 // Same fakes as image-prompts-advance.spec.ts, for the same reasons: getBalance needs a
 // request context a bare test process lacks, and ensureSignupGrant is service-role.

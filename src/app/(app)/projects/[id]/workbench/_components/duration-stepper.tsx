@@ -97,6 +97,7 @@ export const DurationStepper = memo(function DurationStepper({
   const sortedAllowed = modelConfig.kind === 'discrete' ? [...modelConfig.allowedDurations].sort((a, b) => a - b) : []
   const durationMin = modelConfig.kind === 'continuous' ? modelConfig.durationMin : sortedAllowed[0]
   const durationMax = modelConfig.kind === 'continuous' ? modelConfig.durationMax : sortedAllowed[sortedAllowed.length - 1]
+  const step = modelConfig.kind === 'continuous' ? modelConfig.durationStep : null
 
   const isUnset = value === null
   const displayValue = value ?? durationMin
@@ -125,10 +126,16 @@ export const DurationStepper = memo(function DurationStepper({
         direction > 0 ? sortedAllowed.filter((v) => v > displayValue) : sortedAllowed.filter((v) => v < displayValue)
       next = candidates.length === 0 ? null : direction > 0 ? Math.min(...candidates) : Math.max(...candidates)
     } else {
+      // The next value on the model's step grid in the direction of travel - so an
+      // off-grid value (7.3s on a whole-second model) lands on 8s or 7s, never 8.3s.
       // Clamp only at the bound in the direction of travel, so a value currently
       // outside the range moves back toward it one press at a time rather than
       // snapping there.
-      const raw = round1(displayValue + direction * STEP)
+      const unit = step ?? STEP
+      const raw =
+        direction > 0
+          ? round1((Math.floor(displayValue / unit + 1e-9) + 1) * unit)
+          : round1((Math.ceil(displayValue / unit - 1e-9) - 1) * unit)
       next = direction < 0 ? Math.max(raw, durationMin) : Math.min(raw, durationMax)
     }
     // Compared against displayValue (synchronous local state), not persisted (only
@@ -148,6 +155,8 @@ export const DurationStepper = memo(function DurationStepper({
     helperText = `${displayValue.toFixed(1)}s isn't a duration ${label} renders — it renders ${allowedList} clips. Nothing has been changed for you. Pick ${allowedList}, or a model that can hold ${displayValue.toFixed(1)}s.`
   } else if (isOutOfRange && displayValue > durationMax) {
     helperText = `${displayValue.toFixed(1)}s is longer than ${label} allows — it takes ${durationMin}s to ${durationMax}s. Nothing has been changed for you. Bring it down to ${durationMax}s, or pick a model that can hold ${displayValue.toFixed(1)}s.`
+  } else if (isOutOfRange && displayValue >= durationMin) {
+    helperText = `${displayValue.toFixed(1)}s isn't a length ${label} renders — it renders whole seconds from ${durationMin}s to ${durationMax}s. Nothing has been changed for you. Pick ${Math.floor(displayValue)}s or ${Math.ceil(displayValue)}s.`
   } else if (isOutOfRange) {
     helperText = `${displayValue.toFixed(1)}s is shorter than ${label} allows — it takes ${durationMin}s to ${durationMax}s. Nothing has been changed for you. Bring it up to ${durationMin}s, or pick a model that can hold ${displayValue.toFixed(1)}s.`
   } else if (!canDecrement) {
@@ -157,7 +166,7 @@ export const DurationStepper = memo(function DurationStepper({
   } else if (isDiscreteModel) {
     helperText = `${label} renders ${formatAllowedDurations(sortedAllowed)} clips.`
   } else {
-    helperText = `${label} takes ${durationMin}s to ${durationMax}s, in tenths.`
+    helperText = `${label} takes ${durationMin}s to ${durationMax}s, in ${step === 1 ? 'whole seconds' : 'tenths'}.`
   }
 
   return (

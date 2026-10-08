@@ -19,7 +19,7 @@ async function seedProject(overrides: Record<string, unknown> = {}) {
       video_type: 'auto',
       duration_target: '30-60s',
       current_step: 'workbench',
-      video_model: 'mochi-1',
+      video_model: 'wan-3.0',
       ...overrides,
     })
     .select('id')
@@ -424,7 +424,8 @@ test.describe('shot card editing', () => {
 
     await page.getByRole('button', { name: 'Increase duration' }).click()
 
-    await expect.poll(async () => (await readShot(shotId))?.duration_sec).toBe(2.1)
+    // The seeded project's model steps in whole seconds.
+    await expect.poll(async () => (await readShot(shotId))?.duration_sec).toBe(3)
 
     const shotRow = await readShot(shotId)
     expect(shotRow?.duration_locked).toBe(true)
@@ -435,38 +436,38 @@ test.describe('shot card editing', () => {
     expect(projectRow?.voiceover_stale).toBe(false)
   })
 
-  test('duration stepper clamps to the active model bounds and steps by 0.1', async ({ page }) => {
-    const projectId = await seedProject({ video_model: 'mochi-1' })
-    await seedShot(projectId, { duration_sec: 5.3 })
+  test('duration stepper clamps to the active model bounds and steps in whole seconds', async ({ page }) => {
+    const projectId = await seedProject({ video_model: 'seedance-1.0-pro' })
+    await seedShot(projectId, { duration_sec: 11 })
 
     await page.goto(`/projects/${projectId}/workbench`)
     await expandFirstCard(page)
 
-    await expect(page.getByTestId('duration-value')).toHaveText('5.3s')
+    await expect(page.getByTestId('duration-value')).toHaveText('11.0s')
     await page.getByRole('button', { name: 'Increase duration' }).click()
-    await expect(page.getByTestId('duration-value')).toHaveText('5.4s')
+    await expect(page.getByTestId('duration-value')).toHaveText('12.0s')
     // At the ceiling - plus is spent.
     await expect(page.getByRole('button', { name: 'Increase duration' })).toBeDisabled()
   })
 
   test('a saved duration outside the current model range renders amber and is not rewritten', async ({ page }) => {
-    const projectId = await seedProject({ video_model: 'mochi-1' })
-    const shotId = await seedShot(projectId, { duration_sec: 7.0, duration_locked: true })
+    const projectId = await seedProject({ video_model: 'seedance-1.0-pro' })
+    const shotId = await seedShot(projectId, { duration_sec: 13.0, duration_locked: true })
 
     await page.goto(`/projects/${projectId}/workbench`)
     await expandFirstCard(page)
 
-    await expect(page.getByTestId('duration-value')).toHaveText('7.0s')
-    await expect(page.getByText(/is longer than Mochi 1 allows/)).toBeVisible()
+    await expect(page.getByTestId('duration-value')).toHaveText('13.0s')
+    await expect(page.getByText(/is longer than Seedance 1.0 Pro allows/)).toBeVisible()
     // Plus is spent (no room above); nothing was auto-corrected on load.
     await expect(page.getByRole('button', { name: 'Increase duration' })).toBeDisabled()
 
     const shotRow = await readShot(shotId)
-    expect(shotRow?.duration_sec).toBe(7)
+    expect(shotRow?.duration_sec).toBe(13)
   })
 
   test('duration stepper on a discrete model steps between exact allowed values only', async ({ page }) => {
-    const projectId = await seedProject({ video_model: 'Kling 2.1' })
+    const projectId = await seedProject({ video_model: 'wan-2.5' })
     await seedShot(projectId, { duration_sec: 5 })
 
     await page.goto(`/projects/${projectId}/workbench`)
@@ -476,7 +477,7 @@ test.describe('shot card editing', () => {
     await expect(page.getByRole('button', { name: 'Decrease duration' })).toBeDisabled()
 
     await page.getByRole('button', { name: 'Increase duration' }).click()
-    // Kling 2.1 only renders 5s or 10s - the step must land exactly on 10.0s, never an
+    // Wan 2.5 only renders 5s or 10s - the step must land exactly on 10.0s, never an
     // intermediate value like 5.1s.
     await expect(page.getByTestId('duration-value')).toHaveText('10.0s')
     await expect(page.getByRole('button', { name: 'Increase duration' })).toBeDisabled()
@@ -485,10 +486,26 @@ test.describe('shot card editing', () => {
     await expect(page.getByTestId('duration-value')).toHaveText('5.0s')
   })
 
+  test('a fractional saved duration on a whole-second model renders amber and steps onto the grid', async ({ page }) => {
+    const projectId = await seedProject({ video_model: 'wan-3.0' })
+    const shotId = await seedShot(projectId, { duration_sec: 7.3, duration_locked: true })
+
+    await page.goto(`/projects/${projectId}/workbench`)
+    await expandFirstCard(page)
+
+    await expect(page.getByTestId('duration-value')).toHaveText('7.3s')
+    await expect(page.getByText(/renders whole seconds from 2s to 30s.*Pick 7s or 8s/)).toBeVisible()
+    expect((await readShot(shotId))?.duration_sec).toBe(7.3)
+
+    await page.getByRole('button', { name: 'Increase duration' }).click()
+    await expect(page.getByTestId('duration-value')).toHaveText('8.0s')
+    await expect.poll(async () => (await readShot(shotId))?.duration_sec).toBe(8)
+  })
+
   test('a saved duration invalid for a discrete model renders amber and moves straight to the nearest allowed value', async ({
     page,
   }) => {
-    const projectId = await seedProject({ video_model: 'Kling 2.1' })
+    const projectId = await seedProject({ video_model: 'wan-2.5' })
     const shotId = await seedShot(projectId, { duration_sec: 7.3, duration_locked: true })
 
     await page.goto(`/projects/${projectId}/workbench`)
@@ -512,7 +529,7 @@ test.describe('shot card editing', () => {
   // so "independently" is checked one at a time rather than all expanded at once: each
   // shot's amber-invalid-duration render must not depend on any sibling's state.
   test('out-of-range shots on a discrete model each render amber independently', async ({ page }) => {
-    const projectId = await seedProject({ video_model: 'Kling 2.1' })
+    const projectId = await seedProject({ video_model: 'wan-2.5' })
     for (let i = 0; i < 8; i++) {
       await seedShot(projectId, { duration_sec: 7.3, duration_locked: true })
     }

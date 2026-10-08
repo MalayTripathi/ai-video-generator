@@ -33,7 +33,7 @@ async function seed(opts: SeedOptions = {}) {
       title: 'Storyboard voiceover UI',
       source_text: 'A short film.',
       aspect_ratio: '9:16',
-      video_model: 'mochi-1',
+      video_model: 'wan-3.0',
       language: 'en',
       current_step: 'storyboard',
       furthest_step: stepIndex('storyboard'),

@@ -36,7 +36,7 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
   const { data: project, error: projectError } = await supabase
     .from('projects')
     .select(
-      `id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target, mix_voice_gain_db, mix_music_gain_db, mix_duck_depth_db, mix_duck_bypass, music_style_prompt, export_motion, export_transition, caption_mode, caption_style, caption_position, loudness_preset, ${IMAGE_STATUS_PROJECT_COLUMNS}`
+      `id, title, source_text, current_step, furthest_step, video_type, language, video_model, video_resolution, duration_target, mix_voice_gain_db, mix_music_gain_db, mix_duck_depth_db, mix_duck_bypass, music_style_prompt, export_motion, export_transition, caption_mode, caption_style, caption_position, loudness_preset, ${IMAGE_STATUS_PROJECT_COLUMNS}`
     )
     .eq('id', projectId)
     .eq('user_id', user.id)

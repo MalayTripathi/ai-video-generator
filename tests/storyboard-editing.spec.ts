@@ -4,8 +4,8 @@ import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { STORYBOARD_MAX_SHOT_SEC, STORYBOARD_MIN_SHOT_SEC } from '../src/lib/config/storyboard'
-import { VIDEO_MODELS, videoModelMaxSeconds } from '../src/lib/config/models'
-import { PRICE_TABLE } from '../src/lib/config/credits'
+import { VIDEO_MODELS, videoModelBounds } from '../src/lib/config/models'
+import { fixedCredits } from './helpers/prices'
 
 // Storyboard B2: retime, reorder, bin, zoom and the playhead on the picture lane (canvas
 // 15b/15c). Every save is a real server action against a real row; the only stubs are a
@@ -13,10 +13,10 @@ import { PRICE_TABLE } from '../src/lib/config/credits'
 
 const NAVIGATION = { timeout: 45000 }
 // Read from the config, never restated: the Continue button prices the in-film shots.
-const VIDEO_PROMPT_PER_SHOT = PRICE_TABLE.video_prompts!.write_video_prompts!.credits
-const VIDEO_MODEL = 'Kling 2.1'
-// Kling 2.1's longest clip (10s). Storyboard lengths deliberately ignore it.
-const MODEL_MAX = videoModelMaxSeconds(VIDEO_MODELS[VIDEO_MODEL])
+const VIDEO_PROMPT_PER_SHOT = fixedCredits('video_prompts', 'write_video_prompts')
+const VIDEO_MODEL = 'wan-2.5'
+// Wan 2.5's longest clip (10s). Storyboard lengths deliberately ignore it.
+const MODEL_MAX = videoModelBounds(VIDEO_MODELS[VIDEO_MODEL]).max
 
 test.use({ viewport: { width: 1920, height: 1200 } })
 test.setTimeout(120000)

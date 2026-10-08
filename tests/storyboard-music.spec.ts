@@ -50,7 +50,7 @@ async function seedProject(userId: string, stylePrompt: string | null = 'Soft pi
       current_step: 'storyboard',
       furthest_step: stepIndex('storyboard'),
       language: 'en',
-      video_model: 'mochi-1',
+      video_model: 'wan-3.0',
       music_style_prompt: stylePrompt,
     })
     .select('id')

@@ -2,10 +2,11 @@ import type { createClient } from '@/lib/supabase/server'
 import type { Json } from '@/lib/database.types'
 import type { ElementType } from '@/lib/config/enums'
 import { ImageLiveCallsBlockedError, type ImageGateway } from '@/lib/images/gateway'
-import { modelsConfig } from '@/lib/config/models'
+import { IMAGE_MODELS, type ImageModelConfig, type ImageModelId } from '@/lib/config/models'
+import { elementReferencePriceKey } from '@/lib/images/price-key'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 import { estimateInputTokens, quoteOpenAiImageCall, reserveUsage, settleUsage } from '@/lib/usage'
-import { creditsFor, InsufficientCreditsError } from '@/lib/config/credits'
+import { creditsFor, InsufficientCreditsError, type ImagePriceKey } from '@/lib/config/credits'
 // Type-only: credits/ledger.ts and credits/signup-grant.ts both transitively import
 // the service-role Supabase client module, which imports 'server-only' - a VALUE
 // import here would crash any test that imports this module directly, same reason
@@ -196,9 +197,16 @@ export async function runElementReferenceGeneration(params: {
   // the balance gate above never reaches this, so it never shows a spinner for a
   // request that was refused before spending anything.
   let enteredGeneratingState = false
+  // The call actually made, resolved from the registry and the project's quality - the
+  // provider follows from the model. Set inside the try, so SETTLE sees it once usage exists.
+  let price: ImagePriceKey | null = null
+  let provider: ImageModelConfig['provider'] = 'openai'
 
   try {
-    const required = creditsFor({ step: 'workbench', operation: 'generate_element_reference', quantity: 1 })
+    // Priced, quoted and sent at the project's image quality (dev-capped outside production).
+    price = elementReferencePriceKey(element.project_image_quality)
+    provider = IMAGE_MODELS[price.model as ImageModelId].provider
+    const required = creditsFor({ step: 'workbench', operation: 'generate_element_reference', quantity: 1, image: price })
     // Defensive: AppLayout already ensures this on every page load, but a client
     // whose first contact is this API call (not a page render) needs it here too -
     // idempotent, costs one existence check when the row already exists.
@@ -214,7 +222,7 @@ export async function runElementReferenceGeneration(params: {
     const styleDescription = await loadStyleDescription(supabase, projectId, elementId)
     const prompt = buildReferencePrompt(element, styleDescription)
 
-    const { model, quality, size } = modelsConfig.elements
+    const { model, quality, size } = price
 
     const { estimatedCost, quotedBreakdown } = quoteOpenAiImageCall({
       model,
@@ -232,7 +240,7 @@ export async function runElementReferenceGeneration(params: {
       shotId: null,
       step: 'workbench',
       operation: 'generate_element_reference',
-      provider: 'openai',
+      provider,
       model,
       quotedCost: estimatedCost,
       quotedBreakdown,
@@ -320,13 +328,13 @@ export async function runElementReferenceGeneration(params: {
       console.error('[elements] SETTLE update failed', settleError)
     }
 
-    if (usageId) {
-      const { model } = modelsConfig.elements
+    if (usageId && price) {
+      const { model } = price
       const settledStatus = measuredBreakdown !== null ? 'succeeded' : 'failed'
       await settleUsage({
         supabase,
         usageId,
-        provider: 'openai',
+        provider,
         model,
         status: settledStatus,
         breakdown: measuredBreakdown,
@@ -349,6 +357,7 @@ export async function runElementReferenceGeneration(params: {
             projectId,
             messageId: null,
             shotKey: null,
+            image: price,
           })
         } catch (err) {
           console.error('[elements] ledger write failed', err)

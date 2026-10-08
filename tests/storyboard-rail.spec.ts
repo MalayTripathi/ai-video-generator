@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test'
+import { framePrice } from './helpers/prices'
 import sharp from 'sharp'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { creditsFor } from '../src/lib/config/credits'
 import { formatCost } from '../src/lib/format-cost'
 
 // The rail's spend figures on the Storyboard update from the status poll the moment a shot
@@ -10,7 +10,7 @@ import { formatCost } from '../src/lib/format-cost'
 // its own fresh user rather than a shared fixed one. Nothing here reaches a provider: the
 // "charge" is a ledger row and a usage row written directly, as the worker would.
 
-const IMAGE_PRICE = creditsFor({ step: 'storyboard', operation: 'generate_image', quantity: 1 })
+const IMAGE_PRICE = framePrice()
 const USAGE_COST = 0.042
 
 test.setTimeout(120000)

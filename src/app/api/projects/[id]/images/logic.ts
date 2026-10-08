@@ -7,16 +7,16 @@ import type { getBalance as getBalanceType } from '@/lib/credits/balance'
 import type { ensureSignupGrant as ensureSignupGrantType } from '@/lib/credits/signup-grant'
 import type { mintAttemptId as mintAttemptIdType, recordFixedSpend as recordFixedSpendType } from '@/lib/credits/ledger'
 import type { ImageGateway } from '@/lib/images/gateway'
-import { creditsFor } from '@/lib/config/credits'
+import { creditsFor, type ImagePriceKey } from '@/lib/config/credits'
 import { ASPECT_RATIOS, type AspectRatio } from '@/lib/config/enums'
-import { modelsConfig } from '@/lib/config/models'
+import { IMAGE_MODELS, type ImageModelId } from '@/lib/config/models'
+import { pricedAspectRatio, storyboardImagePriceKey, usableReferencePaths } from '@/lib/images/price-key'
 import {
   CONTINUATION_CHAIN_LIMIT,
   IMAGE_CONCURRENCY,
   IMAGE_HANDOFF_TIMEOUT_MS,
   IMAGE_STALE_AFTER_MS,
   RUN_TIME_BUDGET_MS,
-  STORYBOARD_IMAGE_SIZES,
   STORYBOARD_THUMB_WIDTH,
   STORYBOARD_WEBP_QUALITY,
 } from '@/lib/config/storyboard'
@@ -65,22 +65,55 @@ function hasPrompt(value: string | null): boolean {
   return value !== null && value.trim() !== ''
 }
 
+function isAspectRatio(value: string | null): value is AspectRatio {
+  return value !== null && (ASPECT_RATIOS as readonly string[]).includes(value)
+}
+
+/** One Storyboard frame's credits, priced on its project's settings and its shot's references. */
+export function storyboardImageCredits(key: ImagePriceKey): number {
+  return creditsFor({ step: STEP, operation: OPERATION, quantity: 1, image: key })
+}
+
 /**
- * The user's live storyboard-image claims across every project - the credits already
- * committed to images that haven't settled yet. Counting them is what stops one batch
- * (or a second tab) spending the same balance twice.
+ * The credits the user has already committed to storyboard images that haven't settled,
+ * across every project - each live claim priced on its own project's quality and aspect
+ * ratio and its shot's references. Counting them is what stops one batch (or a second
+ * tab) spending the same balance twice.
  */
-export async function countLiveImageClaims(supabase: SupabaseServerClient, userId: string): Promise<number> {
+export async function liveImageCommittedCredits(supabase: SupabaseServerClient, userId: string): Promise<number> {
   const { data, error } = await supabase
     .from('generations')
-    .select('state, started_at, queued_at, projects!inner(user_id)')
+    .select(
+      'state, started_at, queued_at, projects!inner(user_id, aspect_ratio, image_quality), shots(shot_elements(elements(reference_image_path, deleted_at)))'
+    )
     .eq('projects.user_id', userId)
     .eq('step', STEP)
     .eq('operation', OPERATION)
     .eq('state', 'generating')
-  if (error) throw new Error(`countLiveImageClaims failed: ${error.message}`)
+  if (error) throw new Error(`liveImageCommittedCredits failed: ${error.message}`)
   const now = Date.now()
-  return (data ?? []).filter((row) => isLiveClaim(row, OPERATION, now)).length
+  let committed = 0
+  // Both embeds are to-one (generations -> projects, generations -> shots); the typed client
+  // can't infer that through the nested embed, so the row is named here.
+  type LiveClaimRow = {
+    state: string
+    started_at: string | null
+    queued_at: string | null
+    projects: { aspect_ratio: string | null; image_quality: string }
+    shots: { shot_elements: Parameters<typeof usableReferencePaths>[0] } | null
+  }
+  for (const row of (data ?? []) as unknown as LiveClaimRow[]) {
+    if (!isLiveClaim(row, OPERATION, now)) continue
+    const project = row.projects
+    committed += storyboardImageCredits(
+      storyboardImagePriceKey({
+        aspectRatio: pricedAspectRatio(project.aspect_ratio),
+        imageQuality: project.image_quality,
+        referenceCount: usableReferencePaths(row.shots?.shot_elements).length,
+      })
+    )
+  }
+  return committed
 }
 
 export async function runImagesRequest(params: {
@@ -93,25 +126,20 @@ export async function runImagesRequest(params: {
 }): Promise<ImagesRequestResult> {
   const { supabase, projectId, userId, shotIds, getBalance, ensureSignupGrant } = params
 
-  // fal is selectable in config but has no image gateway yet - refuse before anything is
-  // written, rather than claiming shots that can only fail.
-  if (modelsConfig.storyboardImages.provider !== 'openai') {
-    return { ok: false, status: 500, error: 'Storyboard image provider is not implemented.' }
-  }
-
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('id')
+    .select('id, aspect_ratio, image_quality')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
   // A failed read is a server error, never a 404 - only a missing row is.
   if (projectError) return { ok: false, status: 500, error: projectError.message }
   if (!project) return { ok: false, status: 404, error: 'Project not found' }
+  const aspectRatio = pricedAspectRatio(project.aspect_ratio)
 
   const { data: shots, error: shotsError } = await supabase
     .from('shots')
-    .select('id, image_prompt')
+    .select('id, image_prompt, shot_elements(elements(reference_image_path, deleted_at))')
     .eq('project_id', projectId)
     .in('id', shotIds)
   if (shotsError) return { ok: false, status: 500, error: shotsError.message }
@@ -147,33 +175,45 @@ export async function runImagesRequest(params: {
   }
 
   // THE GATE - before any claim. Effective balance = ledger balance minus everything this
-  // user already has committed to in-flight images and voiceovers.
-  const price = creditsFor({ step: STEP, operation: OPERATION, quantity: 1 })
+  // user already has committed to in-flight images and voiceovers. Each frame is priced on
+  // the project's quality and its own shot's references; the charge itself is settled on
+  // the references the worker actually sends.
+  const shotById = new Map((shots ?? []).map((s) => [s.id, s]))
+  const priceOf = (shotId: string): number =>
+    storyboardImageCredits(
+      storyboardImagePriceKey({
+        aspectRatio,
+        imageQuality: project.image_quality,
+        referenceCount: usableReferencePaths(shotById.get(shotId)?.shot_elements).length,
+      })
+    )
   await ensureSignupGrant(userId)
   const balance = await getBalance(userId)
   const committed =
-    (await countLiveImageClaims(supabase, userId)) * price + (await liveAudioCommittedCredits(supabase, userId))
+    (await liveImageCommittedCredits(supabase, userId)) + (await liveAudioCommittedCredits(supabase, userId))
   const effective = balance - committed
-  const affordable = Math.max(0, Math.floor(effective / price))
+  const firstPrice = priceOf(candidates[0])
 
-  if (affordable === 0) {
+  if (effective < firstPrice) {
     return {
       ok: false,
       status: 402,
-      error: `Not enough credits: each image costs ${price}, available balance is ${Math.max(0, effective)}.`,
-      requiredCredits: price * candidates.length,
+      error: `Not enough credits: the next image costs ${firstPrice}, available balance is ${Math.max(0, effective)}.`,
+      requiredCredits: candidates.reduce((sum, shotId) => sum + priceOf(shotId), 0),
       balanceCredits: Math.max(0, effective),
     }
   }
 
-  // Claim in request order until the affordable count is reached; the rest stay
-  // unclaimed and read as "not generated". A claim lost to a concurrent run doesn't use
-  // up budget - it's reported as in flight.
+  // Claim in request order while the budget covers the next shot; the rest stay unclaimed
+  // and read as "not generated". A claim lost to a concurrent run doesn't use up budget -
+  // it's reported as in flight.
   const claimed: string[] = []
   const generationIds: string[] = []
   const notGenerated: string[] = []
+  let budget = effective
   for (const shotId of candidates) {
-    if (claimed.length >= affordable) {
+    const price = priceOf(shotId)
+    if (price > budget) {
       notGenerated.push(shotId)
       continue
     }
@@ -186,6 +226,7 @@ export async function runImagesRequest(params: {
     if (claim.outcome === 'claimed') {
       claimed.push(shotId)
       generationIds.push(claim.generation.id)
+      budget -= price
     } else if (claim.outcome === 'blocked') {
       inFlight.push(shotId)
     } else {
@@ -319,12 +360,18 @@ export type ImageWorkerResult = {
   abandoned: string[]
 }
 
-type StoredImagePayload = { path: string; attemptId: string }
+// `price` is the call actually made, so a RECOVER charges what was paid for. A payload
+// written before it existed has none - its RECOVER is priced on the current settings.
+type StoredImagePayload = { path: string; attemptId: string; price: ImagePriceKey | null }
 
 function readStoredPayload(payload: Json | null): StoredImagePayload | null {
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return null
   const p = payload as Record<string, unknown>
-  return typeof p.path === 'string' && typeof p.attemptId === 'string' ? { path: p.path, attemptId: p.attemptId } : null
+  if (typeof p.path !== 'string' || typeof p.attemptId !== 'string') return null
+  const price = p.price as ImagePriceKey | undefined
+  const validPrice =
+    typeof price === 'object' && price !== null && typeof price.quality === 'string' && typeof price.referenceCount === 'number'
+  return { path: p.path, attemptId: p.attemptId, price: validPrice ? price : null }
 }
 
 export function storyboardImagePath(userId: string, projectId: string, shotId: string, attemptId: string): string {
@@ -349,14 +396,7 @@ async function loadReferenceImages(supabase: SupabaseServerClient, shotId: strin
     .eq('shot_id', shotId)
   if (error) throw new Error(`Failed to load bound elements: ${error.message}`)
 
-  type BoundElement = { reference_image_path: string | null; deleted_at: string | null }
-  const paths = (data ?? [])
-    .flatMap((row) => {
-      const el = row.elements as BoundElement | BoundElement[] | null
-      return el === null ? [] : Array.isArray(el) ? el : [el]
-    })
-    .filter((el) => el.deleted_at === null && el.reference_image_path !== null)
-    .map((el) => el.reference_image_path as string)
+  const paths = usableReferencePaths(data)
 
   const buffers: Buffer[] = []
   for (const path of paths) {
@@ -387,11 +427,11 @@ async function linkShotImage(
 
 async function processShot(
   deps: ImageWorkerDeps,
-  ctx: { userId: string; projectId: string; size: string },
+  ctx: { userId: string; projectId: string; aspectRatio: AspectRatio; imageQuality: string },
   generationId: string
 ): Promise<ShotOutcome> {
   const { supabase, gateway } = deps
-  const { userId, projectId, size } = ctx
+  const { userId, projectId } = ctx
 
   const { data: queuedRow } = await supabase
     .from('generations')
@@ -410,12 +450,16 @@ async function processShot(
   const shotId = queuedRow.shot_id
   const startedAt = Date.now()
 
-  const { model, quality } = modelsConfig.storyboardImages
+  // The project's quality (dev-capped outside production) and the frame's native size.
+  const { model, quality, size } = storyboardImagePriceKey({ ...ctx, referenceCount: 0 })
+  // The provider follows from the model the registry resolved - never from env.
+  const provider = IMAGE_MODELS[model as ImageModelId].provider
   let outcome: { ok: boolean; error: string | null } = { ok: false, error: 'Unexpected error' }
   let usageId: string | null = null
   let measured: UsageBreakdown | null = null
   let caughtError: unknown = null
   let chargeAttemptId: string | null = null
+  let chargePrice: ImagePriceKey | null = null
   let shotKey: string | null = null
 
   try {
@@ -443,6 +487,7 @@ async function processShot(
         return 'failed'
       }
       chargeAttemptId = stored.attemptId
+      chargePrice = stored.price ?? { model, quality, size, referenceCount: 0 }
       outcome = { ok: true, error: null }
       return 'succeeded'
     }
@@ -455,6 +500,7 @@ async function processShot(
     const attemptId = deps.mintAttemptId()
 
     const references = await loadReferenceImages(supabase, shotId)
+    const price: ImagePriceKey = { model, quality, size, referenceCount: references.length }
     const { estimatedCost, quotedBreakdown } = quoteOpenAiImageCall({
       model,
       size,
@@ -472,7 +518,7 @@ async function processShot(
       shotId,
       step: STEP,
       operation: OPERATION,
-      provider: 'openai',
+      provider,
       model,
       quotedCost: estimatedCost,
       quotedBreakdown,
@@ -517,6 +563,7 @@ async function processShot(
     const { error: persistError } = await persistGenerationPayload(supabase, generation.id, {
       path,
       attemptId,
+      price,
     } as Json)
     if (persistError) {
       outcome = { ok: false, error: `Image generated but could not be saved safely (${persistError})` }
@@ -538,6 +585,7 @@ async function processShot(
     }
 
     chargeAttemptId = attemptId
+    chargePrice = price
     outcome = { ok: true, error: null }
     return 'succeeded'
   } catch (err) {
@@ -557,7 +605,7 @@ async function processShot(
       await settleUsage({
         supabase,
         usageId,
-        provider: 'openai',
+        provider,
         model,
         status: measured !== null ? 'succeeded' : 'failed',
         breakdown: measured,
@@ -566,7 +614,7 @@ async function processShot(
     }
 
     // Ledger: success only - a failed image is absorbed. Never throws to the run.
-    if (outcome.ok && chargeAttemptId) {
+    if (outcome.ok && chargeAttemptId && chargePrice) {
       try {
         await deps.recordFixedSpend({
           userId,
@@ -577,6 +625,7 @@ async function processShot(
           projectId,
           messageId: null,
           shotKey,
+          image: chargePrice,
         })
       } catch (ledgerError) {
         console.error(`[images] ledger write failed for generation ${generation.id}`, ledgerError)
@@ -600,18 +649,18 @@ export async function runImageWorker(
 
   const { data: project } = await supabase
     .from('projects')
-    .select('aspect_ratio')
+    .select('aspect_ratio, image_quality')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
 
-  const aspectRatio = project?.aspect_ratio
-  if (!aspectRatio || !(ASPECT_RATIOS as readonly string[]).includes(aspectRatio)) {
+  const aspectRatio = project?.aspect_ratio ?? null
+  if (!project || !isAspectRatio(aspectRatio)) {
     // Nothing can be generated without a size - release every claim, uncharged.
     result.abandoned = await release(supabase, projectId, generationIds, 'Project not found or has no valid aspect ratio')
     return result
   }
-  const size = STORYBOARD_IMAGE_SIZES[aspectRatio as AspectRatio]
+  const shotCtx = { userId, projectId, aspectRatio, imageQuality: project.image_quality }
 
   // Passes the unreached ids to a fresh run, or - at the chain limit, or when the hand-off
   // is refused - releases them failed, uncharged and retryable.
@@ -649,7 +698,7 @@ export async function runImageWorker(
   const lanes = Array.from({ length: Math.min(concurrency, generationIds.length) }, async () => {
     while (state.next < generationIds.length && Date.now() - runStart < budget) {
       const id = generationIds[state.next++]
-      result.outcomes[id] = await processShot(deps, { userId, projectId, size }, id)
+      result.outcomes[id] = await processShot(deps, shotCtx, id)
     }
   })
   await Promise.all(lanes)

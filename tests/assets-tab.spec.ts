@@ -1,9 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
+import { elementReferencePrice } from './helpers/prices'
 import sharp from 'sharp'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { creditsFor } from '../src/lib/config/credits'
 
 // C5 Task 7 - Assets tab UI. Business-logic coverage (create/rename/delete/bind-block,
 // upload/generate/remove, signed-URL batch+single re-sign) already lives in
@@ -24,7 +24,7 @@ async function seedProject(overrides: Record<string, unknown> = {}) {
       video_type: 'auto',
       duration_target: '30-60s',
       current_step: 'workbench',
-      video_model: 'mochi-1',
+      video_model: 'wan-3.0',
       ...overrides,
     })
     .select('id')
@@ -279,7 +279,7 @@ test.describe('Assets tab', () => {
     const menu = page.getByRole('menu')
     await expect(menu.getByText('Regenerate')).toBeVisible()
     await expect(menu.getByText('Generate', { exact: true })).toHaveCount(0)
-    const expectedCredits = creditsFor({ step: 'workbench', operation: 'generate_element_reference', quantity: 1 })
+    const expectedCredits = elementReferencePrice()
     await expect(menu).toContainText(`${expectedCredits} cr`)
   })
 

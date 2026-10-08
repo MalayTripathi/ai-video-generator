@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { fixedCredits } from './helpers/prices'
 import {
   MUSIC_END_FADE_SEC,
   MUSIC_LOOP_CROSSFADE_SEC,
@@ -57,9 +58,8 @@ test.describe('requested length', () => {
 
 test.describe('per-minute pricing', () => {
   test('background_music is priced per minute of the requested length, rounded up once', () => {
-    const entry = PRICE_TABLE.storyboard?.background_music
-    expect(entry?.unit).toBe('per_minute')
-    const perMinute = entry!.credits
+    expect(PRICE_TABLE.storyboard?.background_music?.unit).toBe('per_minute')
+    const perMinute = fixedCredits('storyboard', 'background_music')
     expect(creditsFor({ step: 'storyboard', operation: 'background_music', quantity: 60 })).toBe(perMinute)
     expect(creditsFor({ step: 'storyboard', operation: 'background_music', quantity: 34 })).toBe(Math.ceil((perMinute * 34) / 60))
     expect(creditsFor({ step: 'storyboard', operation: 'background_music', quantity: 600 })).toBe(perMinute * 10)

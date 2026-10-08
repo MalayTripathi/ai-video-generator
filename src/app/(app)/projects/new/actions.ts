@@ -3,7 +3,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
-import { modelsConfig } from '@/lib/config/models'
+import { assertRegisteredVideoModel, DEFAULT_QUALITY_PRESET, QUALITY_PRESETS } from '@/lib/config/models'
 import { VIDEO_TYPES, ASPECT_RATIOS } from '@/lib/config/enums'
 
 export async function createProjectFromIntake(formData: FormData) {
@@ -34,7 +34,11 @@ export async function createProjectFromIntake(formData: FormData) {
     durationTargetRaw && durationTargetRaw in durationConfig ? (durationTargetRaw as DurationTarget) : '1-2min'
 
   const language = (formData.get('language') as string | null)?.trim() || 'en'
-  const videoModel = (formData.get('video_model') as string | null)?.trim() || modelsConfig.video.model
+  // Until intake offers a quality choice, every new project takes the default preset - a
+  // template's own model is not carried over. The model is checked against the registry
+  // before it is written: an unknown value fails loudly, never lands in the row.
+  const preset = QUALITY_PRESETS[DEFAULT_QUALITY_PRESET]
+  const videoModel = assertRegisteredVideoModel(preset.videoModel)
   const templateSourceId = (formData.get('template_source_id') as string | null)?.trim() || null
 
   const { data: project, error } = await supabase
@@ -47,7 +51,10 @@ export async function createProjectFromIntake(formData: FormData) {
       aspect_ratio: aspectRatio,
       duration_target: durationTarget,
       language,
+      quality_preset: DEFAULT_QUALITY_PRESET,
       video_model: videoModel,
+      video_resolution: preset.videoResolution,
+      image_quality: preset.imageQuality,
       template_source_id: templateSourceId,
       status: 'draft',
       current_step: 'workbench',

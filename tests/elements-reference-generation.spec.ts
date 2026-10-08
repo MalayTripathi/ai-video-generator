@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { elementReferencePrice } from './helpers/prices'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
@@ -9,7 +10,7 @@ import { runElementReferenceGeneration } from '../src/app/api/projects/[id]/elem
 import type { recordFixedSpend } from '../src/lib/credits/ledger'
 import type { getBalance as getBalanceType } from '../src/lib/credits/balance'
 import type { ensureSignupGrant as ensureSignupGrantType } from '../src/lib/credits/signup-grant'
-import { SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
+import { CREDIT_PRICE_VERSION, SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
 
 // Same child-process dispatcher as tests/fixed-price-ledger.spec.ts / tests/ledger.spec.ts
 // - credit_ledger.ts transitively imports 'server-only', so it can't be imported
@@ -370,6 +371,52 @@ test.describe('generate_element_reference - success', () => {
     const element = await readElement(elementId)
     expect(element.status).toBe('ready')
     expect(element.reference_image_path).not.toBeNull()
+  })
+})
+
+test.describe('generate_element_reference - model and quality', () => {
+  const run = (projectId: string, elementId: string, gateway: ReturnType<typeof successImageGateway>) =>
+    runElementReferenceGeneration({
+      gateway,
+      supabase: admin,
+      projectId,
+      elementId,
+      userId: primary.user.id,
+      attemptId: crypto.randomUUID(),
+      recordFixedSpend: realRecordFixedSpend,
+      getBalance: realGetBalance,
+      ensureSignupGrant: realEnsureSignupGrant,
+    })
+
+  test("calls gpt-image-2.5-flare at 1024x1024 with the project's image quality, and charges on it", async () => {
+    const projectId = await seedProject(primary.user.id, { image_quality: 'medium' })
+    const elementId = await seedElement(projectId)
+    const gateway = successImageGateway()
+
+    expect((await run(projectId, elementId, gateway)).ok).toBe(true)
+    expect(gateway.getReferenceCalls()).toEqual([{ model: 'gpt-image-2.5-flare', quality: 'medium', size: '1024x1024' }])
+    const [row] = await readLedgerRows(projectId)
+    expect(row.delta).toBe(-elementReferencePrice('medium'))
+    expect(row.price_version).toBe(CREDIT_PRICE_VERSION)
+  })
+
+  test('IMAGE_QUALITY_DEV_CAP lowers the quality sent outside production, and the price follows it', async () => {
+    const projectId = await seedProject(primary.user.id, { image_quality: 'high' })
+    const elementId = await seedElement(projectId)
+    const gateway = successImageGateway()
+
+    const previous = process.env.IMAGE_QUALITY_DEV_CAP
+    process.env.IMAGE_QUALITY_DEV_CAP = 'low'
+    try {
+      expect((await run(projectId, elementId, gateway)).ok).toBe(true)
+    } finally {
+      if (previous === undefined) delete process.env.IMAGE_QUALITY_DEV_CAP
+      else process.env.IMAGE_QUALITY_DEV_CAP = previous
+    }
+    expect(gateway.getReferenceCalls()).toEqual([expect.objectContaining({ quality: 'low' })])
+    const [row] = await readLedgerRows(projectId)
+    expect(row.delta).toBe(-elementReferencePrice('low'))
+    expect(elementReferencePrice('low')).toBeLessThan(elementReferencePrice('high'))
   })
 })
 

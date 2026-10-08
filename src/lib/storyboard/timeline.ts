@@ -252,10 +252,10 @@ export type CaseTwo = { title: string; body: string; requiredCredits: number; sh
 
 // Canvas 15c (d): some frames were never generated and the balance can't cover all of them.
 // Null when there is nothing to finish or the balance covers it (the per-block Generate is
-// then enough).
-export function caseTwo(r: Readiness, balanceCredits: number | null, price: number): CaseTwo | null {
+// then enough). `requiredCredits` is the not-generated frames' prices summed - each frame is
+// priced on its own references.
+export function caseTwo(r: Readiness, balanceCredits: number | null, requiredCredits: number): CaseTwo | null {
   if (r.notGenerated === 0 || balanceCredits === null) return null
-  const requiredCredits = price * r.notGenerated
   if (balanceCredits >= requiredCredits) return null
   const frames = (n: number) => (n === 1 ? 'frame' : 'frames')
   const drawn =

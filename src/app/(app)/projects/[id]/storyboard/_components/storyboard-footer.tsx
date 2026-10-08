@@ -2,13 +2,13 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import { AdvanceConfirmModal } from '@/components/advance-confirm-modal'
 import { creditsFor } from '@/lib/config/credits'
 import { stepIndex, stepLabel } from '@/lib/config/pipeline'
 import { musicShorterThanPicture } from '@/lib/music/length'
 import { formatTimecode } from '@/lib/storyboard/timeline'
 import { voiceoverLengthDiffers } from '@/lib/storyboard/voiceover'
+import { useGoToStep } from '@/lib/hooks/use-go-to-step'
 import { getProjectFurthestStep } from '../../workbench/actions'
 import { shorterMessage } from './music-card'
 import { useStoryboard } from './storyboard-context'
@@ -54,7 +54,7 @@ export function StoryboardFooter({ furthestStep }: { furthestStep: number }) {
 }
 
 function GenerateVideoPromptsButton({ onAdvancedSince }: { onAdvancedSince: () => void }) {
-  const router = useRouter()
+  const goToStep = useGoToStep()
   const { projectId, laneShots, statusFor, framesReady, film, voiceover, voiceoverStaleness, music } = useStoryboard()
 
   const [modalPhase, setModalPhase] = useState<ModalPhase>('closed')
@@ -99,7 +99,7 @@ function GenerateVideoPromptsButton({ onAdvancedSince }: { onAdvancedSince: () =
     if (actual !== null && actual > stepIndex('storyboard')) {
       setModalPhase('closed')
       onAdvancedSince()
-      router.push(`/projects/${projectId}/video_prompts`)
+      goToStep(projectId, 'video_prompts')
       return
     }
     setModalPhase('confirm')
@@ -117,7 +117,7 @@ function GenerateVideoPromptsButton({ onAdvancedSince }: { onAdvancedSince: () =
       const body = await res.json()
 
       if (res.ok && body.ok) {
-        router.push(`/projects/${projectId}/video_prompts`)
+        goToStep(projectId, 'video_prompts')
         return
       }
 

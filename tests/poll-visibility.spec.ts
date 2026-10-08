@@ -99,7 +99,7 @@ async function project(step: 'workbench' | 'image_prompts' | 'storyboard', title
       title,
       source_text: 'A short film.',
       aspect_ratio: '9:16',
-      video_model: 'Kling 2.1',
+      video_model: 'wan-2.5',
       current_step: step,
       furthest_step: stepIndex(step),
     })

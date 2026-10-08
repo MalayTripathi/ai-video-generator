@@ -56,7 +56,7 @@ async function seedProject(userId: string) {
       current_step: 'storyboard',
       furthest_step: stepIndex('storyboard'),
       language: 'en',
-      video_model: 'mochi-1',
+      video_model: 'wan-3.0',
     })
     .select('id')
     .single()
@@ -593,7 +593,7 @@ test.describe('voiceover - Fit to voiceover (server)', () => {
   })
 
   test('uses the true spans, past the video model’s clip limit, clamping only at 30s', async () => {
-    // mochi-1 clips top out at 5.4s; the storyboard ignores that.
+    // The video model's own clip limit plays no part; the storyboard clamps at 30s.
     const projectId = await seedProject(primary.user.id)
     const narration = ['The river rises.', 'The city wakes.', 'The night falls.']
     const shotIds = await seedShots(projectId, narration)

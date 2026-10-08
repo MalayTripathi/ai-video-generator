@@ -4,6 +4,7 @@ import type { createClient } from '@/lib/supabase/server'
 import type { getBalance as getBalanceType } from '@/lib/credits/balance'
 import type { ensureSignupGrant as ensureSignupGrantType } from '@/lib/credits/signup-grant'
 import { creditsFor } from '@/lib/config/credits'
+import { pricedAspectRatio, storyboardImagePriceKey, usableReferencePaths } from '@/lib/images/price-key'
 import { advanceStep } from '@/lib/projects/advance-step'
 import { stepIndex } from '@/lib/config/pipeline'
 
@@ -34,7 +35,7 @@ export async function runAdvanceToStoryboard({
 }): Promise<AdvanceToStoryboardResult> {
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('id, furthest_step')
+    .select('id, furthest_step, aspect_ratio, image_quality')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
@@ -46,21 +47,33 @@ export async function runAdvanceToStoryboard({
   if (!project) {
     return { ok: false, status: 404, error: 'Project not found' }
   }
+  const aspectRatio = pricedAspectRatio(project.aspect_ratio)
 
   const { data: shots, error: shotsError } = await supabase
     .from('shots')
-    .select('id, image_prompt')
+    .select('id, image_prompt, shot_elements(elements(reference_image_path, deleted_at))')
     .eq('project_id', projectId)
 
   if (shotsError) {
     return { ok: false, status: 500, error: shotsError.message }
   }
 
-  const required = creditsFor({
-    step: 'storyboard',
-    operation: 'generate_image',
-    quantity: shots.length,
-  })
+  // Each frame priced on the project's image quality and its own shot's references.
+  const required = shots.reduce(
+    (sum, shot) =>
+      sum +
+      creditsFor({
+        step: 'storyboard',
+        operation: 'generate_image',
+        quantity: 1,
+        image: storyboardImagePriceKey({
+          aspectRatio,
+          imageQuality: project.image_quality,
+          referenceCount: usableReferencePaths(shot.shot_elements).length,
+        }),
+      }),
+    0
+  )
 
   // A project that has already advanced to the storyboard owns this step: getting to it
   // spends nothing (generation is gated by its own route), so it must never be refused on

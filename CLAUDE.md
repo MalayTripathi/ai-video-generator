@@ -207,8 +207,8 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   generic widget cannot know a camera field's origin-aware diff rule, where
   the same value under an 'auto' origin is a real write, not a no-op.
 - **Duration: two independent conditions, never conflated.** The stepper
-  moves in 0.1s steps (always one decimal) against bounds resolved from
-  the project's `video_model` — never a fixed constant, and never frame
+  moves in the model's own step (whole seconds for every fal model) within bounds
+  resolved from the project's `video_model` — never a fixed constant, and never frame
   counts or a provider name in copy. A **saved duration invalid for the
   current model** is per-shot: amber on that shot's own stepper, value
   never silently rewritten, copy naming the way out. An **aggregate
@@ -295,14 +295,13 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   hold — no normalization layer), `resolveVideoModel(id)`, and
   `isDurationAllowed(config, seconds)`. `VideoModelConfig` is a
   discriminated union on `kind: 'continuous' | 'discrete'` — a model
-  cannot be defined without picking one, because a discrete model (Kling
-  2.1: exactly 5s or 10s) would otherwise let a stepper produce a value
+  cannot be defined without picking one, because a discrete model (Wan
+  2.5: exactly 5s or 10s) would otherwise let a stepper produce a value
   the provider rejects at Step 6, after everything upstream was paid for.
-  Adding a model is one entry here. `resolveVideoModel` never falls back
-  to another model's bounds: it throws outside production and returns
-  `null` in production. `ProjectHeader`'s chip-label lookup deliberately
-  uses the opposite fallback (raw value, never blank) — different failure
-  costs, both correct.
+  Adding a model is one entry here, with its source URLs. `video_model` has
+  no CHECK: every write goes through `assertRegisteredVideoModel`.
+  `resolveVideoModel` never falls back to another model's bounds; the
+  header chip hides an unregistered value, never renders it raw.
 - Pricing lives in `src/lib/config/pricing.ts`, separate from
   `models.ts` — the single place a rate is edited, and the single source
   of `computeCost`, which turns a provider's raw usage report into the
@@ -311,12 +310,12 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   is stamped onto every settled `usage` row so a past row's cost stays
   reconstructable even after rates change later. `pricing.ts` is
   deliberately client-importable (rates aren't secrets) and holds Anthropic's
-  and OpenAI's real rates and ElevenLabs' placeholders — `fal` is a stub
-  shape with no values yet, filled in when it is wired up.
+  and OpenAI's real rates and ElevenLabs' placeholders; `FAL_RATES` is
+  derived from `VIDEO_MODELS`, never hand-copied.
 - Credit prices live in `src/lib/config/credits.ts` (`PRICE_TABLE`, keyed on
   `(step, operation)` — never operation alone, since the same operation can price
-  differently at different steps — plus `usdToCredits` for the one
-  dynamically-priced operation, `agent_turn`). No credit literal belongs anywhere
+  differently at different steps; image prices are computed per call by
+  `imageCredits` and `agent_turn` by `usdToCredits`). No credit literal belongs anywhere
   else. A new priced call site mints its own attempt id via `credits/ledger.ts`'s
   `mintAttemptId()` — never `generations.id`, which names a reusable lock slot, not
   one attempt — and takes the real `recordFixedSpend`/`recordDynamicSpend` writer as

@@ -119,13 +119,11 @@ export function estimateAgentTurnCost(params: { model: string; estimatedInputTok
 }
 
 /**
- * The pre-flight quote for an OpenAI image call. Unlike quoteClaudeCall, the output
- * half is EXACT, not worst-case: OpenAI meters image generation at a fixed
- * output-token count per size/quality tier (OPENAI_RATES.images[model].outputTokensBySize),
- * so there is no "ceiling" to reserve against - the real call can never produce more or
- * fewer output tokens than this. The input half still goes through the same chars/4
- * estimate as every other call (the prompt is short: element name + description +
- * style keywords), since real tokenization still isn't knowable before the call.
+ * The pre-flight quote for an OpenAI image call - a worst-case reservation, like
+ * quoteClaudeCall: the output half is the size/quality's quote ceiling
+ * (OPENAI_RATES.images[model].quoteOutputTokensBySize), not the calculator figure an image
+ * is priced at, since real consumption can differ from it. The input half goes through the
+ * same chars/4 estimate as every other call.
  */
 export function quoteOpenAiImageCall(params: {
   model: string
@@ -136,7 +134,7 @@ export function quoteOpenAiImageCall(params: {
   referenceCount: number
 }): { estimatedCost: number; quotedBreakdown: UsageBreakdown } {
   const rates = OPENAI_RATES.images[params.model]
-  const outputTokens = rates?.outputTokensBySize[params.size]?.[params.quality] ?? 0
+  const outputTokens = rates?.quoteOutputTokensBySize[params.size]?.[params.quality] ?? 0
   const imageInputTokens = (rates?.imageInputTokensPerReference ?? 0) * params.referenceCount
 
   const quotedBreakdown: UsageBreakdown = {

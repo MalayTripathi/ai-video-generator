@@ -47,5 +47,9 @@ Required environment variables (see `.env.example` for the full list and default
   150s run hands itself on to a fresh run with this secret; without it the unreached frames
   are released failed (retryable) and the run logs an error.
 
+Model and provider choice is not an environment setting: image and video models come from
+the registry in `src/lib/config/models.ts` and each project's quality settings. Env holds
+API keys and development-only overrides; `IMAGE_QUALITY_DEV_CAP` is ignored in production.
+
 Never set an `ALLOW_REAL_*` variable on a deployment - production calls providers without
 it. Set `BLOCK_PROVIDER_CALLS=1` to stop all provider spend on a deployment.

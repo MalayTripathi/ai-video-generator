@@ -1,6 +1,7 @@
 import { notFound, redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getCurrentUser } from '@/lib/auth/current-user'
+import { storyboardImagePriceKey } from '@/lib/images/price-key'
 import { WorkbenchShell } from '@/components/workbench-shell'
 import { ProjectHeader } from '@/components/workbench/project-header'
 import { ImagePromptsFooter } from './_components/image-prompts-footer'
@@ -65,6 +66,18 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
   // The project row gates the page (404 / redirect), but no read below needs its data -
   // they key on projectId and are RLS-scoped to the owner - so all of them run in one
   // wave with it, and the gate is applied once they land.
+  // A real Promise (not the query builder), so the Assets price can wait on its image
+  // quality without a second read.
+  const projectPromise = Promise.resolve(
+    supabase
+      .from('projects')
+      .select(
+        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, video_resolution, image_quality, duration_target'
+      )
+      .eq('id', projectId)
+      .eq('user_id', user.id)
+      .maybeSingle()
+  )
   const [
     { data: project, error: projectError },
     shotRows,
@@ -76,14 +89,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
     { data: usageRows },
     { data: creditLedgerRows },
   ] = await Promise.all([
-    supabase
-      .from('projects')
-      .select(
-        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, duration_target'
-      )
-      .eq('id', projectId)
-      .eq('user_id', user.id)
-      .maybeSingle(),
+    projectPromise,
     shotsPromise,
     // Each card shows its Storyboard frame: one batched signing call, started as soon as the
     // shots land rather than after every other read.
@@ -91,7 +97,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
     // The same grouped-and-signed read the Workbench uses: signed reference thumbnails
     // for the tiles, and the element list behind the picker.
     getProjectElementsForUser(supabase, projectId, user.id),
-    getElementGenerateAffordability(),
+    getElementGenerateAffordability(projectPromise.then(({ data }) => data?.image_quality ?? null)),
     supabase
       .from('generations')
       .select('state')
@@ -164,6 +170,18 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
     ? (project.aspect_ratio as AspectRatio)
     : '9:16'
 
+  // A frame's price for each possible reference count (up to every element in the project),
+  // so the Continue modal stays exact as bindings change on this page.
+  const elementCount = elementGroups.reduce((n, group) => n + group.elements.length, 0)
+  const frameCreditsByReferenceCount = Array.from({ length: elementCount + 1 }, (_, referenceCount) =>
+    creditsFor({
+      step: 'storyboard',
+      operation: 'generate_image',
+      quantity: 1,
+      image: storyboardImagePriceKey({ aspectRatio, imageQuality: project.image_quality, referenceCount }),
+    })
+  )
+
   // First arrival with nothing ever attempted generates once - but only if the balance
   // covers it. Decided here, on the server, so the page never renders a "writing" state
   // for a run that would be refused; a short balance shows the banner instead.
@@ -204,6 +222,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
       autoGenerate={autoGenerate}
       initialInsufficient={initialInsufficient}
       aspectRatio={aspectRatio}
+      frameCreditsByReferenceCount={frameCreditsByReferenceCount}
     >
       <AssetsProvider
         projectId={projectId}
