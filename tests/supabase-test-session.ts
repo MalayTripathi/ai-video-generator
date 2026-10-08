@@ -2,6 +2,7 @@ import './load-env'
 import { createClient } from '@supabase/supabase-js'
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { removeStorageUnder } from './storage-cleanup'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -68,12 +69,62 @@ async function createTestUser() {
   if (createError || !created.user) {
     throw new Error('createUser failed: ' + JSON.stringify(createError))
   }
+  // Registered before anything can use it, so a run killed before this user's own cleanup
+  // leaves a record the next run's global-setup sweeps (sweepOrphanedTestUsers).
+  mkdirSync(REGISTRY_DIR, { recursive: true })
+  writeFileSync(path.join(REGISTRY_DIR, `${created.user.id}.json`), JSON.stringify({ id: created.user.id, email: created.user.email }))
   return created.user
 }
 
+/** Removes a minted user's files, projects and auth row, then its registry entry - the
+ * entry only once the auth row is gone, so a failed delete is retried by the next sweep. */
 export async function deleteTestUser(userId: string) {
+  await removeStorageUnder(admin, userId).catch((err) => console.error(`[test-session] storage cleanup for ${userId} failed:`, err))
   await admin.from('projects').delete().eq('user_id', userId)
-  await admin.auth.admin.deleteUser(userId)
+  const { error } = await admin.auth.admin.deleteUser(userId)
+  if (!error || error.status === 404) rmSync(path.join(REGISTRY_DIR, `${userId}.json`), { force: true })
+}
+
+// Every minted user, one file each, written at creation and removed by deleteTestUser.
+const REGISTRY_DIR = path.resolve(__dirname, '.auth/minted')
+const MINTED_EMAIL = /^pw-test-[0-9a-f-]{36}@reelcraft\.local$/
+
+/**
+ * Cleans up minted users an earlier run left behind - a run killed mid-test skips both the
+ * test's own `finally` and globalTeardown. Candidates are registry entries plus any
+ * signed-in minted account (pre-registry leftovers); unclaimed pool users are never
+ * touched. Only addresses matching the minted pattern are deleted, re-checked against the
+ * auth row, so a fixed or real user can never be swept. Runs from global-setup, before any
+ * test of this run has minted anything.
+ */
+export async function sweepOrphanedTestUsers(): Promise<number> {
+  const unclaimedPool = new Set(listJson(POOL_DIR))
+  const candidates = new Set(listJson(REGISTRY_DIR))
+  for (let page = 1; ; page++) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 1000 })
+    if (error) throw new Error('listUsers failed: ' + error.message)
+    for (const u of data.users) if (u.last_sign_in_at && MINTED_EMAIL.test(u.email ?? '')) candidates.add(u.id)
+    if (data.users.length < 1000) break
+  }
+  let swept = 0
+  for (const id of candidates) {
+    if (unclaimedPool.has(id)) continue
+    const { data, error } = await admin.auth.admin.getUserById(id)
+    if (error && error.status !== 404) continue
+    if (data?.user && !MINTED_EMAIL.test(data.user.email ?? '')) continue
+    await deleteTestUser(id)
+    swept++
+  }
+  return swept
+}
+
+function listJson(dir: string): string[] {
+  try {
+    return readdirSync(dir).filter((name) => name.endsWith('.json')).map((name) => name.slice(0, -'.json'.length))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
 }
 
 // The fresh-user pool: one file per unclaimed, never-signed-in user. Claiming renames the

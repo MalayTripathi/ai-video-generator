@@ -110,6 +110,9 @@ are not lost.
 
 ## Unbuilt product surface
 
+- **Launch blocker — Storage lifecycle.** Project delete (rows + storage) does not exist;
+  deleted/replaced shots leave images in storage. Remove superseded files of genuinely
+  deleted shots only; stale outputs are kept.
 - **Video-prompt generation (`write_video_prompts`, `step: 'video_prompts'`) has no
   route at all.** The old combined `/api/projects/[id]/prompts` route (which
   incorrectly generated both `image_prompt` and `video_prompt` in one call,

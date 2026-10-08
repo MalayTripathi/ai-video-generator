@@ -148,8 +148,15 @@ export default async function globalSetup() {
   // across the run under Supabase's auth rate limit. Sized to the fresh users
   // a full run creates; a short pool only costs speed (the rest are minted on demand),
   // and teardown logs the counts to keep it tuned. Targeted runs mint on demand instead.
-  const { pruneClaimedUsers, fillUserPool } = await import('./supabase-test-session')
+  const { pruneClaimedUsers, fillUserPool, sweepOrphanedTestUsers } = await import('./supabase-test-session')
   await pruneClaimedUsers()
+  // A killed run never reaches its tests' cleanup or globalTeardown; this run does it.
+  try {
+    const swept = await sweepOrphanedTestUsers()
+    if (swept > 0) console.log(`[global-setup] swept ${swept} minted user(s) an earlier run left behind`)
+  } catch (err) {
+    console.error('[global-setup] orphaned-user sweep failed - continuing:', err)
+  }
   if (process.env.PW_SERVER === 'prod') {
     const created = await fillUserPool(FULL_RUN_USER_POOL)
     console.log(`[global-setup] fresh-user pool: created ${created}, reused ${FULL_RUN_USER_POOL - created}`)

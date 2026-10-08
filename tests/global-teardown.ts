@@ -27,6 +27,7 @@ export default async function globalTeardown() {
   try {
     const { admin, pruneClaimedUsers } = await import('./supabase-test-session')
     const { primary, secondary } = await import('./fixed-users')
+    const { removeStorageUnder } = await import('./storage-cleanup')
     const fixedUserIds = [primary.user.id, secondary.user.id]
 
     const { error: usageError, count: usageCount } = await admin
@@ -57,6 +58,17 @@ export default async function globalTeardown() {
       console.error('[global-teardown] projects delete failed:', projectsError.message)
     } else {
       console.log(`[global-teardown] deleted ${projectsCount ?? 0} project(s) for the fixed test users`)
+    }
+
+    // Storage doesn't cascade from projects: every fixed-user project is gone now, so
+    // everything under the fixed users' own prefixes is orphaned.
+    for (const userId of fixedUserIds) {
+      try {
+        const removed = await removeStorageUnder(admin, userId)
+        console.log(`[global-teardown] removed ${removed} storage object(s) under ${userId}/`)
+      } catch (err) {
+        console.error(`[global-teardown] storage cleanup under ${userId}/ failed:`, err)
+      }
     }
 
     // Last, so a pool problem can never skip the fixed users' cleanup above. Unclaimed
