@@ -47,6 +47,7 @@ test.describe('New Project intake', () => {
       expect(project.video_model).toBe(QUALITY_PRESETS[DEFAULT_QUALITY_PRESET].videoModel)
       expect(project.video_resolution).toBe(QUALITY_PRESETS[DEFAULT_QUALITY_PRESET].videoResolution)
       expect(project.image_quality).toBe(QUALITY_PRESETS[DEFAULT_QUALITY_PRESET].imageQuality)
+      expect(project.image_model).toBe(QUALITY_PRESETS[DEFAULT_QUALITY_PRESET].imageModel)
 
       // The auto-trigger POST is blocked above, so no claim was ever attempted - a
       // brand-new project has no generations row until its first claim.
@@ -174,7 +175,7 @@ test.describe('New Project intake', () => {
       expect(await estimateOf(page, 'intake-estimate')).toBe(long[0])
     })
 
-    test('Advanced makes it Custom, disables unsupported resolutions, drops resolution with a notice, and saves the four columns', async ({
+    test('Advanced makes it Custom, disables unsupported resolutions, drops resolution with a notice, and saves the five columns', async ({
       page,
     }) => {
       await page.route('**/api/projects/*/shots', (route) => route.abort())
@@ -202,13 +203,15 @@ test.describe('New Project intake', () => {
       await expect(page.getByTestId('quality-resolution-720p')).toHaveAttribute('aria-checked', 'true')
 
       await page.getByTestId('quality-image-high').click()
+      await page.getByTestId('quality-image-model-gpt-image-2').click()
+      await expect(page.getByTestId('quality-image-model-gpt-image-2')).toHaveAttribute('aria-checked', 'true')
 
       await page.getByRole('button', { name: 'Build workbench' }).click()
       await page.waitForURL(/\/projects\/[0-9a-f-]+\/workbench$/, { waitUntil: 'commit' })
       const projectId = page.url().match(/\/projects\/([0-9a-f-]+)\/workbench$/)![1]
       const { data: project } = await admin
         .from('projects')
-        .select('quality_preset, video_model, video_resolution, image_quality')
+        .select('quality_preset, video_model, video_resolution, image_quality, image_model')
         .eq('id', projectId)
         .single()
       expect(project).toEqual({
@@ -216,10 +219,11 @@ test.describe('New Project intake', () => {
         video_model: 'seedance-2.0-mini',
         video_resolution: '720p',
         image_quality: 'high',
+        image_model: 'gpt-image-2',
       })
     })
 
-    test('a template copies all four quality values', async ({ page, context }) => {
+    test('a template copies all five quality values', async ({ page, context }) => {
       // A fresh user, so the template is certainly in this user's recent-projects list.
       const { user, cookie } = await createTestSession()
       try {
@@ -233,6 +237,7 @@ test.describe('New Project intake', () => {
           video_model: 'wan-2.5',
           video_resolution: '1080p',
           image_quality: 'medium',
+          image_model: 'gpt-image-2',
         })
         expect(error).toBeNull()
 
@@ -248,7 +253,7 @@ test.describe('New Project intake', () => {
         const projectId = page.url().match(/\/projects\/([0-9a-f-]+)\/workbench$/)![1]
         const { data: project } = await admin
           .from('projects')
-          .select('quality_preset, video_model, video_resolution, image_quality')
+          .select('quality_preset, video_model, video_resolution, image_quality, image_model')
           .eq('id', projectId)
           .single()
         expect(project).toEqual({
@@ -256,6 +261,7 @@ test.describe('New Project intake', () => {
           video_model: 'wan-2.5',
           video_resolution: '1080p',
           image_quality: 'medium',
+          image_model: 'gpt-image-2',
         })
       } finally {
         await deleteTestUser(user.id)

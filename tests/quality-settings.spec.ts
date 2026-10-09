@@ -49,7 +49,7 @@ test.describe('quality helper', () => {
         const preset = presetSettings(id)
         const usd = videoUsdPerSecond({ model: preset.videoModel, resolution: preset.videoResolution, audio: false })
         const expected =
-          config.targetShots * frameCredits(preset.imageQuality, aspect) +
+          config.targetShots * frameCredits(preset.imageModel, preset.imageQuality, aspect) +
           usdToCredits(usd * config.targetSecondsMax * CREDIT_MARGIN)
         const actual = estimateCredits({ durationTarget: tier, aspectRatio: aspect, ...preset })
         expect(actual).toBe(expected)
@@ -64,22 +64,39 @@ test.describe('quality helper', () => {
   test('the server validator rejects combinations the registry does not support', () => {
     const reject = (raw: Parameters<typeof parseQualitySettings>[0]) =>
       expect(() => parseQualitySettings(raw)).toThrow(UnsupportedQualityError)
-    reject({ preset: 'custom', videoModel: 'seedance-2.0-mini', videoResolution: '1080p', imageQuality: 'low' })
-    reject({ preset: 'custom', videoModel: 'not-a-model', videoResolution: '720p', imageQuality: 'low' })
-    reject({ preset: 'custom', videoModel: 'wan-3.0', videoResolution: '4k', imageQuality: 'low' })
-    reject({ preset: 'custom', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'ultra' })
-    reject({ preset: 'turbo', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'low' })
+    reject({ preset: 'custom', videoModel: 'seedance-2.0-mini', videoResolution: '1080p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' })
+    reject({ preset: 'custom', videoModel: 'not-a-model', videoResolution: '720p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' })
+    reject({ preset: 'custom', videoModel: 'wan-3.0', videoResolution: '4k', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' })
+    reject({ preset: 'custom', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'ultra', imageModel: 'gpt-image-2.5-flare' })
+    reject({ preset: 'turbo', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' })
     // A named preset must carry exactly its own values.
-    reject({ preset: 'low', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'low' })
-    reject({ preset: null, videoModel: null, videoResolution: null, imageQuality: null })
+    reject({ preset: 'low', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' })
+    reject({ preset: null, videoModel: null, videoResolution: null, imageQuality: null, imageModel: null })
+    reject({ preset: 'custom', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'low', imageModel: 'dall-e-3' })
+    // Presets all draw on the default image model - GPT Image 2 is an Advanced (custom) choice.
+    reject({ preset: 'low', ...QUALITY_PRESETS.low, imageModel: 'gpt-image-2' })
 
-    expect(parseQualitySettings({ preset: 'custom', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'high' })).toEqual({
+    expect(
+      parseQualitySettings({ preset: 'custom', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'high', imageModel: 'gpt-image-2' })
+    ).toEqual({
       preset: 'custom',
       videoModel: 'wan-3.0',
       videoResolution: '720p',
       imageQuality: 'high',
+      imageModel: 'gpt-image-2',
     })
     expect(parseQualitySettings({ preset: 'low', ...QUALITY_PRESETS.low })).toEqual(presetSettings('low'))
+  })
+
+  test('GPT Image 2 frames cost at least as much as 2.5-flare at every quality, and the estimate follows the image model', () => {
+    for (const quality of ['low', 'medium', 'high'] as const) {
+      expect(frameCredits('gpt-image-2', quality, '9:16')).toBeGreaterThanOrEqual(frameCredits('gpt-image-2.5-flare', quality, '9:16'))
+      expect(frameCredits('gpt-image-2', quality, '9:16', 1)).toBeGreaterThan(frameCredits('gpt-image-2', quality, '9:16'))
+    }
+    const base = { durationTarget: '30-60s' as const, aspectRatio: '9:16' as const, videoModel: 'wan-3.0' as const, videoResolution: '480p' as const, imageQuality: 'high' as const }
+    const flare = estimateCredits({ ...base, imageModel: 'gpt-image-2.5-flare' })
+    const two = estimateCredits({ ...base, imageModel: 'gpt-image-2' })
+    expect(two - flare).toBe(8 * (frameCredits('gpt-image-2', 'high', '9:16') - frameCredits('gpt-image-2.5-flare', 'high', '9:16')))
   })
 
   test('a missing or unknown duration falls back to the intake default', () => {
@@ -149,7 +166,7 @@ async function addDialogue(projectId: string, shotId: string) {
 async function readProject(projectId: string) {
   const { data } = await admin
     .from('projects')
-    .select('quality_preset, video_model, video_resolution, image_quality, current_step, furthest_step')
+    .select('quality_preset, video_model, video_resolution, image_quality, image_model, current_step, furthest_step')
     .eq('id', projectId)
     .single()
   return data!
@@ -164,7 +181,7 @@ async function readShots(projectId: string) {
   return data!
 }
 
-const KLING_720 = { preset: 'custom', videoModel: 'kling-v3-standard', videoResolution: '720p', imageQuality: 'low' }
+const KLING_720 = { preset: 'custom', videoModel: 'kling-v3-standard', videoResolution: '720p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' }
 
 test.describe('project settings apply', () => {
   test('preview lists in-film shots over the new maximum and flags the ones with dialogue', async () => {
@@ -216,6 +233,7 @@ test.describe('project settings apply', () => {
       video_model: 'kling-v3-standard',
       video_resolution: '720p',
       image_quality: 'low',
+      image_model: 'gpt-image-2.5-flare',
       current_step: 'video_prompts',
       furthest_step: 5,
     })
@@ -229,13 +247,27 @@ test.describe('project settings apply', () => {
       admin,
       primary.user.id,
       projectId,
-      { preset: 'custom', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'high' },
+      { preset: 'custom', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'high', imageModel: 'gpt-image-2.5-flare' },
       0
     )
     expect(result).toEqual({ ok: true, trimmed: 0 })
     const [shot] = await readShots(projectId)
     expect(shot).toMatchObject({ duration_sec: 28, video_prompt_stale: false })
     expect(await readProject(projectId)).toMatchObject({ video_resolution: '720p', image_quality: 'high', quality_preset: 'custom' })
+
+    // The image model saves the same way, and regenerates nothing: shots are untouched.
+    expect(
+      await applyProjectSettings(
+        admin,
+        primary.user.id,
+        projectId,
+        { preset: 'custom', videoModel: 'wan-3.0', videoResolution: '720p', imageQuality: 'high', imageModel: 'gpt-image-2' },
+        0
+      )
+    ).toEqual({ ok: true, trimmed: 0 })
+    expect(await readProject(projectId)).toMatchObject({ image_model: 'gpt-image-2' })
+    const [after] = await readShots(projectId)
+    expect(after).toMatchObject({ duration_sec: 28, video_prompt_stale: false })
   })
 
   test('when the over-length shots differ from what was confirmed, nothing is written', async () => {
@@ -258,7 +290,7 @@ test.describe('project settings apply', () => {
       admin,
       primary.user.id,
       projectId,
-      { preset: 'custom', videoModel: 'seedance-2.0-mini', videoResolution: '1080p', imageQuality: 'low' },
+      { preset: 'custom', videoModel: 'seedance-2.0-mini', videoResolution: '1080p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' },
       0
     )
     expect(result).toMatchObject({ ok: false, error: 'unsupported' })
@@ -275,7 +307,7 @@ test.describe('project settings apply', () => {
       admin,
       primary.user.id,
       projectId,
-      { preset: 'custom', videoModel: 'wan-3.0', videoResolution: '1080p', imageQuality: 'low' },
+      { preset: 'custom', videoModel: 'wan-3.0', videoResolution: '1080p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' },
       0
     )
     expect(resolutionChange).toMatchObject({ ok: false, error: 'locked' })
@@ -287,11 +319,27 @@ test.describe('project settings apply', () => {
       admin,
       primary.user.id,
       projectId,
-      { preset: 'custom', videoModel: 'wan-3.0', videoResolution: '480p', imageQuality: 'high' },
+      { preset: 'custom', videoModel: 'wan-3.0', videoResolution: '480p', imageQuality: 'high', imageModel: 'gpt-image-2' },
       0
     )
     expect(imageChange).toEqual({ ok: true, trimmed: 0 })
-    expect(await readProject(projectId)).toMatchObject({ image_quality: 'high', quality_preset: 'custom', video_model: 'wan-3.0' })
+    expect(await readProject(projectId)).toMatchObject({
+      image_quality: 'high',
+      image_model: 'gpt-image-2',
+      quality_preset: 'custom',
+      video_model: 'wan-3.0',
+    })
+  })
+
+  test('the backfill left every project on a registered image model - none is null', async () => {
+    const { count, error } = await admin.from('projects').select('id', { count: 'exact', head: true }).is('image_model', null)
+    expect(error).toBeNull()
+    expect(count).toBe(0)
+    const { count: unregistered } = await admin
+      .from('projects')
+      .select('id', { count: 'exact', head: true })
+      .not('image_model', 'in', '("gpt-image-2.5-flare","gpt-image-2")')
+    expect(unregistered).toBe(0)
   })
 
   test("another user's project is not found and is left untouched", async () => {

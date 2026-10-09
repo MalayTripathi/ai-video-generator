@@ -92,7 +92,7 @@ export default async function WorkbenchPage({
     supabase
       .from('projects')
       .select(
-        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, video_resolution, image_quality, quality_preset, duration_target'
+        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, video_resolution, image_model, image_quality, quality_preset, duration_target'
       )
       .eq('id', projectId)
       .eq('user_id', user.id)
@@ -120,7 +120,7 @@ export default async function WorkbenchPage({
     // shots/dialogue join below and the Assets tab's initial render, so there is no
     // second raw `elements` query.
     getProjectElementsForUser(supabase, projectId, user.id),
-    getElementGenerateAffordability(projectPromise.then(({ data }) => data?.image_quality ?? null)),
+    getElementGenerateAffordability(projectPromise.then(({ data }) => data ?? null)),
     supabase
       .from('shot_dialogue')
       .select('id, shot_id, element_id, line, order_index')

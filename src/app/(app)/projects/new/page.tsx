@@ -17,7 +17,7 @@ export default async function NewProjectPage() {
   const { data: recentProjects } = await supabase
     .from('projects')
     .select(
-      'id, title, source_text, video_type, aspect_ratio, duration_target, language, quality_preset, video_model, video_resolution, image_quality, created_at'
+      'id, title, source_text, video_type, aspect_ratio, duration_target, language, quality_preset, video_model, video_resolution, image_quality, image_model, created_at'
     )
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })

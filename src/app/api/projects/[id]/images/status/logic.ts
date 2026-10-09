@@ -140,10 +140,10 @@ export function storyboardThumbUrl(urlByPath: Map<string, string>, imagePath: st
 // The project columns the voiceover and music lanes derive from. A page that has already
 // read its project for this user selects these too and passes the row in.
 export const IMAGE_STATUS_PROJECT_COLUMNS =
-  'aspect_ratio, image_quality, audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words, music_path, music_duration_sec, music_source, music_generated_at, music_loop, music_muted' as const
+  'aspect_ratio, image_model, image_quality, audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words, music_path, music_duration_sec, music_source, music_generated_at, music_loop, music_muted' as const
 
 type StatusProjectRow = VoiceoverProjectRow &
-  MusicProjectRow & { music_path: string | null; aspect_ratio: string | null; image_quality: string }
+  MusicProjectRow & { music_path: string | null; aspect_ratio: string | null; image_model: string; image_quality: string }
 
 /**
  * Per-shot storyboard image state for one project, cheap enough to poll: two narrow
@@ -238,6 +238,7 @@ export async function loadImageStatuses(params: {
       imageCredits: storyboardImageCredits(
         storyboardImagePriceKey({
           aspectRatio,
+          imageModel: project.image_model,
           imageQuality: project.image_quality,
           referenceCount: usableReferencePaths(shot.shot_elements).length,
         })

@@ -35,17 +35,19 @@ export function pricedAspectRatio(value: string | null): AspectRatio {
 }
 
 /**
- * A Storyboard frame's price key, for a project's stored aspect ratio and image quality. The
- * key is also what the call sends: model (resolved from the registry), quality and size.
+ * A Storyboard frame's price key, for a project's stored aspect ratio, image model and image
+ * quality. The key is also what the call sends: model (checked against the registry),
+ * quality and size.
  */
 export function storyboardImagePriceKey(params: {
   aspectRatio: AspectRatio
+  imageModel: string
   imageQuality: string
   referenceCount: number
 }): ImagePriceKey {
   const quality = effectiveImageQuality(parseImageQuality(params.imageQuality))
   return {
-    model: resolveImageModel('storyboard_frame', quality).id,
+    model: resolveImageModel(params.imageModel, 'storyboard_frame', quality).id,
     quality,
     size: STORYBOARD_IMAGE_SIZES[params.aspectRatio],
     referenceCount: params.referenceCount,
@@ -53,10 +55,10 @@ export function storyboardImagePriceKey(params: {
 }
 
 /** An element reference image's price key - a text-only generation, so no references. */
-export function elementReferencePriceKey(imageQuality: string): ImagePriceKey {
+export function elementReferencePriceKey(imageModel: string, imageQuality: string): ImagePriceKey {
   const quality = effectiveImageQuality(parseImageQuality(imageQuality))
   return {
-    model: resolveImageModel('element_reference', quality).id,
+    model: resolveImageModel(imageModel, 'element_reference', quality).id,
     quality,
     size: modelsConfig.elements.size,
     referenceCount: 0,

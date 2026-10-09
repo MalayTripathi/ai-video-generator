@@ -2,7 +2,7 @@ import type { createClient } from '@/lib/supabase/server'
 import type { Json } from '@/lib/database.types'
 import type { ElementType } from '@/lib/config/enums'
 import { ImageLiveCallsBlockedError, type ImageGateway } from '@/lib/images/gateway'
-import { IMAGE_MODELS, type ImageModelConfig, type ImageModelId } from '@/lib/config/models'
+import { IMAGE_MODELS, type ImageModelConfig } from '@/lib/config/models'
 import { elementReferencePriceKey } from '@/lib/images/price-key'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 import { estimateInputTokens, quoteOpenAiImageCall, reserveUsage, settleUsage } from '@/lib/usage'
@@ -204,8 +204,8 @@ export async function runElementReferenceGeneration(params: {
 
   try {
     // Priced, quoted and sent at the project's image quality (dev-capped outside production).
-    price = elementReferencePriceKey(element.project_image_quality)
-    provider = IMAGE_MODELS[price.model as ImageModelId].provider
+    price = elementReferencePriceKey(element.project_image_model, element.project_image_quality)
+    provider = IMAGE_MODELS[price.model as keyof typeof IMAGE_MODELS].provider
     const required = creditsFor({ step: 'workbench', operation: 'generate_element_reference', quantity: 1, image: price })
     // Defensive: AppLayout already ensures this on every page load, but a client
     // whose first contact is this API call (not a page render) needs it here too -

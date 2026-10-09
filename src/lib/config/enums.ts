@@ -45,6 +45,11 @@ export type VideoResolution = (typeof VIDEO_RESOLUTIONS)[number]
 export const IMAGE_QUALITIES = ['low', 'medium', 'high'] as const
 export type ImageQuality = (typeof IMAGE_QUALITIES)[number]
 
+// The project's image model, for element references and Storyboard frames alike. Each has
+// its registry entry in IMAGE_MODELS (models.ts).
+export const IMAGE_MODEL_IDS = ['gpt-image-2.5-flare', 'gpt-image-2'] as const
+export type ImageModelId = (typeof IMAGE_MODEL_IDS)[number]
+
 export const SHOT_SIZES = ['wide', 'full', 'medium', 'close_up', 'extreme_close_up'] as const
 
 export type ShotSize = (typeof SHOT_SIZES)[number]

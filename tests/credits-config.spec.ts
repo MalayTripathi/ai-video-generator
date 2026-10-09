@@ -157,6 +157,58 @@ test.describe('computed prices - images and video', () => {
     expect(imageCredits({ model: 'gpt-image-2.5-flare', quality: 'high', size: '1088x1088', referenceCount: 0 })).toBe(58)
   })
 
+  test('GPT Image 2 prices, worked by hand', () => {
+    // medium 9:16: 1234 output tokens x $30/1M = $0.03702, + $0.002 prompt -> 40 credits.
+    expect(imageCredits({ model: 'gpt-image-2', quality: 'medium', size: '1008x1792', referenceCount: 0 })).toBe(40)
+    // + one reference: 1536 image-input tokens x $8/1M = $0.012288 -> $0.051308 -> 52 credits.
+    expect(imageCredits({ model: 'gpt-image-2', quality: 'medium', size: '1008x1792', referenceCount: 1 })).toBe(52)
+    // element reference, high 1024x1024: 7024 x $30/1M = $0.21072, + $0.002 -> 213 credits.
+    expect(imageCredits({ model: 'gpt-image-2', quality: 'high', size: '1024x1024', referenceCount: 0 })).toBe(213)
+    // Same token rates as 2.5-flare, so the same tokens cost the same: low is identical.
+    for (const size of sizes) {
+      expect(imageCredits({ model: 'gpt-image-2', quality: 'low', size, referenceCount: 0 })).toBe(
+        imageCredits({ model: 'gpt-image-2.5-flare', quality: 'low', size, referenceCount: 0 })
+      )
+    }
+  })
+
+  test('both models bill the same per-token rates; GPT Image 2 reads references at a higher per-image figure', () => {
+    const flare = OPENAI_RATES.images['gpt-image-2.5-flare']
+    const two = OPENAI_RATES.images['gpt-image-2']
+    expect([two.textInputPerMTok, two.imageInputPerMTok, two.outputPerMTok]).toEqual([
+      flare.textInputPerMTok,
+      flare.imageInputPerMTok,
+      flare.outputPerMTok,
+    ])
+    expect(two.imageInputTokensPerReference).toBeGreaterThan(flare.imageInputTokensPerReference)
+  })
+
+  // OpenAI's GptImageTokenCalculator (image-generation guide), restated: a per-model quality
+  // base on the long side, the short side scaled by aspect ratio with half rounding to even.
+  test("every output-token figure is the guide calculator's, for both models at every size and quality", () => {
+    const BASES: Record<string, Record<string, number>> = {
+      'gpt-image-2.5-flare': { low: 16, medium: 24, high: 48 },
+      'gpt-image-2': { low: 16, medium: 48, high: 96 },
+    }
+    const calculator = (base: number, w: number, h: number) => {
+      const scaled = base / (Math.max(w, h) / Math.min(w, h))
+      const floor = Math.floor(scaled)
+      const short = scaled - floor === 0.5 ? floor + (floor % 2) : Math.round(scaled)
+      return Math.ceil(base * short * (2e6 + w * h) / 4e6)
+    }
+    for (const [model, bases] of Object.entries(BASES)) {
+      for (const size of sizes) {
+        const [w, h] = size.split('x').map(Number)
+        for (const quality of IMAGE_QUALITIES) {
+          expect(OPENAI_RATES.images[model].outputTokensBySize[size][quality]).toBe(calculator(bases[quality], w, h))
+        }
+      }
+    }
+    // The guide's own GPT Image 2 per-image prices at 1024x1024: $0.006 / $0.053 / $0.211.
+    const at1024 = OPENAI_RATES.images['gpt-image-2'].outputTokensBySize['1024x1024']
+    expect([at1024.low, at1024.medium, at1024.high].map((t) => Math.round((t * 30) / 1000) / 1000)).toEqual([0.006, 0.053, 0.211])
+  })
+
   test('the pre-flight quote reserves at least the priced output, so a reservation stays a ceiling', () => {
     for (const rates of Object.values(OPENAI_RATES.images)) {
       for (const [size, byQuality] of Object.entries(rates.outputTokensBySize)) {

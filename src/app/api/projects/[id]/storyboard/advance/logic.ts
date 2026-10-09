@@ -35,7 +35,7 @@ export async function runAdvanceToStoryboard({
 }): Promise<AdvanceToStoryboardResult> {
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('id, furthest_step, aspect_ratio, image_quality')
+    .select('id, furthest_step, aspect_ratio, image_model, image_quality')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
@@ -68,6 +68,7 @@ export async function runAdvanceToStoryboard({
         quantity: 1,
         image: storyboardImagePriceKey({
           aspectRatio,
+          imageModel: project.image_model,
           imageQuality: project.image_quality,
           referenceCount: usableReferencePaths(shot.shot_elements).length,
         }),

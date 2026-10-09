@@ -33,7 +33,7 @@ export async function createProjectFromIntake(formData: FormData) {
   const durationTarget = parseDurationTarget(formData.get('duration_target') as string | null)
 
   const language = (formData.get('language') as string | null)?.trim() || 'en'
-  // The Quality group's four values. An unsupported model/resolution/quality combination,
+  // The Quality group's five values. An unsupported model/resolution/quality combination,
   // or a named preset whose values don't match it, is refused - never coerced. The model is
   // checked against the registry again before it is written.
   const quality = parseQualitySettings({
@@ -41,6 +41,7 @@ export async function createProjectFromIntake(formData: FormData) {
     videoModel: formData.get('video_model'),
     videoResolution: formData.get('video_resolution'),
     imageQuality: formData.get('image_quality'),
+    imageModel: formData.get('image_model'),
   })
   const videoModel = assertRegisteredVideoModel(quality.videoModel)
   const templateSourceId = (formData.get('template_source_id') as string | null)?.trim() || null
@@ -59,6 +60,7 @@ export async function createProjectFromIntake(formData: FormData) {
       video_model: videoModel,
       video_resolution: quality.videoResolution,
       image_quality: quality.imageQuality,
+      image_model: quality.imageModel,
       template_source_id: templateSourceId,
       status: 'draft',
       current_step: 'workbench',

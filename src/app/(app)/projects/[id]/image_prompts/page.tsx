@@ -72,7 +72,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
     supabase
       .from('projects')
       .select(
-        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, video_resolution, image_quality, quality_preset, duration_target'
+        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, video_resolution, image_model, image_quality, quality_preset, duration_target'
       )
       .eq('id', projectId)
       .eq('user_id', user.id)
@@ -97,7 +97,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
     // The same grouped-and-signed read the Workbench uses: signed reference thumbnails
     // for the tiles, and the element list behind the picker.
     getProjectElementsForUser(supabase, projectId, user.id),
-    getElementGenerateAffordability(projectPromise.then(({ data }) => data?.image_quality ?? null)),
+    getElementGenerateAffordability(projectPromise.then(({ data }) => data ?? null)),
     supabase
       .from('generations')
       .select('state')
@@ -178,7 +178,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
       step: 'storyboard',
       operation: 'generate_image',
       quantity: 1,
-      image: storyboardImagePriceKey({ aspectRatio, imageQuality: project.image_quality, referenceCount }),
+      image: storyboardImagePriceKey({ aspectRatio, imageModel: project.image_model, imageQuality: project.image_quality, referenceCount }),
     })
   )
 

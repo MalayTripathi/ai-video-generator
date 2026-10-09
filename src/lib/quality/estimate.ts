@@ -1,9 +1,11 @@
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
 import {
+  IMAGE_MODEL_IDS,
   IMAGE_QUALITIES,
   QUALITY_PRESET_IDS,
   VIDEO_RESOLUTIONS,
   type AspectRatio,
+  type ImageModelId,
   type ImageQuality,
   type QualityPresetId,
   type VideoResolution,
@@ -25,7 +27,7 @@ import { STORYBOARD_IMAGE_SIZES } from '@/lib/config/storyboard'
 // The one source for every rate, badge and estimate the Quality picker shows - at intake
 // and in the project settings drawer. Pure and client-importable: everything is read from
 // the model registry and the duration tiers, with no server call. Estimates price the
-// project's own image quality (never the dev cap) with no references, and video with
+// project's own image model and quality (never the dev cap) with no references, and video with
 // audio off - an upper bound on frames and clips, shown as "≈".
 
 export type QualitySettings = {
@@ -33,6 +35,7 @@ export type QualitySettings = {
   videoModel: VideoModelId
   videoResolution: VideoResolution
   imageQuality: ImageQuality
+  imageModel: ImageModelId
 }
 
 /**
@@ -66,13 +69,18 @@ export function videoCreditsPerSecond(model: VideoModelId, res: VideoResolution)
   return usd === null ? null : usdToCredits(usd * CREDIT_MARGIN)
 }
 
-/** Credits for one storyboard frame at this quality and aspect ratio, with no references. */
-export function frameCredits(quality: ImageQuality, aspectRatio: AspectRatio): number {
+/** Credits for one storyboard frame on this model, at this quality and aspect ratio. */
+export function frameCredits(
+  model: ImageModelId,
+  quality: ImageQuality,
+  aspectRatio: AspectRatio,
+  referenceCount = 0
+): number {
   return imageCredits({
-    model: resolveImageModel('storyboard_frame', quality).id,
+    model: resolveImageModel(model, 'storyboard_frame', quality).id,
     quality,
     size: STORYBOARD_IMAGE_SIZES[aspectRatio],
-    referenceCount: 0,
+    referenceCount,
   })
 }
 
@@ -104,12 +112,13 @@ export function estimateCredits(params: {
   videoModel: VideoModelId
   videoResolution: VideoResolution
   imageQuality: ImageQuality
+  imageModel: ImageModelId
 }): number {
   const tier = durationConfig[params.durationTarget]
   const usd = usdPerSecond(params.videoModel, params.videoResolution)
   if (usd === null) throw new Error(`${params.videoModel} does not render at ${params.videoResolution}.`)
   return (
-    tier.targetShots * frameCredits(params.imageQuality, params.aspectRatio) +
+    tier.targetShots * frameCredits(params.imageModel, params.imageQuality, params.aspectRatio) +
     usdToCredits(usd * tier.targetSecondsMax * CREDIT_MARGIN)
   )
 }
@@ -122,6 +131,7 @@ export function presetSettings(id: Exclude<QualityPresetId, 'custom'>): QualityS
     videoModel: preset.videoModel,
     videoResolution: preset.videoResolution,
     imageQuality: preset.imageQuality,
+    imageModel: preset.imageModel,
   }
 }
 
@@ -146,8 +156,9 @@ export function parseQualitySettings(raw: {
   videoModel: unknown
   videoResolution: unknown
   imageQuality: unknown
+  imageModel: unknown
 }): QualitySettings {
-  const { preset, videoModel, videoResolution, imageQuality } = raw
+  const { preset, videoModel, videoResolution, imageQuality, imageModel } = raw
   if (typeof preset !== 'string' || !(QUALITY_PRESET_IDS as readonly string[]).includes(preset)) {
     throw new UnsupportedQualityError('unknown preset')
   }
@@ -160,11 +171,22 @@ export function parseQualitySettings(raw: {
   if (typeof imageQuality !== 'string' || !(IMAGE_QUALITIES as readonly string[]).includes(imageQuality)) {
     throw new UnsupportedQualityError('unknown image quality')
   }
+  if (typeof imageModel !== 'string' || !(IMAGE_MODEL_IDS as readonly string[]).includes(imageModel)) {
+    throw new UnsupportedQualityError('unknown image model')
+  }
   const settings = {
     preset: preset as QualityPresetId,
     videoModel,
     videoResolution: videoResolution as VideoResolution,
     imageQuality: imageQuality as ImageQuality,
+    imageModel: imageModel as ImageModelId,
+  }
+  // Every model must serve both uses at the chosen quality - one setting drives both.
+  try {
+    resolveImageModel(settings.imageModel, 'storyboard_frame', settings.imageQuality)
+    resolveImageModel(settings.imageModel, 'element_reference', settings.imageQuality)
+  } catch {
+    throw new UnsupportedQualityError('the image model does not offer that quality')
   }
   if (!supportsResolution(settings.videoModel, settings.videoResolution)) {
     throw new UnsupportedQualityError('the model does not render at that resolution')
@@ -174,7 +196,8 @@ export function parseQualitySettings(raw: {
     if (
       expected.videoModel !== settings.videoModel ||
       expected.videoResolution !== settings.videoResolution ||
-      expected.imageQuality !== settings.imageQuality
+      expected.imageQuality !== settings.imageQuality ||
+      expected.imageModel !== settings.imageModel
     ) {
       throw new UnsupportedQualityError('the values do not match the preset')
     }

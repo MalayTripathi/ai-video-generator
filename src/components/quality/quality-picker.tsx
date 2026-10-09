@@ -2,8 +2,16 @@
 
 import { useState } from 'react'
 import type { DurationTarget } from '@/lib/config/duration'
-import { IMAGE_QUALITIES, VIDEO_RESOLUTIONS, type AspectRatio, type ImageQuality, type VideoResolution } from '@/lib/config/enums'
-import { QUALITY_PRESETS, VIDEO_MODELS, VIDEO_MODEL_IDS, resolveImageModel, type VideoModelId } from '@/lib/config/models'
+import {
+  IMAGE_MODEL_IDS,
+  IMAGE_QUALITIES,
+  VIDEO_RESOLUTIONS,
+  type AspectRatio,
+  type ImageModelId,
+  type ImageQuality,
+  type VideoResolution,
+} from '@/lib/config/enums'
+import { IMAGE_MODELS, QUALITY_PRESETS, VIDEO_MODELS, VIDEO_MODEL_IDS, type VideoModelId } from '@/lib/config/models'
 import {
   estimateCredits,
   frameCredits,
@@ -21,7 +29,7 @@ import {
 // model cards, resolution and image quality. Controlled: the caller owns the value, so
 // intake submits it and the settings drawer stages it. Opening Advanced or changing
 // anything inside it makes the value 'custom'. With `locked`, the presets, model and
-// resolution are disabled and image quality stays editable.
+// resolution are disabled and the image model and quality stay editable.
 
 const PRESET_IDS = Object.keys(QUALITY_PRESETS) as (keyof typeof QUALITY_PRESETS)[]
 const PRESET_NAMES: Record<keyof typeof QUALITY_PRESETS, string> = { low: 'Low', medium: 'Medium', high: 'High' }
@@ -138,9 +146,14 @@ export function QualityPicker({
     goCustom({ imageQuality: quality })
   }
 
+  // Like image quality, the image model stays editable after the lock.
+  function pickImageModel(model: ImageModelId) {
+    if (model === value.imageModel) return
+    goCustom({ imageModel: model })
+  }
+
   const tiers = tierBadges(value.videoResolution)
   const resolutionSelectable = hasSelectableResolution(value.videoModel)
-  const imageModel = resolveImageModel('storyboard_frame', value.imageQuality)
 
   return (
     <div className="flex flex-col gap-rc-lg" data-testid="quality-picker">
@@ -356,7 +369,7 @@ export function QualityPicker({
                     >
                       <span className="text-small font-medium">{IMAGE_QUALITY_LABELS[quality]}</span>
                       <span className={`text-chip tabular-nums ${selected ? 'text-accent-quiet' : 'text-text-tertiary'}`}>
-                        {frameCredits(quality, aspectRatio)} cr/frame
+                        {frameCredits(value.imageModel, quality, aspectRatio)} cr/frame
                       </span>
                     </button>
                   )
@@ -364,9 +377,33 @@ export function QualityPicker({
               </div>
             </div>
 
-            <div className="flex flex-col gap-[6px]">
+            <div className="flex flex-col gap-rc-xs">
               <span className="text-label uppercase tracking-label text-text-tertiary">Image model</span>
-              <span className="text-control text-text-secondary">{imageModel.label}</span>
+              <div
+                role="radiogroup"
+                aria-label="Image model"
+                className="grid grid-cols-2 gap-[2px] rounded-control border border-border-strong bg-bg-surface p-[2px]"
+              >
+                {IMAGE_MODEL_IDS.map((model) => {
+                  const selected = model === value.imageModel
+                  return (
+                    <button
+                      key={model}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      onClick={() => pickImageModel(model)}
+                      data-testid={`quality-image-model-${model}`}
+                      className={`flex h-[42px] cursor-pointer flex-col items-center justify-center gap-px rounded-badge outline-none focus-visible:outline-2 focus-visible:outline-accent ${segmentClass(selected)}`}
+                    >
+                      <span className="text-small font-medium">{IMAGE_MODELS[model].label}</span>
+                      <span className={`text-chip tabular-nums ${selected ? 'text-accent-quiet' : 'text-text-tertiary'}`}>
+                        {frameCredits(model, value.imageQuality, aspectRatio)} cr/frame
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
         )}

@@ -30,6 +30,7 @@ function templateQuality(project: TemplateProject): QualitySettings | null {
       videoModel: project.video_model,
       videoResolution: project.video_resolution,
       imageQuality: project.image_quality,
+      imageModel: project.image_model,
     })
   } catch {
     return null
@@ -127,6 +128,7 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
       <input type="hidden" name="video_model" value={quality.videoModel} />
       <input type="hidden" name="video_resolution" value={quality.videoResolution} />
       <input type="hidden" name="image_quality" value={quality.imageQuality} />
+      <input type="hidden" name="image_model" value={quality.imageModel} />
 
       <div className="flex flex-col gap-rc-xs">
         <span className="text-label uppercase tracking-label text-text-tertiary">

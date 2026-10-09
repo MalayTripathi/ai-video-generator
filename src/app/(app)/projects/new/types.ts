@@ -10,5 +10,6 @@ export type TemplateProject = {
   video_model: string | null
   video_resolution: string
   image_quality: string
+  image_model: string
   created_at: string
 }

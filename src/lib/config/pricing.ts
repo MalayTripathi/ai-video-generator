@@ -94,45 +94,62 @@ type OpenAiImageRates = {
   >
 }
 
-// Output tokens per image for the gpt-image-2.5 family. OpenAI prints no table for 2.5;
-// these come from the token calculator on its image-generation guide
-// (https://developers.openai.com/api/docs/guides/image-generation): quality base low 16,
-// medium 24, high 48 on the long side, the short side scaled by aspect ratio,
-// ceil(a x b x (2e6 + w x h) / 4e6). That formula reproduces the page's own 196-token
-// default (low, 1024x1024). The image-credit price reads them.
+// Output tokens per image, from the token calculator on OpenAI's image-generation guide
+// (https://developers.openai.com/api/docs/guides/image-generation, its
+// GptImageTokenCalculator; OpenAI prints no table): a per-model quality base on the long
+// side, the short side scaled by aspect ratio (half rounds to even), then
+// ceil(a x b x (2e6 + w x h) / 4e6). Bases: 2.5 low 16 / medium 24 / high 48; GPT Image 2
+// low 16 / medium 48 / high 96. The formula reproduces the guide's GPT Image 2 per-image
+// prices ($0.006 / $0.053 / $0.211 at 1024x1024). The image-credit price reads these.
 const GPT_IMAGE_2_5_OUTPUT_TOKENS: Record<string, Record<string, number>> = {
   '1024x1024': { low: 196, medium: 439, high: 1756 },
   '1008x1792': { low: 138, medium: 320, high: 1234 },
   '1792x1008': { low: 138, medium: 320, high: 1234 },
   '1088x1088': { low: 204, medium: 459, high: 1834 },
 }
+const GPT_IMAGE_2_OUTPUT_TOKENS: Record<string, Record<string, number>> = {
+  '1024x1024': { low: 196, medium: 1756, high: 7024 },
+  '1008x1792': { low: 138, medium: 1234, high: 4934 },
+  '1792x1008': { low: 138, medium: 1234, high: 4934 },
+  '1088x1088': { low: 204, medium: 1834, high: 7336 },
+}
 
 // The pre-flight quote is a spend-cap reservation and must never be overrun, but OpenAI
 // says real consumption "can differ" from the calculator. Until measured usage rows say
 // otherwise, it reserves twice the calculator figure.
-const GPT_IMAGE_2_5_QUOTE_OUTPUT_TOKENS = Object.fromEntries(
-  Object.entries(GPT_IMAGE_2_5_OUTPUT_TOKENS).map(([size, byQuality]) => [
-    size,
-    Object.fromEntries(Object.entries(byQuality).map(([quality, tokens]) => [quality, tokens * 2])), // placeholder
-  ])
-)
+const doubled = (table: Record<string, Record<string, number>>) =>
+  Object.fromEntries(
+    Object.entries(table).map(([size, byQuality]) => [
+      size,
+      Object.fromEntries(Object.entries(byQuality).map(([quality, tokens]) => [quality, tokens * 2])), // placeholder
+    ])
+  )
 
-const GPT_IMAGE_2_5_TOKENS = {
-  outputTokensBySize: GPT_IMAGE_2_5_OUTPUT_TOKENS,
-  quoteOutputTokensBySize: GPT_IMAGE_2_5_QUOTE_OUTPUT_TOKENS,
-  imageInputTokensPerReference: 1500, // placeholder - replace with a measured figure
-  // About 1,600 characters at chars/4 - twice the stored frame prompts (~800 chars). No
-  // prompt length limit exists to bound it.
-  promptTokenAllowance: 400, // placeholder - replace with a measured figure
-}
+// Both models bill the same token rates (https://developers.openai.com/api/docs/pricing,
+// image generation, checked 2026-10-09); they differ in tokens used, not price per token.
+const GPT_IMAGE_TOKEN_RATES = { textInputPerMTok: 5.0, imageInputPerMTok: 8.0, outputPerMTok: 30.0 }
+// About 1,600 characters at chars/4 - twice the stored frame prompts (~800 chars). No
+// prompt length limit exists to bound it.
+const PROMPT_TOKEN_ALLOWANCE = 400 // placeholder - replace with a measured figure
 
 export const OPENAI_RATES: OpenAiImageRates = {
   images: {
     'gpt-image-2.5-flare': {
-      textInputPerMTok: 5.0,
-      imageInputPerMTok: 8.0,
-      outputPerMTok: 30.0,
-      ...GPT_IMAGE_2_5_TOKENS,
+      ...GPT_IMAGE_TOKEN_RATES,
+      outputTokensBySize: GPT_IMAGE_2_5_OUTPUT_TOKENS,
+      quoteOutputTokensBySize: doubled(GPT_IMAGE_2_5_OUTPUT_TOKENS),
+      imageInputTokensPerReference: 1500, // placeholder - replace with a measured figure
+      promptTokenAllowance: PROMPT_TOKEN_ALLOWANCE,
+    },
+    'gpt-image-2': {
+      ...GPT_IMAGE_TOKEN_RATES,
+      outputTokensBySize: GPT_IMAGE_2_OUTPUT_TOKENS,
+      quoteOutputTokensBySize: doubled(GPT_IMAGE_2_OUTPUT_TOKENS),
+      // Always read at high fidelity; OpenAI publishes no figure. 1,536 is the patch budget
+      // a community measurement found caps one reference (1024x1024 measured at 1,024):
+      // https://community.openai.com/t/openai-must-document-the-input-image-pricing-of-gpt-image-2-so-i-did/1382940
+      imageInputTokensPerReference: 1536, // placeholder - replace with a measured figure
+      promptTokenAllowance: PROMPT_TOKEN_ALLOWANCE,
     },
   },
 }

@@ -21,6 +21,7 @@ import {
   QUALITY_PRESET_IDS,
   VIDEO_RESOLUTIONS,
   IMAGE_QUALITIES,
+  IMAGE_MODEL_IDS,
   EXPORT_STATUSES,
 } from '../src/lib/config/enums'
 import { STEPS, OPERATIONS, PROVIDERS } from '../src/lib/config/pipeline'
@@ -578,7 +579,7 @@ test.describe('enum drift - export settings and exports', () => {
   })
 })
 
-// Project quality settings: three NOT NULL projects columns with a default, each CHECK
+// Project quality settings: four NOT NULL projects columns with a default, each CHECK
 // mirroring its enums.ts tuple by hand. video_model deliberately has no CHECK - it is
 // validated in application code against VIDEO_MODELS (see video-models.spec.ts).
 test.describe('enum drift - project quality settings', () => {
@@ -586,6 +587,7 @@ test.describe('enum drift - project quality settings', () => {
     ['quality_preset', QUALITY_PRESET_IDS, 'low'],
     ['video_resolution', VIDEO_RESOLUTIONS, '480p'],
     ['image_quality', IMAGE_QUALITIES, 'low'],
+    ['image_model', IMAGE_MODEL_IDS, 'gpt-image-2.5-flare'],
   ] as const) {
     test(`accepts every projects.${column} member, rejects a bogus value, and defaults to ${fallback}`, async () => {
       const insert = (value: string) =>

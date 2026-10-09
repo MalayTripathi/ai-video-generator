@@ -502,6 +502,24 @@ test.describe('storyboard images - worker', () => {
     expect(row.price_version).toBe(CREDIT_PRICE_VERSION)
   })
 
+  test("the call carries the project's image model - GPT Image 2 - with references, and the charge is priced on it", async () => {
+    const projectId = await seedProject(primary.user.id)
+    await admin.from('projects').update({ image_model: 'gpt-image-2', image_quality: 'medium' }).eq('id', projectId)
+    const [shotId] = await seedShots(projectId, 1)
+    await bindReference(primary.user.id, projectId, shotId)
+    const gateway = successImageGateway()
+
+    await generate(primary.user.id, projectId, [shotId], gateway)
+    expect(gateway.getStoryboardCalls()).toEqual([
+      expect.objectContaining({ model: 'gpt-image-2', quality: 'medium', size: '1008x1792' }),
+    ])
+    const [row] = await ledgerRows(projectId)
+    expect(row.delta).toBe(-framePrice({ imageModel: 'gpt-image-2', imageQuality: 'medium', referenceCount: 1 }))
+    expect(framePrice({ imageModel: 'gpt-image-2', imageQuality: 'medium', referenceCount: 1 })).toBeGreaterThan(
+      framePrice({ imageQuality: 'medium', referenceCount: 1 })
+    )
+  })
+
   test('IMAGE_QUALITY_DEV_CAP lowers the quality sent outside production, and the price follows it', async () => {
     const projectId = await seedProject(primary.user.id)
     await admin.from('projects').update({ image_quality: 'high' }).eq('id', projectId)

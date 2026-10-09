@@ -330,6 +330,7 @@ export type Database = {
           export_transition: string | null
           furthest_step: number
           id: string
+          image_model: string
           image_quality: string
           language: string | null
           language_code: string | null
@@ -379,6 +380,7 @@ export type Database = {
           export_transition?: string | null
           furthest_step?: number
           id?: string
+          image_model?: string
           image_quality?: string
           language?: string | null
           language_code?: string | null
@@ -428,6 +430,7 @@ export type Database = {
           export_transition?: string | null
           furthest_step?: number
           id?: string
+          image_model?: string
           image_quality?: string
           language?: string | null
           language_code?: string | null

@@ -115,6 +115,11 @@ test.describe('computeCost', () => {
     expect(result.estimatedCost).toBeCloseTo(1 * 5.0 + 2 * 8.0 + 1 * 30.0, 6)
   })
 
+  test('openai: gpt-image-2 is priced at its own rates', () => {
+    const result = computeCost('openai', 'gpt-image-2', { input_tokens: 3_000_000, image_input_tokens: 2_000_000, output_tokens: 1_000_000 })
+    expect(result.estimatedCost).toBeCloseTo(1 * 5.0 + 2 * 8.0 + 1 * 30.0, 6)
+  })
+
   test('openai: only registry image models are priced - sunburst, never registered, is not', () => {
     expect(computeCost('openai', 'gpt-image-2.5-sunburst', { input_tokens: 1, output_tokens: 1 }).estimatedCost).toBeNull()
   })

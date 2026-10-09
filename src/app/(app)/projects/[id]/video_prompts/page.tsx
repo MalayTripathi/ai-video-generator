@@ -35,7 +35,7 @@ export default async function VideoPromptsPage({ params }: { params: Promise<{ i
   const [{ data: project, error: projectError }, shots, agentMessages] = await Promise.all([
     supabase
       .from('projects')
-      .select('id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, video_resolution, image_quality, quality_preset, duration_target')
+      .select('id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, video_resolution, image_model, image_quality, quality_preset, duration_target')
       .eq('id', projectId)
       .eq('user_id', user.id)
       .maybeSingle(),

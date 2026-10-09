@@ -5,7 +5,7 @@ import { isRegisteredVideoModel, type VideoModelId } from '@/lib/config/models'
 import { maxShotSeconds, parseQualitySettings, UnsupportedQualityError, type QualitySettings } from '@/lib/quality/estimate'
 
 // The project settings drawer's server side: which shots a lower maximum would trim, and
-// the one Apply that writes the four quality columns, trims those shots and marks video
+// the one Apply that writes the five quality columns, trims those shots and marks video
 // prompts stale. Saving settings is not advancing - nothing here touches current_step or
 // furthest_step.
 
@@ -20,9 +20,9 @@ export type ApplySettingsResult =
   // The over-length shots changed after the person confirmed - re-confirm with these.
   | { ok: false; error: 'trims_changed'; message: string; trims: ShotTrim[] }
 
-const PROJECT_COLUMNS = 'id, quality_preset, video_model, video_resolution, image_quality, furthest_step' as const
+const PROJECT_COLUMNS = 'id, quality_preset, video_model, video_resolution, image_quality, image_model, furthest_step' as const
 
-/** Video settings lock once the project has reached clip generation; image quality never does. */
+/** Video settings lock once the project has reached clip generation; image settings never do. */
 export function isVideoSettingsLocked(furthestStep: number): boolean {
   return furthestStep >= stepIndex('generation')
 }
@@ -97,14 +97,14 @@ export async function previewSettingsTrims(
 /**
  * Applies staged settings in one action: trims the in-film shots over a lower maximum
  * (both duration fields), marks every shot's video prompt stale when the model changed,
- * then writes the four project columns. `confirmedTrimCount` is how many trims the person
+ * then writes the five project columns. `confirmedTrimCount` is how many trims the person
  * agreed to; if the server finds a different set, nothing is written.
  */
 export async function applyProjectSettings(
   supabase: Client,
   userId: string,
   projectId: string,
-  raw: { preset: unknown; videoModel: unknown; videoResolution: unknown; imageQuality: unknown },
+  raw: { preset: unknown; videoModel: unknown; videoResolution: unknown; imageQuality: unknown; imageModel: unknown },
   confirmedTrimCount: number
 ): Promise<ApplySettingsResult> {
   let settings: QualitySettings
@@ -121,11 +121,12 @@ export async function applyProjectSettings(
   const modelChanged = settings.videoModel !== project.video_model
   const resolutionChanged = settings.videoResolution !== project.video_resolution
   const presetChanged = settings.preset !== project.quality_preset
-  const imageQualityChanged = settings.imageQuality !== project.image_quality
-  if (!modelChanged && !resolutionChanged && !presetChanged && !imageQualityChanged) return { ok: true, trimmed: 0 }
+  const imageChanged = settings.imageQuality !== project.image_quality || settings.imageModel !== project.image_model
+  if (!modelChanged && !resolutionChanged && !presetChanged && !imageChanged) return { ok: true, trimmed: 0 }
 
-  // Image quality stays editable after the lock, and changing it makes the preset
-  // 'custom' - so a move to 'custom' is the one preset change the lock allows.
+  // Image model and quality stay editable after the lock, and changing either makes the
+  // preset 'custom' - so a move to 'custom' is the one preset change the lock allows.
+  // Nothing already drawn is regenerated: the new model applies to new images only.
   if (
     isVideoSettingsLocked(project.furthest_step) &&
     (modelChanged || resolutionChanged || (presetChanged && settings.preset !== 'custom'))
@@ -171,6 +172,7 @@ export async function applyProjectSettings(
       video_model: settings.videoModel,
       video_resolution: settings.videoResolution,
       image_quality: settings.imageQuality,
+      image_model: settings.imageModel,
       updated_at: now,
     })
     .eq('id', projectId)

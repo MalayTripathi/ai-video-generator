@@ -43,7 +43,7 @@ export async function previewProjectSettingsTrims(
 
 export async function saveProjectSettings(
   projectId: string,
-  settings: { preset: string; videoModel: string; videoResolution: string; imageQuality: string },
+  settings: { preset: string; videoModel: string; videoResolution: string; imageQuality: string; imageModel: string },
   confirmedTrimCount: number
 ): Promise<ApplySettingsResult> {
   const supabase = await createClient()

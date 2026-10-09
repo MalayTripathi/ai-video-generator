@@ -125,7 +125,7 @@ test.describe('Project settings drawer', () => {
     expect(project).toEqual({ video_model: 'kling-v3-standard', quality_preset: 'custom', current_step: 'video_prompts', furthest_step: 5 })
   })
 
-  test('after generation starts, video settings are locked and image quality stays editable', async ({ page }) => {
+  test('after generation starts, video settings are locked and the image model and quality stay editable', async ({ page }) => {
     const projectId = await seedProject({ furthest_step: 6 })
     await openDrawer(page, projectId)
 
@@ -137,14 +137,21 @@ test.describe('Project settings drawer', () => {
     await expect(page.getByTestId('project-settings-apply')).toBeDisabled()
 
     await page.getByTestId('quality-image-high').click()
+    await page.getByTestId('quality-image-model-gpt-image-2').click()
     await page.getByTestId('project-settings-apply').click()
     await expect(page.getByTestId('project-settings-drawer')).toBeHidden()
 
     const { data: project } = await admin
       .from('projects')
-      .select('video_model, video_resolution, image_quality, quality_preset')
+      .select('video_model, video_resolution, image_quality, image_model, quality_preset')
       .eq('id', projectId)
       .single()
-    expect(project).toEqual({ video_model: 'wan-3.0', video_resolution: '480p', image_quality: 'high', quality_preset: 'custom' })
+    expect(project).toEqual({
+      video_model: 'wan-3.0',
+      video_resolution: '480p',
+      image_quality: 'high',
+      image_model: 'gpt-image-2',
+      quality_preset: 'custom',
+    })
   })
 })

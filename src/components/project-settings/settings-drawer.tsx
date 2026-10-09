@@ -17,6 +17,7 @@ export type SettingsProject = {
   video_model: string | null
   video_resolution: string
   image_quality: string
+  image_model: string
   aspect_ratio: string | null
   duration_target: string | null
   furthest_step: number
@@ -30,6 +31,7 @@ function savedSettings(project: SettingsProject): QualitySettings | null {
     videoModel: project.video_model,
     videoResolution: project.video_resolution,
     imageQuality: project.image_quality,
+    imageModel: project.image_model,
   }
   try {
     return parseQualitySettings(raw)
@@ -46,7 +48,8 @@ const sameSettings = (a: QualitySettings, b: QualitySettings) =>
   a.preset === b.preset &&
   a.videoModel === b.videoModel &&
   a.videoResolution === b.videoResolution &&
-  a.imageQuality === b.imageQuality
+  a.imageQuality === b.imageQuality &&
+  a.imageModel === b.imageModel
 
 type Confirm = { trims: ShotTrim[]; modelChanged: boolean }
 
@@ -112,7 +115,7 @@ export function SettingsChip({ project, label }: { project: SettingsProject; lab
     if (!staged || !saved || !dirty || busy) return
     const modelChanged = staged.videoModel !== saved.videoModel
     if (!modelChanged) {
-      // A resolution, image quality or preset change with the same model applies directly.
+      // A resolution, image or preset change with the same video model applies directly.
       await commit(staged, 0)
       return
     }

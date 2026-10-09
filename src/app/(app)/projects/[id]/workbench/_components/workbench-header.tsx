@@ -16,6 +16,7 @@ export function WorkbenchHeader({
     video_model: string | null
     video_resolution: string
     image_quality: string
+    image_model: string
     quality_preset: string
     duration_target: string | null
     furthest_step: number

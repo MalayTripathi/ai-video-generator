@@ -1,4 +1,4 @@
-import { IMAGE_QUALITIES, type ImageQuality, type QualityPresetId, type VideoResolution } from './enums'
+import { IMAGE_MODEL_IDS, IMAGE_QUALITIES, type ImageModelId, type ImageQuality, type QualityPresetId, type VideoResolution } from './enums'
 
 const isProduction = process.env.NODE_ENV === 'production'
 
@@ -246,63 +246,90 @@ export type QualityPreset = {
   videoModel: VideoModelId
   videoResolution: VideoResolution
   imageQuality: ImageQuality
+  imageModel: ImageModelId
 }
+// Every preset draws on DEFAULT_IMAGE_MODEL; another image model is an Advanced choice.
 export const QUALITY_PRESETS: Record<Exclude<QualityPresetId, 'custom'>, QualityPreset> = {
-  low: { videoModel: 'wan-3.0', videoResolution: '480p', imageQuality: 'low' },
-  medium: { videoModel: 'seedance-2.0-mini', videoResolution: '720p', imageQuality: 'medium' },
-  high: { videoModel: 'wan-3.0', videoResolution: '1080p', imageQuality: 'high' },
+  low: { videoModel: 'wan-3.0', videoResolution: '480p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' },
+  medium: { videoModel: 'seedance-2.0-mini', videoResolution: '720p', imageQuality: 'medium', imageModel: 'gpt-image-2.5-flare' },
+  high: { videoModel: 'wan-3.0', videoResolution: '1080p', imageQuality: 'high', imageModel: 'gpt-image-2.5-flare' },
 }
 export const DEFAULT_QUALITY_PRESET = 'low' as const
 
 // Image-model registry - the single source for which image models exist, which provider
 // serves each, what each is used for and at which qualities. Never chosen by env: the
-// model for a call is resolved from the use and the project's image quality
-// (resolveImageModel), and the provider follows from the model. Sizes: frames use
-// STORYBOARD_IMAGE_SIZES (storyboard.ts); element references are 1024x1024 - both meet
-// 2.5-flare's size rules (multiples of 16, 655,360-8,294,400 pixels in total). Every model
-// here has an OPENAI_RATES entry (pricing.ts), and only these do.
+// model for a call is the project's own `image_model` (DB CHECK mirrors IMAGE_MODEL_IDS),
+// checked here against the use and quality (resolveImageModel); the provider follows from
+// the model. Sizes: frames use STORYBOARD_IMAGE_SIZES (storyboard.ts); element references
+// are 1024x1024 - every size meets both models' size rules (multiples of 16, long:short at
+// most 3:1, edges at most 3840px, 655,360-8,294,400 pixels in total). Every model here has
+// an OPENAI_RATES entry (pricing.ts), and only these do.
 export const IMAGE_USES = ['element_reference', 'storyboard_frame'] as const
 export type ImageUse = (typeof IMAGE_USES)[number]
 
 export type ImageModelConfig = {
-  id: string
+  id: ImageModelId
   label: string
   /** The only image gateway is OpenAI's; a model on another provider needs its own first. */
   provider: 'openai'
   uses: readonly ImageUse[]
-  /** Qualities offered (xhigh and max are excluded). */
+  /** Qualities offered (2.5's xhigh and max are excluded). */
   qualities: readonly ImageQuality[]
-  source: string
+  /** The provider's announced shutdown date, or null when none is announced. */
+  deprecatedOn: string | null
+  source: readonly string[]
 }
 
-export const IMAGE_MODELS = {
+export const IMAGE_MODELS: Record<ImageModelId, ImageModelConfig> = {
   'gpt-image-2.5-flare': {
     id: 'gpt-image-2.5-flare',
     label: 'GPT Image 2.5 Flare',
     provider: 'openai',
     uses: ['element_reference', 'storyboard_frame'],
     qualities: IMAGE_QUALITIES,
-    source: 'https://developers.openai.com/api/docs/models/gpt-image-2.5-flare',
+    deprecatedOn: null,
+    source: ['https://developers.openai.com/api/docs/models/gpt-image-2.5-flare'],
   },
-} as const satisfies Record<string, ImageModelConfig>
-export type ImageModelId = keyof typeof IMAGE_MODELS
+  // Always reads reference images at high fidelity (input_fidelity can't be set), so a
+  // reference costs more input tokens here (see OPENAI_RATES). No deprecation listed on
+  // the deprecations page, checked 2026-10-09.
+  'gpt-image-2': {
+    id: 'gpt-image-2',
+    label: 'GPT Image 2',
+    provider: 'openai',
+    uses: ['element_reference', 'storyboard_frame'],
+    qualities: IMAGE_QUALITIES,
+    deprecatedOn: null,
+    source: [
+      'https://developers.openai.com/api/docs/models/gpt-image-2',
+      'https://developers.openai.com/api/docs/guides/image-generation',
+      'https://developers.openai.com/api/docs/deprecations',
+    ],
+  },
+}
+export type { ImageModelId }
+export const DEFAULT_IMAGE_MODEL: ImageModelId = 'gpt-image-2.5-flare'
 
 export class NoImageModelError extends Error {
-  constructor(use: ImageUse, quality: ImageQuality) {
-    super(`No registered image model serves ${use} at ${quality} quality.`)
+  constructor(model: string, use: ImageUse, quality: ImageQuality) {
+    super(`Image model "${model}" does not serve ${use} at ${quality} quality.`)
     this.name = 'NoImageModelError'
   }
 }
 
+export function isRegisteredImageModel(id: string | null): id is ImageModelId {
+  return id !== null && (IMAGE_MODEL_IDS as readonly string[]).includes(id)
+}
+
 /**
- * The image model - and so the provider - for one call: the first registered model that
- * serves this use at the quality the call sends. No env lookup.
+ * The image model - and so the provider - for one call: the project's own `image_model`,
+ * if it serves this use at the quality the call sends. Anything else throws. No env lookup.
  */
-export function resolveImageModel(use: ImageUse, quality: ImageQuality): ImageModelConfig & { id: ImageModelId } {
-  for (const model of Object.values(IMAGE_MODELS) as (ImageModelConfig & { id: ImageModelId })[]) {
-    if (model.uses.includes(use) && model.qualities.includes(quality)) return model
-  }
-  throw new NoImageModelError(use, quality)
+export function resolveImageModel(model: string, use: ImageUse, quality: ImageQuality): ImageModelConfig {
+  if (!isRegisteredImageModel(model)) throw new NoImageModelError(model, use, quality)
+  const config = IMAGE_MODELS[model]
+  if (!config.uses.includes(use) || !config.qualities.includes(quality)) throw new NoImageModelError(model, use, quality)
+  return config
 }
 
 export class InvalidImageQualityError extends Error {

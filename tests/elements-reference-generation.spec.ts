@@ -400,6 +400,17 @@ test.describe('generate_element_reference - model and quality', () => {
     expect(row.price_version).toBe(CREDIT_PRICE_VERSION)
   })
 
+  test("calls the project's image model - GPT Image 2 - and charges on it", async () => {
+    const projectId = await seedProject(primary.user.id, { image_model: 'gpt-image-2', image_quality: 'high' })
+    const elementId = await seedElement(projectId)
+    const gateway = successImageGateway()
+
+    expect((await run(projectId, elementId, gateway)).ok).toBe(true)
+    expect(gateway.getReferenceCalls()).toEqual([{ model: 'gpt-image-2', quality: 'high', size: '1024x1024' }])
+    const [row] = await readLedgerRows(projectId)
+    expect(row.delta).toBe(-elementReferencePrice('high', 'gpt-image-2'))
+  })
+
   test('IMAGE_QUALITY_DEV_CAP lowers the quality sent outside production, and the price follows it', async () => {
     const projectId = await seedProject(primary.user.id, { image_quality: 'high' })
     const elementId = await seedElement(projectId)

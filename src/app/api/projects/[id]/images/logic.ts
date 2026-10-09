@@ -9,7 +9,7 @@ import type { mintAttemptId as mintAttemptIdType, recordFixedSpend as recordFixe
 import type { ImageGateway } from '@/lib/images/gateway'
 import { creditsFor, type ImagePriceKey } from '@/lib/config/credits'
 import { ASPECT_RATIOS, type AspectRatio } from '@/lib/config/enums'
-import { IMAGE_MODELS, type ImageModelId } from '@/lib/config/models'
+import { IMAGE_MODELS } from '@/lib/config/models'
 import { pricedAspectRatio, storyboardImagePriceKey, usableReferencePaths } from '@/lib/images/price-key'
 import {
   CONTINUATION_CHAIN_LIMIT,
@@ -84,7 +84,7 @@ export async function liveImageCommittedCredits(supabase: SupabaseServerClient, 
   const { data, error } = await supabase
     .from('generations')
     .select(
-      'state, started_at, queued_at, projects!inner(user_id, aspect_ratio, image_quality), shots(shot_elements(elements(reference_image_path, deleted_at)))'
+      'state, started_at, queued_at, projects!inner(user_id, aspect_ratio, image_model, image_quality), shots(shot_elements(elements(reference_image_path, deleted_at)))'
     )
     .eq('projects.user_id', userId)
     .eq('step', STEP)
@@ -99,7 +99,7 @@ export async function liveImageCommittedCredits(supabase: SupabaseServerClient, 
     state: string
     started_at: string | null
     queued_at: string | null
-    projects: { aspect_ratio: string | null; image_quality: string }
+    projects: { aspect_ratio: string | null; image_model: string; image_quality: string }
     shots: { shot_elements: Parameters<typeof usableReferencePaths>[0] } | null
   }
   for (const row of (data ?? []) as unknown as LiveClaimRow[]) {
@@ -108,6 +108,7 @@ export async function liveImageCommittedCredits(supabase: SupabaseServerClient, 
     committed += storyboardImageCredits(
       storyboardImagePriceKey({
         aspectRatio: pricedAspectRatio(project.aspect_ratio),
+        imageModel: project.image_model,
         imageQuality: project.image_quality,
         referenceCount: usableReferencePaths(row.shots?.shot_elements).length,
       })
@@ -128,7 +129,7 @@ export async function runImagesRequest(params: {
 
   const { data: project, error: projectError } = await supabase
     .from('projects')
-    .select('id, aspect_ratio, image_quality')
+    .select('id, aspect_ratio, image_model, image_quality')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
@@ -183,6 +184,7 @@ export async function runImagesRequest(params: {
     storyboardImageCredits(
       storyboardImagePriceKey({
         aspectRatio,
+        imageModel: project.image_model,
         imageQuality: project.image_quality,
         referenceCount: usableReferencePaths(shotById.get(shotId)?.shot_elements).length,
       })
@@ -427,7 +429,7 @@ async function linkShotImage(
 
 async function processShot(
   deps: ImageWorkerDeps,
-  ctx: { userId: string; projectId: string; aspectRatio: AspectRatio; imageQuality: string },
+  ctx: { userId: string; projectId: string; aspectRatio: AspectRatio; imageModel: string; imageQuality: string },
   generationId: string
 ): Promise<ShotOutcome> {
   const { supabase, gateway } = deps
@@ -453,7 +455,7 @@ async function processShot(
   // The project's quality (dev-capped outside production) and the frame's native size.
   const { model, quality, size } = storyboardImagePriceKey({ ...ctx, referenceCount: 0 })
   // The provider follows from the model the registry resolved - never from env.
-  const provider = IMAGE_MODELS[model as ImageModelId].provider
+  const provider = IMAGE_MODELS[model as keyof typeof IMAGE_MODELS].provider
   let outcome: { ok: boolean; error: string | null } = { ok: false, error: 'Unexpected error' }
   let usageId: string | null = null
   let measured: UsageBreakdown | null = null
@@ -649,7 +651,7 @@ export async function runImageWorker(
 
   const { data: project } = await supabase
     .from('projects')
-    .select('aspect_ratio, image_quality')
+    .select('aspect_ratio, image_model, image_quality')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
@@ -660,7 +662,7 @@ export async function runImageWorker(
     result.abandoned = await release(supabase, projectId, generationIds, 'Project not found or has no valid aspect ratio')
     return result
   }
-  const shotCtx = { userId, projectId, aspectRatio, imageQuality: project.image_quality }
+  const shotCtx = { userId, projectId, aspectRatio, imageModel: project.image_model, imageQuality: project.image_quality }
 
   // Passes the unreached ids to a fresh run, or - at the chain limit, or when the hand-off
   // is refused - releases them failed, uncharged and retryable.
