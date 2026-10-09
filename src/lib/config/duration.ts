@@ -3,6 +3,12 @@ export type DurationTarget = '30-60s' | '1-2min' | '3-5min' | '8-10min'
 // Single source of truth for the intake screen's pre-selected duration tile.
 export const DEFAULT_DURATION_TARGET: DurationTarget = '30-60s'
 
+// A submitted duration tier, falling back to the intake default - the server and the
+// pre-selected tile can never disagree on what a missing or unknown value means.
+export function parseDurationTarget(raw: string | null): DurationTarget {
+  return raw && Object.hasOwn(durationConfig, raw) ? (raw as DurationTarget) : DEFAULT_DURATION_TARGET
+}
+
 export type DurationConfig = {
   label: string
   targetShots: number

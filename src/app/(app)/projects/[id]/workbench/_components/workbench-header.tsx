@@ -7,14 +7,18 @@ export function WorkbenchHeader({
   project,
 }: {
   project: {
+    id: string
     title: string | null
     source_text: string | null
     video_type: string | null
     aspect_ratio: string | null
     language: string | null
     video_model: string | null
-    video_resolution: string | null
+    video_resolution: string
+    image_quality: string
+    quality_preset: string
     duration_target: string | null
+    furthest_step: number
   }
 }) {
   const { shots, videoType } = useShots()

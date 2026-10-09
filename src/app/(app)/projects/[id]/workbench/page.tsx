@@ -92,7 +92,7 @@ export default async function WorkbenchPage({
     supabase
       .from('projects')
       .select(
-        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, video_resolution, image_quality, duration_target'
+        'id, title, source_text, current_step, furthest_step, video_type, aspect_ratio, language, video_model, video_resolution, image_quality, quality_preset, duration_target'
       )
       .eq('id', projectId)
       .eq('user_id', user.id)

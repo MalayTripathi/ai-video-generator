@@ -4,17 +4,36 @@ import { useMemo, useState } from 'react'
 import { displayTitle } from '@/lib/display-title'
 import { durationConfig, DEFAULT_DURATION_TARGET, type DurationTarget } from '@/lib/config/duration'
 import type { AspectRatio } from '@/lib/config/enums'
+import { DEFAULT_QUALITY_PRESET } from '@/lib/config/models'
+import { QualityPicker } from '@/components/quality/quality-picker'
+import { estimateCredits, parseQualitySettings, presetSettings, type QualitySettings } from '@/lib/quality/estimate'
 import { VIDEO_TYPES } from '@/lib/video-type-labels'
 import { createProjectFromIntake } from '../actions'
 import type { TemplateProject } from '../types'
 import { BuildButton } from './build-button'
 
-type PrefillableField = 'video_type' | 'aspect_ratio' | 'duration_target'
+type PrefillableField = 'video_type' | 'aspect_ratio' | 'duration_target' | 'quality'
 
 const DEFAULTS = {
   videoType: 'auto',
   aspectRatio: '9:16' as AspectRatio,
   durationTarget: DEFAULT_DURATION_TARGET,
+  quality: presetSettings(DEFAULT_QUALITY_PRESET),
+}
+
+// A template's four quality values, or null when they no longer form a supported
+// combination (the registry changed since it was made) - then the default stays.
+function templateQuality(project: TemplateProject): QualitySettings | null {
+  try {
+    return parseQualitySettings({
+      preset: project.quality_preset,
+      videoModel: project.video_model,
+      videoResolution: project.video_resolution,
+      imageQuality: project.image_quality,
+    })
+  } catch {
+    return null
+  }
 }
 
 const FORMATS: { value: AspectRatio; label: string; sublabel: string; width: number; height: number }[] = [
@@ -54,7 +73,11 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
   const [videoType, setVideoType] = useState(DEFAULTS.videoType)
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(DEFAULTS.aspectRatio)
   const [durationTarget, setDurationTarget] = useState<DurationTarget>(DEFAULTS.durationTarget)
+  const [quality, setQuality] = useState<QualitySettings>(DEFAULTS.quality)
   const [prefilled, setPrefilled] = useState<Set<PrefillableField>>(new Set())
+  // Remounts the picker when a template is chosen, so its Advanced disclosure and notice
+  // start from the copied value.
+  const [qualityKey, setQualityKey] = useState(0)
 
   const requestedShotCount = useMemo(() => extractRequestedShotCount(sourceText), [sourceText])
   const targetShots = durationConfig[durationTarget].targetShots
@@ -62,6 +85,8 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
     requestedShotCount !== null && requestedShotCount > targetShots
       ? `You mentioned around ${requestedShotCount} shots, but the shot list for ${durationConfig[durationTarget].label} is capped at ${targetShots}. Pick a longer duration if you need more, or the brief will be trimmed to fit.`
       : null
+
+  const estimate = Math.round(estimateCredits({ durationTarget, aspectRatio, ...quality }) / 10) * 10
 
   function dropPrefilled(field: PrefillableField) {
     setPrefilled((prev) => {
@@ -78,6 +103,8 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
       setVideoType(DEFAULTS.videoType)
       setAspectRatio(DEFAULTS.aspectRatio)
       setDurationTarget(DEFAULTS.durationTarget)
+      setQuality(DEFAULTS.quality)
+      setQualityKey((k) => k + 1)
       setPrefilled(new Set())
       return
     }
@@ -86,13 +113,20 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
     setVideoType(project.video_type ?? DEFAULTS.videoType)
     setAspectRatio((project.aspect_ratio as AspectRatio | null) ?? DEFAULTS.aspectRatio)
     setDurationTarget((project.duration_target as DurationTarget | null) ?? DEFAULTS.durationTarget)
-    setPrefilled(new Set(['video_type', 'aspect_ratio', 'duration_target']))
+    const copied = templateQuality(project)
+    setQuality(copied ?? DEFAULTS.quality)
+    setQualityKey((k) => k + 1)
+    setPrefilled(new Set<PrefillableField>(['video_type', 'aspect_ratio', 'duration_target', ...(copied ? (['quality'] as const) : [])]))
   }
 
   return (
     <form action={createProjectFromIntake} className="flex flex-col gap-rc-lg">
       <input type="hidden" name="template_source_id" value={template?.id ?? ''} />
       <input type="hidden" name="language" value={template?.language ?? ''} />
+      <input type="hidden" name="quality_preset" value={quality.preset} />
+      <input type="hidden" name="video_model" value={quality.videoModel} />
+      <input type="hidden" name="video_resolution" value={quality.videoResolution} />
+      <input type="hidden" name="image_quality" value={quality.imageQuality} />
 
       <div className="flex flex-col gap-rc-xs">
         <span className="text-label uppercase tracking-label text-text-tertiary">
@@ -242,9 +276,21 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
         </div>
       </div>
 
+      <QualityPicker
+        key={qualityKey}
+        value={quality}
+        onChange={(next) => {
+          setQuality(next)
+          dropPrefilled('quality')
+        }}
+        durationTarget={durationTarget}
+        aspectRatio={aspectRatio}
+        badge={prefilled.has('quality') ? <PrefilledBadge /> : null}
+      />
+
       <div className="flex flex-col gap-rc-2xs">
-        <span className="text-meta text-text-secondary">
-          ≈ <span className="font-mono">{durationConfig[durationTarget].estimatedCredits}</span> credits
+        <span className="text-meta text-text-secondary" data-testid="intake-estimate">
+          ≈ <span className="tabular-nums">{estimate.toLocaleString('en-US')}</span> credits
         </span>
         <BuildButton disabled={sourceText.trim().length === 0} />
       </div>

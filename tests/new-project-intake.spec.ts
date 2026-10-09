@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { DEFAULT_DURATION_TARGET } from '../src/lib/config/duration'
+import { DEFAULT_QUALITY_PRESET, QUALITY_PRESETS } from '../src/lib/config/models'
 
 test.describe('New Project intake', () => {
   test('filling the brief and submitting creates a project and lands on workbench', { tag: '@smoke' }, async ({ page }) => {
@@ -41,6 +42,11 @@ test.describe('New Project intake', () => {
       expect(project.duration_target).toBe(DEFAULT_DURATION_TARGET)
       expect(project.video_type).toBe('auto')
       expect(project.template_source_id).toBeNull()
+      // No quality choice made: the default preset's four values.
+      expect(project.quality_preset).toBe(DEFAULT_QUALITY_PRESET)
+      expect(project.video_model).toBe(QUALITY_PRESETS[DEFAULT_QUALITY_PRESET].videoModel)
+      expect(project.video_resolution).toBe(QUALITY_PRESETS[DEFAULT_QUALITY_PRESET].videoResolution)
+      expect(project.image_quality).toBe(QUALITY_PRESETS[DEFAULT_QUALITY_PRESET].imageQuality)
 
       // The auto-trigger POST is blocked above, so no claim was ever attempted - a
       // brand-new project has no generations row until its first claim.
@@ -134,5 +140,126 @@ test.describe('New Project intake', () => {
     } finally {
       await deleteTestUser(user.id)
     }
+  })
+
+  test.describe('Quality', () => {
+    const estimateOf = async (page: import('@playwright/test').Page, id: string) =>
+      Number((await page.getByTestId(id).innerText()).replace(/[^0-9]/g, ''))
+
+    test('defaults to Low, and the estimates follow the duration and ascend Low < Medium < High', async ({ page }) => {
+      await page.goto('/projects/new')
+      await expect(page.getByTestId('quality-preset-low')).toHaveAttribute('aria-checked', 'true')
+      await expect(page.getByTestId('quality-custom-label')).toBeHidden()
+
+      const read = async () => [
+        await estimateOf(page, 'quality-preset-low-estimate'),
+        await estimateOf(page, 'quality-preset-medium-estimate'),
+        await estimateOf(page, 'quality-preset-high-estimate'),
+      ]
+      const short = await read()
+      expect(short[0]).toBeLessThan(short[1])
+      expect(short[1]).toBeLessThan(short[2])
+      // The line above the button shows the selected preset's figure.
+      expect(await estimateOf(page, 'intake-estimate')).toBe(short[0])
+
+      // Retried: a click that lands before hydration is lost.
+      await expect(async () => {
+        await page.getByText('3–5 min', { exact: true }).click()
+        expect(await estimateOf(page, 'quality-preset-low-estimate')).toBeGreaterThan(short[0])
+      }).toPass({ timeout: 10_000 })
+      const long = await read()
+      long.forEach((figure, i) => expect(figure).toBeGreaterThan(short[i]))
+      expect(long[0]).toBeLessThan(long[1])
+      expect(long[1]).toBeLessThan(long[2])
+      expect(await estimateOf(page, 'intake-estimate')).toBe(long[0])
+    })
+
+    test('Advanced makes it Custom, disables unsupported resolutions, drops resolution with a notice, and saves the four columns', async ({
+      page,
+    }) => {
+      await page.route('**/api/projects/*/shots', (route) => route.abort())
+      await page.goto('/projects/new')
+      await page.getByPlaceholder(/describe your idea/i).fill('A quiet film about tides.')
+
+      await page.getByRole('button', { name: 'Advanced' }).click()
+      await expect(page.getByTestId('quality-custom-label')).toBeVisible()
+      await expect(page.getByTestId('quality-preset-low')).toHaveAttribute('aria-checked', 'false')
+
+      // Wan 3.0 at 1080p, then Seedance 2.0 Mini - which tops out at 720p.
+      await page.getByTestId('quality-resolution-1080p').click()
+      await expect(page.getByTestId('quality-resolution-1080p')).toHaveAttribute('aria-checked', 'true')
+      await expect(page.getByTestId('quality-model-seedance-2.0-mini')).toHaveAttribute('data-supported', 'false')
+      await expect(page.getByTestId('quality-model-seedance-2.0-mini-rate')).toHaveText('— at 1080p')
+      await page.getByTestId('quality-model-seedance-2.0-mini').click()
+      await expect(page.getByTestId('quality-resolution-720p')).toHaveAttribute('aria-checked', 'true')
+      await expect(page.getByTestId('quality-resolution-notice')).toHaveText(
+        'Resolution set to 720p. Seedance 2.0 Mini supports up to 720p.'
+      )
+      const unsupported = page.getByTestId('quality-resolution-1080p')
+      await expect(unsupported).toHaveAttribute('aria-disabled', 'true')
+      await expect(unsupported).toHaveAttribute('title', 'Seedance 2.0 Mini supports up to 720p')
+      await unsupported.click({ force: true })
+      await expect(page.getByTestId('quality-resolution-720p')).toHaveAttribute('aria-checked', 'true')
+
+      await page.getByTestId('quality-image-high').click()
+
+      await page.getByRole('button', { name: 'Build workbench' }).click()
+      await page.waitForURL(/\/projects\/[0-9a-f-]+\/workbench$/, { waitUntil: 'commit' })
+      const projectId = page.url().match(/\/projects\/([0-9a-f-]+)\/workbench$/)![1]
+      const { data: project } = await admin
+        .from('projects')
+        .select('quality_preset, video_model, video_resolution, image_quality')
+        .eq('id', projectId)
+        .single()
+      expect(project).toEqual({
+        quality_preset: 'custom',
+        video_model: 'seedance-2.0-mini',
+        video_resolution: '720p',
+        image_quality: 'high',
+      })
+    })
+
+    test('a template copies all four quality values', async ({ page, context }) => {
+      // A fresh user, so the template is certainly in this user's recent-projects list.
+      const { user, cookie } = await createTestSession()
+      try {
+        await context.addCookies([cookie])
+        const { error } = await admin.from('projects').insert({
+          user_id: user.id,
+          title: 'Quality template',
+          source_text: 'Template brief.',
+          duration_target: '1-2min',
+          quality_preset: 'custom',
+          video_model: 'wan-2.5',
+          video_resolution: '1080p',
+          image_quality: 'medium',
+        })
+        expect(error).toBeNull()
+
+        await page.route('**/api/projects/*/shots', (route) => route.abort())
+        await page.goto('/projects/new')
+        await page.getByRole('radio', { name: 'Quality template' }).click()
+        await expect(page.getByTestId('quality-custom-label')).toBeVisible()
+        await expect(page.getByTestId('quality-model-wan-2.5')).toHaveAttribute('aria-checked', 'true')
+
+        await page.getByPlaceholder(/describe your idea/i).fill('A new film from the template.')
+        await page.getByRole('button', { name: 'Build workbench' }).click()
+        await page.waitForURL(/\/projects\/[0-9a-f-]+\/workbench$/, { waitUntil: 'commit' })
+        const projectId = page.url().match(/\/projects\/([0-9a-f-]+)\/workbench$/)![1]
+        const { data: project } = await admin
+          .from('projects')
+          .select('quality_preset, video_model, video_resolution, image_quality')
+          .eq('id', projectId)
+          .single()
+        expect(project).toEqual({
+          quality_preset: 'custom',
+          video_model: 'wan-2.5',
+          video_resolution: '1080p',
+          image_quality: 'medium',
+        })
+      } finally {
+        await deleteTestUser(user.id)
+      }
+    })
   })
 })

@@ -427,6 +427,7 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
 | `src/lib/config/enums.ts` | Shot-attribute and project-setting enums, and their model-reportable subsets |
 | `src/lib/config/pipeline.ts` | Step / operation / provider vocabulary, `STEP_OPERATIONS`, `stepOperationLabel`, `stepIndex` |
 | `src/lib/config/models.ts` | Per-call model + `maxTokens` config, `VIDEO_MODELS` duration registry, `resolveVideoModel`, `isDurationAllowed` |
+| `src/lib/quality/estimate.ts` | Quality picker rates, tier badges, frame credits, the intake/drawer estimate, `parseQualitySettings` |
 | `src/lib/generations/claim.ts` | The only reader/writer of `state`/`payload`/`started_at`/`queued_at`/`error`; claim, persist, settle |
 | `src/lib/usage/reserve-settle.ts` | `reserveUsage` / `settleUsage` and the throw/never-throw asymmetry |
 | `src/lib/usage/quote.ts` | `estimateInputTokens` / `quoteClaudeCall` (the worst-case reservation quote) and `estimateAgentTurnCost` / `estimateExpectedCallCost` (the calibrated turn estimate a balance gate uses) |

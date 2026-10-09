@@ -4,6 +4,7 @@ import { videoTypeLabel } from '@/lib/video-type-labels'
 import { languageLabel } from '@/lib/language-labels'
 import { displayTitle } from '@/lib/display-title'
 import { formatDuration } from '@/lib/format-duration'
+import { SettingsChip } from '@/components/project-settings/settings-drawer'
 
 // The model chip, from the registry: "Wan 3.0 · up to 30s/shot · 480p". The resolution is
 // left off for a model whose output resolution isn't selectable. An unregistered value
@@ -27,15 +28,9 @@ function LockIcon() {
   )
 }
 
-function Chip({ children, accent = false }: { children: React.ReactNode; accent?: boolean }) {
+function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span
-      className={
-        accent
-          ? 'flex items-center gap-[5px] rounded-full border border-accent-faint px-[10px] py-1 text-chip text-accent'
-          : 'flex items-center gap-[5px] rounded-full border border-border-strong px-[10px] py-1 text-chip text-text-secondary'
-      }
-    >
+    <span className="flex items-center gap-[5px] rounded-full border border-border-strong px-[10px] py-1 text-chip text-text-secondary">
       {children}
     </span>
   )
@@ -46,14 +41,18 @@ export function ProjectHeader({
   shots,
 }: {
   project: {
+    id: string
     title: string | null
     source_text: string | null
     video_type: string | null
     aspect_ratio: string | null
     language: string | null
     video_model: string | null
-    video_resolution: string | null
+    video_resolution: string
+    image_quality: string
+    quality_preset: string
     duration_target: string | null
+    furthest_step: number
   }
   shots: { duration_sec: number | null; duration_locked: boolean }[]
 }) {
@@ -129,7 +128,7 @@ export function ProjectHeader({
         {videoTypeLabel(project.video_type) && <Chip>{videoTypeLabel(project.video_type)}</Chip>}
         {project.aspect_ratio && <Chip>{project.aspect_ratio} · Locked</Chip>}
         {languageLabel(project.language) && <Chip>{languageLabel(project.language)}</Chip>}
-        {modelChip && <Chip accent>{modelChip}</Chip>}
+        {modelChip && <SettingsChip project={project} label={modelChip} />}
       </div>
     </div>
   )
