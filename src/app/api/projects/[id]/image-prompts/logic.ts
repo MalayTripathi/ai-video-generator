@@ -1,10 +1,10 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { createClient } from '@/lib/supabase/server'
-import type { ClaudeGateway } from '@/lib/claude'
+import { ClaudeRefusalError, throwIfRefused, type ClaudeGateway } from '@/lib/claude'
 import type { Json } from '@/lib/database.types'
-import { modelsConfig } from '@/lib/config/models'
+import { claudeReasoningParams, modelsConfig } from '@/lib/config/models'
 import type { UsageBreakdown } from '@/lib/config/pricing'
-import { estimateInputTokens, quoteClaudeCall, assertWithinAllowance, reserveUsage, settleUsage, AllowanceExceededError } from '@/lib/usage'
+import { estimateInputTokens, quoteClaudeCall, assertWithinAllowance, reserveUsage, settleUsage, settledStatus, AllowanceExceededError } from '@/lib/usage'
 import { creditsFor, InsufficientCreditsError } from '@/lib/config/credits'
 // Type-only: credits/ledger.ts transitively imports the service-role Supabase client
 // module, which imports 'server-only' - a VALUE import here would crash any test that
@@ -534,10 +534,13 @@ export async function runImagePromptGeneration(
       tools: [WRITE_IMAGE_PROMPTS_TOOL],
       tool_choice: { type: 'tool', name: 'write_image_prompts' },
       messages: [{ role: 'user', content: userMessage }],
+      ...claudeReasoningParams(modelsConfig.imagePrompts),
     })
 
     measuredBreakdown = message.usage
     stopReasonForSettle = stopReason
+    // Before reading content: a refusal's partial tool_use must never be persisted.
+    throwIfRefused({ message, stopReason })
 
     const toolUseBlock = message.content.find(
       (block): block is Anthropic.ToolUseBlock =>
@@ -607,7 +610,9 @@ export async function runImagePromptGeneration(
   } catch (err) {
     caughtError = err
     const message = err instanceof Error ? err.message : 'Unexpected error during image prompt generation'
-    if (err instanceof InsufficientCreditsError) {
+    if (err instanceof ClaudeRefusalError) {
+      outcome = { ok: false, status: 422, error: err.message }
+    } else if (err instanceof InsufficientCreditsError) {
       outcome = {
         ok: false,
         status: 402,
@@ -643,7 +648,7 @@ export async function runImagePromptGeneration(
         usageId,
         provider: 'anthropic',
         model: modelsConfig.imagePrompts.model,
-        status: measuredBreakdown !== null && stopReasonForSettle !== 'max_tokens' ? 'succeeded' : 'failed',
+        status: settledStatus(measuredBreakdown, stopReasonForSettle),
         breakdown: measuredBreakdown,
         stopReason: stopReasonForSettle,
         error: outcome.ok ? null : caughtError,

@@ -35,6 +35,33 @@ function describeCall(params: Anthropic.MessageCreateParams): string {
   return `any of ${tools.length}: ${tools.map((t) => t.name).join(', ')}`
 }
 
+// What a person is shown when the model's safety checks decline a request. No provider or
+// model name (CLAUDE.md rule 14).
+export const REFUSAL_USER_MESSAGE =
+  "This request was declined by the AI's safety checks. Nothing was saved and no credits were charged. Try rewording it."
+
+/** A call that ended with stop_reason 'refusal'. Whatever the response carries - even a
+ * partial tool_use from a mid-stream decline - is incomplete and must be discarded. */
+export class ClaudeRefusalError extends Error {
+  readonly category: string | null
+  readonly explanation: string | null
+  constructor(details: { category: string | null; explanation: string | null } | null) {
+    super(REFUSAL_USER_MESSAGE)
+    this.name = 'ClaudeRefusalError'
+    this.category = details?.category ?? null
+    this.explanation = details?.explanation ?? null
+  }
+}
+
+/** Throws ClaudeRefusalError for a refused call. Call it right after capturing the usage,
+ * before reading `content`. Keyed on the stop reason value, never on text. */
+export function throwIfRefused(result: { message: Anthropic.Message; stopReason: string | null }): void {
+  if (result.stopReason !== 'refusal') return
+  const details = result.message.stop_details
+  console.warn(`[claude] refusal category=${details?.category ?? 'null'}`)
+  throw new ClaudeRefusalError(details ? { category: details.category ?? null, explanation: details.explanation ?? null } : null)
+}
+
 export function assertLiveCallsAllowed(): void {
   assertProviderCallAllowed('anthropic')
 }

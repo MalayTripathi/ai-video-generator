@@ -90,6 +90,9 @@ of finished work. Each is stated in full further down; these are the pointers.
     DELETE; balance is `SUM(delta)`, computed fresh, never a stored running total.
     All writes go through `src/lib/credits/ledger.ts`'s service-role functions —
     never add an `authenticated` INSERT/UPDATE/DELETE policy to the table.
+19. Every env var read anywhere in code is listed in `.env.example` with its
+    default and a one-line purpose, in the same change that introduces it.
+    `tests/env-drift.spec.ts` enforces it.
 
 Read `src/lib/database.types.ts` for columns — never rely on this file for them.
 
@@ -286,9 +289,9 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   `isProduction ? sonnet : haiku` ternary every other section uses — it is
   Haiku in both environments, a locked cost decision (mechanical enum
   extraction, fired on nearly every description blur). Its `maxTokens`
-  default of 128 is deliberately small: `reserveUsage` reserves the full
+  default of 500 is deliberately small: `reserveUsage` reserves the full
   `max_tokens` as its worst-case quote, so a shots-scale ceiling here would
-  over-reserve ~25x on every edit. Both stay overridable via
+  over-reserve ~16x on every edit. Both stay overridable via
   `CLAUDE_CAMERA_MODEL` / `CLAUDE_CAMERA_MAX_TOKENS`.
 - **Video-model duration registry.** `src/lib/config/models.ts` exports
   `VIDEO_MODELS` (keyed by the literal string `projects.video_model` can
@@ -388,11 +391,10 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   `src/lib/database.types.ts` is generated, never hand-edited.
 - Supabase clients are typed with the generated `Database` type. Don't
   infer schema from usage — read the types file.
-- Prompt caching is wired on both `/image-prompts` and `/shots` but is inert: the
-  static prefixes still sit under the minimum cacheable size (2048 Haiku /
-  1024 Sonnet), so no cache entry is created and the cache buckets inside
-  `usage.raw_usage.breakdown` log as 0. **Don't pad prompts to reach the
-  threshold** — it will activate on its own as prompts grow.
+- Prompt caching is wired on `/image-prompts` and `/shots`. A static prefix under
+  the minimum cacheable size (512 Haiku 5.5 / 1024 Sonnet 5) creates no cache entry,
+  and the cache buckets inside `usage.raw_usage.breakdown` then log as 0. **Don't pad
+  prompts to reach the threshold** — caching activates on its own as prompts grow.
 - Shot keys are stable and immutable. `shots.shot_key` is 5 lowercase
   characters from `23456789bcdfghjkmnpqrstvwxz` (no vowels, no
   `0/1/i/l/o`), generated server-side in TypeScript

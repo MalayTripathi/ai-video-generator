@@ -17,7 +17,7 @@ type Env = Record<string, string | undefined>
 
 export const BLOCK_PROVIDER_CALLS = 'BLOCK_PROVIDER_CALLS'
 
-const ALLOW_FLAG: Record<GuardedProvider, string> = {
+export const ALLOW_FLAG: Record<GuardedProvider, string> = {
   anthropic: 'ALLOW_REAL_CLAUDE',
   openai: 'ALLOW_REAL_OPENAI_IMAGES',
   elevenlabs: 'ALLOW_REAL_ELEVENLABS',

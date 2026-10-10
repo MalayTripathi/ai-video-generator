@@ -1,8 +1,8 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { createClient } from '@/lib/supabase/server'
-import type { ClaudeGateway } from '@/lib/claude'
+import { ClaudeRefusalError, throwIfRefused, type ClaudeGateway } from '@/lib/claude'
 import type { Tables } from '@/lib/database.types'
-import { modelsConfig } from '@/lib/config/models'
+import { claudeReasoningParams, modelsConfig } from '@/lib/config/models'
 import { insertUserMessage, insertAssistantReply, insertToolActivity, insertInterstitialReply } from '@/lib/messages-idempotency'
 import { claimGeneration, settleGeneration } from '@/lib/generations/claim'
 import {
@@ -12,6 +12,7 @@ import {
   assertWithinAllowance,
   reserveUsage,
   settleUsage,
+  settledStatus,
   sumTurnCost,
   AllowanceExceededError,
 } from '@/lib/usage'
@@ -77,7 +78,13 @@ export type AgentTurnResult =
   | { ok: false; status: 404; error: string }
   | { ok: false; status: 409; error: string; reason: 'already_generating' }
   | { ok: false; status: 402; error: string }
+  | { ok: false; status: 422; error: string }
   | { ok: false; status: 500; error: string }
+
+// The reply when the model's safety checks decline a call. Changes earlier calls in the
+// turn already applied stay, so this never claims nothing changed.
+export const AGENT_REFUSAL_REPLY =
+  "That request was declined by the AI's safety checks, so I stopped there. No credits were charged for this turn. Try rewording it."
 
 type ClaimedProject = {
   // Already the 1-7 index (CLAUDE.md: intake=1 ... assembly=7), never a step name -
@@ -422,7 +429,7 @@ export async function runAgentTurn(params: {
           usageId: reserved.usageId,
           provider: 'anthropic',
           model: modelsConfig.agent.model,
-          status: breakdown !== null && stopReason !== 'max_tokens' ? 'succeeded' : 'failed',
+          status: settledStatus(breakdown, stopReason),
           breakdown,
           stopReason,
           error: null,
@@ -483,11 +490,16 @@ export async function runAgentTurn(params: {
           ],
           tools: config.tools,
           messages,
+          ...claudeReasoningParams(modelsConfig.agent),
         },
         { onTextDelta: (text) => emit({ type: 'text_delta', text }) }
       )
 
-      turnCostUsd += await markSettled(message.usage, stopReason)
+      const callCostUsd = await markSettled(message.usage, stopReason)
+      // A refused call is settled (usage keeps its real cost) but never added to the
+      // turn's charge; the throw fails the turn, which writes no ledger row.
+      throwIfRefused({ message, stopReason })
+      turnCostUsd += callCostUsd
 
       if (stopReason === 'max_tokens') {
         finalText = "I ran out of room finishing that - here's what I have so far."
@@ -577,11 +589,14 @@ export async function runAgentTurn(params: {
     outcome = { ok: true, status: 200 } as AgentTurnResult
   } catch (err) {
     caughtError = err
-    assistantContent = 'Something went wrong while working on that - nothing further was changed.'
+    assistantContent =
+      err instanceof ClaudeRefusalError
+        ? AGENT_REFUSAL_REPLY
+        : 'Something went wrong while working on that - nothing further was changed.'
     outcome = {
       ok: false,
-      status: err instanceof AllowanceExceededError ? 402 : 500,
-      error: err instanceof Error ? err.message : 'Unexpected error during agent turn',
+      status: err instanceof AllowanceExceededError ? 402 : err instanceof ClaudeRefusalError ? 422 : 500,
+      error: err instanceof ClaudeRefusalError ? AGENT_REFUSAL_REPLY : err instanceof Error ? err.message : 'Unexpected error during agent turn',
     }
   } finally {
     const assistantRow = await insertAssistantReply(supabase, projectId, clientId, assistantContent ?? 'Done.')

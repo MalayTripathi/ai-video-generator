@@ -136,3 +136,42 @@ test.describe('computeCost', () => {
     expect(result.quantity).toBe(200)
   })
 })
+
+test.describe('computeCost: Claude Haiku 5.5 two rate cards', () => {
+  // https://platform.claude.com/docs/en/about-claude/pricing - up to 100,000 prompt tokens:
+  // in 0.10 / 5m write 0.125 / read 0.01 / out 0.50; over it: 0.50 / 0.625 / 0.05 / 2.50.
+  test('a prompt up to 100,000 tokens is priced on the standard card', () => {
+    const result = computeCost('anthropic', 'claude-haiku-5-5', {
+      input_tokens: 50_000,
+      output_tokens: 10_000,
+      cache_creation_input_tokens: 20_000,
+      cache_read_input_tokens: 30_000,
+    })
+    // Exactly 100,000 prompt tokens: still standard ("up to 100,000").
+    expect(result.estimatedCost).toBeCloseTo(0.05 * 0.1 + 0.01 * 0.5 + 0.02 * 0.125 + 0.03 * 0.01, 9)
+    expect(result.appliedRates).toMatchObject({ tier: 'standard', inputPerMTok: 0.1, outputPerMTok: 0.5 })
+  })
+
+  test('cache reads and writes count toward the threshold: one token over prices every bucket on the long card', () => {
+    const result = computeCost('anthropic', 'claude-haiku-5-5', {
+      input_tokens: 50_001,
+      output_tokens: 10_000,
+      cache_creation_input_tokens: 20_000,
+      cache_read_input_tokens: 30_000,
+    })
+    expect(result.estimatedCost).toBeCloseTo(0.050001 * 0.5 + 0.01 * 2.5 + 0.02 * 0.625 + 0.03 * 0.05, 9)
+    expect(result.appliedRates).toMatchObject({
+      tier: 'long_context',
+      inputPerMTok: 0.5,
+      outputPerMTok: 2.5,
+      cacheWritePerMTok: 0.625,
+      cacheReadPerMTok: 0.05,
+    })
+  })
+
+  test('Haiku 4.5 rows keep their single card', () => {
+    const result = computeCost('anthropic', 'claude-haiku-4-5-20251001', { input_tokens: 200_000, output_tokens: 0 })
+    expect(result.estimatedCost).toBeCloseTo(0.2, 9)
+    expect(result.appliedRates).toMatchObject({ tier: 'standard', inputPerMTok: 1.0 })
+  })
+})

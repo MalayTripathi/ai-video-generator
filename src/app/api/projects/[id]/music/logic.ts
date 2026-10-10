@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { createClient } from '@/lib/supabase/server'
 import type { Json, Tables } from '@/lib/database.types'
-import type { ClaudeGateway } from '@/lib/claude'
+import { ClaudeRefusalError, throwIfRefused, type ClaudeGateway } from '@/lib/claude'
 // Type-only, like every paid route's logic.ts: the route injects the real functions, so a
 // plain-Node test can pass fakes and this file adds no service-role import.
 import type { getBalance as getBalanceType } from '@/lib/credits/balance'
@@ -9,7 +9,7 @@ import type { ensureSignupGrant as ensureSignupGrantType } from '@/lib/credits/s
 import type { mintAttemptId as mintAttemptIdType, recordFixedSpend as recordFixedSpendType } from '@/lib/credits/ledger'
 import type { MusicGateway } from '@/lib/music/gateway'
 import { creditsFor } from '@/lib/config/credits'
-import { modelsConfig } from '@/lib/config/models'
+import { claudeReasoningParams, modelsConfig } from '@/lib/config/models'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 import {
   MUSIC_STALE_AFTER_MS,
@@ -25,6 +25,7 @@ import {
   quoteClaudeCall,
   reserveUsage,
   settleUsage,
+  settledStatus,
 } from '@/lib/usage'
 import { quoteElevenLabsCall } from '@/lib/usage/quote'
 import { measureDurationSec } from '@/lib/voiceover/audio'
@@ -94,7 +95,7 @@ export type MusicPromptPayload = { kind: 'music_prompt'; style: string }
 
 export type DeriveMusicPromptResult =
   | { ok: true; status: 200; prompt: string | null }
-  | { ok: false; status: 402 | 404 | 409 | 500; error: string; code?: string }
+  | { ok: false; status: 402 | 404 | 409 | 422 | 500; error: string; code?: string }
 
 /** The film text a style is derived from: the in-film narration, else the shot descriptions. */
 async function loadStyleSource(
@@ -212,10 +213,13 @@ export async function runMusicPromptDerivation(params: {
       tools: [WRITE_MUSIC_STYLE_TOOL],
       tool_choice: { type: 'tool', name: WRITE_MUSIC_STYLE_TOOL.name },
       messages: [{ role: 'user', content: userMessage }],
+      ...claudeReasoningParams(modelsConfig.musicPrompt),
     })
     measured = result.message.usage
     stopReason = result.stopReason
     console.warn(`[music/prompt] stopReason=${result.stopReason} requestId=${result.requestId}`)
+    // Before reading content: a refusal's partial tool_use must never be stored.
+    throwIfRefused(result)
 
     const block = result.message.content.find(
       (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === WRITE_MUSIC_STYLE_TOOL.name
@@ -238,7 +242,7 @@ export async function runMusicPromptDerivation(params: {
     console.error(`[music/prompt] ${generationId} failed`, err)
     return (outcome = {
       ok: false,
-      status: err instanceof AllowanceExceededError ? 402 : 500,
+      status: err instanceof AllowanceExceededError ? 402 : err instanceof ClaudeRefusalError ? 422 : 500,
       error: errorMessage(err),
     })
   } finally {
@@ -248,7 +252,7 @@ export async function runMusicPromptDerivation(params: {
         usageId,
         provider: 'anthropic',
         model,
-        status: measured !== null && stopReason !== 'max_tokens' ? 'succeeded' : 'failed',
+        status: settledStatus(measured, stopReason),
         breakdown: measured,
         stopReason,
         error: outcome.ok ? null : caught,

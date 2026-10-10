@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import type Anthropic from '@anthropic-ai/sdk'
-import { estimateInputTokens } from '../src/lib/usage/quote'
+import { estimateInputTokens, quoteClaudeCall, QUOTE_TIER_HEADROOM } from '../src/lib/usage/quote'
 import { buildChunkWriteShotsTool } from '../src/lib/prompts/shot-chunk'
 
 const SMALL_TOOL: Anthropic.Tool = {
@@ -93,5 +93,17 @@ test.describe('estimateInputTokens', () => {
     // estimateInputTokens must reflect the actual per-call schema passed to it, not a
     // stale/shared one.
     expect(withLargeTarget).not.toBe(withSmallTarget)
+  })
+})
+
+test.describe('quoteClaudeCall: rate card headroom', () => {
+  test('an estimate that could really cross 100,000 tokens is quoted on the long card', () => {
+    // 70,000 estimated x 1.5 headroom = 105,000 > 100,000: priced long, so the newer
+    // tokenizer's ~30% undercount can never overrun the reservation.
+    expect(QUOTE_TIER_HEADROOM).toBe(1.5)
+    const near = quoteClaudeCall({ model: 'claude-haiku-5-5', estimatedInputTokens: 70_000, maxTokens: 1_000 })
+    expect(near.estimatedCost).toBeCloseTo(0.07 * 0.5 + 0.001 * 2.5, 9)
+    const far = quoteClaudeCall({ model: 'claude-haiku-5-5', estimatedInputTokens: 60_000, maxTokens: 1_000 })
+    expect(far.estimatedCost).toBeCloseTo(0.06 * 0.1 + 0.001 * 0.5, 9)
   })
 })

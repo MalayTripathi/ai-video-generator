@@ -6,6 +6,9 @@ import { computeCost, OPENAI_RATES, TOOL_USE_SYSTEM_OVERHEAD_TOKENS, type UsageB
 // over-estimating input tokens is safe here in a way it would not be for a bill.
 const CHARS_PER_TOKEN_ESTIMATE = 4
 
+// How far the quote pads its input estimate before choosing a Claude rate card.
+export const QUOTE_TIER_HEADROOM = 1.5
+
 /**
  * Estimates input tokens from everything actually sent to the model: the system
  * prompt text, the user message text, and the serialised tool schema JSON - derived
@@ -46,7 +49,12 @@ export function quoteClaudeCall(params: {
     cache_read_input_tokens: 0,
   }
 
-  const { estimatedCost } = computeCost('anthropic', params.model, quotedBreakdown)
+  // The rate card is picked from a padded estimate: chars/4 undercounts the newer
+  // tokenizer by ~30%, and a quote priced on the standard card for a prompt that really
+  // crosses a long-context threshold would be overrun.
+  const { estimatedCost } = computeCost('anthropic', params.model, quotedBreakdown, {
+    tierPromptTokens: Math.ceil(params.estimatedInputTokens * QUOTE_TIER_HEADROOM),
+  })
 
   // An Anthropic model with no configured rate would make estimatedCost null - but
   // every model reachable through modelsConfig has a CLAUDE_RATES entry (see

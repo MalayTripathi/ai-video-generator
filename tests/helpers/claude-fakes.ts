@@ -122,3 +122,31 @@ export function scriptedGateway(results: (FakeResult & { deltas?: string[] })[])
     getCalls: () => calls,
   }
 }
+
+/** A safety-classifier refusal: stop_reason 'refusal' with stop_details. Pass
+ * `partialToolUse` to model a mid-stream decline whose response still carries the start of
+ * a tool call - output that must be discarded, never saved. */
+export function refusalMessage(
+  opts: {
+    category?: string | null
+    partialToolUse?: { name: string; input: unknown }
+    usage?: FakeUsage
+  } = {}
+): FakeResult {
+  return {
+    message: {
+      content: opts.partialToolUse
+        ? [{ type: 'tool_use', id: 'tu_partial', name: opts.partialToolUse.name, input: opts.partialToolUse.input }]
+        : [],
+      stop_reason: 'refusal',
+      stop_details: {
+        type: 'refusal',
+        category: opts.category === undefined ? 'general_harms' : opts.category,
+        explanation: 'This request was declined.',
+      },
+      usage: opts.usage ?? DEFAULT_USAGE,
+    } as unknown as Anthropic.Message,
+    stopReason: 'refusal',
+    requestId: 'req_test',
+  }
+}

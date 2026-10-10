@@ -243,7 +243,7 @@ complete — every such call names exactly one shot, with no analogue to the age
 zero-or-several-shots problem — so a spend line can be reinstated then, on data that
 actually supports it.
 
-## Why the camera model is Haiku permanently and its ceiling is 128
+## Why the camera model is Haiku permanently and its ceiling is 500
 *Supports: the `modelsConfig.camera` note in `## Code conventions`. (Audit item 66.)*
 
 Deriving 1–3 enum values from a sentence is mechanical work that never benefits from Sonnet's
@@ -253,9 +253,10 @@ Still overridable via env for ops flexibility, but the code default is Haiku in 
 environments.
 
 `reserveUsage` reserves the *full* `max_tokens` as its worst-case pre-flight quote, so reusing
-the shots/prompts ~8192-scale ceiling here would reserve roughly 25× the real cost of a 1–3
-enum-field answer, on every description edit. A representative 3-field call quotes at
-input ≈ 768 / output = 128 tokens ≈ **$0.0014** against Haiku's rates.
+the shots/prompts ~8,000-scale ceiling here would reserve roughly 16× the cap this answer needs,
+on every description edit. 500 (up from 128 on Haiku 4.5) leaves room for Haiku 5.5's tokenizer,
+which counts the same text as ~30% more tokens. A representative 3-field call quotes at
+input ≈ 768 / output = 500 tokens ≈ **$0.00033** against Haiku 5.5's rates.
 
 ## Why duration edits set nothing stale
 *Supports: the staleness table in `## Database`. (Audit item 67.)*
@@ -594,11 +595,10 @@ directly, rather than carving out an exception the way `stepIndex` once did.
   invisible batch instead of a legible sequence.
 - **C4 dev caching note.** Prompt caching on the agent call is wired the
   same way as every other Claude call site (breakpoints on the stable
-  prefix), but it will not activate in development: Haiku's minimum
-  cacheable prefix is 2048 tokens, and the agent's stable prefix (system
-  prompt + tool schemas) doesn't clear it. Zero saving in the dev usage
-  table is expected, not a bug — it only becomes observable in production
-  on Sonnet, whose minimum is 1024.
+  prefix). On Haiku 4.5 it never activated in development: that model's
+  minimum cacheable prefix is 4,096 tokens, which the agent's stable prefix
+  (system prompt + tool schemas) doesn't clear. Haiku 5.5's minimum is 512
+  and Sonnet 5's is 1,024, so a prefix over those creates cache entries.
 - **The shot index is not part of a stable cached prefix across turns.**
   `buildShotIndexBlock`'s output is rebuilt fresh from the DB every turn and
   carries its own `cache_control` breakpoint, separate from the system
@@ -1441,3 +1441,39 @@ that in a single pass - `aselect` keeps the pieces (10ms frames), `asetpts` move
 place, `aresample=async=1` fills the gaps with silence - as long as the pieces read the file
 forwards. Shots reordered against the read break that, so pieces split into forward runs, one
 input each, mixed. `asplit` is avoided for the same reason as the music bed.
+
+## Haiku 5.5: explicit effort per operation, refusals as failures, two rate cards
+
+**Why every Haiku default moved to `claude-haiku-5-5`.** It replaces Haiku 4.5 as the dev model
+for shots, the agent and image prompts, and as the permanent model for camera and the music
+prompt. Sonnet routes are unchanged. Haiku 4.5's rate entry stays so its settled rows remain
+reconstructable.
+
+**Why thinking and effort are set per operation, and only for listed models.** Haiku 5.5 thinks
+by default (effort `medium`), and thinking counts toward `max_tokens`. Every section in
+`models.ts` therefore states its own `reasoning`, so no route depends on a model default.
+`claudeReasoningParams` sends it only to a model in `CLAUDE_REASONING_MODELS`, which keeps Sonnet 5
+production requests (and an env override back to Haiku 4.5, which rejects `effort`) byte-identical.
+
+**Why forced-tool routes say `thinking: disabled`.** Haiku 5.5 accepts a forced `tool_choice` but
+then "starts with the tool call and has no thinking block"
+(https://platform.claude.com/docs/en/models/haiku-5-5/migration-guide#configure-thinking).
+`disabled` states that behaviour explicitly, keeps each cap an output-only cap, and is accepted at
+low/medium/high effort. The creative forced routes (outline, chunk, image prompts) run at `medium`:
+effort there shapes only the tool arguments, which are the product, and the post-switch tokens-per-shot
+measurement needs representative output. Camera and the music prompt are mechanical and run at `low`.
+The agent (tool_choice auto) is the one route that thinks: adaptive at `medium`. Anthropic notes that
+at `low`, reasoning-like text leaks into the reply more often and long agent prompts stop early.
+
+**Why a refusal settles as a failure at the measured cost.** A refusal is HTTP 200 with
+`stop_reason: "refusal"`, and a mid-stream one can carry a partial tool call. Every call site runs
+`throwIfRefused` before reading `content`, so nothing partial is persisted or charged. The usage row
+settles `failed` at the measured breakdown, like a truncation. That over-counts refusals in categories
+Anthropic doesn't bill, which is the safe direction for a spend cap, and it adds no third
+unmeasured-settle branch. A shot run whose outline or a chunk was refused ends `refused`, so the Shots
+tab can say so.
+
+**Why the quote pads its estimate before picking a rate card.** Haiku 5.5 prices a prompt over 100,000
+tokens (cache reads and writes included) on a 5× card. chars/4 undercounts the new tokenizer by
+about 30%, so `quoteClaudeCall` chooses the card from the estimate × 1.5. A quote then can't be priced on
+the standard card for a call that really lands on the long one.

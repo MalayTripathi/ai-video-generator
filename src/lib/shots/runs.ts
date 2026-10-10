@@ -18,7 +18,7 @@ type Client = SupabaseClient<Database>
 export type ShotRunRow = Tables<'shot_runs'>
 export type ShotRunChunkRow = Tables<'shot_run_chunks'>
 export type ShotRunStatus = 'running' | 'completed' | 'stopped' | 'failed'
-export type ShotRunStopReason = 'balance' | 'error' | 'chain_limit' | 'stale' | 'ceiling'
+export type ShotRunStopReason = 'balance' | 'error' | 'chain_limit' | 'stale' | 'ceiling' | 'refused'
 
 /** The ledger writers a charge may need - fixed for a button run, dynamic for an agent run. */
 export type ShotRunLedger = {

@@ -63,19 +63,23 @@ function GenerationPartialBanner({
   onRetry,
   onRemaining,
   stoppedForCredits,
+  refused,
 }: {
   onRetry: () => void
   onRemaining: (() => void) | null
   stoppedForCredits: boolean
+  refused: boolean
 }) {
   return (
     <div className="flex items-center justify-between gap-rc-md rounded-control border border-status-active-bg-hover bg-status-active-bg p-[14px_16px]">
       <div className="flex flex-col gap-[3px]">
         <span className="text-control font-medium text-banner-active-title">
-          {stoppedForCredits ? 'Ran out of credits' : 'Generation was cut short'}
+          {stoppedForCredits ? 'Ran out of credits' : refused ? 'Part of the brief was declined' : 'Generation was cut short'}
         </span>
         <span className="text-small leading-[1.5] text-banner-active-body">
-          {onRemaining
+          {refused
+            ? "The AI's safety checks declined some scenes, and nothing was charged for them. The shots below are saved — try rewording the brief."
+            : onRemaining
             ? 'Some scenes were not written. The shots below are saved.'
             : 'The shots below may be incomplete.'}
         </span>
@@ -185,9 +189,12 @@ export function ShotsTab() {
   } = useShots()
 
   const stoppedForCredits = run.stopReason === 'balance'
+  const refused = run.stopReason === 'refused'
   const failedBody = stoppedForCredits
     ? "There weren't enough credits to write the shots. Nothing was charged."
-    : 'The model returned nothing usable. Your brief is saved — nothing was charged.'
+    : refused
+      ? "The AI's safety checks declined this brief. Your brief is saved — nothing was charged. Try rewording it."
+      : 'The model returned nothing usable. Your brief is saved — nothing was charged.'
 
   const modal = (
     <RetryConfirmModal
@@ -234,6 +241,7 @@ export function ShotsTab() {
           onRetry={openRetryConfirm}
           onRemaining={canGenerateRemaining(run) ? openRemainingConfirm : null}
           stoppedForCredits={stoppedForCredits}
+          refused={refused}
         />
         <ShotList shots={shots} />
       </div>

@@ -5,6 +5,6 @@ export {
   estimateAgentTurnCost,
   estimateExpectedCallCost,
 } from './quote'
-export { reserveUsage, settleUsage } from './reserve-settle'
+export { reserveUsage, settleUsage, settledStatus } from './reserve-settle'
 export { isAllowanceEnabled, getMonthlyCeilingUsd, AllowanceExceededError, assertWithinAllowance } from './allowance'
 export { sumTurnCost } from './turn-cost'

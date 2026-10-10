@@ -358,12 +358,34 @@ export function effectiveImageQuality(projectQuality: ImageQuality): ImageQualit
   return IMAGE_QUALITIES[Math.min(IMAGE_QUALITIES.indexOf(projectQuality), capIndex)]
 }
 
+// Thinking and effort, set explicitly per operation - never the model's default. A forced
+// tool_choice skips thinking on Haiku 5.5 (the response starts with the tool call), so
+// every forced route says 'disabled', and its max_tokens covers output alone; the agent
+// (tool_choice auto) is the one route that thinks. 'disabled' is accepted at effort
+// low/medium/high only - xhigh/max with it is a 400.
+export type ClaudeEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+export type ClaudeReasoning = { thinking: 'adaptive' | 'disabled'; effort: ClaudeEffort }
+
+// Models the reasoning settings are sent to. A model absent here gets neither field, so a
+// Sonnet 5 production request (or an env override back to an older Haiku, which rejects
+// effort) is unchanged. Add a model when its reasoning is tuned.
+export const CLAUDE_REASONING_MODELS: ReadonlySet<string> = new Set(['claude-haiku-5-5'])
+
+export function claudeReasoningParams(section: {
+  model: string
+  reasoning: ClaudeReasoning
+}): { thinking?: { type: 'adaptive' | 'disabled' }; output_config?: { effort: ClaudeEffort } } {
+  if (!CLAUDE_REASONING_MODELS.has(section.model)) return {}
+  return { thinking: { type: section.reasoning.thinking }, output_config: { effort: section.reasoning.effort } }
+}
+
 export type ModelsConfig = {
   // Shot generation's outline call: the scenes, in order. Same model as the chunks.
   shotOutline: {
     provider: 'anthropic'
     model: string
     maxTokens: number
+    reasoning: ClaudeReasoning
   }
   // Shot generation's chunk calls: up to SHOTS_PER_CHUNK shots of one scene each
   // (config/shots.ts). maxTokens is sized with it so a chunk finishes well inside 300s.
@@ -371,16 +393,19 @@ export type ModelsConfig = {
     provider: 'anthropic'
     model: string
     maxTokens: number
+    reasoning: ClaudeReasoning
   }
   camera: {
     provider: 'anthropic'
     model: string
     maxTokens: number
+    reasoning: ClaudeReasoning
   }
   agent: {
     provider: 'anthropic'
     model: string
     maxTokens: number
+    reasoning: ClaudeReasoning
   }
   // Quality is not here: it is the project's own `image_quality`, through
   // effectiveImageQuality.
@@ -394,6 +419,7 @@ export type ModelsConfig = {
     provider: 'anthropic'
     model: string
     maxTokens: number
+    reasoning: ClaudeReasoning
   }
   // Voices are not here: they are a per-language list, VOICEOVER_VOICES below.
   voiceover: {
@@ -408,23 +434,26 @@ export type ModelsConfig = {
     provider: 'anthropic'
     model: string
     maxTokens: number
+    reasoning: ClaudeReasoning
   }
   // Future steps (video prompts) each get their own section here as they're
   // implemented - keep this type and the object below in sync.
 }
 
-const shotsModel = process.env.CLAUDE_SHOTS_MODEL ?? (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001')
+const shotsModel = process.env.CLAUDE_SHOTS_MODEL ?? (isProduction ? 'claude-sonnet-5' : 'claude-haiku-5-5')
 
 export const modelsConfig: ModelsConfig = {
   shotOutline: {
     provider: 'anthropic',
     model: shotsModel,
-    maxTokens: Number(process.env.CLAUDE_SHOT_OUTLINE_MAX_TOKENS) || 4000,
+    maxTokens: Number(process.env.CLAUDE_SHOT_OUTLINE_MAX_TOKENS) || 8000,
+    reasoning: { thinking: 'disabled', effort: 'medium' },
   },
   shots: {
     provider: 'anthropic',
     model: shotsModel,
-    maxTokens: Number(process.env.CLAUDE_SHOTS_MAX_TOKENS) || 4000,
+    maxTokens: Number(process.env.CLAUDE_SHOTS_MAX_TOKENS) || 8000,
+    reasoning: { thinking: 'disabled', effort: 'medium' },
   },
   camera: {
     provider: 'anthropic',
@@ -434,12 +463,13 @@ export const modelsConfig: ModelsConfig = {
     // extra quality, and this call fires on nearly every visual-description blur, so
     // the cost delta compounds across every edit of every shot. Still overridable via
     // CLAUDE_CAMERA_MODEL for ops flexibility, but the default is Haiku in both envs.
-    model: process.env.CLAUDE_CAMERA_MODEL ?? 'claude-haiku-4-5-20251001',
+    model: process.env.CLAUDE_CAMERA_MODEL ?? 'claude-haiku-5-5',
     // Small ceiling on purpose: reserveUsage reserves the FULL max_tokens as its
-    // worst-case pre-flight quote (see src/lib/usage/quote.ts). Reusing shots'/
-    // prompts' ~8192-scale ceiling here would reserve roughly 25x the real cost of a
-    // 1-3 enum-field answer, on every description edit.
-    maxTokens: Number(process.env.CLAUDE_CAMERA_MAX_TOKENS) || 128,
+    // worst-case pre-flight quote (see src/lib/usage/quote.ts), and this call fires on
+    // nearly every description edit. 500 leaves room for the new tokenizer's ~30% more
+    // tokens on a 1-3 enum-field answer without a shots-scale reservation.
+    maxTokens: Number(process.env.CLAUDE_CAMERA_MAX_TOKENS) || 500,
+    reasoning: { thinking: 'disabled', effort: 'low' },
   },
   agent: {
     provider: 'anthropic',
@@ -448,8 +478,10 @@ export const modelsConfig: ModelsConfig = {
     // carve-out, which is locked because that call is purely mechanical.
     model:
       process.env.CLAUDE_AGENT_MODEL ??
-      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
+      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-5-5'),
     maxTokens: Number(process.env.CLAUDE_AGENT_MAX_TOKENS) || 8192,
+    // The one route with tool_choice auto, so the only one where thinking runs.
+    reasoning: { thinking: 'adaptive', effort: 'medium' },
   },
   elements: {
     size: '1024x1024',
@@ -458,8 +490,9 @@ export const modelsConfig: ModelsConfig = {
     provider: 'anthropic',
     model:
       process.env.CLAUDE_IMAGE_PROMPTS_MODEL ??
-      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
+      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-5-5'),
     maxTokens: Number(process.env.CLAUDE_IMAGE_PROMPTS_MAX_TOKENS) || 8192,
+    reasoning: { thinking: 'disabled', effort: 'medium' },
   },
   voiceover: {
     provider: voiceoverProvider,
@@ -476,9 +509,10 @@ export const modelsConfig: ModelsConfig = {
     provider: 'anthropic',
     // Haiku in every environment, like camera: one short line of instruments, mood and
     // tempo is mechanical summarising, fired once per project and free to the user.
-    model: process.env.CLAUDE_MUSIC_PROMPT_MODEL ?? 'claude-haiku-4-5-20251001',
+    model: process.env.CLAUDE_MUSIC_PROMPT_MODEL ?? 'claude-haiku-5-5',
     // Small ceiling for the same reason as camera: reserveUsage reserves all of it.
-    maxTokens: Number(process.env.CLAUDE_MUSIC_PROMPT_MAX_TOKENS) || 128,
+    maxTokens: Number(process.env.CLAUDE_MUSIC_PROMPT_MAX_TOKENS) || 500,
+    reasoning: { thinking: 'disabled', effort: 'low' },
   },
 }
 

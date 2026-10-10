@@ -5,7 +5,7 @@ import { VIDEO_MODELS, isRegisteredVideoModel, type VideoPerSecondRate } from '@
 // Single place edited when a rate changes. Bump by hand on any edit below -
 // raw_usage.rates on every settled `usage` row records the rate_version that
 // produced it, so a past row's cost stays reconstructable even after rates move.
-export const RATE_VERSION = '2026-10-08'
+export const RATE_VERSION = '2026-10-10'
 
 // Anthropic injects a fixed system-prompt overhead when tools are present, on top of
 // the tool schema JSON and the visible system/user text - this approximates that
@@ -47,13 +47,34 @@ export type ClaudeRates = {
 // Authority: https://platform.claude.com/docs/en/about-claude/pricing. As of this
 // writing, several third-party pricing trackers still show Sonnet 5 at the old
 // $3/$15 figure - the docs above are correct and supersede them.
-const CLAUDE_RATES: Record<string, ClaudeRates> = {
+// A model priced by prompt length carries a second card for prompts over its threshold.
+// "Prompt length" counts every input token - regular, cache read and cache write - and each
+// request is priced on its own (https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing).
+type ClaudeModelRates = ClaudeRates & { longContext?: { thresholdTokens: number; rates: ClaudeRates } }
+
+/** The rates a settled row was costed at, and which card they came from. */
+export type ClaudeAppliedRates = ClaudeRates & { tier: 'standard' | 'long_context' }
+
+const CLAUDE_RATES: Record<string, ClaudeModelRates> = {
   'claude-sonnet-5': {
     inputPerMTok: 2.0,
     outputPerMTok: 10.0,
     cacheWritePerMTok: 2.5,
     cacheReadPerMTok: 0.2,
   },
+  // Two cards: up to 100,000 prompt tokens, and over it. Cache writes are the 5-minute
+  // rate (every breakpoint here is the default ephemeral TTL).
+  'claude-haiku-5-5': {
+    inputPerMTok: 0.1,
+    outputPerMTok: 0.5,
+    cacheWritePerMTok: 0.125,
+    cacheReadPerMTok: 0.01,
+    longContext: {
+      thresholdTokens: 100_000,
+      rates: { inputPerMTok: 0.5, outputPerMTok: 2.5, cacheWritePerMTok: 0.625, cacheReadPerMTok: 0.05 },
+    },
+  },
+  // Kept so rows settled on it stay reconstructable.
   'claude-haiku-4-5-20251001': {
     inputPerMTok: 1.0,
     outputPerMTok: 5.0,
@@ -222,7 +243,7 @@ type OpenAiImageAppliedRates = { textInputPerMTok: number; imageInputPerMTok: nu
 
 export type CostResult = {
   estimatedCost: number | null
-  appliedRates: ClaudeRates | OpenAiImageAppliedRates | ElevenLabsAppliedRates | null
+  appliedRates: ClaudeAppliedRates | OpenAiImageAppliedRates | ElevenLabsAppliedRates | null
   quantity: number
   unit: 'tokens' | 'characters' | 'seconds' | 'unknown'
 }
@@ -232,7 +253,14 @@ export type CostResult = {
  * report. Returns a null estimatedCost (never a guess) for an unknown model or a
  * provider whose calls it doesn't meter yet (fal - see FAL_RATES above).
  */
-export function computeCost(provider: Provider, model: string, breakdown: UsageBreakdown): CostResult {
+export function computeCost(
+  provider: Provider,
+  model: string,
+  breakdown: UsageBreakdown,
+  /** Prompt length that picks a Claude rate card, when it must differ from the breakdown's
+   * own (the pre-flight quote passes a padded estimate). Never changes the token math. */
+  options: { tierPromptTokens?: number } = {}
+): CostResult {
   if (provider === 'openai') {
     const quantity = breakdown.input_tokens + breakdown.output_tokens
     const rates = OPENAI_RATES.images[model]
@@ -296,9 +324,21 @@ export function computeCost(provider: Provider, model: string, breakdown: UsageB
   }
 
   const quantity = breakdown.input_tokens + breakdown.output_tokens
-  const rates = CLAUDE_RATES[model]
-  if (!rates) {
+  const modelRates = CLAUDE_RATES[model]
+  if (!modelRates) {
     return { estimatedCost: null, appliedRates: null, quantity, unit: 'tokens' }
+  }
+  const promptTokens =
+    options.tierPromptTokens ??
+    breakdown.input_tokens + (breakdown.cache_creation_input_tokens ?? 0) + (breakdown.cache_read_input_tokens ?? 0)
+  const longContext = modelRates.longContext && promptTokens > modelRates.longContext.thresholdTokens
+  const card = longContext ? modelRates.longContext!.rates : modelRates
+  const rates: ClaudeAppliedRates = {
+    inputPerMTok: card.inputPerMTok,
+    outputPerMTok: card.outputPerMTok,
+    cacheWritePerMTok: card.cacheWritePerMTok,
+    cacheReadPerMTok: card.cacheReadPerMTok,
+    tier: longContext ? 'long_context' : 'standard',
   }
 
   const estimatedCost =

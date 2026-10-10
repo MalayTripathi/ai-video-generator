@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { createClient } from '@/lib/supabase/server'
-import type { ClaudeGateway } from '@/lib/claude'
-import { modelsConfig } from '@/lib/config/models'
+import { ClaudeRefusalError, throwIfRefused, type ClaudeGateway } from '@/lib/claude'
+import { claudeReasoningParams, modelsConfig } from '@/lib/config/models'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 import { MODEL_REPORTABLE_CAMERA_ORIGINS } from '@/lib/config/enums'
 import { stalenessFor } from '@/lib/shot-staleness'
@@ -11,6 +11,7 @@ import {
   assertWithinAllowance,
   reserveUsage,
   settleUsage,
+  settledStatus,
   AllowanceExceededError,
 } from '@/lib/usage'
 // Type-only, same reason as shots/logic.ts's identical import: a VALUE import here
@@ -182,11 +183,14 @@ export async function runCameraDerivation(params: {
       tools: [tool],
       tool_choice: { type: 'tool', name: 'derive_camera' },
       messages: [{ role: 'user', content: userMessage }],
+      ...claudeReasoningParams(modelsConfig.camera),
     })
 
     measuredBreakdown = message.usage
     stopReasonForSettle = stopReason
     console.warn(`[camera] stopReason=${stopReason} requestId=${requestId}`)
+    // Before reading content: a refusal's partial tool_use must never be applied.
+    throwIfRefused({ message, stopReason })
 
     const toolUseBlock = message.content.find(
       (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use' && block.name === 'derive_camera'
@@ -251,7 +255,7 @@ export async function runCameraDerivation(params: {
     caughtError = err
     outcome = {
       ok: false,
-      status: err instanceof AllowanceExceededError ? 402 : 500,
+      status: err instanceof AllowanceExceededError ? 402 : err instanceof ClaudeRefusalError ? 422 : 500,
       error: err instanceof Error ? err.message : 'Unexpected error during camera derivation',
     }
     return outcome
@@ -266,7 +270,7 @@ export async function runCameraDerivation(params: {
         usageId,
         provider: 'anthropic',
         model: modelsConfig.camera.model,
-        status: measuredBreakdown !== null && stopReasonForSettle !== 'max_tokens' ? 'succeeded' : 'failed',
+        status: settledStatus(measuredBreakdown, stopReasonForSettle),
         breakdown: measuredBreakdown,
         stopReason: stopReasonForSettle,
         error: outcome.ok ? null : caughtError,

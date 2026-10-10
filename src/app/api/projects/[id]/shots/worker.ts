@@ -1,9 +1,9 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database, Json, Tables } from '@/lib/database.types'
-import type { ClaudeGateway } from '@/lib/claude'
+import { ClaudeRefusalError, throwIfRefused, type ClaudeGateway } from '@/lib/claude'
 import type { UsageBreakdown } from '@/lib/config/pricing'
-import { modelsConfig, resolveVideoModel, videoModelBounds, type VideoModelConfig } from '@/lib/config/models'
+import { claudeReasoningParams, modelsConfig, resolveVideoModel, videoModelBounds, type VideoModelConfig } from '@/lib/config/models'
 import { durationConfig, parseDurationTarget, type DurationConfig } from '@/lib/config/duration'
 import { CLASSIFIABLE_VIDEO_TYPES } from '@/lib/config/enums'
 import {
@@ -14,7 +14,7 @@ import {
   SHOTS_PER_CHUNK,
 } from '@/lib/config/shots'
 import { persistGenerationPayload } from '@/lib/generations/claim'
-import { assertWithinAllowance, estimateInputTokens, quoteClaudeCall, reserveUsage, settleUsage } from '@/lib/usage'
+import { assertWithinAllowance, estimateInputTokens, quoteClaudeCall, reserveUsage, settleUsage, settledStatus } from '@/lib/usage'
 import { isUniqueViolation } from '@/lib/shot-key'
 import {
   SHOT_OUTLINE_SYSTEM_PROMPT_V1,
@@ -227,7 +227,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   let outlineElementNames: Map<number, string[]> | null = null
   if (run.total_scenes === null) {
     const outline = await writeOutline({ supabase, gateway, run, project, tier, model, usageBase })
-    if (!outline.ok) return finish('failed', 'error')
+    if (!outline.ok) return finish('failed', outline.refused ? 'refused' : 'error')
     outlineElementNames = outline.elementNames
   }
 
@@ -302,6 +302,8 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   // Held in an object so the lanes' closures and the code after them see one value.
   const control: { stop: { status: Exclude<ShotRunStatus, 'running'>; reason: ShotRunStopReason } | null } = { stop: null }
   let failures = 0
+  // Chunks the model's safety checks declined - the run then ends 'refused', not 'error'.
+  let refusals = 0
 
   const runChunk = async (state: SceneState): Promise<'again' | 'done' | 'failed'> => {
     const cap = Math.min(SHOTS_PER_CHUNK, state.maxShots - state.shots, ceiling - totals.shots - reservedShots)
@@ -401,10 +403,13 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
           tools: [tool],
           tool_choice: { type: 'tool', name: 'write_shots' },
           messages: [{ role: 'user', content: userMessage }],
+          ...claudeReasoningParams(modelsConfig.shots),
         })
         breakdown = message.usage
         stopReason = sr
         console.warn(`[shots] chunk stopReason=${sr} requestId=${requestId} outputTokens=${message.usage?.output_tokens}`)
+        // Before reading content: a refusal's partial write_shots must never be saved.
+        throwIfRefused({ message, stopReason: sr })
         const block = message.content.find(
           (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'write_shots'
         )
@@ -426,7 +431,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
           usageId,
           provider: 'anthropic',
           model: modelsConfig.shots.model,
-          status: breakdown !== null && stopReason !== 'max_tokens' ? 'succeeded' : 'failed',
+          status: settledStatus(breakdown, stopReason),
           breakdown,
           stopReason,
           error: caught,
@@ -436,6 +441,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
 
     if (caught) {
       reservedShots -= cap
+      if (caught instanceof ClaudeRefusalError) refusals += 1
       console.error(`[shots] run ${runId}: chunk of scene ${state.scene.position} failed`, caught)
       await settleChunk({ status: 'failed', error: caught instanceof Error ? caught.message : 'Chunk failed' })
       return 'failed'
@@ -520,7 +526,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   await Promise.all(Array.from({ length: Math.max(1, concurrency) }, lane))
 
   if (control.stop) return finish(control.stop.status, control.stop.reason)
-  if (queue.length === 0) return finish(failures > 0 ? 'failed' : 'completed', failures > 0 ? 'error' : null)
+  if (queue.length === 0) return finish(failures > 0 ? 'failed' : 'completed', refusals > 0 ? 'refused' : failures > 0 ? 'error' : null)
 
   // Budget reached with scenes still to write: hand the rest to a fresh run.
   if (chainDepth >= chainLimit) {
@@ -599,7 +605,7 @@ async function writeOutline(params: {
   tier: DurationConfig
   model: VideoModelConfig
   usageBase: Omit<Parameters<typeof reserveUsage>[0], 'model' | 'quotedCost' | 'quotedBreakdown'>
-}): Promise<{ ok: true; elementNames: Map<number, string[]> } | { ok: false }> {
+}): Promise<{ ok: true; elementNames: Map<number, string[]> } | { ok: false; refused?: boolean }> {
   const { supabase, gateway, run, project, tier, model, usageBase } = params
   const projectId = usageBase.projectId
   if (!run.generation_id) return { ok: false }
@@ -635,10 +641,13 @@ async function writeOutline(params: {
         tools: [WRITE_OUTLINE_TOOL],
         tool_choice: { type: 'tool', name: 'write_outline' },
         messages: [{ role: 'user', content: userMessage }],
+        ...claudeReasoningParams(modelsConfig.shotOutline),
       })
       breakdown = message.usage
       stopReason = sr
       console.warn(`[shots] outline stopReason=${sr} requestId=${requestId} outputTokens=${message.usage?.output_tokens}`)
+      // Before reading content: a refused outline is never persisted.
+      throwIfRefused({ message, stopReason: sr })
       const block = message.content.find(
         (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'write_outline'
       )
@@ -657,7 +666,7 @@ async function writeOutline(params: {
           usageId,
           provider: 'anthropic',
           model: modelsConfig.shotOutline.model,
-          status: breakdown !== null && stopReason !== 'max_tokens' ? 'succeeded' : 'failed',
+          status: settledStatus(breakdown, stopReason),
           breakdown,
           stopReason,
           error: caught,
@@ -667,7 +676,7 @@ async function writeOutline(params: {
     }
     if (caught) {
       console.error(`[shots] run ${run.id}: outline failed`, caught)
-      return { ok: false }
+      return { ok: false, refused: caught instanceof ClaudeRefusalError }
     }
   }
 

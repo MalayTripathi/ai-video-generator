@@ -368,9 +368,18 @@ untouched). The Storyboard voiceover already follows it.
 ## Shot generation (Models Task 4)
 
 - **Re-measure the chunk size on Sonnet before production.** `SHOTS_PER_CHUNK` (8), the
-  chunk's 4,000 `max_tokens` and the 120s `SHOT_RUN_BUDGET_MS` were set from one Haiku
-  `generate_shots` row (316 output tokens/shot, ~26 tokens/s end to end). Re-derive them
+  chunk's `max_tokens` (now 8,000) and the 120s `SHOT_RUN_BUDGET_MS` were set from one Haiku
+  4.5 `generate_shots` row (316 output tokens/shot, ~26 tokens/s end to end). Re-derive them
   from the `[shots] chunk ... outputTokens=` logs of real Sonnet runs; each is a config value.
+- **Re-measure on Haiku 5.5 after the live run.** Take throughput and output tokens per shot
+  from the `[shots] chunk ... outputTokens=` logs of the first live Haiku 5.5 runs, then set
+  `SHOTS_PER_CHUNK` and `SHOT_RUN_BUDGET_MS` from the measured values (Haiku 5.5's tokenizer
+  counts ~30% more tokens per shot than the 4.5 figures above). Re-cut `AGENT_TURN_ESTIMATE`
+  from the same runs' `agent_turn` rows - it was calibrated on Haiku 4.5.
+- **Image prompts are one call capped at 8,192 output tokens (≈29 shots).** A full list on the
+  3-5 min and 8-10 min tiers can exceed it and truncate, and one call that size can't finish
+  inside Hobby's 300s either. Batching belongs in Task 5, which moves image prompts onto the
+  shot-chain design.
 - **Re-measure words per second and padding as voiceovers accumulate.** Both come from one
   English read (2.19 words/s; gaps p50 0.12s, max 0.21s). `node scripts/measure-voiceover-wps.mjs`
   reports them per language and voice; other languages use the English pace until measured.

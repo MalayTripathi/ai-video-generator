@@ -90,6 +90,13 @@ export async function reserveUsage(params: {
   return { usageId: data.id }
 }
 
+/** A Claude call's settle status: succeeded only when usage came back and the answer was
+ * complete. A max_tokens truncation and a refusal are both failures - the stop reason is
+ * data, never a status of its own. */
+export function settledStatus(breakdown: UsageBreakdown | null, stopReason: string | null): 'succeeded' | 'failed' {
+  return breakdown !== null && stopReason !== 'max_tokens' && stopReason !== 'refusal' ? 'succeeded' : 'failed'
+}
+
 export async function settleUsage(params: {
   supabase: SupabaseServerClient
   usageId: string
