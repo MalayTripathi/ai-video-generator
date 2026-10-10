@@ -2,19 +2,13 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { MUSIC_STYLE_PROMPT_EDIT_MAX_CHARS } from '@/lib/config/storyboard'
-import { filmDuration, filmSeconds, isRetimeAllowed, retimeBounds } from '@/lib/storyboard/timeline'
+import { filmDuration, filmSeconds, isRetimeAllowed, retimeBounds, storyboardRetimeRange } from '@/lib/storyboard/timeline'
+import { applyFitToVoiceover } from '@/lib/storyboard/apply-fit'
 import type { Motion, Transition } from '@/lib/config/enums'
 import { isSplitAllowed, parseMotion, parseTransition } from '@/lib/storyboard/motion'
 import { isMixDbAllowed, MIX_COLUMNS, MIX_RANGES, type MixColumn } from '@/lib/storyboard/film'
 import { EXPORT_SETTING_COLUMNS, EXPORT_SETTING_VALUES, type ExportSettingColumn } from '@/lib/export/settings'
-import {
-  fitToVoiceover as fitLengths,
-  fitUnavailableReason,
-  parseSpans,
-  restoreSpanOrderWrites,
-  voiceoverOrderDiffers,
-  voiceoverStaleness,
-} from '@/lib/storyboard/voiceover'
+import { parseSpans, restoreSpanOrderWrites } from '@/lib/storyboard/voiceover'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -25,7 +19,7 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 // advanceStep - saving is not advancing.
 export type TimelineEditResult = { success: true; unchanged?: true } | { success: false; error: string }
 
-type EditableProject = { id: string }
+type EditableProject = { id: string; videoModel: string | null }
 
 // The project, if this user owns it. The Storyboard never freezes: it stays editable after
 // the project advances to Video Prompts.
@@ -36,14 +30,14 @@ async function editableProject(
 ): Promise<EditableProject | { error: string }> {
   const { data: project, error } = await supabase
     .from('projects')
-    .select('id')
+    .select('id, video_model')
     .eq('id', projectId)
     .eq('user_id', userId)
     .maybeSingle()
   // A failed read is reported as a failed read, never as a missing project.
   if (error) return { error: 'Could not load project' }
   if (!project) return { error: 'Project not found' }
-  return { id: project.id }
+  return { id: project.id, videoModel: project.video_model }
 }
 
 export async function saveFilmDurationForUser(
@@ -66,13 +60,36 @@ export async function saveFilmDurationForUser(
   if (!shot) return { success: false, error: 'Shot not found' }
 
   const committed = filmDuration(shot)
-  if (!isRetimeAllowed(seconds, retimeBounds(committed))) return { success: false, error: 'That length is outside the allowed range' }
+  if (!isRetimeAllowed(seconds, retimeBounds(committed, storyboardRetimeRange(project.videoModel)))) {
+    return { success: false, error: 'That length is outside the allowed range' }
+  }
   if (seconds === committed) return { success: true, unchanged: true }
 
-  const { error } = await supabase
-    .from('shots')
-    .update({ film_duration_sec: seconds, updated_at: new Date().toISOString() })
-    .eq('id', shotId)
+  const now = new Date().toISOString()
+  const { error } = await supabase.from('shots').update({ film_duration_sec: seconds, updated_at: now }).eq('id', shotId)
+  if (error) return { success: false, error: error.message }
+  // A hand retime: a later voiceover asks before refitting over it (see isRefitPending).
+  const { error: stampError } = await supabase
+    .from('projects')
+    .update({ last_manual_retime_at: now, updated_at: now })
+    .eq('id', projectId)
+  if (stampError) console.error(`[storyboard] could not stamp the manual retime for ${projectId}`, stampError.message)
+  return { success: true }
+}
+
+/**
+ * "Refit timing?" answered Keep: the hand timing stands for this read. Stamps the manual
+ * retime so the question is not asked again until another read replaces this one.
+ */
+export async function keepManualTimingForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string
+): Promise<TimelineEditResult> {
+  const project = await editableProject(supabase, projectId, userId)
+  if ('error' in project) return { success: false, error: project.error }
+  const now = new Date().toISOString()
+  const { error } = await supabase.from('projects').update({ last_manual_retime_at: now, updated_at: now }).eq('id', projectId)
   if (error) return { success: false, error: error.message }
   return { success: true }
 }
@@ -166,7 +183,7 @@ export type FitResultAction =
 /**
  * Fit to voiceover: recomputed here from the stored spans and the shots as they stand -
  * never from lengths the page sends - and refused with the same reasons the button shows.
- * Writes film_duration_sec only, for each in-film shot whose length changes.
+ * Writes film_duration_sec for each in-film shot whose length changes (applyFitToVoiceover).
  */
 export async function fitToVoiceoverForUser(
   supabase: SupabaseServerClient,
@@ -175,39 +192,7 @@ export async function fitToVoiceoverForUser(
 ): Promise<FitResultAction> {
   const project = await editableProject(supabase, projectId, userId)
   if ('error' in project) return { success: false, error: project.error }
-
-  const { data: vo } = await supabase
-    .from('projects')
-    .select('audio_path, voiceover_spans, total_duration_sec')
-    .eq('id', projectId)
-    .maybeSingle()
-  const spans = parseSpans(vo?.voiceover_spans ?? null)
-  const { data: shots, error: shotsError } = await supabase
-    .from('shots')
-    .select('id, voice_over, order_index, film_order, binned_at, duration_sec, film_duration_sec')
-    .eq('project_id', projectId)
-  if (shotsError) return { success: false, error: shotsError.message }
-
-  const hasVoiceover = !!vo?.audio_path && spans !== null
-  const reason = fitUnavailableReason({
-    hasVoiceover,
-    inFlight: false,
-    stale: hasVoiceover && voiceoverStaleness(spans!, shots ?? []).stale,
-    orderDiffers: hasVoiceover && voiceoverOrderDiffers(spans!, shots ?? []),
-  })
-  if (reason) return { success: false, error: reason }
-
-  const result = fitLengths(spans!, shots ?? [], vo!.total_duration_sec ?? 0)
-  const updatedAt = new Date().toISOString()
-  for (const w of result.writes) {
-    const { error } = await supabase
-      .from('shots')
-      .update({ film_duration_sec: w.film_duration_sec, updated_at: updatedAt })
-      .eq('id', w.id)
-      .eq('project_id', projectId)
-    if (error) return { success: false, error: error.message }
-  }
-  return { success: true, lengths: result.lengths, clamped: result.clamped }
+  return applyFitToVoiceover(supabase, projectId)
 }
 
 // The project's current-voiceover columns, nulled. The files stay in storage - Remove
@@ -623,6 +608,12 @@ export async function setShotBinned(
   const { supabase, user } = await currentUser()
   if (!user) return NOT_AUTHENTICATED
   return setShotBinnedForUser(supabase, user.id, projectId, shotId, binned)
+}
+
+export async function keepManualTiming(projectId: string): Promise<TimelineEditResult> {
+  const { supabase, user } = await currentUser()
+  if (!user) return NOT_AUTHENTICATED
+  return keepManualTimingForUser(supabase, user.id, projectId)
 }
 
 export async function fitToVoiceover(projectId: string): Promise<FitResultAction> {

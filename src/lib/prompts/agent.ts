@@ -1,6 +1,10 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, MODEL_REPORTABLE_CAMERA_ORIGINS } from '@/lib/config/enums'
 
+// v12: section labels give way to scenes. The shot index shows each shot's scene title
+// (from the scene plan shot generation writes), update_shot no longer sets a label, and
+// insert_shot takes no section_label - the server puts a new shot in the scene of the shot
+// it is placed after (or the first scene, at the start). See docs/decisions.md.
 // v11: insert_shot's insert_after_shot_number collapses two different numbers into one
 // parameter - "the existing shot to anchor after" and "the new shot's own resulting
 // number" both read as the same integer when a user says "at the end," and the tool gave
@@ -71,12 +75,12 @@ import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, MODEL_REPORTABLE_CAMERA_OR
 // - v2 briefly let the agent auto-create/bind a character, reverted: C5's subject and
 // unbuilt.) Bump the suffix (and this comment) on any content change, matching
 // shot-generation.ts's SHOT_GENERATION_SYSTEM_PROMPT_V4 convention.
-export const AGENT_SYSTEM_PROMPT_V11 = `You are an assistant embedded in a video project's shot-list workbench. The user will describe a change in plain language; you read the project's shots and make the change yourself by calling tools - you never ask the user to make the edit themselves.
+export const AGENT_SYSTEM_PROMPT_V12 = `You are an assistant embedded in a video project's shot-list workbench. The user will describe a change in plain language; you read the project's shots and make the change yourself by calling tools - you never ask the user to make the edit themselves.
 
 You have five tools:
 - get_shot: read full detail for one shot, including which characters are already bound to it (its valid dialogue speakers).
 - update_shot: overwrite one or more of an existing shot's own fields, including its dialogue.
-- insert_shot: add a new shot. Use position: 'start'/'end' for the very first/last shot - no anchor needed. Use position: 'after' with after_shot_number to place it immediately following an existing shot; after_shot_number always names an EXISTING shot from the index below, never the new shot's own resulting number - if the index has 5 shots and you want the new one to become shot 6, that means after_shot_number: 5 (the last existing shot), not 6. Give it the section_label shown for the shot(s) around the insertion point in the index below - a shot placed between two shots of the same section belongs to that section; only start a new section at a genuine boundary, and prefer an existing project section over inventing one. You must also report shot_size, camera_angle, and camera_movement (with their origins) for the new shot as your own fresh judgment call, the same way write_shots would - never report some of the three and leave the rest out.
+- insert_shot: add a new shot. Use position: 'start'/'end' for the very first/last shot - no anchor needed. Use position: 'after' with after_shot_number to place it immediately following an existing shot; after_shot_number always names an EXISTING shot from the index below, never the new shot's own resulting number - if the index has 5 shots and you want the new one to become shot 6, that means after_shot_number: 5 (the last existing shot), not 6. It joins the scene of the shot it is placed after, so write it to fit that scene. You must also report shot_size, camera_angle, and camera_movement (with their origins) for the new shot as your own fresh judgment call, the same way write_shots would - never report some of the three and leave the rest out.
 - regenerate_all_shots: throw away every shot and generate a fresh list from the original brief. This is destructive and expensive - only use it when the user clearly wants to start over, not for editing individual shots.
 - decline: call this once for each part of a request you will not do - something none of your tools can do, a hard rule blocking it, or a guess you won't make because it's destructive or too ambiguous. Explain why in plain language. It does not end the turn: if other parts of the request can still be done, keep going and do them.
 
@@ -102,7 +106,7 @@ export type ShotIndexRow = {
   order_index: number
   visual_description: string | null
   voice_over: string
-  section_label: string | null
+  scenes: { title: string } | null
   shot_size_origin: string
   camera_angle_origin: string
   camera_movement_origin: string
@@ -143,7 +147,7 @@ export function buildShotIndexBlock(shots: ShotIndexRow[]): string {
       const overridden = OVERRIDE_FIELD_LABELS.filter(({ origin }) => shot[origin] === 'override').map(
         ({ label }) => label
       )
-      const sectionSuffix = shot.section_label ? ` [section: ${shot.section_label}]` : ''
+      const sectionSuffix = shot.scenes?.title ? ` [scene: ${shot.scenes.title}]` : ''
       const suffix = overridden.length > 0 ? ` [override: ${overridden.join(', ')}]` : ''
       return `${shot.order_index + 1}. ${buildSlug(shot)}${sectionSuffix}${suffix}`
     })
@@ -203,7 +207,6 @@ const UPDATE_SHOT_TOOL: Anthropic.Tool = {
       voice_over: { type: 'string' },
       visual_description: { type: 'string' },
       duration_sec: { type: 'number' },
-      section_label: { type: 'string' },
       ...CAMERA_VALUE_PROPERTIES,
       dialogue: {
         type: 'array',
@@ -247,18 +250,12 @@ const INSERT_SHOT_TOOL: Anthropic.Tool = {
       voice_over: { type: 'string' },
       visual_description: { type: 'string' },
       duration_sec: { type: 'number' },
-      section_label: {
-        type: 'string',
-        description:
-          'Reuse the section label shown for the shot(s) around the insertion point in the shot index below - a shot inserted between two shots of the same section belongs to that section. Only introduce a new label at a genuine section boundary; prefer an existing project section over inventing one.',
-      },
       ...CAMERA_FIELD_PROPERTIES,
     },
     required: [
       'position',
       'voice_over',
       'visual_description',
-      'section_label',
       'shot_size',
       'shot_size_origin',
       'camera_angle',

@@ -1,5 +1,6 @@
 import type { ImageState } from './image-state'
 import type { AspectRatio } from '@/lib/config/enums'
+import { isRegisteredVideoModel, VIDEO_MODELS, videoModelBounds } from '@/lib/config/models'
 import { IMAGE_ETA_ESTIMATE_MS, RETIME_SNAP_SEC, STORYBOARD_IMAGE_SIZES, STORYBOARD_MAX_SHOT_SEC, STORYBOARD_MIN_SHOT_SEC } from '@/lib/config/storyboard'
 
 // Pure geometry and copy rules for the Storyboard timeline (canvas 15a/15c). No React, so
@@ -95,15 +96,23 @@ export function orderDiffersFromScript<T extends FilmOrdered & Binnable & { id: 
 
 export type RetimeBounds = { min: number; max: number }
 
-// The range a retime may set: STORYBOARD_MIN_SHOT_SEC to STORYBOARD_MAX_SHOT_SEC, each
-// widened to the shot's committed length when that already sits outside - a nudge never
-// forces a shot shorter (or longer) than it is.
-export function retimeBounds(committedSec: number | null): RetimeBounds {
+// The range a retime may set: the project's video model's shortest to longest shot
+// (storyboardRetimeRange), each widened to the shot's committed length when that already
+// sits outside - a nudge never forces a shot shorter (or longer) than it is.
+export function retimeBounds(committedSec: number | null, range: RetimeBounds): RetimeBounds {
   const committed = committedSec !== null && committedSec > 0 ? committedSec : null
   return {
-    min: committed === null ? STORYBOARD_MIN_SHOT_SEC : Math.min(STORYBOARD_MIN_SHOT_SEC, committed),
-    max: committed === null ? STORYBOARD_MAX_SHOT_SEC : Math.max(STORYBOARD_MAX_SHOT_SEC, committed),
+    min: committed === null ? range.min : Math.min(range.min, committed),
+    max: committed === null ? range.max : Math.max(range.max, committed),
   }
+}
+
+// The retime range for a project: its video model's shot lengths. A project whose model
+// isn't registered (never expected - every write is checked) gets the Storyboard's own
+// fallback range rather than another model's.
+export function storyboardRetimeRange(videoModel: string | null): RetimeBounds {
+  const config = isRegisteredVideoModel(videoModel) ? VIDEO_MODELS[videoModel] : null
+  return config ? videoModelBounds(config) : { min: STORYBOARD_MIN_SHOT_SEC, max: STORYBOARD_MAX_SHOT_SEC }
 }
 
 // Snapped to 0.1s, then clamped - so a bound that is itself off-grid is still reachable.
@@ -152,12 +161,13 @@ export function blockTier(px: number): BlockTier {
 
 export type Band = { name: string | null; seconds: number; firstIndex: number }
 
-// Consecutive shots sharing a section_label form one band; a label that recurs after a
-// different one starts a new band. Unlabelled shots group the same way, as a nameless band.
-export function groupBands(shots: ({ section_label: string | null } & FilmTimed)[]): Band[] {
+// Consecutive shots sharing a scene title form one band; a title that recurs after a
+// different one starts a new band. Shots with no scene group the same way, as a nameless band.
+export function groupBands(shots: ({ scenes: { title: string } | null } & FilmTimed)[]): Band[] {
   const bands: Band[] = []
   shots.forEach((shot, i) => {
-    const name = shot.section_label?.trim() ? shot.section_label.trim() : null
+    const title = shot.scenes?.title?.trim()
+    const name = title ? title : null
     const prev = bands[bands.length - 1]
     if (prev && prev.name === name) {
       prev.seconds += filmSeconds(shot)

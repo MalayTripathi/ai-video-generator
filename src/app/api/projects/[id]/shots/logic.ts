@@ -1,201 +1,41 @@
-import type { createClient } from '@/lib/supabase/server'
-import type { ClaudeGateway } from '@/lib/claude'
-import { modelsConfig } from '@/lib/config/models'
-import { durationConfig, type DurationTarget } from '@/lib/config/duration'
-import type { UsageBreakdown } from '@/lib/config/pricing'
-import { estimateInputTokens, quoteClaudeCall, assertWithinAllowance, reserveUsage, settleUsage, AllowanceExceededError } from '@/lib/usage'
-// Type-only: credits/ledger.ts transitively imports the service-role Supabase client
-// module, which imports 'server-only' - a VALUE import here would crash any test that
-// imports this module directly (tests/shot-generation.spec.ts,
-// tests/shots-generation-state-machine.spec.ts), exactly as Task 5 found for
-// agent/logic.ts. The real value lives only in route.ts, which is safe (runs inside
-// Next's server bundle).
-import type { recordFixedSpend } from '@/lib/credits/ledger'
-import { generateUniqueShotKeys, isUniqueViolation, MAX_SHOT_KEY_INSERT_ATTEMPTS } from '@/lib/shot-key'
-import {
-  claimGeneration,
-  persistGenerationPayload,
-  settleGeneration,
-  type BlockedReason,
-} from '@/lib/generations/claim'
-import {
-  SHOT_GENERATION_SYSTEM_PROMPT_V6,
-  buildWriteShotsTool,
-  buildShotsDynamicBlock,
-} from '@/lib/prompts/shot-generation'
-import {
-  SHOT_SIZES,
-  CAMERA_ANGLES,
-  CAMERA_MOVEMENTS,
-  SHOT_ELEMENT_TYPES,
-  CLASSIFIABLE_VIDEO_TYPES,
-  MODEL_REPORTABLE_CAMERA_ORIGINS,
-} from '@/lib/config/enums'
-import type { Json, Tables } from '@/lib/database.types'
-import type Anthropic from '@anthropic-ai/sdk'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Database } from '@/lib/database.types'
+// Type-only, for the same reason as every other paid route's logic.ts: credits/* import the
+// service-role client (server-only); the route injects the real functions.
+import type { getBalance as getBalanceType } from '@/lib/credits/balance'
+import type { ensureSignupGrant as ensureSignupGrantType } from '@/lib/credits/signup-grant'
+import { creditsFor } from '@/lib/config/credits'
+import { durationConfig, parseDurationTarget } from '@/lib/config/duration'
+import { isRegisteredVideoModel, VIDEO_MODELS, videoModelBounds } from '@/lib/config/models'
+import { claimGeneration, settleGeneration, type BlockedReason } from '@/lib/generations/claim'
+import { shotCeiling } from '@/lib/shots/limits'
+import { hasLiveShotRun, settleDeadShotRuns, type ShotRunLedger } from '@/lib/shots/runs'
 
-type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
-type ElementRow = Tables<'elements'>
+type Client = SupabaseClient<Database>
 
-export type RawDialogueLine = { speaker_name: string; line: string }
-export type RawElementRef = { name: string; type: string; description: string }
-export type RawStyleRef = { name: string; description: string }
+// Passed as `recordFixedSpend` by a caller whose nested call is already billed inside an
+// enclosing agent turn's dynamic agent_turn charge (the Step 3 regeneration tools).
+// attemptId/recordFixedSpend are required (not optional) so a caller can never simply
+// forget to wire billing and have it silently no-op; this sentinel is an explicit,
+// greppable opt-out.
+export const BILLED_BY_TURN = Symbol('generate_shots:billed_by_turn')
 
-export type RawShot = {
-  voice_over: string
-  visual_description: string
-  shot_size: string | null
-  camera_angle: string | null
-  camera_movement: string | null
-  shot_size_origin: string | null
-  camera_angle_origin: string | null
-  camera_movement_origin: string | null
-  duration_sec: number | null
-  section_label: string | null
-  dialogue: RawDialogueLine[]
-  element_names: RawElementRef[]
-}
+// ---------------------------------------------------------------------------------------
+// Request: gate -> claim -> run record. Runs with the caller's own client before anything
+// is scheduled; nothing here calls a provider. The chain itself is worker.ts.
+// ---------------------------------------------------------------------------------------
 
-/**
- * DB CHECK constraints reject an unrecognized value outright. Claude
- * occasionally drifts from the declared enum despite a strict schema, so an
- * unrecognized value is nulled (the column is nullable) rather than failing
- * the whole shot.
- */
-export function sanitizeEnum<T extends string>(value: unknown, allowed: readonly T[]): T | null {
-  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
-    ? (value as T)
-    : null
-}
+export type ShotsRequestMode =
+  /** Generate shots: an outline, then every scene. Replaces the project's shots. */
+  | 'generate'
+  /** Generate remaining shots: only the scenes a stopped run left unwritten. */
+  | 'remaining'
 
-function isDialogueLine(value: unknown): value is RawDialogueLine {
-  if (typeof value !== 'object' || value === null) return false
-  const v = value as Record<string, unknown>
-  return typeof v.speaker_name === 'string' && typeof v.line === 'string' && v.line.trim().length > 0
-}
-
-function isElementRef(value: unknown): value is RawElementRef {
-  if (typeof value !== 'object' || value === null) return false
-  const v = value as Record<string, unknown>
-  return (
-    typeof v.name === 'string' &&
-    v.name.trim().length > 0 &&
-    typeof v.type === 'string' &&
-    typeof v.description === 'string'
-  )
-}
-
-function isStyleRef(value: unknown): value is RawStyleRef {
-  if (typeof value !== 'object' || value === null) return false
-  const v = value as Record<string, unknown>
-  return typeof v.name === 'string' && v.name.trim().length > 0 && typeof v.description === 'string'
-}
-
-function isRawShotShape(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
-/**
- * A shot with no voice_over and no visual_description is unusable - there is
- * nothing to narrate or draw. Everything else (missing camera fields, an
- * empty section_label) is tolerated and left null/generic rather than
- * dropping the shot.
- */
-export function isUsableShot(shot: RawShot): boolean {
-  return shot.voice_over.trim().length > 0 || shot.visual_description.trim().length > 0
-}
-
-/**
- * Parses Claude's raw write_shots tool input into usable shots, dropping
- * only shots with neither narration nor a visual to draw from.
- */
-export function parseRawShots(rawShots: unknown): RawShot[] {
-  if (!Array.isArray(rawShots)) return []
-
-  const shots = rawShots.filter(isRawShotShape).map(
-    (v): RawShot => ({
-      voice_over: typeof v.voice_over === 'string' ? v.voice_over : '',
-      visual_description: typeof v.visual_description === 'string' ? v.visual_description : '',
-      shot_size: typeof v.shot_size === 'string' ? v.shot_size : null,
-      camera_angle: typeof v.camera_angle === 'string' ? v.camera_angle : null,
-      camera_movement: typeof v.camera_movement === 'string' ? v.camera_movement : null,
-      shot_size_origin: typeof v.shot_size_origin === 'string' ? v.shot_size_origin : null,
-      camera_angle_origin: typeof v.camera_angle_origin === 'string' ? v.camera_angle_origin : null,
-      camera_movement_origin: typeof v.camera_movement_origin === 'string' ? v.camera_movement_origin : null,
-      duration_sec: typeof v.duration_sec === 'number' ? v.duration_sec : null,
-      section_label: typeof v.section_label === 'string' ? v.section_label.trim() || null : null,
-      dialogue: Array.isArray(v.dialogue) ? v.dialogue.filter(isDialogueLine) : [],
-      element_names: Array.isArray(v.element_names) ? v.element_names.filter(isElementRef) : [],
-    })
-  )
-
-  return shots.filter(isUsableShot)
-}
-
-export type ShotsResponseBody = {
-  title: string | null
-  message: string
-  video_type: string | null
-  shots: {
-    id: string
-    order_index: number
-    shot_key: string
-    section_label: string | null
-    voice_over: string
-    visual_description: string | null
-    duration_sec: number | null
-    duration_locked: boolean
-    shot_size: string | null
-    camera_angle: string | null
-    camera_movement: string | null
-    dialogue: { element_id: string; element_name: string; line: string }[]
-    elements: { id: string; name: string; type: string; status: string; reference_image_path: string | null }[]
-  }[]
-}
-
-export type ShotGenerationResult =
-  | { ok: true; status: 200; data: ShotsResponseBody }
-  | { ok: false; status: 404; error: string }
-  | {
-      ok: false
-      status: 409
-      error: string
-      reason: 'already_ready' | 'already_generating' | 'retry_required'
-    }
-  | { ok: false; status: 422; error: string }
-  | { ok: false; status: 402; error: string }
-  | { ok: false; status: 500; error: string }
-
-type ClaimedProject = {
-  source_text: string | null
-  video_type: string | null
-  language: string | null
-  duration_target: string | null
-  title: string | null
-}
-
-/**
- * Loads the project fields the pipeline needs. Run before the claim, not as a
- * fallback after one is refused: this subsumes the old "informational SELECT after a
- * refused claim" 404 case, and sidesteps having to distinguish an RLS/FK error on a
- * `generations` INSERT for a nonexistent or unowned project from any other insert
- * error.
- */
-async function loadProjectForClaim(
-  supabase: SupabaseServerClient,
-  projectId: string,
-  userId: string
-): Promise<{ project: ClaimedProject | null; failed: boolean }> {
-  const { data, error } = await supabase
-    .from('projects')
-    .select('source_text, video_type, language, duration_target, title')
-    .eq('id', projectId)
-    .eq('user_id', userId)
-    .maybeSingle()
-  if (error) console.error(`[shots] project read failed for ${projectId}:`, error.message)
-
-  return { project: data, failed: error !== null }
-}
+export type ShotsRequestResult =
+  | { ok: true; status: 202; runId: string }
+  | { ok: false; status: 404 | 422 | 500; error: string }
+  | { ok: false; status: 409; error: string; reason: BlockedReason | 'nothing_remaining' }
+  | { ok: false; status: 402; error: string; requiredCredits: number; balanceCredits: number }
 
 const BLOCKED_REASON_MESSAGES: Record<BlockedReason, string> = {
   already_ready: 'Shots have already been generated for this project.',
@@ -203,607 +43,126 @@ const BLOCKED_REASON_MESSAGES: Record<BlockedReason, string> = {
   retry_required: 'The last generation failed. Retry to try again.',
 }
 
-/**
- * Runs the parse -> resolve-elements -> insert-shots -> shot_elements -> dialogue pipeline
- * against a write_shots tool input. Called from both the fresh-Claude-call path and the
- * RECOVER path - rawInput is either the live toolUseBlock.input or a stored
- * pending_shots_payload, identical shape either way.
- */
-async function runShotsPipeline(
-  supabase: SupabaseServerClient,
-  projectId: string,
-  project: ClaimedProject,
-  rawInput: unknown,
-  targetShots: number,
-  generationId: string
-): Promise<
-  { ok: true; status: 200; data: ShotsResponseBody } | { ok: false; status: 422 | 500; error: string }
-> {
-  const input = rawInput as {
-    title?: unknown
-    message?: unknown
-    video_type?: unknown
-    shots?: unknown
-    style?: unknown
-  }
-
-  const validatedShots = parseRawShots(input.shots).map((shot) => ({
-    ...shot,
-    shot_size: sanitizeEnum(shot.shot_size, SHOT_SIZES),
-    camera_angle: sanitizeEnum(shot.camera_angle, CAMERA_ANGLES),
-    camera_movement: sanitizeEnum(shot.camera_movement, CAMERA_MOVEMENTS),
-    // The origin columns are NOT NULL, so an unrecognized/missing value falls back to
-    // 'auto' - the conservative default, since it never claims the description names a
-    // camera choice when we can't tell.
-    shot_size_origin: sanitizeEnum(shot.shot_size_origin, MODEL_REPORTABLE_CAMERA_ORIGINS) ?? 'auto',
-    camera_angle_origin: sanitizeEnum(shot.camera_angle_origin, MODEL_REPORTABLE_CAMERA_ORIGINS) ?? 'auto',
-    camera_movement_origin:
-      sanitizeEnum(shot.camera_movement_origin, MODEL_REPORTABLE_CAMERA_ORIGINS) ?? 'auto',
-  }))
-
-  if (validatedShots.length === 0) {
-    return {
-      ok: false,
-      status: 422,
-      error: "Couldn't build the shot list. The model returned nothing usable.",
-    }
-  }
-
-  // The tool-use API has no way to structurally cap an array's length (only `minItems`
-  // of 0 or 1 is supported, never a `maxItems`), so targetShots is enforced only by the
-  // system prompt's "hard maximum" wording and buildWriteShotsTool's own description -
-  // this over-count is the expected, deliberate backstop, not a rare defensive case.
-  // Accept-and-log, never truncate: the call is already paid for regardless of how many
-  // rows get persisted, and dropping trailing shots would leave a story missing its
-  // ending - the person can trim the extra shots themselves with judgment the server
-  // doesn't have (see the amber indicator in ProjectHeader).
-  if (validatedShots.length > targetShots) {
-    console.warn(
-      `[shots] over_count project=${projectId} generation=${generationId} target=${targetShots} actual=${validatedShots.length}`
-    )
-  }
-
-  const parsedTitle = typeof input.title === 'string' ? input.title.trim().slice(0, 60) || null : null
-  const parsedMessage = typeof input.message === 'string' ? input.message.trim() : ''
-  const parsedVideoType = sanitizeEnum(input.video_type, CLASSIFIABLE_VIDEO_TYPES)
-
-  // At most one style: the tool-use API can't express maxItems, so a model that ignores
-  // the "never more than one" schema description still gets truncated here rather than
-  // inserting several.
-  const styleCandidate =
-    (Array.isArray(input.style) ? input.style.filter(isStyleRef) : [])[0] ?? null
-
-  // Dedup source of truth: reused across the whole request so two shots naming the same
-  // new element resolve to one row, not one each. The project's (project_id, lower(name))
-  // unique index is only a race safety net, not the primary mechanism - hence the
-  // sequential awaits below. Soft-deleted elements are excluded: without this filter,
-  // regenerating shots would resurrect a deleted element by reusing its row.
-  const { data: existingElements, error: elementsFetchError } = await supabase
-    .from('elements')
-    .select('*')
-    .eq('project_id', projectId)
-    .is('deleted_at', null)
-
-  if (elementsFetchError) {
-    return { ok: false, status: 500, error: elementsFetchError.message }
-  }
-
-  const elementsByLowerName = new Map<string, ElementRow>()
-  for (const el of existingElements ?? []) {
-    elementsByLowerName.set(el.name.toLowerCase(), el)
-  }
-
-  async function resolveElement(
-    name: string,
-    type: string,
-    description: string | null
-  ): Promise<ElementRow> {
-    const key = name.trim().toLowerCase()
-    const existing = elementsByLowerName.get(key)
-    if (existing) return existing
-
-    const { data, error } = await supabase
-      .from('elements')
-      .insert({
-        project_id: projectId,
-        name: name.trim(),
-        type,
-        description: description?.trim() || null,
-      })
-      .select('*')
-      .single()
-
-    if (error) {
-      if (isUniqueViolation(error)) {
-        const { data: raced } = await supabase
-          .from('elements')
-          .select('*')
-          .eq('project_id', projectId)
-          .is('deleted_at', null)
-          .ilike('name', name.trim())
-          .single()
-        if (raced) {
-          elementsByLowerName.set(key, raced)
-          return raced
-        }
-      }
-      throw new Error(error.message)
-    }
-
-    elementsByLowerName.set(key, data)
-    return data
-  }
-
-  // The style element is project-level and must never be bound to a shot. resolveElement
-  // dedups by lower(name) alone, with no type component, so a per-shot element_names or
-  // dialogue speaker_name reference that happens to share the style element's name would
-  // otherwise resolve to that same row and get bound into shot_elements. This guard makes
-  // that impossible to introduce silently, by later editing the prompt or the binding
-  // logic below, without failing loudly.
-  function assertNotStyle(el: ElementRow): void {
-    if (el.type === 'style') {
-      throw new Error(`"${el.name}" is the project's style element and cannot be bound to a shot`)
-    }
-  }
-
-  type ShotBuild = {
-    shot: RawShot
-    elementIds: string[]
-    elementsForResponse: ElementRow[]
-    dialogueResolved: { element_id: string; element_name: string; line: string }[]
-  }
-
-  const shotBuilds: ShotBuild[] = []
-
-  try {
-    // Resolved once, before any shot's elements, and never added to a shot's elementIds -
-    // this is what a style element is: project-level, one per project, never shot-bound.
-    // Must use resolveElement, not a separate insert: same dedup path, same race behavior
-    // as any other element (the uniqueness index has no type component, so a style sharing
-    // a name with an existing character/location/prop collides exactly like any other pair
-    // would).
-    if (styleCandidate) {
-      await resolveElement(styleCandidate.name, 'style', styleCandidate.description)
-    }
-
-    for (const shot of validatedShots) {
-      const elementIds = new Set<string>()
-      const elementsForResponse: ElementRow[] = []
-
-      for (const ref of shot.element_names) {
-        const type = sanitizeEnum(ref.type, SHOT_ELEMENT_TYPES) ?? 'prop'
-        const el = await resolveElement(ref.name, type, ref.description)
-        assertNotStyle(el)
-        if (!elementIds.has(el.id)) {
-          elementIds.add(el.id)
-          elementsForResponse.push(el)
-        }
-      }
-
-      const dialogueResolved: { element_id: string; element_name: string; line: string }[] = []
-      for (const line of shot.dialogue) {
-        const el = await resolveElement(line.speaker_name, 'character', null)
-        assertNotStyle(el)
-        if (!elementIds.has(el.id)) {
-          elementIds.add(el.id)
-          elementsForResponse.push(el)
-        }
-        dialogueResolved.push({ element_id: el.id, element_name: el.name, line: line.line })
-      }
-
-      shotBuilds.push({ shot, elementIds: [...elementIds], elementsForResponse, dialogueResolved })
-    }
-  } catch (error) {
-    return {
-      ok: false,
-      status: 500,
-      error: error instanceof Error ? error.message : 'Failed to resolve elements',
-    }
-  }
-
-  // Replace semantics: every call into this pipeline (first run, retry, or recovery) must
-  // produce a clean slate, matching the confirmation modal's "existing shots will be
-  // replaced" copy. Elements are project-level and deliberately NOT deleted here -
-  // resolveElement() above re-matches them by name on replay, preserving any reference
-  // image already generated for one. shot_elements rows cascade-delete with their parent
-  // shot (FK ON DELETE CASCADE).
-  const { error: deleteError } = await supabase.from('shots').delete().eq('project_id', projectId)
-  if (deleteError) {
-    return { ok: false, status: 500, error: deleteError.message }
-  }
-
-  let insertedShots: Tables<'shots'>[] | null = null
-  let insertError: { message: string } | null = null
-
-  // With the delete above, no shot row for this project can predate this insert - a
-  // unique-violation here can only be a shot_key collision within this fresh batch. Do
-  // not widen this loop to also regenerate order_index; an order_index collision would
-  // mean the delete step above was skipped or bypassed, not something to paper over here.
-  for (let attempt = 0; attempt < MAX_SHOT_KEY_INSERT_ATTEMPTS; attempt++) {
-    const shotKeys = generateUniqueShotKeys(validatedShots.length)
-    const rows = validatedShots.map((shot, index) => ({
-      project_id: projectId,
-      order_index: index,
-      shot_key: shotKeys[index],
-      voice_over: shot.voice_over,
-      visual_description: shot.visual_description || null,
-      shot_size: shot.shot_size,
-      camera_angle: shot.camera_angle,
-      camera_movement: shot.camera_movement,
-      shot_size_origin: shot.shot_size_origin,
-      camera_angle_origin: shot.camera_angle_origin,
-      camera_movement_origin: shot.camera_movement_origin,
-      duration_sec: shot.duration_sec,
-      section_label: shot.section_label,
-      duration_locked: false,
-    }))
-
-    const { data, error } = await supabase.from('shots').insert(rows).select('*')
-
-    if (!error) {
-      insertedShots = (data ?? []).sort((a, b) => a.order_index - b.order_index)
-      insertError = null
-      break
-    }
-
-    if (!isUniqueViolation(error)) {
-      insertError = error
-      break
-    }
-    insertError = error
-  }
-
-  if (!insertedShots) {
-    return { ok: false, status: 500, error: insertError?.message ?? 'Failed to insert shots' }
-  }
-
-  const shotElementRows = insertedShots.flatMap((shotRow, index) =>
-    shotBuilds[index].elementIds.map((elementId) => ({ shot_id: shotRow.id, element_id: elementId }))
-  )
-
-  if (shotElementRows.length > 0) {
-    const { error: shotElementsError } = await supabase.from('shot_elements').insert(shotElementRows)
-    if (shotElementsError) {
-      return { ok: false, status: 500, error: shotElementsError.message }
-    }
-  }
-
-  const dialogueRows = insertedShots.flatMap((shotRow, index) =>
-    shotBuilds[index].dialogueResolved.map((d, lineIndex) => ({
-      shot_id: shotRow.id,
-      project_id: projectId,
-      element_id: d.element_id,
-      line: d.line,
-      order_index: lineIndex,
-    }))
-  )
-
-  if (dialogueRows.length > 0) {
-    const { error: dialogueError } = await supabase.from('shot_dialogue').insert(dialogueRows)
-    if (dialogueError) {
-      return { ok: false, status: 500, error: dialogueError.message }
-    }
-  }
-
-  // Guarded: only write the title if the user hasn't set one since creation
-  // (still null, matching createProjectFromIntake's title: null on insert).
-  if (parsedTitle && project.title === null) {
-    await supabase.from('projects').update({ title: parsedTitle }).eq('id', projectId).is('title', null)
-  }
-  const appliedTitle = project.title ?? parsedTitle
-
-  // Guarded: only resolve video_type when the user left it on auto-detect;
-  // never overwrite a type chosen explicitly at intake.
-  if (parsedVideoType && project.video_type === 'auto') {
-    await supabase
-      .from('projects')
-      .update({ video_type: parsedVideoType })
-      .eq('id', projectId)
-      .eq('video_type', 'auto')
-  }
-  const appliedVideoType =
-    project.video_type === 'auto' ? (parsedVideoType ?? project.video_type) : project.video_type
-
-  if (parsedMessage) {
-    await supabase
-      .from('messages')
-      .insert({ project_id: projectId, role: 'assistant', content: parsedMessage })
-  }
-
-  return {
-    ok: true,
-    status: 200,
-    data: {
-      title: appliedTitle,
-      message: parsedMessage,
-      video_type: appliedVideoType,
-      shots: insertedShots.map((shotRow, index) => ({
-        id: shotRow.id,
-        order_index: shotRow.order_index,
-        shot_key: shotRow.shot_key,
-        section_label: shotRow.section_label,
-        voice_over: shotRow.voice_over,
-        visual_description: shotRow.visual_description,
-        duration_sec: shotRow.duration_sec,
-        duration_locked: shotRow.duration_locked,
-        shot_size: shotRow.shot_size,
-        camera_angle: shotRow.camera_angle,
-        camera_movement: shotRow.camera_movement,
-        dialogue: shotBuilds[index].dialogueResolved,
-        elements: shotBuilds[index].elementsForResponse.map((el) => ({
-          id: el.id,
-          name: el.name,
-          type: el.type,
-          status: el.status,
-          reference_image_path: el.reference_image_path,
-        })),
-      })),
-    },
-  }
+/** The credits shot generation holds back before it starts - 2 per shot, at `shots`. */
+export function shotCredits(shots: number): number {
+  return creditsFor({ step: 'workbench', operation: 'generate_shots', quantity: shots })
 }
 
-// Passed as `recordFixedSpend` by the one caller that must NOT write a fixed-price
-// generate_shots row: the agent's regenerate_all_shots tool (agent/tools.ts). That
-// call's real dollar cost is already folded into the agent turn's own dynamic
-// agent_turn charge (see agent/logic.ts's accumulator, Task 5) - charging both here
-// and there would double-bill one Claude call. attemptId/recordFixedSpend are
-// required (not optional) so a caller can never simply forget to wire billing and
-// have it silently no-op; passing this sentinel is an explicit, greppable opt-out.
-export const BILLED_BY_TURN = Symbol('generate_shots:billed_by_turn')
+/** Scenes no run has finished - what "Generate remaining shots" writes. */
+async function unwrittenSceneCount(supabase: Client, projectId: string): Promise<{ total: number; unwritten: number; error: string | null }> {
+  const { data, error } = await supabase
+    .from('scenes')
+    .select('id, shot_run_chunks(scene_complete)')
+    .eq('project_id', projectId)
+  if (error) return { total: 0, unwritten: 0, error: error.message }
+  const scenes = (data ?? []) as { id: string; shot_run_chunks: { scene_complete: boolean }[] }[]
+  const unwritten = scenes.filter((s) => !s.shot_run_chunks.some((c) => c.scene_complete)).length
+  return { total: scenes.length, unwritten, error: null }
+}
 
-export async function runShotGeneration(params: {
-  gateway: ClaudeGateway
-  supabase: SupabaseServerClient
+export async function runShotsRequest(params: {
+  supabase: Client
   projectId: string
   userId: string
+  mode: ShotsRequestMode
+  /** Reclaim a settled or failed claim (a retry, or regenerate). Ignored for 'remaining'. */
   retry: boolean
-  // Set only when called from an agent turn's regenerate_all_shots tool, so this call's
-  // usage row groups under that turn's chat message. /shots/route.ts omits it and gets
-  // null, unchanged.
-  messageId?: string | null
-  // Set only when called from an agent turn's regenerate_all_shots tool, so the turn's
-  // own in-memory cost accumulator can fold this call's real settled cost into its
-  // single ledger charge, without querying `usage` back (see credit_ledger's
-  // independence from `usage`, CLAUDE.md). Fires once, only on the fresh-call path -
-  // never on RECOVER, since no money is spent there. /shots/route.ts omits it; the
-  // call site below no-ops when absent.
-  onSettled?: (usd: number) => void
-  // Minted alongside the claim above, by the caller - see the import-type comment
-  // above for why this can't be minted in here. Every real caller must pass one, even
-  // the agent path (see BILLED_BY_TURN): there is no legitimate "forgot to wire
-  // billing" state.
   attemptId: string
-  recordFixedSpend: typeof recordFixedSpend | typeof BILLED_BY_TURN
-}): Promise<ShotGenerationResult> {
-  const { gateway, supabase, projectId, userId, retry, messageId, onSettled, attemptId, recordFixedSpend } = params
+  /** The agent turn's message and its agent_turn claim, when the agent starts the run. */
+  messageId?: string | null
+  agentGenerationId?: string | null
+  getBalance: typeof getBalanceType
+  ensureSignupGrant: typeof ensureSignupGrantType
+  ledger: ShotRunLedger
+}): Promise<ShotsRequestResult> {
+  const { supabase, projectId, userId, mode, attemptId, getBalance, ensureSignupGrant, ledger } = params
 
+  const { data: project, error: projectError } = await supabase
+    .from('projects')
+    .select('id, duration_target, video_model')
+    .eq('id', projectId)
+    .eq('user_id', userId)
+    .maybeSingle()
   // A failed read is a server error, never a 404 - only a missing row is.
-  const { project, failed } = await loadProjectForClaim(supabase, projectId, userId)
-  if (failed) {
-    return { ok: false, status: 500, error: 'Could not load project' }
+  if (projectError) return { ok: false, status: 500, error: 'Could not load project' }
+  if (!project) return { ok: false, status: 404, error: 'Project not found' }
+  if (!isRegisteredVideoModel(project.video_model)) {
+    return { ok: false, status: 422, error: "This project's video model isn't available, so shot lengths can't be set." }
   }
-  if (!project) {
-    return { ok: false, status: 404, error: 'Project not found' }
+
+  // A dead chain is settled on the first touch after its stale window, before this request
+  // is judged against it.
+  await settleDeadShotRuns(supabase, ledger, projectId)
+  try {
+    if (await hasLiveShotRun(supabase, projectId)) {
+      return { ok: false, status: 409, error: BLOCKED_REASON_MESSAGES.already_generating, reason: 'already_generating' }
+    }
+  } catch {
+    return { ok: false, status: 500, error: 'Could not check for a running generation' }
+  }
+
+  const tier = durationConfig[parseDurationTarget(project.duration_target)]
+  let totalScenes: number | null = null
+  let heldShots = tier.targetShots
+  if (mode === 'remaining') {
+    const scenes = await unwrittenSceneCount(supabase, projectId)
+    if (scenes.error) return { ok: false, status: 500, error: scenes.error }
+    if (scenes.unwritten === 0) {
+      return { ok: false, status: 409, error: 'Every scene already has its shots.', reason: 'nothing_remaining' }
+    }
+    totalScenes = scenes.total
+    const ceiling = shotCeiling(tier.targetSecondsMax, videoModelBounds(VIDEO_MODELS[project.video_model]).min)
+    heldShots = Math.min(tier.targetShots, ceiling)
+  }
+
+  // Pre-flight: before any claim or provider call, so a refusal writes nothing. Charging is
+  // on shots actually saved; this only holds back the tier's target.
+  const requiredCredits = shotCredits(heldShots)
+  let balanceCredits: number
+  try {
+    await ensureSignupGrant(userId)
+    balanceCredits = await getBalance(userId)
+  } catch (err) {
+    console.error('[shots] balance read failed', err)
+    return { ok: false, status: 500, error: 'Could not check your credit balance' }
+  }
+  if (balanceCredits < requiredCredits) {
+    return { ok: false, status: 402, error: 'Not enough credits to write the shot list.', requiredCredits, balanceCredits }
   }
 
   const claim = await claimGeneration({
     supabase,
     identity: { projectId, step: 'workbench', operation: 'generate_shots', shotId: null, elementId: null },
-    retry,
+    retry: mode === 'remaining' ? true : params.retry,
     queued: false,
   })
-
-  if (claim.outcome === 'error') {
-    return { ok: false, status: 500, error: claim.message }
-  }
+  if (claim.outcome === 'error') return { ok: false, status: 500, error: claim.message }
   if (claim.outcome === 'blocked') {
-    // never entered 'generating' - nothing to settle
     return { ok: false, status: 409, error: BLOCKED_REASON_MESSAGES[claim.reason], reason: claim.reason }
   }
 
-  const { generation } = claim
-  const pendingPayload = generation.payload
-  let outcome: ShotGenerationResult = {
-    ok: false,
-    status: 500,
-    error: 'Shot generation did not complete',
+  const now = new Date().toISOString()
+  const { data: run, error: runError } = await supabase
+    .from('shot_runs')
+    .insert({
+      project_id: projectId,
+      attempt_id: attemptId,
+      kind: mode,
+      status: 'running',
+      stop_reason: null,
+      generation_id: claim.generation.id,
+      message_id: params.messageId ?? null,
+      agent_generation_id: params.agentGenerationId ?? null,
+      total_scenes: totalScenes,
+      heartbeat_at: now,
+      created_at: now,
+      updated_at: now,
+    })
+    .select('id')
+    .single()
+  if (runError || !run) {
+    await settleGeneration(supabase, claim.generation.id, { success: false, error: 'Could not start the run' })
+    return { ok: false, status: 500, error: runError?.message ?? 'Could not start the run' }
   }
-  let clearPayloadOnSettle = false
-  let usageId: string | null = null
-  let measuredBreakdown: UsageBreakdown | null = null
-  let stopReasonForSettle: string | null = null
-  let caughtError: unknown = null
-
-  try {
-    const targetShots =
-      project.duration_target && project.duration_target in durationConfig
-        ? durationConfig[project.duration_target as DurationTarget].targetShots
-        : durationConfig['1-2min'].targetShots
-
-    // RECOVER BEFORE SPEND. A stored payload means Claude has already been paid for;
-    // recovery replays it and never re-calls the gateway.
-    if (pendingPayload !== null) {
-      console.warn(
-        `[shots] recovering pending payload for project=${projectId} generation=${generation.id} - skipping a new Claude call`
-      )
-      outcome = await runShotsPipeline(supabase, projectId, project, pendingPayload, targetShots, generation.id)
-      return outcome
-    }
-
-    const userMessage = 'Generate the shot list now.'
-    const writeShotsTool = buildWriteShotsTool(targetShots)
-
-    const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
-      model: modelsConfig.shots.model,
-      estimatedInputTokens: estimateInputTokens({
-        texts: [SHOT_GENERATION_SYSTEM_PROMPT_V6, buildShotsDynamicBlock(project, targetShots), userMessage],
-        tools: [writeShotsTool],
-      }),
-      maxTokens: modelsConfig.shots.maxTokens,
-    })
-
-    await assertWithinAllowance({ supabase, userId, quotedCost: estimatedCost })
-
-    const reserved = await reserveUsage({
-      supabase,
-      userId,
-      projectId,
-      generationId: generation.id,
-      shotId: null,
-      messageId,
-      step: 'workbench',
-      operation: 'generate_shots',
-      provider: 'anthropic',
-      model: modelsConfig.shots.model,
-      quotedCost: estimatedCost,
-      quotedBreakdown,
-    })
-    usageId = reserved.usageId
-
-    const { message, stopReason, requestId } = await gateway.createMessage({
-      model: modelsConfig.shots.model,
-      max_tokens: modelsConfig.shots.maxTokens,
-      system: [
-        { type: 'text', text: SHOT_GENERATION_SYSTEM_PROMPT_V6, cache_control: { type: 'ephemeral' } },
-        { type: 'text', text: buildShotsDynamicBlock(project, targetShots) },
-      ],
-      tools: [writeShotsTool],
-      tool_choice: { type: 'tool', name: 'write_shots' },
-      messages: [{ role: 'user', content: userMessage }],
-    })
-
-    measuredBreakdown = message.usage
-    stopReasonForSettle = stopReason
-
-    const toolUseBlock = message.content.find(
-      (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use' && block.name === 'write_shots'
-    )
-
-    if (!toolUseBlock) {
-      outcome = { ok: false, status: 500, error: 'Claude did not return a shot list' }
-      return outcome
-    }
-
-    // PERSIST BEFORE WRITING. Lands before any shot row insert - if the process dies
-    // between here and SETTLE, the payload is already safe to recover on the next claim.
-    const { error: persistError } = await persistGenerationPayload(
-      supabase,
-      generation.id,
-      toolUseBlock.input as Json
-    )
-
-    console.warn(`[shots] stopReason=${stopReason} requestId=${requestId}`)
-
-    if (persistError) {
-      // Hard gate: do not fall through and insert using the in-memory input anyway - doing
-      // so would defeat the safety net for exactly the failure mode it exists to cover.
-      outcome = {
-        ok: false,
-        status: 500,
-        error: `Claude returned a shot list, but it could not be saved safely (${persistError}). Retry to regenerate.`,
-      }
-      return outcome
-    }
-
-    const pipelineResult = await runShotsPipeline(
-      supabase,
-      projectId,
-      project,
-      toolUseBlock.input,
-      targetShots,
-      generation.id
-    )
-
-    // TRUNCATION. A max_tokens stop was never a successful return, so - unlike a normal
-    // failure - the payload is cleared here rather than left for a later recovery: leaving
-    // it would make a retry replay the same truncated answer forever instead of asking
-    // Claude for a fresh, complete one.
-    if (stopReason === 'max_tokens') {
-      clearPayloadOnSettle = true
-      outcome = {
-        ok: false,
-        status: 422,
-        error:
-          'Generation stopped early before Claude finished the shot list.' +
-          (pipelineResult.ok
-            ? ` ${pipelineResult.data.shots.length} shot(s) were saved, but the list is incomplete. Retry to regenerate.`
-            : ' Retry to regenerate.'),
-      }
-      return outcome
-    }
-
-    outcome = pipelineResult
-    return outcome
-  } catch (err) {
-    caughtError = err
-    outcome = {
-      ok: false,
-      status: err instanceof AllowanceExceededError ? 402 : 500,
-      error: err instanceof Error ? err.message : 'Unexpected error during shot generation',
-    }
-    return outcome
-  } finally {
-    // SETTLE. Runs on every exit, including a thrown exception, so a project can never be
-    // left stuck 'generating'.
-    try {
-      const { error: settleError } = await settleGeneration(supabase, generation.id, {
-        success: outcome.ok,
-        error: outcome.ok ? null : outcome.error,
-        clearPayload: clearPayloadOnSettle,
-      })
-      if (settleError) {
-        console.error('[shots] SETTLE update failed', settleError)
-      }
-    } catch (settleErr) {
-      // No further safety net for a failed SETTLE write - logged, not thrown, so it can
-      // never override the already-decided outcome being returned.
-      console.error('[shots] SETTLE update failed', settleErr)
-    }
-
-    // usage SETTLE. Only reserved on the fresh-call path (RECOVER never spends, so
-    // usageId stays null there) - skipped entirely when nothing was ever reserved.
-    // status reflects whether Claude actually responded and was billed, which is NOT
-    // the same as outcome.ok: a persistError after a successful call is outcome.ok ===
-    // false but was still billed successfully, while a max_tokens stop is billed but
-    // must settle 'failed' regardless of how much of the pipeline it saved.
-    if (usageId) {
-      const settledCostUsd = await settleUsage({
-        supabase,
-        usageId,
-        provider: 'anthropic',
-        model: modelsConfig.shots.model,
-        status: measuredBreakdown !== null && stopReasonForSettle !== 'max_tokens' ? 'succeeded' : 'failed',
-        breakdown: measuredBreakdown,
-        stopReason: stopReasonForSettle,
-        error: outcome.ok ? null : caughtError,
-      })
-      onSettled?.(settledCostUsd)
-
-      // ledger. Placed after settle, never interleaved. Gated on usageId (this branch)
-      // so RECOVER - which returns before usageId is ever assigned, see the early
-      // `if (pendingPayload !== null) { ...; return outcome }` above - can never reach
-      // here: no money was spent, so nothing is charged. Also gated on outcome.ok: a
-      // failed fresh call (persist error, pipeline error, max_tokens truncation) writes
-      // no row either, matching agent_turn's absorb-on-failure policy (Task 5) -
-      // provisional pending a refund decision, since real provider cost may already
-      // have been incurred. recordFixedSpend never throws to the caller (wrapped
-      // below); a forced failure here must not fail the request.
-      if (outcome.ok && recordFixedSpend !== BILLED_BY_TURN) {
-        try {
-          await recordFixedSpend({
-            userId,
-            step: 'workbench',
-            operation: 'generate_shots',
-            quantity: outcome.data.shots.length,
-            attemptId,
-            projectId,
-            messageId: null,
-            shotKey: null,
-          })
-        } catch (err) {
-          console.error('[shots] ledger write failed', err)
-        }
-      }
-    }
-  }
+  return { ok: true, status: 202, runId: run.id }
 }

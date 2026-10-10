@@ -16,7 +16,7 @@ export const PROTECTED_SMOKE: Record<string, { file: string; title: string }[]> 
     {
       file: 'shot-generation.spec.ts',
       title:
-        'parses shots, applies the title/video_type, inserts an assistant message, and lands on ready with the payload cleared',
+        'writes the shots, applies the title and video type, inserts an assistant message, and lands on succeeded with the payload cleared',
     },
   ],
   claim: [
@@ -31,8 +31,8 @@ export const PROTECTED_SMOKE: Record<string, { file: string; title: string }[]> 
   ],
   recover: [
     {
-      file: 'shots-generation-state-machine.spec.ts',
-      title: 'recovery replays a pending payload without calling the gateway again, replacing any existing shots',
+      file: 'shot-generation.spec.ts',
+      title: 'recovery replays a stored outline without calling the gateway again, replacing the existing shots',
     },
   ],
   dedupe: [

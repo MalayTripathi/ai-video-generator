@@ -1,15 +1,25 @@
 'use client'
 
-import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { SideColumnOverrideContext } from '@/components/side-column-switch'
 import { overwritePromptContent, PromptConfirmModal } from '@/components/prompt-confirm-modal'
 import { parseRailFigures, useRailFigures } from '@/components/rail-figures-context'
 import { creditsFor } from '@/lib/config/credits'
 import type { AspectRatio, Motion, Transition } from '@/lib/config/enums'
 import { clampSplit, resolveJoins, resolveMotions, type ResolvedJoin, type ResolvedMotion } from '@/lib/storyboard/motion'
-import { filmDuration, filmSeconds, laneShots as orderLane, readiness, reorderWrites, type Readiness } from '@/lib/storyboard/timeline'
+import {
+  filmDuration,
+  filmSeconds,
+  laneShots as orderLane,
+  readiness,
+  reorderWrites,
+  storyboardRetimeRange,
+  type Readiness,
+  type RetimeBounds,
+} from '@/lib/storyboard/timeline'
+import { isRegisteredVideoModel, VIDEO_MODELS } from '@/lib/config/models'
 import { MIX_SAVE_DEBOUNCE_MS } from '@/lib/config/storyboard'
-import { buildFilmTimeline, type FilmTimeline, type MixColumn, type StoredMix } from '@/lib/storyboard/film'
+import { buildFilmTimeline, placeWords, voicePieces, type FilmTimeline, type MixColumn, type StoredMix } from '@/lib/storyboard/film'
 import { toFilmInput } from '@/lib/export/film-input'
 import { filmHash as hashFilm } from '@/lib/export/film-hash'
 import {
@@ -29,6 +39,7 @@ import {
 } from '@/lib/storyboard/voiceover'
 import {
   fitToVoiceover as fitToVoiceoverAction,
+  keepManualTiming as keepManualTimingAction,
   resetMix as resetMixAction,
   saveMix,
   saveExportSetting,
@@ -107,6 +118,8 @@ type StoryboardContextValue = {
   voiceoverOrderDiffers: boolean
   fitReason: string | null
   fitToVoiceover: () => void
+  /** The shortest and longest a retime may make a shot - the project's video model's range. */
+  retimeRange: RetimeBounds
   /** Shot numbers the last Fit held to the allowed range; null when nothing was clamped. */
   fitClamped: number[] | null
   // Motion & transitions (B3). Resolved from the lane by the shared pure rules; edits are
@@ -175,6 +188,7 @@ export function StoryboardProvider({
   projectId,
   aspectRatio,
   readOnly,
+  videoModel,
   initialShots,
   initialStatus,
   initialMix,
@@ -184,6 +198,7 @@ export function StoryboardProvider({
   projectId: string
   aspectRatio: AspectRatio
   readOnly: boolean
+  videoModel: string | null
   initialShots: StoryboardShot[]
   initialStatus: ImageStatusData
   initialMix: MixState
@@ -323,27 +338,59 @@ export function StoryboardProvider({
 
   const staleness = useMemo(() => (spans ? voiceoverStaleness(spans, shots) : null), [spans, shots])
   const orderDiffers = useMemo(() => (spans ? voiceoverOrderDiffers(spans, shots) : false), [spans, shots])
-  const fitReason = fitUnavailableReason({
-    hasVoiceover: voiceover.current !== null,
-    inFlight: voiceover.state === 'generating',
-    stale: staleness?.stale ?? false,
-    orderDiffers,
-  })
+  // Fit rounds each length to the project's video model, so it needs a registered one.
+  const fitModel = useMemo(() => (isRegisteredVideoModel(videoModel) ? VIDEO_MODELS[videoModel] : null), [videoModel])
+  const retimeRange = useMemo(() => storyboardRetimeRange(videoModel), [videoModel])
+  const fitReason = fitModel
+    ? fitUnavailableReason({
+        hasVoiceover: voiceover.current !== null,
+        inFlight: voiceover.state === 'generating',
+        stale: staleness?.stale ?? false,
+        orderDiffers,
+      })
+    : "Shot lengths can't be fitted for this project's video model."
   const [fitClamped, setFitClamped] = useState<number[] | null>(null)
 
   // Fit to voiceover: applied at once from the same rule the server runs, then saved (the
   // server recomputes from the stored spans, never from these lengths). Free.
   const currentRead = voiceover.current
   const fitToVoiceover = useCallback(() => {
-    if (readOnly || fitReason || !currentRead) return
-    const result = fitLengths(currentRead.spans, shotsRef.current, currentRead.durationSec)
+    if (readOnly || fitReason || !currentRead || !fitModel) return
+    const result = fitLengths(currentRead.spans, shotsRef.current, fitModel)
     const byId = new Map(shotsRef.current.map((s) => [s.id, s]))
     setFitClamped(result.clamped.length > 0 ? result.clamped.map((id) => (byId.get(id)?.order_index ?? 0) + 1) : null)
     if (result.writes.length === 0) return
     void commitEdit('film_duration_sec', new Map(result.writes.map((w) => [w.id, w.film_duration_sec])), () =>
       fitToVoiceoverAction(projectId)
     )
-  }, [projectId, readOnly, fitReason, currentRead, commitEdit])
+  }, [projectId, readOnly, fitReason, currentRead, fitModel, commitEdit])
+
+  // A read that lands while the page is open was fitted by the server as it was saved (the
+  // auto-fit), unless it is waiting on "Refit timing?": mirror those lengths locally with
+  // the same rule, without saving again.
+  const seenReadAt = useRef(currentRead?.generatedAt ?? null)
+  useEffect(() => {
+    const at = currentRead?.generatedAt ?? null
+    if (at === seenReadAt.current) return
+    seenReadAt.current = at
+    if (!currentRead || !fitModel || currentRead.refitPending || fitReason) return
+    const result = fitLengths(currentRead.spans, shotsRef.current, fitModel)
+    if (result.writes.length > 0) patchShots(new Map(result.writes.map((w) => [w.id, { film_duration_sec: w.film_duration_sec }])))
+  }, [currentRead, fitModel, fitReason, patchShots])
+
+  // "Refit timing?": a new read replaced one the shots were fitted to, after a hand retime.
+  const [refitAnswered, setRefitAnswered] = useState<string | null>(null)
+  const refitAsk = !readOnly && !!currentRead?.refitPending && refitAnswered !== currentRead.generatedAt && !fitReason
+  const answerRefit = useCallback(
+    async (refit: boolean) => {
+      if (!currentRead) return
+      setRefitAnswered(currentRead.generatedAt)
+      if (refit) fitToVoiceover()
+      else await keepManualTimingAction(projectId).catch(() => null)
+      void refresh()
+    },
+    [currentRead, fitToVoiceover, projectId, refresh]
+  )
 
   const laneShots = useMemo(() => orderLane(shots), [shots])
   const binnedShots = useMemo(
@@ -365,8 +412,13 @@ export function StoryboardProvider({
   const selectJoin = useCallback((shotId: string | null) => setSelectedJoinShotId(shotId), [])
 
   // Word boundaries for the forced-cut rule ride on the voiceover status (projects.
-  // voiceover_words, computed when the read settled). With no voiceover nothing is forced.
-  const liveWords = voiceover.current?.words ?? null
+  // voiceover_words, computed when the read settled), placed where the film plays each
+  // shot's narration (voice pieces). With no voiceover nothing is forced.
+  const liveRead = voiceover.current
+  const liveWords = useMemo(
+    () => (liveRead ? placeWords(voicePieces(laneShots, liveRead.spans), liveRead.words) : null),
+    [liveRead, laneShots]
+  )
   // Export (F): the settings, whose motion and transition are the film defaults.
   const [exportSettings, setExportSettings] = useState<StoredExportSettings>(initialExportSettings)
   const savedExportSettings = useRef<StoredExportSettings>(initialExportSettings)
@@ -692,6 +744,7 @@ export function StoryboardProvider({
       voiceoverOrderDiffers: orderDiffers,
       fitReason,
       fitToVoiceover,
+      retimeRange,
       fitClamped,
       mode,
       setMode,
@@ -747,6 +800,7 @@ export function StoryboardProvider({
       orderDiffers,
       fitReason,
       fitToVoiceover,
+      retimeRange,
       fitClamped,
       mode,
       setMode,
@@ -782,6 +836,21 @@ export function StoryboardProvider({
         credits={promptPrice()}
         onConfirm={confirmOverwrite}
         onCancel={cancelOverwrite}
+      />
+      <PromptConfirmModal
+        content={
+          refitAsk
+            ? {
+                title: 'Refit timing?',
+                body: 'The new voiceover has different timing. You retimed shots by hand since the last fit - refitting sets every narrated shot to the new voiceover and replaces those lengths.',
+                quote: null,
+                confirmLabel: 'Refit',
+              }
+            : null
+        }
+        credits={0}
+        onConfirm={() => void answerRefit(true)}
+        onCancel={() => void answerRefit(false)}
       />
     </StoryboardContext.Provider>
   )

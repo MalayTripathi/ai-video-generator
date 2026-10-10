@@ -43,6 +43,9 @@ export type CurrentVoiceover = {
   spans: VoiceoverSpan[]
   /** Spoken-word boundaries (projects.voiceover_words) for the forced-cut rule; null if absent. */
   words: WordBoundary[] | null
+  /** This read replaced one the shots were fitted to, and a person has retimed shots by
+   * hand since that fit - so it was not refitted silently; the Storyboard asks first. */
+  refitPending: boolean
 }
 
 export type VoiceoverStatus = {
@@ -140,7 +143,7 @@ export function storyboardThumbUrl(urlByPath: Map<string, string>, imagePath: st
 // The project columns the voiceover and music lanes derive from. A page that has already
 // read its project for this user selects these too and passes the row in.
 export const IMAGE_STATUS_PROJECT_COLUMNS =
-  'aspect_ratio, image_model, image_quality, audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words, music_path, music_duration_sec, music_source, music_generated_at, music_loop, music_muted' as const
+  'aspect_ratio, image_model, image_quality, audio_path, voice_id, language_code, total_duration_sec, voiceover_source, voiceover_generated_at, voiceover_muted, voiceover_spans, voiceover_words, last_fit_at, last_manual_retime_at, music_path, music_duration_sec, music_source, music_generated_at, music_loop, music_muted' as const
 
 type StatusProjectRow = VoiceoverProjectRow &
   MusicProjectRow & { music_path: string | null; aspect_ratio: string | null; image_model: string; image_quality: string }
@@ -283,6 +286,23 @@ type VoiceoverProjectRow = {
   voiceover_muted: boolean
   voiceover_spans: unknown
   voiceover_words?: unknown
+  last_fit_at?: string | null
+  last_manual_retime_at?: string | null
+}
+
+/**
+ * Whether a regenerated read is waiting on the person's "Refit timing?" answer: the shots
+ * were fitted before (so this is not the first read), a manual retime came after that fit,
+ * and this read is newer than both - answering either way (refit stamps last_fit_at, keep
+ * stamps last_manual_retime_at) clears it.
+ */
+export function isRefitPending(project: Pick<VoiceoverProjectRow, 'voiceover_generated_at' | 'last_fit_at' | 'last_manual_retime_at'>): boolean {
+  const at = (value: string | null | undefined) => (value ? Date.parse(value) : null)
+  const generated = at(project.voiceover_generated_at)
+  const fit = at(project.last_fit_at)
+  const manual = at(project.last_manual_retime_at)
+  if (generated === null || fit === null || manual === null) return false
+  return manual > fit && generated > manual
 }
 
 type VoiceoverClaimRow = {
@@ -316,6 +336,7 @@ export function deriveVoiceoverStatus(
           languageCode: project.language_code,
           source: project.voiceover_source === 'uploaded' ? 'uploaded' : 'generated',
           generatedAt: project.voiceover_generated_at,
+          refitPending: isRefitPending(project),
         }
       : null
 

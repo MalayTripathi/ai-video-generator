@@ -4,7 +4,7 @@ const VERBS: Record<ToolName, string> = {
   get_shot: 'Looked at',
   update_shot: 'Updated',
   insert_shot: 'Inserted',
-  regenerate_all_shots: 'Regenerated all shots', // never carries a shotKey
+  regenerate_all_shots: 'Started rewriting all shots', // never carries a shotKey
   regenerate_all_image_prompts: 'Rewrote all image prompts', // never carries a shotKey
   regenerate_image_prompt: 'Rewrote',
 }

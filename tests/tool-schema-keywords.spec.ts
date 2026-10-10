@@ -2,7 +2,8 @@ import { test, expect } from '@playwright/test'
 import type Anthropic from '@anthropic-ai/sdk'
 import { AGENT_TOOLS } from '../src/lib/prompts/agent'
 import { AGENT_IMAGE_PROMPTS_TOOLS } from '../src/lib/prompts/agent-image-prompts'
-import { buildWriteShotsTool } from '../src/lib/prompts/shot-generation'
+import { buildChunkWriteShotsTool } from '../src/lib/prompts/shot-chunk'
+import { WRITE_OUTLINE_TOOL } from '../src/lib/prompts/shot-outline'
 import { buildDeriveCameraTool, CAMERA_FIELD_NAMES } from '../src/lib/prompts/camera-derivation'
 import { WRITE_IMAGE_PROMPTS_TOOL } from '../src/lib/prompts/image-prompts'
 
@@ -103,7 +104,11 @@ test.describe('tool input_schema keyword allowlist', () => {
   }
 
   test('write_shots uses only API-supported JSON Schema keywords', () => {
-    assertSchemaIsClean(buildWriteShotsTool(6))
+    assertSchemaIsClean(buildChunkWriteShotsTool(6))
+  })
+
+  test('write_outline uses only API-supported JSON Schema keywords', () => {
+    assertSchemaIsClean(WRITE_OUTLINE_TOOL)
   })
 
   test('derive_camera uses only API-supported JSON Schema keywords', () => {

@@ -31,7 +31,7 @@ function shots(durations: number[], overrides: Partial<FilmShot>[] = []): FilmSh
     id: `s${i}`,
     order_index: i,
     duration_sec: d,
-    section_label: null,
+    scenes: null,
     image_path: `img/${i}.webp`,
     ...(overrides[i] ?? {}),
   }))
@@ -145,8 +145,8 @@ test.describe('captions', () => {
   })
 })
 
-test.describe('chapters from section_label', () => {
-  const lane = shots([4, 4, 5, 3], [{ section_label: 'Opening' }, { section_label: 'Opening' }, { section_label: 'The mill' }, { section_label: null }])
+test.describe('chapters from scene titles', () => {
+  const lane = shots([4, 4, 5, 3], [{ scenes: { title: 'Opening' } }, { scenes: { title: 'Opening' } }, { scenes: { title: 'The mill' } }, { scenes: null }])
 
   test('each labelled scene start becomes a chapter', () => {
     const t = film(lane)
@@ -242,7 +242,8 @@ test.describe('render plan', () => {
     expect(both.sidecars.ass).toContain('PlayResY: 320')
     // Middle centre (numpad 5).
     expect(both.sidecars.ass).toMatch(/Style: Caption,Inter,.*,5,\d+,\d+,0,1/)
-    expect(both.audio.voice).toEqual({ path: 'v.mp3', gainDb: 0 })
+    // Each shot's narration plays from its shot's start: the read's 0.2s lead-in is not played.
+    expect(both.audio.voice).toEqual({ path: 'v.mp3', gainDb: 0, pieces: [{ shotId: 's0', fromSec: 0.2, toSec: 0.8, atSec: 0 }] })
   })
 
   test('the duck becomes a piecewise gain expression', () => {

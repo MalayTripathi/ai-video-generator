@@ -1,6 +1,6 @@
 import type { FilmChapter } from '@/lib/storyboard/film'
 
-// Chapters come from the film's section_label scene starts (FilmTimeline.chapters): written
+// Chapters come from the film's scene starts (FilmTimeline.chapters): written
 // beside the video as "0:00 Title" lines, and embedded in the mp4 as ffmetadata. Pure.
 
 /** m:ss, or h:mm:ss past an hour - the form video platforms read chapter lists in. */

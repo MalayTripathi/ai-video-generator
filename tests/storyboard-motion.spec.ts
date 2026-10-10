@@ -22,6 +22,7 @@ type SeedOptions = {
   shots?: { duration: number; transition_out?: string }[]
   /** Word boundaries of a seeded voiceover, as [start, end] pairs. */
   words?: [number, number][]
+  spans?: [number, number][]
 }
 
 async function seed(opts: SeedOptions = {}) {
@@ -60,13 +61,14 @@ async function seed(opts: SeedOptions = {}) {
     const audioPath = `${primary.user.id}/${projectId}/voiceover/${crypto.randomUUID()}.mp3`
     await admin.storage.from('artifacts').upload(audioPath, Buffer.from([0xff, 0xfb, 0x90, 0x00]), { contentType: 'audio/mpeg' })
     const total = opts.words[opts.words.length - 1][1]
+    // One span per shot, each covering the words it holds (opts.spans), or an even split.
     const spans = ids.map((id, i) => ({
       shotId: id,
       from: 0,
-      to: 0,
+      to: `Line ${i + 1}.`.length,
       text: `Line ${i + 1}.`,
-      startSec: (i * total) / ids.length,
-      endSec: ((i + 1) * total) / ids.length,
+      startSec: opts.spans?.[i]?.[0] ?? (i * total) / ids.length,
+      endSec: opts.spans?.[i]?.[1] ?? ((i + 1) * total) / ids.length,
     }))
     await admin
       .from('projects')
@@ -315,8 +317,15 @@ test.describe('storyboard motion - forced cut', () => {
   test('a dissolve whose join falls inside a spoken word shows Cut with the reason, and the stored value stays', async ({
     page,
   }) => {
-    // Join 1→2 at 5.0s sits inside the word 4.6–5.4; join 2→3 at 10.0s falls between words.
+    // Each shot's narration plays from its shot's start: shot 1 speaks 0.2-5.4 of the read
+    // from 0s, so its last word lands at 4.4-5.2 - across the 5.0s join. Shot 3's piece
+    // starts on its shot at 10.0s, so the 2→3 join falls on a word edge, between words.
     const { projectId, ids } = await seed({
+      spans: [
+        [0.2, 5.4],
+        [5.6, 9.8],
+        [10.2, 14.8],
+      ],
       shots: [
         { duration: 5, transition_out: 'dissolve' },
         { duration: 5, transition_out: 'dissolve' },

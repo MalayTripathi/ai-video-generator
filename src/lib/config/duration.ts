@@ -11,30 +11,24 @@ export function parseDurationTarget(raw: string | null): DurationTarget {
 
 export type DurationConfig = {
   label: string
+  // The intake estimate's shot count and shot generation's pre-flight credit check
+  // (2 credits x this) - never a cap on how many shots generation writes.
   targetShots: number
   estimatedCredits: number
-  // Upper bound of the tier's seconds range, for the workbench header's over-target
-  // warning (sum of shot durations vs. this ceiling). Not parsed from `label` elsewhere.
+  // The tier's seconds range. Shot generation keeps the outline's total inside it and
+  // stops writing shots at the maximum; the workbench header's over-target warning reads
+  // the maximum too. Not parsed from `label` elsewhere.
+  targetSecondsMin: number
   targetSecondsMax: number
+  // The length the outline is asked for: the middle of the range (a product choice).
+  targetSeconds: number
 }
 
-// Both the intake duration tiles and the shot-generation prompt read from
+// The intake duration tiles, shot generation and its pre-flight check all read from
 // this map — the numbers live nowhere else.
 export const durationConfig: Record<DurationTarget, DurationConfig> = {
-  '30-60s': { label: '30–60s', targetShots: 8, estimatedCredits: 50, targetSecondsMax: 60 },
-  '1-2min': { label: '1–2 min', targetShots: 15, estimatedCredits: 90, targetSecondsMax: 120 },
-  '3-5min': { label: '3–5 min', targetShots: 40, estimatedCredits: 240, targetSecondsMax: 300 },
-  '8-10min': { label: '8–10 min', targetShots: 75, estimatedCredits: 450, targetSecondsMax: 600 },
-}
-
-// How many shots over `targetShots` the project currently has - 0 when at or under
-// target, or when the target can't be resolved (null). Takes the resolved number rather
-// than a DurationTarget so callers reuse their own tier lookup instead of a second one
-// here. The tool-use API can't structurally cap write_shots' shot count (see
-// buildWriteShotsTool), so an overshoot is an expected, accept-and-logged outcome rather
-// than a rare edge case; this is what ProjectHeader's amber indicator reads to surface it
-// to the person who can trim it.
-export function shotCountOverrun(shotCount: number, targetShots: number | null): number {
-  if (targetShots == null) return 0
-  return Math.max(0, shotCount - targetShots)
+  '30-60s': { label: '30–60s', targetShots: 8, estimatedCredits: 50, targetSecondsMin: 30, targetSecondsMax: 60, targetSeconds: 45 },
+  '1-2min': { label: '1–2 min', targetShots: 15, estimatedCredits: 90, targetSecondsMin: 60, targetSecondsMax: 120, targetSeconds: 90 },
+  '3-5min': { label: '3–5 min', targetShots: 40, estimatedCredits: 240, targetSecondsMin: 180, targetSecondsMax: 300, targetSeconds: 240 },
+  '8-10min': { label: '8–10 min', targetShots: 75, estimatedCredits: 450, targetSecondsMin: 480, targetSecondsMax: 600, targetSeconds: 540 },
 }

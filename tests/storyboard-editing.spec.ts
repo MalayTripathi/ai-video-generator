@@ -3,7 +3,7 @@ import sharp from 'sharp'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { STORYBOARD_MAX_SHOT_SEC, STORYBOARD_MIN_SHOT_SEC } from '../src/lib/config/storyboard'
+import { STORYBOARD_MAX_SHOT_SEC } from '../src/lib/config/storyboard'
 import { VIDEO_MODELS, videoModelBounds } from '../src/lib/config/models'
 import { fixedCredits } from './helpers/prices'
 
@@ -17,6 +17,7 @@ const VIDEO_PROMPT_PER_SHOT = fixedCredits('video_prompts', 'write_video_prompts
 const VIDEO_MODEL = 'wan-2.5'
 // Wan 2.5's longest clip (10s). Storyboard lengths deliberately ignore it.
 const MODEL_MAX = videoModelBounds(VIDEO_MODELS[VIDEO_MODEL]).max
+const MODEL_MIN = videoModelBounds(VIDEO_MODELS[VIDEO_MODEL]).min
 
 test.use({ viewport: { width: 1920, height: 1200 } })
 test.setTimeout(120000)
@@ -66,7 +67,6 @@ async function seed(specs: ShotSpec[], opts: { furthestStep?: number } = {}) {
     voice_over: `Line ${i + 1}.`,
     visual_description: `Shot description ${i + 1}`,
     duration_sec: spec.duration ?? 5,
-    section_label: null,
     image_prompt: `Prompt for shot ${i + 1}, long enough to read as written.`,
     image_prompt_edited: false,
     image_prompt_stale: false,
@@ -194,28 +194,29 @@ test.describe('storyboard editing - retime', () => {
     expect(saved.video_prompt_stale).toBe(false)
   })
 
-  test('a drag clamps to the 1.0s floor and the 30s ceiling, past the video model’s clip limit', async ({ page }) => {
+  test("a drag clamps to the project video model's shortest and longest shot", async ({ page }) => {
+    // Wan 2.5: 5-10s.
     const { projectId, ids } = await seed([{ state: 'ready' }, { state: 'ready' }, { state: 'ready' }])
     await open(page, projectId)
     const tooltip = page.getByTestId('retime-tooltip')
+    expect([MODEL_MIN, MODEL_MAX]).toEqual([5, 10])
 
     let at = await center(page, grip(page, ids[1]))
     await page.mouse.move(at.x, at.y)
     await page.mouse.down()
-    await page.mouse.move(at.x - 1500, at.y, { steps: 8 })
-    await expect(tooltip).toHaveText(`5.0s → ${STORYBOARD_MIN_SHOT_SEC.toFixed(1)}s`)
+    await page.mouse.move(at.x + 3000, at.y, { steps: 8 })
+    await expect(tooltip).toHaveText(`5.0s → ${MODEL_MAX.toFixed(1)}s`)
     await page.mouse.up()
-    await expect.poll(async () => (await row(projectId, ids[1])).film_duration_sec).toBe(STORYBOARD_MIN_SHOT_SEC)
+    await expect.poll(async () => (await row(projectId, ids[1])).film_duration_sec).toBe(MODEL_MAX)
+    await expect(block(page, ids[1])).toContainText('10.0s')
 
     at = await center(page, grip(page, ids[1]))
     await page.mouse.move(at.x, at.y)
     await page.mouse.down()
-    await page.mouse.move(at.x + 3000, at.y, { steps: 8 })
-    await expect(tooltip).toHaveText(`1.0s → ${STORYBOARD_MAX_SHOT_SEC.toFixed(1)}s`)
+    await page.mouse.move(at.x - 3000, at.y, { steps: 8 })
+    await expect(tooltip).toHaveText(`10.0s → ${MODEL_MIN.toFixed(1)}s`)
     await page.mouse.up()
-    await expect.poll(async () => (await row(projectId, ids[1])).film_duration_sec).toBe(STORYBOARD_MAX_SHOT_SEC)
-    expect(STORYBOARD_MAX_SHOT_SEC).toBeGreaterThan(MODEL_MAX)
-    await expect(block(page, ids[1])).toContainText('30.0s')
+    await expect.poll(async () => (await row(projectId, ids[1])).film_duration_sec).toBe(MODEL_MIN)
   })
 
   test('the last shot has an end handle, and ←/→ on a focused boundary nudges ±0.1s, saving each press', async ({
@@ -478,11 +479,13 @@ test.describe('storyboard editing - saves', () => {
 
     expect((await saveFilmDurationForUser(admin, uid, projectId, ids[0], STORYBOARD_MAX_SHOT_SEC + 0.1)).success).toBe(false)
     expect((await saveFilmDurationForUser(admin, uid, projectId, ids[0], 0.9)).success).toBe(false)
+    expect((await saveFilmDurationForUser(admin, uid, projectId, ids[0], MODEL_MAX + 0.1)).success).toBe(false)
     expect((await saveFilmDurationForUser(admin, uid, projectId, ids[0], 5.25)).success).toBe(false)
     expect(await saveFilmDurationForUser(admin, uid, projectId, ids[0], 5)).toEqual({ success: true, unchanged: true })
     expect(await saveFilmDurationForUser(admin, uid, projectId, ids[0], 6.2)).toEqual({ success: true })
-    // Past the video model's 10s clip, up to the storyboard's own 30s ceiling.
-    expect(await saveFilmDurationForUser(admin, uid, projectId, ids[1], 25)).toEqual({ success: true })
+    // Inside the video model's range, up to its longest shot.
+    expect((await saveFilmDurationForUser(admin, uid, projectId, ids[1], 25)).success).toBe(false)
+    expect(await saveFilmDurationForUser(admin, uid, projectId, ids[1], MODEL_MAX)).toEqual({ success: true })
     expect(await saveFilmOrderForUser(admin, uid, projectId, [{ id: ids[0], film_order: 1 }, { id: ids[1], film_order: 0 }])).toEqual({
       success: true,
     })

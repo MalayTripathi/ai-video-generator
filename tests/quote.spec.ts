@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import type Anthropic from '@anthropic-ai/sdk'
 import { estimateInputTokens } from '../src/lib/usage/quote'
-import { buildWriteShotsTool } from '../src/lib/prompts/shot-generation'
+import { buildChunkWriteShotsTool } from '../src/lib/prompts/shot-chunk'
 
 const SMALL_TOOL: Anthropic.Tool = {
   name: 'small_tool',
@@ -78,17 +78,17 @@ test.describe('estimateInputTokens', () => {
     expect(withUserMessage).toBeGreaterThan(short)
   })
 
-  test('picks up the real write_shots tool schema per call - the estimate differs across targetShots', () => {
+  test('picks up the real write_shots tool schema per call - the estimate differs across chunk caps', () => {
     const texts = ['A fixed system prompt.', 'A fixed user message.']
 
-    const withSmallTarget = estimateInputTokens({ texts, tools: [buildWriteShotsTool(8)] })
-    // A wide gap in digit count, not a realistic duration tier - the schema has no
+    const withSmallTarget = estimateInputTokens({ texts, tools: [buildChunkWriteShotsTool(8)] })
+    // A wide gap in digit count, not a realistic chunk cap - the schema has no
     // maxItems to vary by (the tool-use API doesn't support one; see
     // tests/tool-schema-keywords.spec.ts), so the only thing that varies with
-    // targetShots now is the description text's own digit count. A small gap (8 vs 75)
+    // the cap is the description text's own digit count. A small gap (8 vs 75)
     // is only a 1-character difference, which the chars/4 heuristic can round away; this
     // gap is wide enough to survive that rounding regardless.
-    const withLargeTarget = estimateInputTokens({ texts, tools: [buildWriteShotsTool(750_000)] })
+    const withLargeTarget = estimateInputTokens({ texts, tools: [buildChunkWriteShotsTool(750_000)] })
 
     // estimateInputTokens must reflect the actual per-call schema passed to it, not a
     // stale/shared one.

@@ -359,6 +359,14 @@ export function effectiveImageQuality(projectQuality: ImageQuality): ImageQualit
 }
 
 export type ModelsConfig = {
+  // Shot generation's outline call: the scenes, in order. Same model as the chunks.
+  shotOutline: {
+    provider: 'anthropic'
+    model: string
+    maxTokens: number
+  }
+  // Shot generation's chunk calls: up to SHOTS_PER_CHUNK shots of one scene each
+  // (config/shots.ts). maxTokens is sized with it so a chunk finishes well inside 300s.
   shots: {
     provider: 'anthropic'
     model: string
@@ -405,13 +413,18 @@ export type ModelsConfig = {
   // implemented - keep this type and the object below in sync.
 }
 
+const shotsModel = process.env.CLAUDE_SHOTS_MODEL ?? (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001')
+
 export const modelsConfig: ModelsConfig = {
+  shotOutline: {
+    provider: 'anthropic',
+    model: shotsModel,
+    maxTokens: Number(process.env.CLAUDE_SHOT_OUTLINE_MAX_TOKENS) || 4000,
+  },
   shots: {
     provider: 'anthropic',
-    model:
-      process.env.CLAUDE_SHOTS_MODEL ??
-      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-4-5-20251001'),
-    maxTokens: Number(process.env.CLAUDE_SHOTS_MAX_TOKENS) || 8192,
+    model: shotsModel,
+    maxTokens: Number(process.env.CLAUDE_SHOTS_MAX_TOKENS) || 4000,
   },
   camera: {
     provider: 'anthropic',

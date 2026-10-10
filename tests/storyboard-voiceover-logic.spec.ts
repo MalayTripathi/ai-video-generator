@@ -17,6 +17,8 @@ import {
   type VoiceoverSpan,
 } from '../src/lib/storyboard/voiceover'
 import { stripMp3Headers, concatMp3 } from '../src/lib/voiceover/audio'
+import { VIDEO_MODELS } from '../src/lib/config/models'
+import { SHOT_DURATION_PAD_SEC } from '../src/lib/config/shots'
 import { evenAlignment } from './helpers/voiceover-fakes'
 
 // Pure rules for the Storyboard voiceover (canvas 15f / 15c c). No DB, no network.
@@ -212,45 +214,47 @@ test.describe('voiceoverOrderDiffers / restoreSpanOrderWrites', () => {
   })
 })
 
-test.describe('fitToVoiceover - tiling, snap and clamp', () => {
-  test('shots tile the read with no gaps: first from 0, pauses go to the preceding shot, last to the end', () => {
+test.describe('fitToVoiceover - span plus padding, rounded up to the video model', () => {
+  const wan3 = VIDEO_MODELS['wan-3.0'] // range 2-30s, whole seconds
+  const wan25 = VIDEO_MODELS['wan-2.5'] // exactly 5s or 10s
+
+  test('each narrated shot is its spoken span plus padding, rounded up to a whole second', () => {
     const shots = [shot('a', 0, 'x'), shot('b', 1, 'x'), shot('c', 2, 'x')]
-    // a speaks 0.4-2.0, pause, b speaks 3.0-5.0, c speaks 5.5-7.2; audio runs 8.0s.
-    const spans = [span('a', 0.4, 2.0, 'x', 0, 1), span('b', 3.0, 5.0, 'x', 2, 3), span('c', 5.5, 7.2, 'x', 4, 5)]
-    const result = fitToVoiceover(spans, shots, 8.0)
-    expect(result.lengths.map((l) => l.seconds)).toEqual([3.0, 2.5, 2.5])
-    expect(result.lengths.reduce((sum, l) => sum + l.seconds, 0)).toBeCloseTo(8.0, 6)
+    // Spoken 1.6s, 2.0s, 2.9s; +0.25s padding -> 1.85, 2.25, 3.15 -> 2, 3, 4.
+    const spans = [span('a', 0.4, 2.0, 'x', 0, 1), span('b', 3.0, 5.0, 'x', 2, 3), span('c', 5.5, 8.4, 'x', 4, 5)]
+    const result = fitToVoiceover(spans, shots, wan3)
+    expect(SHOT_DURATION_PAD_SEC).toBe(0.25)
+    expect(result.lengths.map((l) => l.seconds)).toEqual([2, 3, 4])
+    for (const l of result.lengths) expect(Number.isInteger(l.seconds)).toBe(true)
     expect(result.clamped).toEqual([])
   })
 
-  test('boundaries snap to 0.1s, so lengths stay on the grid and still tile the whole read', () => {
-    const shots = [shot('a', 0, 'x'), shot('b', 1, 'x'), shot('c', 2, 'x')]
-    const spans = [span('a', 0, 1, 'x', 0, 1), span('b', 1.24, 2, 'x', 2, 3), span('c', 2.38, 3, 'x', 4, 5)]
-    const result = fitToVoiceover(spans, shots, 3.42)
-    expect(result.lengths.map((l) => l.seconds)).toEqual([1.2, 1.2, 1.0])
-    expect(result.lengths.reduce((sum, l) => sum + l.seconds, 0)).toBeCloseTo(3.4, 6)
-  })
-
-  test('uses the true spans, past any video model’s clip limit, with nothing clamped', () => {
+  test('a discrete model rounds up to its next allowed length', () => {
     const shots = [shot('a', 0, 'x'), shot('b', 1, 'x')]
-    const spans = [span('a', 0, 14, 'x', 0, 1), span('b', 14, 20, 'x', 2, 3)]
-    const result = fitToVoiceover(spans, shots, 20)
-    expect(result.lengths.map((l) => l.seconds)).toEqual([14, 6])
-    expect(result.clamped).toEqual([])
+    const spans = [span('a', 0, 3, 'x', 0, 1), span('b', 3, 8, 'x', 2, 3)]
+    expect(fitToVoiceover(spans, shots, wan25).lengths.map((l) => l.seconds)).toEqual([5, 10])
   })
 
-  test('lengths clamp only to the minimum and the 30s maximum, and the clamped shots are named', () => {
-    const shots = [shot('a', 0, 'x'), shot('b', 1, 'x'), shot('c', 2, 'x')]
-    const spans = [span('a', 0, 0.3, 'x', 0, 1), span('b', 0.4, 40, 'x', 2, 3), span('c', 41, 41.5, 'x', 4, 5)]
-    const result = fitToVoiceover(spans, shots, 42)
-    expect(result.lengths.map((l) => l.seconds)).toEqual([1, 30, 1])
-    expect(result.clamped.sort()).toEqual(['a', 'b'])
+  test('a silent shot keeps its own length - never squeezed to the minimum', () => {
+    const shots = [shot('a', 0, 'x'), shot('quiet', 1, '', { duration_sec: 6 }), shot('c', 2, 'x')]
+    const spans = [span('a', 0, 1.5, 'x', 0, 1), span('quiet', 1.5, 1.5, '', 2, 2), span('c', 1.6, 3, 'x', 3, 4)]
+    const result = fitToVoiceover(spans, shots, wan3)
+    expect(result.lengths.map((l) => l.seconds)).toEqual([2, 6, 2])
+    expect(result.writes.map((w) => w.id)).not.toContain('quiet')
+  })
+
+  test('kept within the model range: short speech rises to the minimum, long speech clamps at the maximum and is named', () => {
+    const shots = [shot('a', 0, 'x'), shot('b', 1, 'x')]
+    const spans = [span('a', 0, 0.3, 'x', 0, 1), span('b', 0.4, 40, 'x', 2, 3)]
+    const result = fitToVoiceover(spans, shots, wan3)
+    expect(result.lengths.map((l) => l.seconds)).toEqual([2, 30])
+    expect(result.clamped).toEqual(['b'])
   })
 
   test('only shots whose length changes are written', () => {
-    const shots = [shot('a', 0, 'x', { duration_sec: 3 }), shot('b', 1, 'x', { duration_sec: 1 })]
-    const spans = [span('a', 0, 2, 'x', 0, 1), span('b', 3, 4, 'x', 2, 3)]
-    const result = fitToVoiceover(spans, shots, 5)
+    const shots = [shot('a', 0, 'x', { duration_sec: 3 }), shot('b', 1, 'x', { duration_sec: 3 })]
+    const spans = [span('a', 0, 2.5, 'x', 0, 1), span('b', 3, 4, 'x', 2, 3)]
+    const result = fitToVoiceover(spans, shots, wan3)
     expect(result.writes).toEqual([{ id: 'b', film_duration_sec: 2 }])
   })
 })

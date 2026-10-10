@@ -6,8 +6,9 @@ import { useStoryboard } from './storyboard-context'
 
 // The one player (canvas 15h): a single clock shared by the timeline playhead, the Preview
 // player and the mini player. Its state lives in a small external store, so a tick re-renders
-// only what reads the time - never the lane. Audio is Web Audio: the voiceover buffer plays
-// through a gain node set from the mix; the music plays each pass of the film's schedule
+// only what reads the time - never the lane. Audio is Web Audio: each shot's piece of the
+// voiceover buffer plays from its own shot's start (the film's voice pieces), through a gain
+// node set from the mix; the music plays each pass of the film's schedule
 // (Loop to fit repeats, crossfades) into a bus whose gain follows the mix, the film's
 // deterministic duck and the end fade - the same schedule the export renders.
 
@@ -37,7 +38,7 @@ class PlaybackEngine {
   private ctx: AudioContext | null = null
   private voiceGain: GainNode | null = null
   private voiceBuffer: AudioBuffer | null = null
-  private voiceSource: AudioBufferSourceNode | null = null
+  private voiceSources: AudioBufferSourceNode[] = []
   private voiceUrl: string | null = null
   private voiceLoad = 0
   private musicBus: GainNode | null = null
@@ -176,12 +177,22 @@ class PlaybackEngine {
     this.stopSources()
     const ctx = this.ctx
     if (!ctx) return
-    if (this.voiceGain && this.voiceBuffer && t < this.voiceBuffer.duration) {
-      const source = ctx.createBufferSource()
-      source.buffer = this.voiceBuffer
-      source.connect(this.voiceGain)
-      source.start(0, t)
-      this.voiceSource = source
+    // Each shot's narration piece starts at its own place on the film (film.ts voicePieces),
+    // so the voice pauses through a silent shot - one source per piece still ahead of t.
+    const voice = this.film?.audio.voice
+    if (voice && this.voiceGain && this.voiceBuffer) {
+      const buffer = this.voiceBuffer
+      for (const piece of voice.pieces) {
+        const length = Math.min(piece.toSec, buffer.duration) - piece.fromSec
+        const end = piece.atSec + length
+        if (length <= 0 || end <= t) continue
+        const into = Math.max(0, t - piece.atSec)
+        const source = ctx.createBufferSource()
+        source.buffer = buffer
+        source.connect(this.voiceGain)
+        source.start(ctx.currentTime + Math.max(0, piece.atSec - t), piece.fromSec + into, length - into)
+        this.voiceSources.push(source)
+      }
     }
     const music = this.film?.audio.music
     if (music && this.musicBus && this.musicBuffer) {
@@ -205,13 +216,15 @@ class PlaybackEngine {
   }
 
   private stopSources() {
-    try {
-      this.voiceSource?.stop()
-    } catch {
-      // already stopped
+    for (const source of this.voiceSources) {
+      try {
+        source.stop()
+      } catch {
+        // already stopped or never started
+      }
+      source.disconnect()
     }
-    this.voiceSource?.disconnect()
-    this.voiceSource = null
+    this.voiceSources = []
     for (const { source, gain } of this.musicSources) {
       try {
         source.stop()

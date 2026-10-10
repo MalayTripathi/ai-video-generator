@@ -1,40 +1,54 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { test, expect } from '@playwright/test'
-import { buildWriteShotsTool, buildShotsDynamicBlock } from '../src/lib/prompts/shot-generation'
+import { buildChunkUserMessage, buildChunkWriteShotsTool } from '../src/lib/prompts/shot-chunk'
+import { WRITE_OUTLINE_TOOL, buildOutlineDynamicBlock } from '../src/lib/prompts/shot-outline'
 
 // Anthropic.Tool.input_schema.properties is typed `unknown` by the SDK (it's a raw JSON
 // schema) - narrow just the one property this suite inspects.
-function shotsSchema(tool: Anthropic.Tool): { maxItems?: number; minItems?: number; description?: string } {
-  return (tool.input_schema.properties as { shots: { maxItems?: number; minItems?: number; description?: string } })
-    .shots
+function arraySchema(tool: Anthropic.Tool, key: string): { maxItems?: number; minItems?: number; description?: string } {
+  return (tool.input_schema.properties as Record<string, { maxItems?: number; minItems?: number; description?: string }>)[key]
 }
 
-test.describe('buildWriteShotsTool', () => {
+test.describe('buildChunkWriteShotsTool', () => {
   // The tool-use API supports no array-count upper bound (only minItems of 0 or 1) - see
-  // tests/tool-schema-keywords.spec.ts. A maxItems here would 400 on every real call, so
-  // targetShots is enforced by the description and system prompt wording instead.
+  // tests/tool-schema-keywords.spec.ts. The count is enforced in code, which saves only
+  // the allowed shots.
   test('never emits maxItems - the API has no array-count upper bound', () => {
-    expect(shotsSchema(buildWriteShotsTool(8)).maxItems).toBeUndefined()
-    expect(shotsSchema(buildWriteShotsTool(75)).maxItems).toBeUndefined()
+    expect(arraySchema(buildChunkWriteShotsTool(8), 'shots').maxItems).toBeUndefined()
   })
 
-  test('states the maximum explicitly in the shots array description', () => {
-    expect(shotsSchema(buildWriteShotsTool(15)).description).toContain('15')
+  test('states the chunk maximum in the shots array description', () => {
+    expect(arraySchema(buildChunkWriteShotsTool(5), 'shots').description).toContain('5')
   })
 
-  test('keeps minItems at 1 regardless of targetShots', () => {
-    expect(shotsSchema(buildWriteShotsTool(8)).minItems).toBe(1)
-    expect(shotsSchema(buildWriteShotsTool(75)).minItems).toBe(1)
+  test('asks whether the scene is complete', () => {
+    expect(buildChunkWriteShotsTool(8).input_schema.required).toContain('scene_complete')
   })
 })
 
-test.describe('buildShotsDynamicBlock', () => {
-  test('states the target shot count as a hard maximum', () => {
-    const block = buildShotsDynamicBlock(
-      { source_text: 'A short film about a lighthouse.', video_type: 'auto', language: 'en' },
-      8
-    )
-    expect(block).toContain('up to 8 shots')
-    expect(block).toContain('hard maximum')
+test.describe('the outline', () => {
+  test('asks for scenes whose seconds add up to the tier target', () => {
+    const block = buildOutlineDynamicBlock({ source_text: 'A short film about a lighthouse.', video_type: 'auto', language: 'en' }, 90)
+    expect(block).toContain('Target length: 90 seconds')
+    expect(arraySchema(WRITE_OUTLINE_TOOL, 'scenes').minItems).toBe(1)
+  })
+})
+
+test.describe('buildChunkUserMessage', () => {
+  test('carries the scene, its elements, the shot before, the cap and the split rule', () => {
+    const message = buildChunkUserMessage({
+      scene: { position: 2, title: 'The Storm', summary: 'Waves rise.', location: 'Cliff', time_of_day: 'night', target_seconds: 20 },
+      elementNames: ['Mara', 'Lighthouse'],
+      previousShot: { voice_over: 'She climbed the stairs.', visual_description: 'Spiral stairs.' },
+      writtenSeconds: 6,
+      maxShots: 8,
+      maxWordsPerShot: 65,
+    })
+    expect(message).toContain('Scene 3: The Storm')
+    expect(message).toContain('Mara, Lighthouse')
+    expect(message).toContain('She climbed the stairs.')
+    expect(message).toContain('about 14 seconds')
+    expect(message).toContain('at most 8 shots')
+    expect(message).toContain('longer than 65 words')
   })
 })

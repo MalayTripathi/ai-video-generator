@@ -1,13 +1,13 @@
 'use client'
 
-import { memo, useCallback, useLayoutEffect, useRef, type KeyboardEvent, type RefObject } from 'react'
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from 'react'
 import {
   FIT_COLLAPSE_BREAKPOINT_PX,
   RETIME_SNAP_SEC,
   STORYBOARD_ZOOM_STEPS,
 } from '@/lib/config/storyboard'
 import { speechBars } from '@/lib/storyboard/voiceover'
-import { musicSchedule } from '@/lib/storyboard/film'
+import { musicSchedule, voicePieces } from '@/lib/storyboard/film'
 import { MOTION_LABELS } from '@/lib/motion-labels'
 import type { Motion } from '@/lib/config/enums'
 import {
@@ -312,11 +312,19 @@ function TimelineHeader({
   )
 }
 
-// The voice lane (canvas 15b): the read's waveform across the time it covers, drawn from
-// its spans; "No voiceover yet" until one lands. Muted reads draw faded.
+// The voice lane (canvas 15b): the read's waveform where the film plays it - each shot's
+// narration from its shot's start (voice pieces) - drawn from its spans; "No voiceover yet"
+// until one lands. Muted reads draw faded.
 function VoiceLane({ totalSeconds }: { totalSeconds: number }) {
-  const { voiceover } = useStoryboard()
+  const { voiceover, laneShots } = useStoryboard()
   const current = voiceover.current
+  const placed = useMemo(
+    () =>
+      current
+        ? voicePieces(laneShots, current.spans).map((p) => ({ startSec: p.atSec, endSec: p.atSec + (p.toSec - p.fromSec) }))
+        : [],
+    [current, laneShots]
+  )
   if (!current) {
     return (
       <span
@@ -327,9 +335,10 @@ function VoiceLane({ totalSeconds }: { totalSeconds: number }) {
       </span>
     )
   }
-  const extent = Math.max(totalSeconds, current.durationSec)
-  const widthPct = extent > 0 ? (current.durationSec / extent) * 100 : 100
-  const bars = speechBars(current.spans, current.durationSec, 62)
+  const playedSec = placed.reduce((end, p) => Math.max(end, p.endSec), 0)
+  const extent = Math.max(totalSeconds, playedSec)
+  const widthPct = extent > 0 ? (playedSec / extent) * 100 : 100
+  const bars = speechBars(placed, playedSec, 62)
   return (
     <span
       data-testid="voice-lane"
@@ -404,6 +413,7 @@ export function TimelineCard() {
     selectedJoinShotId,
     selectJoin,
     setSplit,
+    retimeRange,
   } = useStoryboard()
   const motionMode = mode === 'motion'
   const now = useNow(polling)
@@ -427,7 +437,7 @@ export function TimelineCard() {
 
   const { onPointerDown, consumeClick } = useLaneDrag({
     // Boundary drags and reordering belong to Retime; Motion mode starts neither.
-    inputs: { layout, laneShots, totalSeconds: total, readOnly: readOnly || motionMode, retime, reorder },
+    inputs: { layout, laneShots, totalSeconds: total, readOnly: readOnly || motionMode, retime, reorder, retimeRange },
     scrollerRef,
     tooltipRef,
     totalRef,
@@ -489,9 +499,9 @@ export function TimelineCard() {
       const shot = laneRef.current.find((s) => s.id === shotId)
       if (!shot) return
       const committed = filmDuration(shot)
-      retime(shotId, snapRetime((committed ?? 0) + direction * RETIME_SNAP_SEC, retimeBounds(committed)))
+      retime(shotId, snapRetime((committed ?? 0) + direction * RETIME_SNAP_SEC, retimeBounds(committed, retimeRange)))
     },
-    [retime]
+    [retime, retimeRange]
   )
 
   return (
@@ -567,7 +577,7 @@ export function TimelineCard() {
               {laneShots.map((shot, i) => {
                 const last = i === laneShots.length - 1
                 const seconds = filmSeconds(shot)
-                const bounds = retimeBounds(filmDuration(shot))
+                const bounds = retimeBounds(filmDuration(shot), retimeRange)
                 const join = joinByShot.get(shot.id)
                 const grip = motionMode ? (
                   join ? (

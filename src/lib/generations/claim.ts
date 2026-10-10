@@ -295,6 +295,24 @@ export async function listQueuedGenerations(
   return { generations: data ?? [], error: null }
 }
 
+/**
+ * A long-running claim is still alive: re-stamps started_at so it keeps reading as live
+ * across a chain of runs (shot generation), each of which re-stamps it. Conditional on the
+ * row still being 'generating' - a claim that was settled or reclaimed is never revived.
+ */
+export async function refreshGenerationHeartbeat(
+  supabase: SupabaseServerClient,
+  generationId: string
+): Promise<{ error: string | null }> {
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('generations')
+    .update({ started_at: now, updated_at: now })
+    .eq('id', generationId)
+    .eq('state', 'generating')
+  return { error: error?.message ?? null }
+}
+
 export async function persistGenerationPayload(
   supabase: SupabaseServerClient,
   generationId: string,

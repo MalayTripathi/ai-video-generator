@@ -1,4 +1,6 @@
-import { RETIME_SNAP_SEC, STORYBOARD_MAX_SHOT_SEC, STORYBOARD_MIN_SHOT_SEC } from '@/lib/config/storyboard'
+import { videoModelBounds, type VideoModelConfig } from '@/lib/config/models'
+import { SHOT_DURATION_PAD_SEC } from '@/lib/config/shots'
+import { fittedShotSeconds } from '@/lib/shots/durations'
 import { filmDuration, filmOrdered, filmPosition, laneShots } from './timeline'
 
 // Pure rules for the Storyboard's voiceover (canvas 15f / 15c c): the script a read is made
@@ -331,50 +333,33 @@ export type FitResult = {
 type FitShot = SpanShot & { duration_sec: number | null; film_duration_sec?: number | null }
 
 /**
- * Fit to voiceover. Each in-film shot starts where its narration starts and ends where the
- * next in-film shot's starts, so pauses belong to the shot before them and shots tile with
- * no gaps; the first starts at 0 and the last ends with the audio. A shot with no
- * narration starts where the next narrated shot does (zero length, then clamped up).
- * Boundaries snap to 0.1s, then lengths clamp to [min, max]. Free - it only writes
+ * Fit to voiceover. Each narrated in-film shot becomes its spoken span plus padding,
+ * rounded up to a length the project's video model can render (whole seconds for a range
+ * model, the next allowed value for a discrete one) and kept inside the model's range - so
+ * Fit never writes a fractional second. A shot whose speech runs past the model's maximum
+ * is clamped there; its narration keeps playing into the next shot (see film.ts's voice
+ * pieces). A shot with no narration keeps its own length. Free - it only writes
  * film_duration_sec.
  */
-export function fitToVoiceover(
-  spans: readonly VoiceoverSpan[],
-  shots: readonly FitShot[],
-  audioSec: number,
-  maxSec: number = STORYBOARD_MAX_SHOT_SEC,
-  minSec: number = STORYBOARD_MIN_SHOT_SEC
-): FitResult {
+export function fitToVoiceover(spans: readonly VoiceoverSpan[], shots: readonly FitShot[], model: VideoModelConfig): FitResult {
   const lane = laneShots(shots)
   const spanById = new Map(spans.map((s) => [s.shotId, s]))
-  const narrated = (id: string) => {
-    const s = spanById.get(id)
-    return s && s.to > s.from ? s : null
-  }
-
-  const starts: number[] = new Array(lane.length).fill(0)
-  for (let i = lane.length - 1; i >= 0; i--) {
-    const s = narrated(lane[i].id)
-    starts[i] = s ? s.startSec : i + 1 < lane.length ? starts[i + 1] : audioSec
-  }
-  if (lane.length > 0) starts[0] = 0
-  // Never let a boundary move backwards (possible only with a malformed alignment).
-  for (let i = 1; i < starts.length; i++) starts[i] = Math.max(starts[i], starts[i - 1])
-
-  // Boundaries snap to the 0.1s grid, then each length is the gap between two snapped
-  // boundaries - so the lengths still tile the whole read exactly - and is clamped last.
-  const snap = (t: number) => Math.round(Math.round(t / RETIME_SNAP_SEC) * RETIME_SNAP_SEC * 10) / 10
-  const edges = [...starts, Math.max(audioSec, starts[starts.length - 1] ?? 0)].map(snap)
+  const { max } = videoModelBounds(model)
   const lengths: { id: string; seconds: number }[] = []
   const writes: { id: string; film_duration_sec: number }[] = []
   const clamped: string[] = []
-  lane.forEach((shot, i) => {
-    const raw = Math.round((edges[i + 1] - edges[i]) * 10) / 10
-    const seconds = Math.min(maxSec, Math.max(minSec, raw))
-    if (seconds !== raw) clamped.push(shot.id)
+  for (const shot of lane) {
+    const span = spanById.get(shot.id)
+    if (!span || span.to <= span.from || span.endSec <= span.startSec) {
+      lengths.push({ id: shot.id, seconds: filmDuration(shot) ?? 0 })
+      continue
+    }
+    const spoken = span.endSec - span.startSec
+    const seconds = fittedShotSeconds(spoken, model)
+    if (spoken + SHOT_DURATION_PAD_SEC > max + 1e-9) clamped.push(shot.id)
     lengths.push({ id: shot.id, seconds })
     if (filmDuration(shot) !== seconds) writes.push({ id: shot.id, film_duration_sec: seconds })
-  })
+  }
   return { writes, lengths, clamped }
 }
 
@@ -402,7 +387,12 @@ export type WaveBar = { h: number; mini: number }
  * its slice of time is speech (from the spans), with a fixed ripple so speech doesn't read
  * as a flat block. Deterministic - the same read always draws the same bars.
  */
-export function speechBars(spans: readonly VoiceoverSpan[], durationSec: number, count: number, scale = 20): WaveBar[] {
+export function speechBars(
+  spans: readonly Pick<VoiceoverSpan, 'startSec' | 'endSec'>[],
+  durationSec: number,
+  count: number,
+  scale = 20
+): WaveBar[] {
   const bars: WaveBar[] = []
   let x = 7
   const slice = durationSec > 0 ? durationSec / count : 0

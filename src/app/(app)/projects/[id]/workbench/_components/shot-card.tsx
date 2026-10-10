@@ -283,9 +283,9 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
           <span className="text-body font-medium tracking-micro text-text-primary">
             Shot {shot.order_index + 1}
           </span>
-          {shot.section_label && (
+          {shot.scene_title && (
             <span className="rounded-badge bg-bg-inset px-rc-xs py-[3px] text-chip text-text-secondary">
-              {shot.section_label}
+              {shot.scene_title}
             </span>
           )}
         </div>

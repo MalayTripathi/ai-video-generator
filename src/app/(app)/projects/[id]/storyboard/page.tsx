@@ -15,7 +15,7 @@ import { PlaybackProvider } from './_components/playback-context'
 import { StoryboardMain } from './_components/storyboard-main'
 import { InspectPanel } from './_components/inspect-panel'
 import { StoryboardFooter } from './_components/storyboard-footer'
-import { STORYBOARD_SHOT_COLUMNS } from './_components/types'
+import { STORYBOARD_SHOT_COLUMNS, type StoryboardShot } from './_components/types'
 
 // Step 4: the timeline with live images (canvas 15). The picture lane and inspect panel
 // read real data; the audio lanes, preview and export are drawn static until built. The
@@ -60,7 +60,8 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
   // A real Promise (not the query builder), so the two consumers share one execution.
   const shotsPromise = Promise.resolve(
     supabase.from('shots').select(STORYBOARD_SHOT_COLUMNS).eq('project_id', projectId).order('order_index', { ascending: true })
-  ).then(({ data }) => data ?? [])
+    // The scenes embed is to-one (shots.scene_id); the typed client can't infer that here.
+  ).then(({ data }) => (data ?? []) as unknown as StoryboardShot[])
   const [shots, status, exportsResult, agentMessages] = await Promise.all([
     shotsPromise,
     loadImageStatuses({ supabase, projectId, userId: user.id, getBalance, project }),
@@ -84,6 +85,7 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
       aspectRatio={aspectRatio}
       // Never frozen: the Storyboard stays editable after the project advances to Video Prompts.
       readOnly={false}
+      videoModel={project.video_model}
       initialShots={shots}
       initialStatus={status.data}
       initialMix={{

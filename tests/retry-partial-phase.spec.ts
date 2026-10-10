@@ -2,22 +2,14 @@ import { test, expect } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 
+// A scene plan a failed attempt already paid for - resuming replays it, never re-asks.
 const PENDING_PAYLOAD = {
   title: 'A short film',
-  message: 'Here is your shot list.',
+  message: 'Here is your scene plan.',
   video_type: 'narrated_story',
-  shots: [
-    {
-      voice_over: 'Once upon a time, in a quiet valley.',
-      visual_description: 'Wide shot of a castle at dawn.',
-      shot_size: 'wide',
-      camera_angle: 'eye_level',
-      camera_movement: 'static',
-      duration_sec: 5,
-      section_label: 'Intro',
-      dialogue: [],
-      element_names: [],
-    },
+  style: [],
+  scenes: [
+    { title: 'The Valley', summary: 'A quiet valley at dawn.', location: 'Valley', time_of_day: 'dawn', element_names: [], seconds: 45 },
   ],
 }
 
@@ -30,6 +22,7 @@ async function seedPartialProject(userId: string) {
       source_text: 'A short film about a quiet valley.',
       video_type: 'auto',
       duration_target: '30-60s',
+      video_model: 'wan-3.0',
       current_step: 'workbench',
     })
     .select('id')
@@ -70,7 +63,7 @@ async function readGeneration(projectId: string) {
 }
 
 test.describe('retry from the partial phase', () => {
-  test('resumes the pending payload without billing, and cancelling sends nothing', async ({ page }) => {
+  test('resumes the stored scene plan without paying for it again, and cancelling sends nothing', async ({ page }) => {
     // The default browser identity (primary, via playwright.config.ts's storageState)
     // is already authenticated - no per-test createTestSession()/addCookies needed.
     const user = primary.user
@@ -94,7 +87,7 @@ test.describe('retry from the partial phase', () => {
       await page.getByRole('button', { name: 'Try again' }).click()
       const dialog = page.getByRole('dialog')
       await expect(dialog).toBeVisible()
-      await expect(dialog.getByText(/no additional credits/)).toBeVisible()
+      await expect(dialog.getByText(/reused at no cost/)).toBeVisible()
 
       await dialog.getByRole('button', { name: 'Cancel' }).click()
       await expect(dialog).not.toBeVisible()
@@ -108,18 +101,28 @@ test.describe('retry from the partial phase', () => {
       expect(shotsRequests[0].method).toBe('POST')
       expect(JSON.parse(shotsRequests[0].postData ?? '{}')).toEqual({ retry: true })
 
-      // The recovery path never calls the gateway, so this is safe under the
-      // ALLOW_REAL_CLAUDE guard regardless - it's worth confirming end to end.
+      // The run replays the stored plan - no outline call is made - then asks for the
+      // scene's shots. Live provider calls are blocked under test, so that one call settles
+      // blocked at zero cost and the run ends failed: the plan was never paid for twice.
+      // The seeded claim is already 'failed', so wait on the run record instead.
       await expect
-        .poll(async () => (await readGeneration(projectId))?.state, { timeout: 15_000 })
-        .toBe('succeeded')
-
-      const finalGeneration = await readGeneration(projectId)
-      expect(finalGeneration?.payload).toBeNull()
-
-      const { data: finalShots } = await admin.from('shots').select('*').eq('project_id', projectId)
-      // Exactly the replayed batch's count, not the sum of the 2 stale rows plus the replay.
-      expect(finalShots?.length).toBe(PENDING_PAYLOAD.shots.length)
+        .poll(
+          async () => {
+            const { data } = await admin.from('shot_runs').select('status').eq('project_id', projectId).maybeSingle()
+            return data?.status ?? null
+          },
+          { timeout: 60_000 }
+        )
+        .toBe('failed')
+      expect((await readGeneration(projectId))?.state).toBe('failed')
+      const { data: scenes } = await admin.from('scenes').select('title').eq('project_id', projectId)
+      expect(scenes).toEqual([{ title: 'The Valley' }])
+      const { data: usage } = await admin.from('usage').select('estimated_cost, raw_usage').eq('project_id', projectId)
+      expect(usage).toHaveLength(1)
+      expect(usage![0].estimated_cost).toBe(0)
+      // The stale rows of the earlier attempt were replaced when the plan was applied.
+      const { data: finalShots } = await admin.from('shots').select('id').eq('project_id', projectId)
+      expect(finalShots).toHaveLength(0)
     }
   })
 })

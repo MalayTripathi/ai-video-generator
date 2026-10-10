@@ -8,6 +8,7 @@ import { stepIndex, stepLabel } from '@/lib/config/pipeline'
 import { musicShorterThanPicture } from '@/lib/music/length'
 import { formatTimecode } from '@/lib/storyboard/timeline'
 import { voiceoverLengthDiffers } from '@/lib/storyboard/voiceover'
+import { voicePieces } from '@/lib/storyboard/film'
 import { useGoToStep } from '@/lib/hooks/use-go-to-step'
 import { getProjectFurthestStep } from '../../workbench/actions'
 import { shorterMessage } from './music-card'
@@ -78,9 +79,14 @@ function GenerateVideoPromptsButton({ onAdvancedSince }: { onAdvancedSince: () =
   if (voiceover.current && voiceoverStaleness?.stale) {
     warnings.push('The voiceover is stale — it no longer matches the shots in the film.')
   }
-  if (voiceover.current && voiceoverLengthDiffers(voiceover.current.durationSec, pictureSec)) {
+  // Each shot's narration plays from its shot's start, so the voice can only outrun the
+  // picture - a pause inside the picture is a silent shot, not a mismatch.
+  const voiceEndSec = voiceover.current
+    ? voicePieces(laneShots, voiceover.current.spans).reduce((end, p) => Math.max(end, p.atSec + (p.toSec - p.fromSec)), 0)
+    : 0
+  if (voiceover.current && voiceEndSec > pictureSec && voiceoverLengthDiffers(voiceEndSec, pictureSec)) {
     warnings.push(
-      `The voiceover is ${formatTimecode(voiceover.current.durationSec)} and the picture is ${formatTimecode(pictureSec)} — they differ in length.`
+      `The voiceover runs to ${formatTimecode(voiceEndSec)} and the picture is ${formatTimecode(pictureSec)} — the end of the narration is cut off.`
     )
   }
   if (music.current && musicShorterThanPicture(music.current.durationSec, pictureSec, music.current.loop)) {

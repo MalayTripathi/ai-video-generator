@@ -289,7 +289,7 @@ export function createContinueRun(params: {
   return async (payload) => {
     if (!params.secret) {
       console.error(
-        `[images] IMAGES_INTERNAL_SECRET is not set - ${payload.generationIds.length} shot(s) of project ${payload.projectId} cannot continue past this run and are released for retry`
+        `[images] INTERNAL_CONTINUATION_SECRET is not set - ${payload.generationIds.length} shot(s) of project ${payload.projectId} cannot continue past this run and are released for retry`
       )
       return false
     }

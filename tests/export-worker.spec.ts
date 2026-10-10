@@ -141,10 +141,17 @@ test('a claimed job renders the seeded film, uploads its outputs and settles suc
   try {
     // Two stills and a 3s tone as the voiceover, with a matching read on the project.
     const shotIds: string[] = []
+    const { data: scenes } = await admin
+      .from('scenes')
+      .insert([
+        { project_id: projectId, position: 0, title: 'Opening' },
+        { project_id: projectId, position: 1, title: 'Close' },
+      ])
+      .select('id, position')
     for (const [i, colour] of ['#c0392b', '#2980b9'].entries()) {
       const { data: shot } = await admin
         .from('shots')
-        .insert({ project_id: projectId, order_index: i, shot_key: shotKey(), voice_over: i === 0 ? 'Hello there' : 'friend', duration_sec: 2, section_label: i === 0 ? 'Opening' : 'Close' })
+        .insert({ project_id: projectId, order_index: i, shot_key: shotKey(), voice_over: i === 0 ? 'Hello there' : 'friend', duration_sec: 2, scene_id: scenes!.find((s) => s.position === i)!.id })
         .select('id')
         .single()
       const imagePath = `${primary.user.id}/${projectId}/images/${shot!.id}/still.webp`

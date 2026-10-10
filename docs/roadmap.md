@@ -11,11 +11,11 @@ are not lost.
 - **A 150-shot storyboard batch outruns the image chain when frames are slow.** 17 runs of a
   150s budget at three in parallel start 102-204 frames (120s-45s per frame); 150 fit only
   if a frame averages <= ~73s. The rest settle failed, uncharged and retryable.
-- **Workbench (Step 2) — narration has no word budget per shot duration.** A 4 × 5s project
-  produced a 46s voiceover. Cap narration per shot at about duration × speaking rate
-  (words/sec in config), in both the Workbench shot generation and the agent paths.
-- **`resolveElement` matches only on current name, so a renamed element gets duplicated on
-  regeneration.** `resolveElement` (`src/app/api/projects/[id]/shots/logic.ts`) dedups
+- **Agent edits don't recompute a shot's duration from its words.** Shot generation sets
+  every duration from the words spoken (`src/lib/shots/durations.ts`); the agent's
+  `update_shot` / `insert_shot` still write whatever `duration_sec` the model gives.
+- **`ElementResolver` matches only on current name, so a renamed element gets duplicated on
+  regeneration.** `ElementResolver.resolve` (`src/lib/shots/write-chunk.ts`) dedups
   purely by `lower(name)`. If a user renames an element (a character, or the project's
   style element) after it's created, the next shot-list regeneration no longer matches it
   by its old name and inserts a new row alongside the renamed one instead of reusing it.
@@ -360,7 +360,30 @@ untouched). The Storyboard voiceover already follows it.
   before the POST to `/agent`, whose balance gate can 402.
 - **Workbench (Step 2) — shot generation.** `shots-context.tsx` flips `generationState` to
   `'generating'` (the skeleton) before the POST to `/shots`, on both the first-load trigger
-  and a confirmed retry. Not credit-gated yet, but it can 402 on the spend cap.
+  and a confirmed retry; a 402 restores the prior state and shows the credit figures.
 - **Workbench (Step 2) — camera derivation.** `use-camera-derivation.ts` sets
   `status: 'running'` and the pending fields' spinners before the POST to `.../camera`.
   Not credit-gated yet, but it can 402 on the spend cap.
+
+## Shot generation (Models Task 4)
+
+- **Re-measure the chunk size on Sonnet before production.** `SHOTS_PER_CHUNK` (8), the
+  chunk's 4,000 `max_tokens` and the 120s `SHOT_RUN_BUDGET_MS` were set from one Haiku
+  `generate_shots` row (316 output tokens/shot, ~26 tokens/s end to end). Re-derive them
+  from the `[shots] chunk ... outputTokens=` logs of real Sonnet runs; each is a config value.
+- **Re-measure words per second and padding as voiceovers accumulate.** Both come from one
+  English read (2.19 words/s; gaps p50 0.12s, max 0.21s). `node scripts/measure-voiceover-wps.mjs`
+  reports them per language and voice; other languages use the English pace until measured.
+- **A dead chain is only settled when the project is next touched.** There is no sweeper (a
+  Hobby cron runs daily at most): a run whose invocation died stays `running` until a
+  Workbench load, a shots request or an agent turn after its stale window settles it.
+- **An agent turn that dies after starting a chain is charged without its own cost.** If
+  the turn never hands its `turn_cost_usd` to the run, the run is charged from the chain's
+  calls alone once it is past the stale window.
+- **Chunks receive the full brief.** Beyond the outline, its scene and the previous shot,
+  each chunk is also sent the brief, so a script or screenplay is written from the source
+  text rather than a summary. It is a cached system block; drop it if cost says so.
+- **Voice placement when shots are reordered against the read.** The export renders each
+  forward run of pieces from its own input of the voice file (`voiceRuns`); a heavily
+  shuffled film opens the file many times.
+

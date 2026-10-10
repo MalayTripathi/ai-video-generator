@@ -1,96 +1,36 @@
 import { test, expect } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
-import { runShotGeneration } from '../src/app/api/projects/[id]/shots/logic'
-import { successMessage, truncatedMessage, throwingGateway } from './helpers/claude-fakes'
+import { successMessage, throwingGateway, truncatedMessage } from './helpers/claude-fakes'
+import { chainGateway, fakeOutline, fakeShot, insertChainProject, readChainShots, runChain } from './helpers/shot-chain'
 import { LiveCallsBlockedError, type ClaudeGateway } from '../src/lib/claude'
+
+// What one shot-generation run writes, through the chain's outline and chunk calls: the
+// title and video type, the assistant message, elements deduped by name, camera origins,
+// the project style, the claim's lifecycle and every call's usage row. The chain's
+// pacing, limits and charging are tests/shot-chain.spec.ts.
 
 const SHOT_KEY_RE = /^[23456789bcdfghjkmnpqrstvwxz]{5}$/
 
-const RICH_INPUT = {
-  title: 'The Lighthouse Keeper',
-  message: 'Here is your shot list.',
-  video_type: 'narrated_story',
-  shots: [
-    {
-      voice_over: 'Mara had kept the light for twenty years.',
-      visual_description: 'Wide shot of a lighthouse at dusk.',
-      shot_size: 'wide',
-      camera_angle: 'eye_level',
-      camera_movement: 'static',
-      shot_size_origin: 'derived',
-      camera_angle_origin: 'auto',
-      camera_movement_origin: 'auto',
-      duration_sec: 5,
-      section_label: 'Intro',
-      dialogue: [],
-      element_names: [{ name: 'Mara', type: 'character', description: 'A lighthouse keeper' }],
-    },
-    {
-      voice_over: 'One stormy night, she heard a voice on the wind.',
-      visual_description: 'Close up of Mara listening at the window.',
-      shot_size: 'close_up',
-      camera_angle: 'eye_level',
-      camera_movement: 'slow_push_in',
-      shot_size_origin: 'auto',
-      camera_angle_origin: 'auto',
-      camera_movement_origin: 'auto',
-      duration_sec: 4,
-      section_label: 'Intro',
-      // Same name as above, different casing - proves case-insensitive dedup.
-      dialogue: [{ speaker_name: 'mara', line: 'Is anyone out there?' }],
-      element_names: [],
-    },
-    {
-      voice_over: 'Her dog was the first to reach the shore.',
-      visual_description: 'Medium shot of a dog running along the rocks.',
-      shot_size: 'medium',
-      camera_angle: 'low',
-      camera_movement: 'pan',
-      shot_size_origin: 'auto',
-      camera_angle_origin: 'auto',
-      camera_movement_origin: 'auto',
-      duration_sec: 4,
-      section_label: 'Rescue',
-      dialogue: [],
-      // A second, genuinely distinct element - proves non-dedup across different names.
-      element_names: [{ name: 'Old Dog', type: 'character', description: 'Her loyal companion' }],
-    },
-  ],
-}
+const RICH_SHOTS = [
+  fakeShot('Mara had kept the light for twenty years.', {
+    visual_description: 'Wide shot of a lighthouse at dusk.',
+    shot_size_origin: 'derived',
+    element_names: [{ name: 'Mara', type: 'character', description: 'A lighthouse keeper' }],
+  }),
+  // Same name as above, different casing - proves case-insensitive dedup.
+  fakeShot('One stormy night, she heard a voice on the wind.', { dialogue: [{ speaker_name: 'mara', line: 'Is anyone out there?' }] }),
+  // A second, genuinely distinct element - proves non-dedup across different names.
+  fakeShot('Her dog was the first to reach the shore.', {
+    element_names: [{ name: 'Old Dog', type: 'character', description: 'Her loyal companion' }],
+  }),
+]
 
-async function insertProject(userId: string, durationTarget = '1-2min') {
-  const { data, error } = await admin
-    .from('projects')
-    .insert({
-      user_id: userId,
-      title: null,
-      source_text: 'A short film about a lighthouse keeper and her dog.',
-      video_type: 'auto',
-      duration_target: durationTarget,
-      current_step: 'workbench',
-    })
-    .select('id')
-    .single()
-  expect(error).toBeNull()
-  return data!.id as string
-}
-
-function buildShots(count: number) {
-  return Array.from({ length: count }, (_, i) => ({
-    voice_over: `Narration for shot ${i + 1}.`,
-    visual_description: `Visual for shot ${i + 1}.`,
-    shot_size: 'wide',
-    camera_angle: 'eye_level',
-    camera_movement: 'static',
-    shot_size_origin: 'auto',
-    camera_angle_origin: 'auto',
-    camera_movement_origin: 'auto',
-    duration_sec: 3,
-    section_label: 'Section',
-    dialogue: [],
-    element_names: [],
-  }))
+function richGateway(style: unknown[] = []) {
+  return chainGateway({
+    outline: fakeOutline([{ title: 'The Keeper', seconds: 90, element_names: ['Mara'] }], { title: 'The Lighthouse Keeper', video_type: 'narrated_story', style }),
+    chunk: () => ({ shots: RICH_SHOTS, scene_complete: true }),
+  })
 }
 
 async function readGeneration(projectId: string) {
@@ -106,492 +46,197 @@ async function readGeneration(projectId: string) {
   return data!
 }
 
+async function readUsage(projectId: string) {
+  const { data, error } = await admin.from('usage').select('*').eq('project_id', projectId)
+  expect(error).toBeNull()
+  return data ?? []
+}
+
 test.describe('Step 2 workbench - shot generation', () => {
-  test('parses shots, applies the title/video_type, inserts an assistant message, and lands on ready with the payload cleared', { tag: '@smoke' }, async () => {
-    const user = primary.user
-    {
-      const projectId = await insertProject(user.id)
-      const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
+  test('writes the shots, applies the title and video type, inserts an assistant message, and lands on succeeded with the payload cleared', { tag: '@smoke' }, async () => {
+    const projectId = await insertChainProject(primary.user.id)
+    const { request } = await runChain({ projectId, userId: primary.user.id, gateway: richGateway() })
+    expect(request.ok).toBe(true)
 
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-      expect(result.ok).toBe(true)
+    const shots = await readChainShots(projectId)
+    expect(shots.length).toBe(RICH_SHOTS.length)
+    const { data: keys } = await admin.from('shots').select('shot_key').eq('project_id', projectId)
+    expect(new Set(keys!.map((k) => k.shot_key)).size).toBe(keys!.length)
+    for (const { shot_key } of keys!) expect(shot_key).toMatch(SHOT_KEY_RE)
+    expect(shots.every((s) => s.scenes?.title === 'The Keeper')).toBe(true)
 
-      const { data: shots, error: shotsError } = await admin
-        .from('shots')
-        .select('shot_key')
-        .eq('project_id', projectId)
-      expect(shotsError).toBeNull()
-      expect(shots!.length).toBe(RICH_INPUT.shots.length)
+    const { data: project } = await admin.from('projects').select('title, video_type').eq('id', projectId).single()
+    expect(project).toEqual({ title: 'The Lighthouse Keeper', video_type: 'narrated_story' })
 
-      const keys = shots!.map((s) => s.shot_key)
-      expect(new Set(keys).size).toBe(keys.length)
-      for (const key of keys) expect(key).toMatch(SHOT_KEY_RE)
-
-      const { data: project, error: projectError } = await admin
-        .from('projects')
-        .select('title, video_type')
-        .eq('id', projectId)
-        .single()
-      expect(projectError).toBeNull()
-      expect(project!.title).toBe(RICH_INPUT.title)
-      expect(project!.video_type).toBe(RICH_INPUT.video_type)
-
-      const generation = await readGeneration(projectId)
-      expect(generation.state).toBe('succeeded')
-      expect(generation.payload).toBeNull()
-
-      const { data: messages, error: messagesError } = await admin
-        .from('messages')
-        .select('role, content')
-        .eq('project_id', projectId)
-        .eq('role', 'assistant')
-      expect(messagesError).toBeNull()
-      expect(messages!.length).toBeGreaterThan(0)
-      expect(messages![0].content.trim().length).toBeGreaterThan(0)
-    }
+    expect(await readGeneration(projectId)).toEqual({ state: 'succeeded', payload: null })
+    const { data: messages } = await admin.from('messages').select('content').eq('project_id', projectId).eq('role', 'assistant')
+    expect(messages!.length).toBeGreaterThan(0)
   })
 
   test('dedupes an element referenced by name in one shot and by dialogue speaker in another, and resolves dialogue to the deduped element', async () => {
-    const user = primary.user
-    {
-      const projectId = await insertProject(user.id)
-      const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
-
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-      expect(result.ok).toBe(true)
-
-      const { data: elements, error: elementsError } = await admin
-        .from('elements')
-        .select('id, name')
-        .eq('project_id', projectId)
-      expect(elementsError).toBeNull()
-      // Exactly 2 unique names (Mara, Old Dog) - not 3, which would mean the dialogue
-      // speaker "mara" created a second row instead of matching the element_names one.
-      expect(elements!.length).toBe(2)
-      const lowerNames = elements!.map((e) => e.name.toLowerCase())
-      expect(new Set(lowerNames).size).toBe(lowerNames.length)
-
-      const mara = elements!.find((e) => e.name.toLowerCase() === 'mara')
-      expect(mara).toBeTruthy()
-
-      const { data: shots, error: shotsError } = await admin
-        .from('shots')
-        .select('id, order_index')
-        .eq('project_id', projectId)
-        .order('order_index', { ascending: true })
-      expect(shotsError).toBeNull()
-
-      const dialogueShotId = shots!.find((s) => s.order_index === 1)!.id
-
-      const { data: dialogue, error: dialogueError } = await admin
-        .from('shot_dialogue')
-        .select('shot_id, element_id, line, order_index')
-        .eq('shot_id', dialogueShotId)
-        .order('order_index', { ascending: true })
-      expect(dialogueError).toBeNull()
-      expect(dialogue!.length).toBe(1)
-      expect(dialogue![0].element_id).toBe(mara!.id)
-    }
+    const projectId = await insertChainProject(primary.user.id)
+    await runChain({ projectId, userId: primary.user.id, gateway: richGateway() })
+    const { data: elements } = await admin.from('elements').select('id, name').eq('project_id', projectId)
+    expect(elements!.map((e) => e.name.toLowerCase()).sort()).toEqual(['mara', 'old dog'])
+    const mara = elements!.find((e) => e.name.toLowerCase() === 'mara')!
+    const shots = await readChainShots(projectId)
+    const { data: dialogue } = await admin.from('shot_dialogue').select('element_id').eq('shot_id', shots[1].id)
+    expect(dialogue).toEqual([{ element_id: mara.id }])
   })
 
   test('persists reported camera origins, and sanitizes an unrecognized origin (including a hypothetical override) to auto', async () => {
-    const user = primary.user
-    {
-      const projectId = await insertProject(user.id)
-      const input = {
-        title: 'Origin Test',
-        message: 'Here is your shot list.',
-        video_type: 'narrated_story',
-        shots: [
-          {
-            voice_over: 'Narration.',
-            visual_description: 'Wide shot of a lighthouse.',
-            shot_size: 'wide',
-            camera_angle: 'eye_level',
-            camera_movement: 'static',
-            shot_size_origin: 'derived',
-            camera_angle_origin: 'auto',
-            // The tool schema structurally blocks 'override' from the model, but this
-            // exercises the sanitizeEnum ?? 'auto' fallback directly in case a stored
-            // pending payload predates the schema change.
-            camera_movement_origin: 'override',
-            duration_sec: 3,
-            section_label: 'Intro',
-            dialogue: [],
-            element_names: [],
-          },
-        ],
-      }
-      const gateway: ClaudeGateway = { async createMessage() { return successMessage(input) } }
-
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-      expect(result.ok).toBe(true)
-
-      const { data: shots, error: shotsError } = await admin
-        .from('shots')
-        .select('shot_size_origin, camera_angle_origin, camera_movement_origin')
-        .eq('project_id', projectId)
-      expect(shotsError).toBeNull()
-      expect(shots!.length).toBe(1)
-      expect(shots![0].shot_size_origin).toBe('derived')
-      expect(shots![0].camera_angle_origin).toBe('auto')
-      expect(shots![0].camera_movement_origin).toBe('auto')
-    }
+    const projectId = await insertChainProject(primary.user.id)
+    const gateway = chainGateway({
+      outline: fakeOutline([{ title: 'A', seconds: 90 }]),
+      chunk: () => ({
+        shots: [fakeShot('Narration.', { shot_size_origin: 'derived', camera_movement_origin: 'override' })],
+        scene_complete: true,
+      }),
+    })
+    await runChain({ projectId, userId: primary.user.id, gateway })
+    const { data } = await admin.from('shots').select('shot_size_origin, camera_angle_origin, camera_movement_origin').eq('project_id', projectId)
+    expect(data).toEqual([{ shot_size_origin: 'derived', camera_angle_origin: 'auto', camera_movement_origin: 'auto' }])
   })
 
-  test('a gateway call that throws still leaves a usage row, failed, with a non-null estimated cost', async () => {
-    const user = primary.user
-    {
-      const projectId = await insertProject(user.id)
-      const gateway = throwingGateway('simulated network failure')
-
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-      expect(result.ok).toBe(false)
-
-      const { data: usageRows, error: usageError } = await admin
-        .from('usage')
-        .select('status, estimated_cost, step, operation')
-        .eq('project_id', projectId)
-      expect(usageError).toBeNull()
-      expect(usageRows!.length).toBe(1)
-      expect(usageRows![0].status).toBe('failed')
-      expect(usageRows![0].estimated_cost).not.toBeNull()
-      expect(usageRows![0].step).toBe('workbench')
-      expect(usageRows![0].operation).toBe('generate_shots')
-    }
+  test('a claim that succeeded is refused without retry - 409 retry_required, nothing called', async () => {
+    const projectId = await insertChainProject(primary.user.id)
+    await runChain({ projectId, userId: primary.user.id, gateway: richGateway() })
+    const again = await runChain({ projectId, userId: primary.user.id, gateway: throwingGateway('never'), retry: false })
+    expect(again.request).toMatchObject({ ok: false, status: 409, reason: 'retry_required' })
   })
 
-  test('a pre-network blocked call settles as failed with zero cost, not the quote', { tag: '@smoke' }, async () => {
-    const user = primary.user
-    {
-      const projectId = await insertProject(user.id)
-      const gateway = throwingGateway(new LiveCallsBlockedError())
-
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-      expect(result.ok).toBe(false)
-
-      const { data: usageRows, error: usageError } = await admin
-        .from('usage')
-        .select('status, estimated_cost, raw_usage')
-        .eq('project_id', projectId)
-      expect(usageError).toBeNull()
-      expect(usageRows!.length).toBe(1)
-      expect(usageRows![0].status).toBe('failed')
-      // Unlike the ordinary-throw case above, this must be exactly 0, not merely
-      // non-null - assertLiveCallsAllowed() throws before any request reaches
-      // Anthropic, so retaining the pre-flight quote here would be a real cost
-      // inflation, not a conservative over-count.
-      expect(usageRows![0].estimated_cost).toBe(0)
-      const raw = usageRows![0].raw_usage as { blocked?: boolean; billed?: boolean }
-      expect(raw.blocked).toBe(true)
-      expect(raw.billed).toBe(false)
-    }
-  })
-
-  test('a successful call writes exactly one succeeded usage row with a measured cost below the quote', async () => {
-    const user = primary.user
-    {
-      const projectId = await insertProject(user.id)
-      const gateway: ClaudeGateway = { async createMessage() { return successMessage(RICH_INPUT) } }
-
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-      expect(result.ok).toBe(true)
-
-      const { data: usageRows, error: usageError } = await admin
-        .from('usage')
-        .select('status, estimated_cost, quantity, raw_usage')
-        .eq('project_id', projectId)
-      expect(usageError).toBeNull()
-      expect(usageRows!.length).toBe(1)
-      expect(usageRows![0].status).toBe('succeeded')
-      expect(usageRows![0].quantity).toBe(20) // successMessage's fixed 10 input + 10 output tokens
-      const raw = usageRows![0].raw_usage as { quoted?: unknown }
-      // The measured cost (tiny, fixed 20-token usage) must be far below the worst-case
-      // quote (max_tokens at the output rate) that raw_usage.quoted would have recorded
-      // had settle never overwritten it.
-      expect(raw.quoted).toBeUndefined()
-      expect(usageRows![0].estimated_cost).toBeGreaterThan(0)
-      expect(usageRows![0].estimated_cost).toBeLessThan(0.001)
-    }
-  })
-
-  test('a max_tokens truncation writes a failed usage row with stop_reason max_tokens and a measured cost', async () => {
-    const user = primary.user
-    {
-      const projectId = await insertProject(user.id)
-      const gateway: ClaudeGateway = { async createMessage() { return truncatedMessage(RICH_INPUT) } }
-
-      const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-      expect(result.ok).toBe(false)
-      expect(result.status).toBe(422)
-
-      const { data: usageRows, error: usageError } = await admin
-        .from('usage')
-        .select('status, stop_reason, estimated_cost')
-        .eq('project_id', projectId)
-      expect(usageError).toBeNull()
-      expect(usageRows!.length).toBe(1)
-      expect(usageRows![0].status).toBe('failed')
-      expect(usageRows![0].stop_reason).toBe('max_tokens')
-      expect(usageRows![0].estimated_cost).not.toBeNull()
-    }
-  })
-
-  test('a gateway returning more shots than the target: all are persisted intact and the over-count is logged, not truncated', async () => {
-    const user = primary.user
-    {
-      // 30-60s tier has targetShots = 8 (src/lib/config/duration.ts); the schema's
-      // maxItems should prevent this in normal operation, but this test proves the
-      // server-side backstop never drops shots if it's ever hit.
-      const projectId = await insertProject(user.id, '30-60s')
-      const overCountInput = {
-        title: 'Over Count',
-        message: 'Here is your shot list.',
-        video_type: 'narrated_story',
-        shots: buildShots(10),
-      }
-      const gateway: ClaudeGateway = { async createMessage() { return successMessage(overCountInput) } }
-
-      const warnCalls: unknown[][] = []
-      const originalWarn = console.warn
-      console.warn = (...args: unknown[]) => {
-        warnCalls.push(args)
-      }
-
-      let result
-      try {
-        result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-      } finally {
-        console.warn = originalWarn
-      }
-
-      expect(result.ok).toBe(true)
-
-      const { data: shots, error: shotsError } = await admin
-        .from('shots')
-        .select('shot_key')
-        .eq('project_id', projectId)
-      expect(shotsError).toBeNull()
-      // Nothing dropped, despite exceeding the target of 8.
-      expect(shots!.length).toBe(10)
-
-      const overCountWarning = warnCalls.find(
-        (args) => typeof args[0] === 'string' && args[0].includes('[shots] over_count')
-      )
-      expect(overCountWarning).toBeTruthy()
-      expect(overCountWarning![0]).toContain(`project=${projectId}`)
-      expect(overCountWarning![0]).toContain('target=8')
-      expect(overCountWarning![0]).toContain('actual=10')
-    }
+  test('recovery replays a stored outline without calling the gateway again, replacing the existing shots', { tag: '@smoke' }, async () => {
+    const projectId = await insertChainProject(primary.user.id)
+    await runChain({ projectId, userId: primary.user.id, gateway: richGateway() })
+    const before = await readChainShots(projectId)
+    // A failed attempt that had already paid for its outline.
+    await admin
+      .from('generations')
+      .update({ state: 'failed', payload: fakeOutline([{ title: 'Recovered', seconds: 90 }]) as never })
+      .eq('project_id', projectId)
+      .eq('operation', 'generate_shots')
+    const gateway = chainGateway({
+      outline: fakeOutline([{ title: 'Must not be asked', seconds: 90 }]),
+      chunk: () => ({ shots: [fakeShot('After recovery.')], scene_complete: true }),
+    })
+    await runChain({ projectId, userId: primary.user.id, gateway, retry: true })
+    expect(gateway.calls.filter((c) => c.tool === 'write_outline')).toHaveLength(0)
+    const after = await readChainShots(projectId)
+    expect(after.map((s) => s.voice_over)).toEqual(['After recovery.'])
+    expect(after.every((s) => !before.some((b) => b.id === s.id))).toBe(true)
+    expect(after[0].scenes!.title).toBe('Recovered')
   })
 })
 
-test.describe('Step 2 workbench - style element (C5 Task 2)', () => {
-  function inputWithStyle(style: unknown, shots = buildShots(1)) {
-    return {
-      title: 'Style Test',
-      message: 'Here is your shot list.',
-      video_type: 'narrated_story',
-      shots,
-      style,
-    }
-  }
+test.describe('Step 2 workbench - shot generation usage rows', () => {
+  test('a gateway call that throws still leaves a usage row, failed, with a non-null estimated cost', async () => {
+    const projectId = await insertChainProject(primary.user.id)
+    await runChain({ projectId, userId: primary.user.id, gateway: throwingGateway('simulated network failure') })
+    const usage = await readUsage(projectId)
+    expect(usage).toHaveLength(1)
+    expect(usage[0]).toMatchObject({ status: 'failed', step: 'workbench', operation: 'generate_shots' })
+    expect(usage[0].estimated_cost).not.toBeNull()
+    expect((await readGeneration(projectId)).state).toBe('failed')
+  })
 
-  test('a single style candidate produces exactly one elements row of type style', async () => {
-    const user = primary.user
-    const projectId = await insertProject(user.id)
+  test('a pre-network blocked call settles as failed with zero cost, not the quote', { tag: '@smoke' }, async () => {
+    const projectId = await insertChainProject(primary.user.id)
+    await runChain({ projectId, userId: primary.user.id, gateway: throwingGateway(new LiveCallsBlockedError()) })
+    const usage = await readUsage(projectId)
+    expect(usage).toHaveLength(1)
+    expect(usage[0].status).toBe('failed')
+    // Exactly 0: assertLiveCallsAllowed() throws before any request reaches Anthropic.
+    expect(usage[0].estimated_cost).toBe(0)
+    expect(usage[0].raw_usage).toMatchObject({ blocked: true, billed: false })
+  })
+
+  test('every successful call writes one succeeded usage row with a measured cost below the quote', async () => {
+    const projectId = await insertChainProject(primary.user.id)
+    const gateway = richGateway()
+    await runChain({ projectId, userId: primary.user.id, gateway })
+    const usage = await readUsage(projectId)
+    expect(usage).toHaveLength(gateway.calls.length)
+    for (const row of usage) {
+      expect(row.status).toBe('succeeded')
+      expect(row.quantity).toBe(20) // successMessage's fixed 10 input + 10 output tokens
+      expect(Number(row.estimated_cost)).toBeGreaterThan(0)
+      expect(Number(row.estimated_cost)).toBeLessThan(Number(row.quoted_cost))
+    }
+  })
+
+  test('a chunk cut short at max_tokens keeps its saved shots, writes a failed usage row with stop_reason max_tokens, and the run ends failed with the scene left unwritten', async () => {
+    const projectId = await insertChainProject(primary.user.id)
+    let calls = 0
     const gateway: ClaudeGateway = {
-      async createMessage() {
-        return successMessage(inputWithStyle([{ name: 'Warm Nostalgia', description: 'clean lines, soft colors, warm tones' }]))
+      async createMessage(params) {
+        calls++
+        const tool = (params.tool_choice as { name: string }).name
+        if (tool === 'write_outline') return successMessage(fakeOutline([{ title: 'A', seconds: 90 }]), 'write_outline')
+        return truncatedMessage({ shots: [fakeShot('Partial.')], scene_complete: false })
       },
     }
+    await runChain({ projectId, userId: primary.user.id, gateway })
+    expect(calls).toBe(2)
+    expect((await readChainShots(projectId)).map((s) => s.voice_over)).toEqual(['Partial.'])
+    const chunkUsage = (await readUsage(projectId)).filter((u) => u.stop_reason === 'max_tokens')
+    expect(chunkUsage).toHaveLength(1)
+    expect(chunkUsage[0].status).toBe('failed')
+    const { data: chunks } = await admin.from('shot_run_chunks').select('status, payload, scene_complete').eq('project_id', projectId)
+    expect(chunks).toEqual([{ status: 'failed', payload: null, scene_complete: false }])
+    expect((await readGeneration(projectId)).state).toBe('failed')
+  })
+})
 
-    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-    expect(result.ok).toBe(true)
-
-    const { data: styleElements, error } = await admin
-      .from('elements')
-      .select('id, name, type, description')
-      .eq('project_id', projectId)
-      .eq('type', 'style')
-    expect(error).toBeNull()
-    expect(styleElements!.length).toBe(1)
-    expect(styleElements![0].name).toBe('Warm Nostalgia')
-    expect(styleElements![0].description).toBe('clean lines, soft colors, warm tones')
+test.describe('Step 2 workbench - the project style', () => {
+  test('a single style candidate produces exactly one elements row of type style, never bound to a shot', async () => {
+    const projectId = await insertChainProject(primary.user.id)
+    await runChain({ projectId, userId: primary.user.id, gateway: richGateway([{ name: 'Warm Nostalgia', description: 'soft colors, warm tones' }]) })
+    const { data: styles } = await admin.from('elements').select('id, name, description').eq('project_id', projectId).eq('type', 'style')
+    expect(styles!.map((s) => [s.name, s.description])).toEqual([['Warm Nostalgia', 'soft colors, warm tones']])
+    const { data: bindings } = await admin.from('shot_elements').select('element_id').eq('element_id', styles![0].id)
+    expect(bindings).toHaveLength(0)
   })
 
   test('more than one style candidate: only the first is inserted, the rest discarded', async () => {
-    const user = primary.user
-    const projectId = await insertProject(user.id)
-    const gateway: ClaudeGateway = {
-      async createMessage() {
-        return successMessage(
-          inputWithStyle([
-            { name: 'First Look', description: 'first' },
-            { name: 'Second Look', description: 'second' },
-          ])
-        )
-      },
-    }
-
-    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-    expect(result.ok).toBe(true)
-
-    const { data: styleElements, error } = await admin
-      .from('elements')
-      .select('name')
-      .eq('project_id', projectId)
-      .eq('type', 'style')
-    expect(error).toBeNull()
-    expect(styleElements!.length).toBe(1)
-    expect(styleElements![0].name).toBe('First Look')
+    const projectId = await insertChainProject(primary.user.id)
+    await runChain({
+      projectId,
+      userId: primary.user.id,
+      gateway: richGateway([
+        { name: 'First Look', description: 'first' },
+        { name: 'Second Look', description: 'second' },
+      ]),
+    })
+    const { data: styles } = await admin.from('elements').select('name').eq('project_id', projectId).eq('type', 'style')
+    expect(styles).toEqual([{ name: 'First Look' }])
   })
 
-  test('no shot_elements row ever references the style element', async () => {
-    const user = primary.user
-    const projectId = await insertProject(user.id)
-    const input = { ...RICH_INPUT, style: [{ name: 'House Style', description: 'muted palette' }] }
-    const gateway: ClaudeGateway = { async createMessage() { return successMessage(input) } }
-
-    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-    expect(result.ok).toBe(true)
-
-    const { data: styleElement, error: styleError } = await admin
+  test('a soft-deleted element with a matching name is not reused - generation inserts a fresh row', async () => {
+    const projectId = await insertChainProject(primary.user.id)
+    const { data: deleted } = await admin
       .from('elements')
-      .select('id')
-      .eq('project_id', projectId)
-      .eq('type', 'style')
-      .single()
-    expect(styleError).toBeNull()
-
-    const { data: bindings, error: bindingsError } = await admin
-      .from('shot_elements')
-      .select('element_id')
-      .eq('element_id', styleElement!.id)
-    expect(bindingsError).toBeNull()
-    expect(bindings!.length).toBe(0)
-  })
-
-  test('a soft-deleted element with a matching name is not reused - regeneration inserts a fresh row', async () => {
-    const user = primary.user
-    const projectId = await insertProject(user.id)
-
-    const { data: deletedElement, error: insertError } = await admin
-      .from('elements')
-      .insert({
-        project_id: projectId,
-        name: 'Vintage Film',
-        type: 'style',
-        description: 'an old, now-deleted style',
-        deleted_at: new Date().toISOString(),
-      })
-      .select('id, deleted_at')
-      .single()
-    expect(insertError).toBeNull()
-
-    const gateway: ClaudeGateway = {
-      async createMessage() {
-        return successMessage(inputWithStyle([{ name: 'Vintage Film', description: 'a fresh take' }]))
-      },
-    }
-
-    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-    expect(result.ok).toBe(true)
-
-    const { data: matches, error } = await admin
-      .from('elements')
-      .select('id, deleted_at, description')
-      .eq('project_id', projectId)
-      .ilike('name', 'Vintage Film')
-    expect(error).toBeNull()
-    expect(matches!.length).toBe(2)
-
-    const original = matches!.find((m) => m.id === deletedElement!.id)
-    const fresh = matches!.find((m) => m.id !== deletedElement!.id)
-    expect(original).toBeTruthy()
-    expect(original!.deleted_at).not.toBeNull()
-    expect(fresh).toBeTruthy()
-    expect(fresh!.deleted_at).toBeNull()
-    expect(fresh!.description).toBe('a fresh take')
-  })
-
-  test('a style name matching an existing (non-deleted) element resolves to that row instead of erroring', async () => {
-    const user = primary.user
-    const projectId = await insertProject(user.id)
-
-    const { data: existing, error: insertError } = await admin
-      .from('elements')
-      .insert({ project_id: projectId, name: 'Golden Hour', type: 'prop', description: 'a lighting prop' })
+      .insert({ project_id: projectId, name: 'Vintage Film', type: 'style', description: 'old', deleted_at: new Date().toISOString() })
       .select('id')
       .single()
-    expect(insertError).toBeNull()
-
-    const gateway: ClaudeGateway = {
-      async createMessage() {
-        return successMessage(inputWithStyle([{ name: 'Golden Hour', description: 'warm backlight everywhere' }]))
-      },
-    }
-
-    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-    expect(result.ok).toBe(true)
-
-    const { data: matches, error } = await admin
-      .from('elements')
-      .select('id, type')
-      .eq('project_id', projectId)
-      .ilike('name', 'Golden Hour')
-    expect(error).toBeNull()
-    // No duplicate inserted - resolveElement's name-only match reused the existing row,
-    // exactly as any other name collision would (the unique index has no type component).
-    expect(matches!.length).toBe(1)
-    expect(matches![0].id).toBe(existing!.id)
-    expect(matches![0].type).toBe('prop')
+    await runChain({ projectId, userId: primary.user.id, gateway: richGateway([{ name: 'Vintage Film', description: 'a fresh take' }]) })
+    const { data: matches } = await admin.from('elements').select('id, deleted_at, description').eq('project_id', projectId).ilike('name', 'Vintage Film')
+    expect(matches).toHaveLength(2)
+    const fresh = matches!.find((m) => m.id !== deleted!.id)!
+    expect(fresh).toMatchObject({ deleted_at: null, description: 'a fresh take' })
   })
 
-  test('a per-shot element colliding by name with the style element fails loudly instead of binding it into shot_elements', async () => {
-    const user = primary.user
-    const projectId = await insertProject(user.id)
-    const input = {
-      title: 'Collision Test',
-      message: 'Here is your shot list.',
-      video_type: 'narrated_story',
-      style: [{ name: 'Echo', description: 'muted tones' }],
-      shots: [
-        {
-          voice_over: 'Narration.',
-          visual_description: 'Wide shot.',
-          shot_size: 'wide',
-          camera_angle: 'eye_level',
-          camera_movement: 'static',
-          shot_size_origin: 'auto',
-          camera_angle_origin: 'auto',
-          camera_movement_origin: 'auto',
-          duration_sec: 3,
-          section_label: 'Intro',
-          dialogue: [],
-          // Same name as the style candidate above - resolveElement will hand back the
-          // style row, and the guard must refuse to bind it into shot_elements.
-          element_names: [{ name: 'Echo', type: 'prop', description: 'a prop that is not the style' }],
-        },
-      ],
-    }
-    const gateway: ClaudeGateway = { async createMessage() { return successMessage(input) } }
-
-    const result = await runShotGeneration({ gateway, supabase: admin, projectId, userId: user.id, retry: false, attemptId: crypto.randomUUID(), recordFixedSpend: async () => {} })
-    expect(result.ok).toBe(false)
-    expect(result.status).toBe(500)
-
-    const { data: shots, error: shotsError } = await admin.from('shots').select('id').eq('project_id', projectId)
-    expect(shotsError).toBeNull()
-    // The guard fires inside the resolve-elements try block, before the shots
-    // delete-and-reinsert - nothing was ever persisted for this failed attempt.
-    expect(shots!.length).toBe(0)
-
-    const { data: bindings, error: bindingsError } = await admin
-      .from('shot_elements')
-      .select('shot_id')
-      .in('shot_id', (shots ?? []).map((s) => s.id))
-    expect(bindingsError).toBeNull()
-    expect(bindings!.length).toBe(0)
+  test('a per-shot element colliding by name with the style element fails that chunk loudly instead of binding the style', async () => {
+    const projectId = await insertChainProject(primary.user.id)
+    const gateway = chainGateway({
+      outline: fakeOutline([{ title: 'A', seconds: 90 }], { style: [{ name: 'Echo', description: 'muted tones' }] }),
+      chunk: () => ({
+        shots: [fakeShot('Narration.', { element_names: [{ name: 'Echo', type: 'prop', description: 'not the style' }] })],
+        scene_complete: true,
+      }),
+    })
+    await runChain({ projectId, userId: primary.user.id, gateway })
+    expect(await readChainShots(projectId)).toHaveLength(0)
+    const { data: chunks } = await admin.from('shot_run_chunks').select('status').eq('project_id', projectId)
+    expect(chunks).toEqual([{ status: 'failed' }])
   })
 })

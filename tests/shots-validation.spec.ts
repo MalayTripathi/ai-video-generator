@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { sanitizeEnum, parseRawShots, isUsableShot } from '../src/app/api/projects/[id]/shots/logic'
+import { sanitizeEnum, parseRawShots, isUsableShot } from '../src/lib/shots/write-chunk'
 import { SHOT_SIZES } from '../src/lib/config/enums'
 
 test.describe('write_shots validation', () => {
@@ -22,7 +22,6 @@ test.describe('write_shots validation', () => {
         camera_angle_origin: null,
         camera_movement_origin: null,
         duration_sec: null,
-        section_label: null,
         dialogue: [],
         element_names: [],
       })
@@ -39,7 +38,6 @@ test.describe('write_shots validation', () => {
         camera_angle_origin: null,
         camera_movement_origin: null,
         duration_sec: null,
-        section_label: null,
         dialogue: [],
         element_names: [],
       })
@@ -55,7 +53,6 @@ test.describe('write_shots validation', () => {
         camera_angle: 'eye_level',
         camera_movement: 'static',
         duration_sec: 5,
-        section_label: 'Introduction',
         dialogue: [],
         element_names: [{ name: 'Taj Mahal', type: 'location', description: 'A white marble mausoleum.' }],
       },
@@ -66,7 +63,6 @@ test.describe('write_shots validation', () => {
         camera_angle: 'eye_level',
         camera_movement: 'static',
         duration_sec: 5,
-        section_label: 'Introduction',
         dialogue: [],
         element_names: [],
       },
@@ -92,7 +88,6 @@ test.describe('write_shots validation', () => {
         camera_angle_origin: 'auto',
         camera_movement_origin: 'auto',
         duration_sec: 5,
-        section_label: 'Introduction',
         dialogue: [],
         element_names: [],
       },
@@ -114,7 +109,6 @@ test.describe('write_shots validation', () => {
         camera_angle: null,
         camera_movement: null,
         duration_sec: 6,
-        section_label: 'Foundation',
         dialogue: [{ speaker_name: 'Worker' }, { speaker_name: 'Worker', line: 'Lift on three.' }],
         element_names: [{ name: '' }, { name: 'Workers', type: 'character', description: 'Construction crew.' }],
       },

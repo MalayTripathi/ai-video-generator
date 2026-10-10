@@ -7,7 +7,7 @@ import { stepIndex } from '../src/lib/config/pipeline'
 import { SIGNUP_GRANT_CREDITS, CREDIT_PRICE_VERSION } from '../src/lib/config/credits'
 import { durationConfig } from '../src/lib/config/duration'
 import { successMessage, throwingGateway, textMessage } from './helpers/claude-fakes'
-import { runShotGeneration, BILLED_BY_TURN } from '../src/app/api/projects/[id]/shots/logic'
+import { chainGateway, fakeOutline, fakeShot, runChain } from './helpers/shot-chain'
 import { runCameraDerivation } from '../src/app/api/projects/[id]/shots/[shotId]/camera/logic'
 import { runAgentTurn } from '../src/app/api/projects/[id]/agent/logic'
 import { grantAndReadBalance } from './helpers/ledger-child'
@@ -83,6 +83,8 @@ async function seedProject(userId: string, overrides: Record<string, unknown> = 
       source_text: 'A short film for fixed-price ledger tests.',
       video_type: 'auto',
       duration_target: '30-60s',
+      // Shot generation sets lengths from the project's video model, which intake always sets.
+      video_model: 'wan-3.0',
       current_step: 'workbench',
       furthest_step: stepIndex('workbench'),
       ...overrides,
@@ -125,189 +127,62 @@ async function readUsageRows(projectId: string) {
   return data ?? []
 }
 
-function buildShots(count: number) {
-  return Array.from({ length: count }, (_, i) => ({
-    voice_over: `Narration for shot ${i + 1}.`,
-    visual_description: `Visual for shot ${i + 1}.`,
-    shot_size: 'wide',
-    camera_angle: 'eye_level',
-    camera_movement: 'static',
-    shot_size_origin: 'auto',
-    camera_angle_origin: 'auto',
-    camera_movement_origin: 'auto',
-    duration_sec: 3,
-    section_label: 'Section',
-    dialogue: [],
-    element_names: [],
-  }))
+// A chain whose one scene is written as `count` shots in a single chunk.
+function shotsGateway(count: number) {
+  return chainGateway({
+    outline: fakeOutline([{ title: 'Only', seconds: 45 }]),
+    chunk: () => ({ shots: Array.from({ length: count }, (_, i) => fakeShot(`Narration for shot ${i + 1}.`)), scene_complete: true }),
+  })
 }
 
+const REAL_SHOT_LEDGER = { recordFixedSpend: realRecordFixedSpend, recordDynamicSpend: realRecordDynamicSpend }
+
 test.describe('generate_shots (button trigger) - fixed-price ledger wiring', () => {
-  test('writes one ledger row priced off the persisted count, not the tier target', async () => {
-    // '1-2min' targets 15 shots (duration.ts) - the fake gateway returns only 3, so a
-    // price keyed on the target (2 * 15 = 30) would silently overcharge.
+  test('writes one ledger row priced off the saved count, not the tier target', async () => {
+    // '1-2min' targets 15 shots (duration.ts) - the chain saves only 3, so a price keyed on
+    // the target (2 * 15 = 30) would silently overcharge.
     expect(durationConfig['1-2min'].targetShots).toBe(15)
     const projectId = await seedProject(primary.user.id, { duration_target: '1-2min' })
-    const gateway: ClaudeGateway = {
-      async createMessage() {
-        return successMessage({ title: null, message: '', video_type: 'auto', shots: buildShots(3) })
-      },
-    }
-
-    const result = await runShotGeneration({
-      gateway,
-      supabase: admin,
-      projectId,
-      userId: primary.user.id,
-      retry: false,
-      attemptId: crypto.randomUUID(),
-      recordFixedSpend: realRecordFixedSpend,
-    })
-    expect(result.ok).toBe(true)
-    if (result.ok) expect(result.data.shots.length).toBe(3)
+    const { request } = await runChain({ projectId, userId: primary.user.id, gateway: shotsGateway(3), ledger: REAL_SHOT_LEDGER })
+    expect(request.ok).toBe(true)
 
     const rows = await readLedgerRows(projectId)
     expect(rows.length).toBe(1)
-    expect(rows[0].kind).toBe('spend')
-    expect(rows[0].pricing_mode).toBe('fixed')
-    expect(rows[0].step).toBe('workbench')
-    expect(rows[0].operation).toBe('generate_shots')
-    expect(rows[0].message_id).toBeNull()
-    expect(rows[0].shot_key).toBeNull()
-    expect(rows[0].delta).toBe(-6) // 2 credits/shot * 3 persisted
-    expect(rows[0].delta).not.toBe(-30) // what pricing off the tier target would produce
+    expect(rows[0]).toMatchObject({ kind: 'spend', pricing_mode: 'fixed', step: 'workbench', operation: 'generate_shots', message_id: null, shot_key: null })
+    expect(rows[0].delta).toBe(-6) // 2 credits/shot * 3 saved
   })
 
-  test('a recovered generate_shots (replaying a persisted payload) writes no ledger row', async () => {
+  test('a failed run that saved nothing writes no ledger row', async () => {
     const projectId = await seedProject(primary.user.id)
-    const { error: generationError } = await admin.from('generations').insert({
-      project_id: projectId,
-      step: 'workbench',
-      operation: 'generate_shots',
-      shot_id: null,
-      state: 'failed',
-      payload: { title: null, message: '', video_type: 'auto', shots: buildShots(2) } as never,
-    })
-    expect(generationError).toBeNull()
-
-    // A gateway that throws if ever called - RECOVER must never reach it, so this
-    // doubles as proof no fresh Claude call happened, not just that no row was written.
-    const result = await runShotGeneration({
-      gateway: throwingGateway('RECOVER must never call the gateway'),
-      supabase: admin,
-      projectId,
-      userId: primary.user.id,
-      retry: true,
-      attemptId: crypto.randomUUID(),
-      recordFixedSpend: realRecordFixedSpend,
-    })
-    expect(result.ok).toBe(true)
-
-    const rows = await readLedgerRows(projectId)
-    expect(rows.length).toBe(0)
+    await runChain({ projectId, userId: primary.user.id, gateway: throwingGateway('simulated failure'), ledger: REAL_SHOT_LEDGER })
+    expect(await readLedgerRows(projectId)).toHaveLength(0)
   })
 
-  test('a failed generate_shots call writes no ledger row', async () => {
+  test('a forced ledger-write failure is swallowed - the run still completes, and no row is written', async () => {
     const projectId = await seedProject(primary.user.id)
-    const result = await runShotGeneration({
-      gateway: throwingGateway('simulated failure'),
-      supabase: admin,
+    const { runs } = await runChain({
       projectId,
       userId: primary.user.id,
-      retry: false,
-      attemptId: crypto.randomUUID(),
-      recordFixedSpend: realRecordFixedSpend,
-    })
-    expect(result.ok).toBe(false)
-
-    const rows = await readLedgerRows(projectId)
-    expect(rows.length).toBe(0)
-  })
-
-  test('a forced ledger-write failure is swallowed - the request still succeeds, and no row is written', async () => {
-    const projectId = await seedProject(primary.user.id)
-    const gateway: ClaudeGateway = {
-      async createMessage() {
-        return successMessage({ title: null, message: '', video_type: 'auto', shots: buildShots(2) })
-      },
-    }
-
-    const result = await runShotGeneration({
-      gateway,
-      supabase: admin,
-      projectId,
-      userId: primary.user.id,
-      retry: false,
-      attemptId: crypto.randomUUID(),
-      recordFixedSpend: async () => {
-        throw new Error('simulated ledger write failure')
+      gateway: shotsGateway(2),
+      ledger: {
+        recordFixedSpend: async () => {
+          throw new Error('simulated ledger write failure')
+        },
+        recordDynamicSpend: realRecordDynamicSpend,
       },
     })
-    expect(result.ok).toBe(true)
-
-    const rows = await readLedgerRows(projectId)
-    expect(rows.length).toBe(0)
+    expect(runs.at(-1)!.result).toMatchObject({ outcome: 'finished', status: 'completed' })
+    expect(await readLedgerRows(projectId)).toHaveLength(0)
   })
 
-  test('calling generate_shots twice with the same attemptId produces exactly one row and does not throw', async () => {
+  test('two runs reusing one attemptId produce exactly one row and do not throw', async () => {
     const projectId = await seedProject(primary.user.id)
     const attemptId = crypto.randomUUID()
-    const gateway: ClaudeGateway = {
-      async createMessage() {
-        return successMessage({ title: null, message: '', video_type: 'auto', shots: buildShots(2) })
-      },
-    }
-
-    const first = await runShotGeneration({
-      gateway,
-      supabase: admin,
-      projectId,
-      userId: primary.user.id,
-      retry: false,
-      attemptId,
-      recordFixedSpend: realRecordFixedSpend,
-    })
-    expect(first.ok).toBe(true)
-
-    // generate_shots is claimable again from 'succeeded' with retry: true.
-    const second = await runShotGeneration({
-      gateway,
-      supabase: admin,
-      projectId,
-      userId: primary.user.id,
-      retry: true,
-      attemptId,
-      recordFixedSpend: realRecordFixedSpend,
-    })
-    expect(second.ok).toBe(true)
-
-    const rows = await readLedgerRows(projectId)
-    expect(rows.length).toBe(1)
-  })
-
-  test('the agent-triggered path (BILLED_BY_TURN) writes no fixed-price row', async () => {
-    // Direct unit check of the sentinel branch itself, independent of the fuller
-    // regenerate_all_shots-through-runAgentTurn fixture in agent-turn-ledger.spec.ts.
-    const projectId = await seedProject(primary.user.id)
-    const gateway: ClaudeGateway = {
-      async createMessage() {
-        return successMessage({ title: null, message: '', video_type: 'auto', shots: buildShots(2) })
-      },
-    }
-
-    const result = await runShotGeneration({
-      gateway,
-      supabase: admin,
-      projectId,
-      userId: primary.user.id,
-      retry: false,
-      attemptId: crypto.randomUUID(),
-      recordFixedSpend: BILLED_BY_TURN,
-    })
-    expect(result.ok).toBe(true)
-
-    const rows = await readLedgerRows(projectId)
-    expect(rows.length).toBe(0)
+    await runChain({ projectId, userId: primary.user.id, gateway: shotsGateway(2), ledger: REAL_SHOT_LEDGER, attemptId })
+    // The run record is keyed by attempt, so a second request with the same id is refused
+    // at its insert - and the ledger never sees a second row either way.
+    await runChain({ projectId, userId: primary.user.id, gateway: shotsGateway(2), ledger: REAL_SHOT_LEDGER, attemptId, retry: true })
+    expect(await readLedgerRows(projectId)).toHaveLength(1)
   })
 })
 
@@ -862,27 +737,15 @@ test.describe('write_image_prompts (image-prompts route) - fixed-price ledger wi
 })
 
 test.describe('usage rows unchanged by Part A/B (gate 12)', () => {
-  test('generate_shots writes the same usage row shape as before this task - one row, no ledger-related columns touched', async () => {
+  test('generate_shots writes one usage row per provider call - the outline and each chunk', async () => {
     const projectId = await seedProject(primary.user.id)
-    const gateway: ClaudeGateway = {
-      async createMessage() {
-        return successMessage({ title: null, message: '', video_type: 'auto', shots: buildShots(2) })
-      },
-    }
-    await runShotGeneration({
-      gateway,
-      supabase: admin,
-      projectId,
-      userId: primary.user.id,
-      retry: false,
-      attemptId: crypto.randomUUID(),
-      recordFixedSpend: realRecordFixedSpend,
-    })
+    const gateway = shotsGateway(2)
+    await runChain({ projectId, userId: primary.user.id, gateway, ledger: REAL_SHOT_LEDGER })
 
     const usageRows = await readUsageRows(projectId)
-    expect(usageRows.length).toBe(1)
-    expect(usageRows[0].operation).toBe('generate_shots')
-    expect(usageRows[0].status).toBe('succeeded')
+    expect(gateway.calls.length).toBe(2) // the outline and one chunk
+    expect(usageRows.length).toBe(gateway.calls.length)
+    expect(usageRows.every((r) => r.operation === 'generate_shots' && r.status === 'succeeded')).toBe(true)
   })
 
   test('derive_camera writes the same usage row shape as before this task - one row', async () => {
@@ -933,24 +796,12 @@ test.describe('balance across a mixed sequence (gate 11)', () => {
       })
       expect(turnResult.ok).toBe(true)
 
-      // One button-triggered generation: 2 shots persisted -> 2 * 2 = 4 credits. This
-      // wholesale-replaces the project's shot list (runShotsPipeline delete-then-insert),
-      // so the shots used for the camera derivations below are seeded AFTER this call,
-      // not before - seeding first would have them deleted out from under the test.
-      const shotsResult = await runShotGeneration({
-        gateway: {
-          async createMessage() {
-            return successMessage({ title: null, message: '', video_type: 'auto', shots: buildShots(2) })
-          },
-        },
-        supabase: admin,
-        projectId,
-        userId: user.id,
-        retry: false,
-        attemptId: crypto.randomUUID(),
-        recordFixedSpend: realRecordFixedSpend,
-      })
-      expect(shotsResult.ok).toBe(true)
+      // One button-triggered generation: 2 shots saved -> 2 * 2 = 4 credits. This
+      // wholesale-replaces the project's shot list once its outline lands, so the shots
+      // used for the camera derivations below are seeded AFTER this run, not before -
+      // seeding first would have them deleted out from under the test.
+      const shotsResult = await runChain({ projectId, userId: user.id, gateway: shotsGateway(2), ledger: REAL_SHOT_LEDGER })
+      expect(shotsResult.request.ok).toBe(true)
 
       // Two camera derivations: 3 credits each -> 6 credits.
       const cameraGateway: ClaudeGateway = {

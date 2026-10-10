@@ -16,19 +16,21 @@ import { getProjectElementsForUser, type ElementGroup } from '@/lib/elements/rea
 import type { DisplayDialogueLine, DisplayShot } from './_components/types'
 import type { Tables } from '@/lib/database.types'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import { recordDynamicSpend, recordFixedSpend } from '@/lib/credits/ledger'
+import { isLiveShotRun, settleDeadShotRuns } from '@/lib/shots/runs'
+import { shotRunView, type ShotRunView } from './_components/shot-run-view'
 import type { CameraOrigin } from '@/lib/config/enums'
 
 type ElementRow = Pick<Tables<'elements'>, 'id' | 'name' | 'type' | 'status' | 'reference_image_path'>
 // Only the columns the shot cards render - the full row also carries image, film and
 // video fields this step never reads.
 const WORKBENCH_SHOT_COLUMNS =
-  'id, order_index, shot_key, section_label, voice_over, visual_description, duration_sec, duration_locked, shot_size, shot_size_origin, camera_angle, camera_angle_origin, camera_movement, camera_movement_origin'
+  'id, order_index, shot_key, voice_over, visual_description, duration_sec, duration_locked, shot_size, shot_size_origin, camera_angle, camera_angle_origin, camera_movement, camera_movement_origin, scenes(title)'
 type ShotRow = Pick<
   Tables<'shots'>,
   | 'id'
   | 'order_index'
   | 'shot_key'
-  | 'section_label'
   | 'voice_over'
   | 'visual_description'
   | 'duration_sec'
@@ -39,7 +41,7 @@ type ShotRow = Pick<
   | 'camera_angle_origin'
   | 'camera_movement'
   | 'camera_movement_origin'
-> & { shot_elements: { elements: ElementRow | null }[] }
+> & { scenes: { title: string } | null; shot_elements: { elements: ElementRow | null }[] }
 type ShotDialogueRow = Pick<
   Tables<'shot_dialogue'>,
   'id' | 'shot_id' | 'element_id' | 'line' | 'order_index'
@@ -98,9 +100,15 @@ export default async function WorkbenchPage({
       .eq('user_id', user.id)
       .maybeSingle()
   )
+  const readShots = () =>
+    supabase
+      .from('shots')
+      .select(`${WORKBENCH_SHOT_COLUMNS}, shot_elements(elements(id, name, type, status, reference_image_path))`)
+      .eq('project_id', projectId)
+      .order('order_index', { ascending: true })
   const [
     { data: project, error: projectError },
-    { data: shotsRows },
+    { data: firstShotsRows },
     elementsResult,
     affordability,
     { data: dialogueRows },
@@ -108,13 +116,11 @@ export default async function WorkbenchPage({
     { data: generation },
     { data: usageRows },
     { data: creditLedgerRows },
+    { data: latestRun },
+    { data: sceneRows },
   ] = await Promise.all([
     projectPromise,
-    supabase
-      .from('shots')
-      .select(`${WORKBENCH_SHOT_COLUMNS}, shot_elements(elements(id, name, type, status, reference_image_path))`)
-      .eq('project_id', projectId)
-      .order('order_index', { ascending: true }),
+    readShots(),
     // Same grouped-and-signed read the Assets tab's client-driven refresh reuses (see
     // workbench/actions.ts's getProjectElements comment) - one call serves both the
     // shots/dialogue join below and the Assets tab's initial render, so there is no
@@ -153,6 +159,17 @@ export default async function WorkbenchPage({
       .eq('project_id', projectId)
       .eq('kind', 'spend')
       .eq('operation', 'agent_turn'),
+    // The latest shot run: the generating state's progress line, why a run stopped, and
+    // whether a dead chain needs settling on this load.
+    supabase
+      .from('shot_runs')
+      .select('status, stop_reason, total_scenes, heartbeat_at, charged_at')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    // Which scenes are written - progress, and whether "Generate remaining shots" applies.
+    supabase.from('scenes').select('id, shot_run_chunks(scene_complete)').eq('project_id', projectId),
   ])
 
   // A failed read is an error (the error boundary), never a 404 - only a missing row is.
@@ -162,6 +179,42 @@ export default async function WorkbenchPage({
   if (!project) {
     notFound()
   }
+
+  // A dead chain is settled on the first load after its stale window (and a terminal run
+  // whose charge failed is retried), then the page renders from a fresh read - so a run
+  // that died never leaves the generating state spinning.
+  let generationState = generation?.state ?? null
+  let run = latestRun
+  let shotsRows = firstShotsRows
+  if (run && ((run.status === 'running' && !isLiveShotRun(run)) || (run.status !== 'running' && run.charged_at === null))) {
+    const { changed } = await settleDeadShotRuns(supabase, { recordFixedSpend, recordDynamicSpend }, projectId)
+    if (changed) {
+      // Settling re-sequences the shots (and drops a dead chunk's half-written ones).
+      const [{ data: freshGeneration }, { data: freshRun }, { data: freshShots }] = await Promise.all([
+        supabase
+          .from('generations')
+          .select('state')
+          .eq('project_id', projectId)
+          .eq('step', 'workbench')
+          .eq('operation', 'generate_shots')
+          .is('shot_id', null)
+          .maybeSingle(),
+        supabase
+          .from('shot_runs')
+          .select('status, stop_reason, total_scenes, heartbeat_at, charged_at')
+          .eq('project_id', projectId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        readShots(),
+      ])
+      generationState = freshGeneration?.state ?? generationState
+      run = freshRun
+      shotsRows = freshShots
+    }
+  }
+  const runView: ShotRunView = shotRunView(run, (sceneRows ?? []) as { shot_run_chunks: { scene_complete: boolean }[] }[])
+
 
 
   const elementGroups: ElementGroup[] = elementsResult.success ? elementsResult.groups : []
@@ -184,7 +237,7 @@ export default async function WorkbenchPage({
     id: row.id,
     order_index: row.order_index,
     shot_key: row.shot_key,
-    section_label: row.section_label,
+    scene_title: row.scenes?.title ?? null,
     voice_over: row.voice_over,
     visual_description: row.visual_description,
     duration_sec: row.duration_sec,
@@ -233,7 +286,8 @@ export default async function WorkbenchPage({
       initialShots={shots}
       initialVideoType={project.video_type}
       initialVideoModel={project.video_model}
-      initialGenerationState={generation?.state ?? null}
+      initialGenerationState={generationState}
+      initialRun={runView}
       initialHasPendingPayload={hasPendingPayload}
       initialFurthestStep={project.furthest_step}
       estimatedCredits={estimatedCredits}

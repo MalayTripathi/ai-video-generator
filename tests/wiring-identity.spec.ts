@@ -80,16 +80,22 @@ test.describe('wiring-identity - source-level guard against a type-compatible wr
     expect(block).toMatch(/(^|[,{\s])getBalance(\s*[,}]|\s*$)/)
   })
 
-  test('shots/route.ts wires the real mintAttemptId/recordFixedSpend into runShotGeneration', () => {
+  test('shots/route.ts wires the real mintAttemptId and the real shot-run ledger into runShotsRequest', () => {
     const source = read('src/app/api/projects/[id]/shots/route.ts')
-    const imported = importLine(source, '@/lib/credits/ledger')
-    expect(imported).toMatch(/\bmintAttemptId\b/)
-    expect(imported).toMatch(/\brecordFixedSpend\b/)
-
-    const block = stripComments(extractCallBlock(source, 'runShotGeneration'))
+    expect(importLine(source, '@/lib/credits/ledger')).toMatch(/\bmintAttemptId\b/)
+    expect(importLine(source, './schedule')).toMatch(/\bSHOT_RUN_LEDGER\b/)
+    const block = stripComments(extractCallBlock(source, 'runShotsRequest'))
     expect(block).toMatch(/\battemptId:\s*mintAttemptId\(\)/)
-    // Shorthand property - the imported name IS the param name here.
-    expect(block).toMatch(/(^|[,{\s])recordFixedSpend(\s*[,}]|\s*$)/)
+    expect(block).toMatch(/\bledger:\s*SHOT_RUN_LEDGER\b/)
+  })
+
+  test('shots/schedule.ts builds the shot-run ledger from the real recordFixedSpend/recordDynamicSpend and hands it to the worker', () => {
+    const source = read('src/app/api/projects/[id]/shots/schedule.ts')
+    const imported = importLine(source, '@/lib/credits/ledger')
+    expect(imported).toMatch(/\brecordFixedSpend\b/)
+    expect(imported).toMatch(/\brecordDynamicSpend\b/)
+    expect(stripComments(source)).toMatch(/SHOT_RUN_LEDGER:\s*ShotRunLedger\s*=\s*\{\s*recordFixedSpend,\s*recordDynamicSpend\s*\}/)
+    expect(stripComments(extractCallBlock(source, 'runShotsWorker'))).toMatch(/\bledger:\s*SHOT_RUN_LEDGER\b/)
   })
 
   test('camera/route.ts wires the real mintAttemptId/recordFixedSpend into runCameraDerivation', () => {
@@ -115,22 +121,23 @@ test.describe('wiring-identity - source-level guard against a type-compatible wr
     expect(block).toMatch(/(^|[,{\s])recordFixedSpend(\s*[,}]|\s*$)/)
   })
 
-  // The exception: the agent's regenerate_all_shots tool must NOT wire the real
-  // recordFixedSpend - its cost is already folded into the turn's dynamic agent_turn
-  // charge (Task 5), and double-wiring here would double-bill the same Claude call.
-  // This asserts the opposite of the three checks above: BILLED_BY_TURN, not the real
-  // function, sits in the deps position.
-  test('agent/tools.ts wires BILLED_BY_TURN, not the real recordFixedSpend, into its runShotGeneration call', () => {
+  // The agent's regenerate_all_shots starts the shot chain on the turn's behalf: the
+  // turn's own attempt id, and never a fixed-price writer - the chain bills the turn once,
+  // dynamically (shot-runs' chargeShotRun).
+  test('agent/tools.ts starts the chain with the turn attempt id and wires no fixed-price writer', () => {
     const source = read('src/app/api/projects/[id]/agent/tools.ts')
-    const imported = importLine(source, '@/app/api/projects/[id]/shots/logic')
-    expect(imported).toMatch(/\bBILLED_BY_TURN\b/)
+    const block = stripComments(extractCallBlock(source, 'runShotsRequest'))
+    expect(block).toMatch(/\battemptId:\s*ctx\.shotRun\.attemptId\b/)
+    expect(block).toMatch(/\bagentGenerationId:\s*ctx\.shotRun\.agentGenerationId\b/)
+    expect(stripComments(source)).not.toMatch(/\brecordFixedSpend\b/)
+  })
 
-    const block = stripComments(extractCallBlock(source, 'runShotGeneration'))
-    expect(block).toMatch(/\brecordFixedSpend:\s*BILLED_BY_TURN\b/)
-    // The real writer must never appear as the value here - only as the sentinel name
-    // ('recordFixedSpend' itself never occurs standalone in this block, only as the
-    // param key on the left of ':').
-    expect(block).not.toMatch(/:\s*recordFixedSpend\b/)
+  test('agent/route.ts wires the real shot-run ledger and scheduler into runAgentTurn', () => {
+    const source = read('src/app/api/projects/[id]/agent/route.ts')
+    const imported = importLine(source, '../shots/schedule')
+    expect(imported).toMatch(/\bSHOT_RUN_LEDGER\b/)
+    expect(imported).toMatch(/\bscheduleShotsWorker\b/)
+    expect(stripComments(extractCallBlock(source, 'runAgentTurn'))).toMatch(/shotRuns:\s*\{\s*ledger:\s*SHOT_RUN_LEDGER,/)
   })
 
   // Same exception for Step 3's two regeneration tools: their nested

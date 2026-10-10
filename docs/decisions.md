@@ -1347,7 +1347,7 @@ cannot finish in one. Each run stops starting shots at its 150s budget and posts
 unreached claims back to the same route at once, while it drains what is in flight - a
 hand-off left until after the drain could be killed with the function near 300s, stranding
 the batch queued. The cost is a brief overlap of up to six provider calls. The continuation
-carries no user session, so its credential is the `IMAGES_INTERNAL_SECRET` header; a missing
+carries no user session, so its credential is the `INTERNAL_CONTINUATION_SECRET` header; a missing
 secret is logged as an error and the shots are released failed and retryable, never left
 queued. It resumes only claims that are still queued in the named project of the named user,
 and never re-runs the gate - those shots were already paid for in the sense that matters,
@@ -1406,3 +1406,38 @@ picture. Because the crossfade is at most half the file, only neighbouring passe
 the even passes go on one input and the odd on another, each the file padded to two steps
 and looped with `aloop`, shaped by an expression built from the same passes the preview
 schedules. The worker passes the file `musicInputCount(plan)` times.
+
+## Shot generation as a chain: outline, chunks, one charge (Models Task 4)
+
+**Why chunks of one scene run in order.** Splitting a scene into fixed chunk sizes up front
+(its seconds ÷ the model's shortest shot, in eights) makes a later chunk repeat the scene when
+Claude covers it in fewer shots than the maximum. So each chunk continues the scene from the
+shot saved before it and reports `scene_complete`; the next chunk of that scene starts only
+once the previous one has settled. Scenes still run in parallel. The flag lives on the chunk
+row (`shot_run_chunks.scene_complete`), so "Generate remaining shots" knows which scenes are
+unwritten across runs.
+
+**Why runs drain before they hand off.** The images chain hands off at its budget while its
+in-flight calls drain, so two runs overlap. Shot runs instead stop starting chunks at 120s,
+let the in-flight ones finish (the slowest ~154s), then hand off - well inside 300s. Runs never
+overlap, so one run's in-memory running totals (shots against the ceiling, seconds against
+the tier maximum, saved-but-uncharged shots against the balance) are exact.
+
+**Why the agent path is priced from the run record, not `usage`.** One `agent_turn` row must
+sum every provider call of the turn, but the chain outlives the turn's memory. Each call's
+settled cost (the value `settleUsage` returns) is stored on the run record - the outline's on
+`shot_runs.outline_cost_usd`, each chunk's on its `shot_run_chunks` row, the turn's own on
+`shot_runs.turn_cost_usd` at hand-over - and whichever finishes second (the chain or the turn)
+sums them and converts once. Rule 18 holds: no credit figure reads `usage`.
+
+**Why chunks also get the brief.** The task's chunk input is the outline, the scene, its
+element names and the previous shot. Without the brief a script or screenplay would be
+rewritten from a summary instead of used verbatim. It rides in a cached system block shared by
+every chunk of a run.
+
+**Why the export places the voice with one input per forward run.** Each shot's narration
+piece is cut from the read and placed at its shot's start. One input of the voice file can do
+that in a single pass - `aselect` keeps the pieces (10ms frames), `asetpts` moves each to its
+place, `aresample=async=1` fills the gaps with silence - as long as the pieces read the file
+forwards. Shots reordered against the read break that, so pieces split into forward runs, one
+input each, mixed. `asplit` is avoided for the same reason as the music bed.

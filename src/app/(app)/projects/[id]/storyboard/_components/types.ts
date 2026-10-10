@@ -18,7 +18,6 @@ export type StoryboardShot = Pick<
   | 'order_index'
   | 'duration_sec'
   | 'duration_locked'
-  | 'section_label'
   | 'visual_description'
   | 'image_prompt'
   | 'image_prompt_edited'
@@ -32,7 +31,7 @@ export type StoryboardShot = Pick<
   | 'split_at'
   | 'split_motion'
   | 'transition_out'
->
+> & { scenes: { title: string } | null }
 
 export const STORYBOARD_SHOT_COLUMNS =
-  'id, shot_key, order_index, duration_sec, duration_locked, section_label, visual_description, image_prompt, image_prompt_edited, image_prompt_stale, image_stale, film_order, film_duration_sec, binned_at, voice_over, motion, split_at, split_motion, transition_out' as const
+  'id, shot_key, order_index, duration_sec, duration_locked, scenes(title), visual_description, image_prompt, image_prompt_edited, image_prompt_stale, image_stale, film_order, film_duration_sec, binned_at, voice_over, motion, split_at, split_motion, transition_out' as const

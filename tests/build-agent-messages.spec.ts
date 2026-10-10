@@ -212,8 +212,8 @@ test.describe('describeToolActivity', () => {
   })
 
   test('regenerate_all_shots ignores any shot number - it is never shot-scoped', () => {
-    expect(describeToolActivity('regenerate_all_shots', 5, 'fallback')).toBe('Regenerated all shots')
-    expect(describeToolActivity('regenerate_all_shots', null, 'fallback')).toBe('Regenerated all shots')
+    expect(describeToolActivity('regenerate_all_shots', 5, 'fallback')).toBe('Started rewriting all shots')
+    expect(describeToolActivity('regenerate_all_shots', null, 'fallback')).toBe('Started rewriting all shots')
   })
 
   test('insert_shot with no resolved number gets its own non-alarming fallback, not "deleted"', () => {

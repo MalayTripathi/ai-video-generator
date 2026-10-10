@@ -820,7 +820,7 @@ test.describe('storyboard images - continuation', () => {
     }
 
     expect(fetched).toBe(false)
-    expect(logged.some((line) => line.includes('IMAGES_INTERNAL_SECRET is not set'))).toBe(true)
+    expect(logged.some((line) => line.includes('INTERNAL_CONTINUATION_SECRET is not set'))).toBe(true)
     expect(run.continued).toEqual([])
     expect(run.abandoned.sort()).toEqual([...req.data.generationIds].sort())
     const rows = await claims(projectId)

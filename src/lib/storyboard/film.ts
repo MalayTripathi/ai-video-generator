@@ -169,6 +169,59 @@ export function motionTransform(motion: Motion, progress: number): FrameTransfor
 }
 
 // ---------------------------------------------------------------------------------------
+// Voice pieces
+// ---------------------------------------------------------------------------------------
+
+/**
+ * One shot's narration as the film plays it: the read's [fromSec, toSec) - that shot's
+ * span - placed to start at atSec on the film.
+ */
+export type VoicePiece = { shotId: string; fromSec: number; toSec: number; atSec: number }
+
+/**
+ * Where each in-film shot's narration plays. A piece starts at its shot's start, so the
+ * voice pauses through a silent shot; one longer than its shot (an overflow) keeps
+ * playing, and the next piece then starts at the later of its own shot's start and the
+ * end of the previous piece - pieces never overlap. `lane` is the in-film shots in
+ * picture order.
+ */
+export function voicePieces(
+  lane: readonly ({ id: string } & Parameters<typeof filmSeconds>[0])[],
+  spans: readonly VoiceoverSpan[]
+): VoicePiece[] {
+  const spanById = new Map(spans.map((s) => [s.shotId, s]))
+  const pieces: VoicePiece[] = []
+  let shotStart = 0
+  let previousEnd = 0
+  for (const shot of lane) {
+    const span = spanById.get(shot.id)
+    if (span && span.to > span.from && span.endSec > span.startSec) {
+      const atSec = Math.max(shotStart, previousEnd)
+      pieces.push({ shotId: shot.id, fromSec: span.startSec, toSec: span.endSec, atSec })
+      previousEnd = atSec + (span.endSec - span.startSec)
+    }
+    shotStart += filmSeconds(shot)
+  }
+  return pieces
+}
+
+/**
+ * The read's word timings moved onto the film with their pieces. A word outside every
+ * piece (between spans, or in a binned shot's span) is not heard, so it is dropped.
+ */
+export function placeWords(pieces: readonly VoicePiece[], words: readonly WordBoundary[] | null): WordBoundary[] | null {
+  if (!words) return null
+  const placed: WordBoundary[] = []
+  for (const [start, end] of words) {
+    const piece = pieces.find((p) => start >= p.fromSec - 1e-6 && start < p.toSec + 1e-6)
+    if (!piece) continue
+    const shift = piece.atSec - piece.fromSec
+    placed.push([start + shift, Math.min(end, piece.toSec) + shift])
+  }
+  return placed.sort((a, b) => a[0] - b[0])
+}
+
+// ---------------------------------------------------------------------------------------
 // The timeline
 // ---------------------------------------------------------------------------------------
 
@@ -179,7 +232,8 @@ export type FilmShot = {
   binned_at?: string | null
   duration_sec: number | null
   film_duration_sec?: number | null
-  section_label: string | null
+  /** The shot's scene (embedded `scenes(title)`), whose title names its chapter. */
+  scenes: { title: string } | null
   motion?: string | null
   split_at?: number | null
   split_motion?: string | null
@@ -317,8 +371,9 @@ export type FilmTimeline = {
   segments: FilmSegment[]
   joins: ResolvedJoin[]
   audio: {
-    /** Omitted (null) when there is no voiceover or its lane is muted. */
-    voice: { path: string; durationSec: number; gainDb: number } | null
+    /** Omitted (null) when there is no voiceover or its lane is muted. `pieces` is where
+     * each shot's narration plays (voicePieces). */
+    voice: { path: string; durationSec: number; gainDb: number; pieces: VoicePiece[] } | null
     /** Omitted (null) when there is no music or its lane is muted. */
     music: FilmMusic | null
     duck: DuckPoint[]
@@ -341,7 +396,10 @@ export type FilmInput = {
 
 export function buildFilmTimeline(input: FilmInput): FilmTimeline {
   const lane = laneShots(input.shots)
-  const words = input.voiceover?.words ?? null
+  // Every timing the voice drives - captions, the duck, the forced-cut rule - follows the
+  // pieces as placed, never the read's own clock.
+  const pieces = input.voiceover ? voicePieces(lane, input.voiceover.spans) : []
+  const words = placeWords(pieces, input.voiceover?.words ?? null)
   const motions = resolveMotions(lane, input.defaultMotion)
   const joins = resolveJoins(lane, words, input.defaultTransition)
 
@@ -391,13 +449,14 @@ export function buildFilmTimeline(input: FilmInput): FilmTimeline {
 
   const vo = input.voiceover
   const mix = input.mix
-  const lines = (vo?.spans ?? [])
-    .filter((s) => s.text.trim().length > 0 && s.endSec > s.startSec)
-    .map((s) => ({
-      shotId: s.shotId,
-      text: s.text.trim(),
-      startSec: s.startSec,
-      endSec: s.endSec,
+  const spanText = new Map((vo?.spans ?? []).map((s) => [s.shotId, s.text.trim()]))
+  const lines = pieces
+    .filter((p) => (spanText.get(p.shotId) ?? '').length > 0)
+    .map((p) => ({
+      shotId: p.shotId,
+      text: spanText.get(p.shotId)!,
+      startSec: p.atSec,
+      endSec: p.atSec + (p.toSec - p.fromSec),
     }))
 
   const bands = groupBands(lane)
@@ -430,6 +489,7 @@ export function buildFilmTimeline(input: FilmInput): FilmTimeline {
               path: vo.path,
               durationSec: vo.durationSec,
               gainDb: mix.voiceGainDb,
+              pieces,
             }
           : null,
       music,

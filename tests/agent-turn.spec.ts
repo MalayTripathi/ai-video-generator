@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
-import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V11 } from '../src/lib/prompts/agent'
+import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V12 } from '../src/lib/prompts/agent'
 import {
   handleGetShot,
   handleUpdateShot,
@@ -127,7 +127,7 @@ type IndexShot = {
   order_index: number
   visual_description: string | null
   voice_over: string
-  section_label: string | null
+  scenes: { title: string } | null
   shot_size_origin: string
   camera_angle_origin: string
   camera_movement_origin: string
@@ -137,7 +137,7 @@ function shot(overrides: Partial<IndexShot> & { order_index: number }): IndexSho
   return {
     visual_description: null,
     voice_over: '',
-    section_label: null,
+    scenes: null,
     shot_size_origin: 'auto',
     camera_angle_origin: 'auto',
     camera_movement_origin: 'auto',
@@ -207,14 +207,14 @@ test.describe('buildShotIndexBlock', () => {
     expect(block).toContain('[override: shot_size, camera_movement]')
   })
 
-  test('carries each shot\'s section_label into its index line, and omits the suffix when there is none', () => {
+  test('carries each shot\'s scene title into its index line, and omits the suffix when there is none', () => {
     const block = buildShotIndexBlock([
-      shot({ order_index: 0, visual_description: 'Shot A', section_label: 'Introduction' }),
-      shot({ order_index: 1, visual_description: 'Shot B', section_label: null }),
+      shot({ order_index: 0, visual_description: 'Shot A', scenes: { title: 'Introduction' } }),
+      shot({ order_index: 1, visual_description: 'Shot B', scenes: null }),
     ])
     const lines = block.split('\n')
-    expect(lines[0]).toContain('[section: Introduction]')
-    expect(lines[1]).not.toContain('[section:')
+    expect(lines[0]).toContain('[scene: Introduction]')
+    expect(lines[1]).not.toContain('[scene:')
   })
 })
 
@@ -256,14 +256,14 @@ test.describe('AGENT_TOOLS', () => {
     expect(props.shot_size_origin).toBeDefined()
   })
 
-  test('insert_shot requires section_label and all six camera value+origin properties together - never a partial or silently-omitted set', () => {
+  test('insert_shot requires all six camera value+origin properties together - never a partial or silently-omitted set - and takes no section label', () => {
     const insertShot = AGENT_TOOLS.find((t) => t.name === 'insert_shot')!
-    const schema = insertShot.input_schema as unknown as { required: string[] }
+    const schema = insertShot.input_schema as unknown as { required: string[]; properties: Record<string, unknown> }
+    expect(schema.properties.section_label).toBeUndefined()
     expect(schema.required).toEqual(
       expect.arrayContaining([
         'position',
         'voice_over',
-        'section_label',
         'shot_size',
         'shot_size_origin',
         'camera_angle',
@@ -303,57 +303,57 @@ test.describe('AGENT_TOOLS', () => {
   })
 })
 
-test.describe('AGENT_SYSTEM_PROMPT_V11', () => {
+test.describe('AGENT_SYSTEM_PROMPT_V12', () => {
   test('explicitly instructs the model never to delete a shot', () => {
-    expect(AGENT_SYSTEM_PROMPT_V11.toLowerCase()).toContain('delete')
+    expect(AGENT_SYSTEM_PROMPT_V12.toLowerCase()).toContain('delete')
   })
 
   test('defaults to acting on a content request rather than asking a clarifying question', () => {
-    expect(AGENT_SYSTEM_PROMPT_V11.toLowerCase()).toContain('default to acting')
+    expect(AGENT_SYSTEM_PROMPT_V12.toLowerCase()).toContain('default to acting')
   })
 
   test('directs the model to use other shots as a style reference instead of asking the user to specify one', () => {
-    expect(AGENT_SYSTEM_PROMPT_V11.toLowerCase()).toContain('style reference')
+    expect(AGENT_SYSTEM_PROMPT_V12.toLowerCase()).toContain('style reference')
   })
 
   test('reserves clarifying questions for which-shot/which-field ambiguity or a destructive guess', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V12.toLowerCase()
     expect(prompt).toContain('which shot or which field')
     expect(prompt).toContain('destructive')
   })
 
   test('finish no longer exists anywhere in the prompt - a turn ends via a plain reply, no tool call', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V12.toLowerCase()
     expect(prompt).not.toContain('finish')
     expect(prompt).toContain('no tool call')
   })
 
   test('the no-delete-tool rule tells the model to call decline', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V12.toLowerCase()
     expect(prompt).toContain('call decline and tell them to use that shot')
   })
 
   test('tells the model a request can mix completed actions with separate declines, not all-or-nothing', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V12.toLowerCase()
     expect(prompt).toContain("don't have to answer all-or-nothing")
     expect(prompt).toContain('call decline separately for whatever you won')
   })
 
   test('states declining anything is a hard rule requiring the decline tool, never a bare prose refusal, with a contrastive example', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V12.toLowerCase()
     expect(prompt).toContain('you must call decline for that part')
     expect(prompt).toContain('never write the refusal as plain reply text')
     expect(prompt).toContain('wrong:')
     expect(prompt).toContain('right:')
   })
 
-  test('tells the model an inserted shot inherits its section from the surrounding shots by default', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
-    expect(prompt).toContain('a shot placed between two shots of the same section belongs to that section')
+  test('tells the model an inserted shot joins the scene of the shot it is placed after', () => {
+    const prompt = AGENT_SYSTEM_PROMPT_V12.toLowerCase()
+    expect(prompt).toContain('it joins the scene of the shot it is placed after')
   })
 
   test('tells the model insert_shot\'s three camera fields must be reported together, never partially', () => {
-    const prompt = AGENT_SYSTEM_PROMPT_V11.toLowerCase()
+    const prompt = AGENT_SYSTEM_PROMPT_V12.toLowerCase()
     expect(prompt).toContain('never report some of the three and leave the rest out')
   })
 })
@@ -823,23 +823,23 @@ test.describe('handleInsertShot', () => {
     expect(await readShots(projectId)).toHaveLength(0)
   })
 
-  test('an inserted shot carries a section label, persisted verbatim', async () => {
+  test('an inserted shot joins the scene of the shot it follows', async () => {
     const projectId = await seedToolProject()
-    await seedToolShot(projectId, { order_index: 0, section_label: 'Introduction' })
+    const { data: scene } = await admin.from('scenes').insert({ project_id: projectId, position: 0, title: 'Introduction' }).select('id').single()
+    await seedToolShot(projectId, { order_index: 0, scene_id: scene!.id })
 
     const outcome = await handleInsertShot(
       {
         position: 'after', after_shot_number: 1,
         voice_over: 'A brand new shot.',
         visual_description: 'A brand new visual.',
-        section_label: 'Introduction',
       },
       buildContext({ projectId })
     )
 
     expect(outcome.kind).toBe('applied')
     const inserted = (await readShots(projectId)).find((s) => s.voice_over === 'A brand new shot.')!
-    expect(inserted.section_label).toBe('Introduction')
+    expect(inserted.scene_id).toBe(scene!.id)
   })
 
   test('a call reporting all three camera fields and origins persists all three verbatim', async () => {
@@ -988,89 +988,79 @@ test.describe('handleInsertShot', () => {
 })
 
 test.describe('handleRegenerateAllShots', () => {
-  test('succeeds while furthest_step is still workbench', async () => {
-    const projectId = await seedToolProject({ furthest_step: stepIndex('workbench') })
-    await seedToolShot(projectId, { order_index: 0 })
-    const messageId = await seedMessage(projectId)
-    const gateway: ClaudeGateway = {
-      async createMessage() {
-        return successMessage({
-          title: 'Regenerated',
-          message: 'Fresh shots.',
-          video_type: 'narrated_story',
-          shots: [
-            {
-              voice_over: 'A fresh narration.',
-              visual_description: 'A fresh visual.',
-              dialogue: [],
-              element_names: [],
-            },
-          ],
-        })
-      },
+  // The agent turn's own claim, which the chain holds until it ends.
+  async function agentClaim(projectId: string) {
+    const { data, error } = await admin
+      .from('generations')
+      .insert({ project_id: projectId, step: 'workbench', operation: 'agent_turn', shot_id: null, element_id: null, state: 'generating', started_at: new Date().toISOString() })
+      .select('id')
+      .single()
+    expect(error).toBeNull()
+    return data!.id as string
+  }
+
+  function shotRunCtx(agentGenerationId: string, scheduled: unknown[]): NonNullable<AgentToolContext['shotRun']> {
+    return {
+      attemptId: crypto.randomUUID(),
+      agentGenerationId,
+      getBalance: async () => 1_000_000,
+      ensureSignupGrant: async () => {},
+      ledger: { recordFixedSpend: async () => {}, recordDynamicSpend: async () => {} },
+      schedule: (run) => scheduled.push(run),
     }
+  }
+
+  test('starts the shot chain while furthest_step is still workbench - one run record carrying the turn, scheduled in the background', async () => {
+    const projectId = await seedToolProject({ furthest_step: stepIndex('workbench'), video_model: 'wan-3.0' })
+    await seedToolShot(projectId, { order_index: 0, voice_over: 'Still here until the chain replaces it.' })
+    const messageId = await seedMessage(projectId)
+    const agentGenerationId = await agentClaim(projectId)
+    const scheduled: unknown[] = []
 
     const outcome = await handleRegenerateAllShots(
       {},
-      buildContext({ projectId, gateway, messageId, furthestStepIndex: stepIndex('workbench') })
+      buildContext({ projectId, messageId, furthestStepIndex: stepIndex('workbench'), shotRun: shotRunCtx(agentGenerationId, scheduled) })
     )
 
     expect(outcome.kind).toBe('applied')
-    const shots = await readShots(projectId)
-    expect(shots.length).toBe(1)
-    expect(shots[0].voice_over).toBe('A fresh narration.')
+    const runId = outcome.kind === 'applied' ? outcome.shotRunId : undefined
+    expect(runId).toBeTruthy()
+    expect(scheduled).toEqual([{ userId: primary.user.id, projectId, runId, chainDepth: 0 }])
+    const { data: run } = await admin.from('shot_runs').select('kind, status, message_id, agent_generation_id').eq('id', runId!).single()
+    expect(run).toEqual({ kind: 'generate', status: 'running', message_id: messageId, agent_generation_id: agentGenerationId })
+    // Nothing is written until the chain runs.
+    expect((await readShots(projectId)).map((s) => s.voice_over)).toEqual(['Still here until the chain replaces it.'])
   })
 
-  test('refused once past the workbench step - existing shots are untouched, gateway never called', async () => {
-    const projectId = await seedToolProject({ furthest_step: stepIndex('image_prompts') })
+  test('refused once past the workbench step - existing shots are untouched, nothing started', async () => {
+    const projectId = await seedToolProject({ furthest_step: stepIndex('image_prompts'), video_model: 'wan-3.0' })
     await seedToolShot(projectId, { order_index: 0, voice_over: 'Must survive.' })
     const messageId = await seedMessage(projectId)
-    let callCount = 0
-    const gateway: ClaudeGateway = {
-      async createMessage() {
-        callCount++
-        return successMessage({ title: null, message: '', video_type: null, shots: [] })
-      },
-    }
+    const scheduled: unknown[] = []
 
     const outcome = await handleRegenerateAllShots(
       {},
-      buildContext({ projectId, gateway, messageId, furthestStepIndex: stepIndex('image_prompts') })
+      buildContext({ projectId, messageId, furthestStepIndex: stepIndex('image_prompts'), shotRun: shotRunCtx(await agentClaim(projectId), scheduled) })
     )
 
     expect(outcome.kind).toBe('refused')
-    expect(callCount).toBe(0)
-    const shots = await readShots(projectId)
-    expect(shots.length).toBe(1)
-    expect(shots[0].voice_over).toBe('Must survive.')
+    expect(scheduled).toHaveLength(0)
+    expect((await readShots(projectId)).map((s) => s.voice_over)).toEqual(['Must survive.'])
   })
 
   test('neither applied nor refused outcomes carry a shot_key - the tool affects the whole list', async () => {
-    const projectId = await seedToolProject({ furthest_step: stepIndex('workbench') })
+    const projectId = await seedToolProject({ furthest_step: stepIndex('workbench'), video_model: 'wan-3.0' })
     await seedToolShot(projectId, { order_index: 0 })
     const messageId = await seedMessage(projectId)
-    const gateway: ClaudeGateway = {
-      async createMessage() {
-        return successMessage({
-          title: 'Regenerated',
-          message: 'Fresh shots.',
-          video_type: 'narrated_story',
-          shots: [{ voice_over: 'Fresh.', visual_description: 'Fresh.', dialogue: [], element_names: [] }],
-        })
-      },
-    }
 
     const applied = await handleRegenerateAllShots(
       {},
-      buildContext({ projectId, gateway, messageId, furthestStepIndex: stepIndex('workbench') })
+      buildContext({ projectId, messageId, furthestStepIndex: stepIndex('workbench'), shotRun: shotRunCtx(await agentClaim(projectId), []) })
     )
     expect(applied.kind).toBe('applied')
     expect(applied.kind === 'applied' && applied.shotKey).toBeUndefined()
 
-    const refused = await handleRegenerateAllShots(
-      {},
-      buildContext({ projectId, messageId, furthestStepIndex: stepIndex('image_prompts') })
-    )
+    const refused = await handleRegenerateAllShots({}, buildContext({ projectId, messageId, furthestStepIndex: stepIndex('image_prompts') }))
     expect(refused.kind).toBe('refused')
     expect(refused.kind === 'refused' && refused.shotKey).toBeUndefined()
   })
@@ -1431,7 +1421,7 @@ test.describe('runAgentTurn', () => {
     // This scripts the fake model to look then write, so it only proves the turn loop
     // supports that shape end-to-end (persists the write, doesn't stop at the get_shot
     // reply). Whether the real model chooses this shape for a given prompt needs a live
-    // Claude call, which this repo's tests never make - see the AGENT_SYSTEM_PROMPT_V11
+    // Claude call, which this repo's tests never make - see the AGENT_SYSTEM_PROMPT_V12
     // content assertions above for the prompt-shape half of this check.
     const projectId = await seedToolProject()
     const shotId = await seedToolShot(projectId)
@@ -1464,7 +1454,7 @@ test.describe('runAgentTurn', () => {
     const shotNumber = (await readShot(shotId)).order_index + 1
     const gateway = scriptedGateway(
       Array.from({ length: 8 }, () =>
-        successMessage({ shot_number: shotNumber, section_label: 'looping' }, 'update_shot')
+        successMessage({ shot_number: shotNumber, voice_over: 'looping' }, 'update_shot')
       )
     )
 

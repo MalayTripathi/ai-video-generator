@@ -44,7 +44,7 @@ function shots(durations: number[], overrides: Partial<FilmShot>[] = []): FilmSh
     id: `s${i}`,
     order_index: i,
     duration_sec: d,
-    section_label: null,
+    scenes: null,
     image_path: `img/${i}.webp`,
     ...(overrides[i] ?? {}),
   }))
@@ -124,10 +124,11 @@ test.describe('film timeline - dissolves and forced cuts', () => {
   })
 
   test('a dissolve whose join falls inside a spoken word is forced to a cut', () => {
+    // Shot 0's narration runs from its start past the join at 5s.
     const voiceover = {
       path: 'vo.mp3',
       durationSec: 10,
-      spans: [],
+      spans: [{ shotId: 's0', from: 0, to: 9, text: 'Long word', startSec: 0, endSec: 5.3 }],
       words: [[4.8, 5.3]] as [number, number][],
     }
     const t = film(shots([5, 5]), { defaultTransition: 'dissolve', voiceover })
@@ -202,7 +203,7 @@ test.describe('ducking envelope', () => {
     const voiceover = {
       path: 'vo.mp3',
       durationSec: 10,
-      spans: [],
+      spans: [{ shotId: 's0', from: 0, to: 4, text: 'Word', startSec: 0, endSec: 3 }],
       words: [[2, 3]] as [number, number][],
     }
     const t = film(shots([5, 5]), { voiceover })
@@ -247,25 +248,31 @@ test.describe('audio lanes and the voiceover line', () => {
   }
 
   test('a muted voiceover lane is omitted; otherwise it carries its gain', () => {
+    // Each shot's narration piece plays from its own shot's start.
     expect(film(shots([5, 5]), { voiceover }).audio.voice).toEqual({
       path: 'vo.mp3',
       durationSec: 8,
       gainDb: 0,
+      pieces: [
+        { shotId: 's0', fromSec: 0.2, toSec: 2, atSec: 0 },
+        { shotId: 's1', fromSec: 5.1, toSec: 7, atSec: 5 },
+      ],
     })
     expect(film(shots([5, 5]), { voiceover, mix: { ...MIX, voiceMuted: true } }).audio.voice).toBeNull()
     expect(film(shots([5, 5]), { voiceover }).audio.music).toBeNull()
   })
 
   test('the now line is the narration holding the current or last spoken word', () => {
+    // The pieces start at their shots' starts (0s and 5s), so each line begins there.
     const t = film(shots([5, 5]), { voiceover })
-    expect(lineAt(t, 0.1)).toBeNull()
-    expect(lineAt(t, 1)?.text).toBe('First line.')
+    expect(lineAt(t, 0.1)?.text).toBe('First line.')
     expect(lineAt(t, 4)?.text).toBe('First line.')
+    expect(lineAt(t, 4.99)?.text).toBe('First line.')
     expect(lineAt(t, 5.2)?.text).toBe('Second line.')
   })
 
   test('chapters start at each named section', () => {
-    const t = film(shots([4, 3, 5], [{ section_label: 'Rise' }, { section_label: 'Rise' }, { section_label: 'Fall' }]))
+    const t = film(shots([4, 3, 5], [{ scenes: { title: 'Rise' } }, { scenes: { title: 'Rise' } }, { scenes: { title: 'Fall' } }]))
     expect(t.chapters).toEqual([
       { title: 'Rise', startSec: 0 },
       { title: 'Fall', startSec: 7 },

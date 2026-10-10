@@ -41,6 +41,7 @@ import {
   type VoiceoverSpan,
 } from '@/lib/storyboard/voiceover'
 import { liveImageCommittedCredits } from '../images/logic'
+import { autoFitAfterVoiceover } from '@/lib/storyboard/apply-fit'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type GenerationRow = Tables<'generations'>
@@ -141,7 +142,7 @@ export function voiceoverDir(userId: string, projectId: string): string {
   return `${userId}/${projectId}/voiceover`
 }
 
-// The current-voiceover columns a finished read writes, in one update.
+// The current-voiceover columns a finished read writes, in one update - then the auto-fit.
 async function linkVoiceover(
   supabase: SupabaseServerClient,
   projectId: string,
@@ -176,7 +177,10 @@ async function linkVoiceover(
       updated_at: now,
     })
     .eq('id', projectId)
-  return error?.message ?? null
+  if (error) return error.message
+  // The alignment is saved: fit the shots to it (free; see autoFitAfterVoiceover).
+  await autoFitAfterVoiceover(supabase, projectId)
+  return null
 }
 
 // Storage writes never overwrite. A retry re-writing an object an earlier run already

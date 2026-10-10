@@ -43,9 +43,10 @@ Required environment variables (see `.env.example` for the full list and default
 
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`
 - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`
-- `IMAGES_INTERNAL_SECRET` - any long random string. A storyboard image batch larger than one
-  150s run hands itself on to a fresh run with this secret; without it the unreached frames
-  are released failed (retryable) and the run logs an error.
+- `INTERNAL_CONTINUATION_SECRET` - any long random string. A background run that outlasts one
+  route invocation (storyboard images, shot generation) hands itself on to a fresh run with
+  this secret; without it the unreached work is released failed (retryable) and the run logs
+  an error.
 
 Model and provider choice is not an environment setting: image and video models come from
 the registry in `src/lib/config/models.ts` and each project's quality settings. Env holds

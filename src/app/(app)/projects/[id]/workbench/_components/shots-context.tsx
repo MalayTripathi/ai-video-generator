@@ -6,6 +6,7 @@ import type { DisplayShot } from './types'
 import { derivePhase, type Phase } from './derive-phase'
 import { stepIndex } from '@/lib/config/pipeline'
 import { usePageVisible } from '@/lib/hooks/use-page-visible'
+import type { ShotRunView } from './shot-run-view'
 
 type ShotsContextValue = {
   projectId: string
@@ -15,8 +16,15 @@ type ShotsContextValue = {
   videoModel: string | null
   hasPendingPayload: boolean
   estimatedCredits: number
+  // The latest shot run: progress while writing, why it stopped, what is left.
+  run: ShotRunView
+  // Set when the server refused a start for credits (402) - the prior state is untouched.
+  startError: { requiredCredits: number; balanceCredits: number } | null
   confirmOpen: boolean
+  // Which action the confirm modal is for: a fresh shot list, or only the unwritten scenes.
+  confirmMode: 'regenerate' | 'remaining'
   openRetryConfirm: () => void
+  openRemainingConfirm: () => void
   closeRetryConfirm: () => void
   confirmRetry: () => void
   updateShotLocal: (shotId: string, patch: Partial<DisplayShot>) => void
@@ -65,6 +73,7 @@ export function ShotsProvider({
   initialGenerationState,
   initialHasPendingPayload,
   initialFurthestStep,
+  initialRun,
   estimatedCredits,
   children,
 }: {
@@ -75,6 +84,7 @@ export function ShotsProvider({
   initialGenerationState: string | null
   initialHasPendingPayload: boolean
   initialFurthestStep: number
+  initialRun: ShotRunView
   estimatedCredits: number
   children: ReactNode
 }) {
@@ -84,6 +94,9 @@ export function ShotsProvider({
   const [generationState, setGenerationState] = useState(initialGenerationState)
   const [hasPendingPayload, setHasPendingPayload] = useState(initialHasPendingPayload)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [confirmMode, setConfirmMode] = useState<'regenerate' | 'remaining'>('regenerate')
+  const [run, setRun] = useState(initialRun)
+  const [startError, setStartError] = useState<{ requiredCredits: number; balanceCredits: number } | null>(null)
   const [lockedShotKeys, setLockedShotKeys] = useState<Set<string>>(new Set())
   const [touchedShotKeys, setTouchedShotKeys] = useState<Set<string>>(new Set())
   // True from the moment an agent turn names touched shots until the router.refresh()
@@ -151,20 +164,29 @@ export function ShotsProvider({
     shotCount: shots.length,
   })
 
-  async function fetchShots(isRetry: boolean) {
+  // The run itself is server-side and self-continuing: a 202 means it started, and the
+  // generating state's poll follows it. Closing the tab does not stop it.
+  async function fetchShots(kind: 'trigger' | 'retry' | 'remaining') {
+    const previousState = generationState
     try {
       const response = await fetch(`/api/projects/${projectId}/shots`, {
         method: 'POST',
-        ...(isRetry
-          ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ retry: true }) }
-          : {}),
+        ...(kind === 'trigger'
+          ? {}
+          : {
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(kind === 'remaining' ? { remaining: true } : { retry: true }),
+            }),
       })
-      if (response.ok) {
-        const data = await response.json()
-        setShots(data.shots)
-        setVideoType(data.video_type)
+      if (response.status === 402) {
+        // Refused before anything began - the prior state stands.
+        const body = (await response.json()) as { requiredCredits: number; balanceCredits: number }
+        setStartError({ requiredCredits: body.requiredCredits, balanceCredits: body.balanceCredits })
+        setGenerationState(previousState)
+        return
       }
-      // Whatever the outcome (success, 409, 422, 500), the DB row is the source of truth -
+      setStartError(null)
+      // Whatever the outcome (202, 409, 422, 500), the DB row is the source of truth -
       // resync from the server rather than hand-deriving the new status here.
       router.refresh()
     } catch {
@@ -175,6 +197,12 @@ export function ShotsProvider({
   }
 
   function openRetryConfirm() {
+    setConfirmMode('regenerate')
+    setConfirmOpen(true)
+  }
+
+  function openRemainingConfirm() {
+    setConfirmMode('remaining')
     setConfirmOpen(true)
   }
 
@@ -185,7 +213,7 @@ export function ShotsProvider({
   function confirmRetry() {
     setConfirmOpen(false)
     setGenerationState('generating')
-    void fetchShots(true)
+    void fetchShots(confirmMode === 'remaining' ? 'remaining' : 'retry')
   }
 
   useEffect(() => {
@@ -196,7 +224,7 @@ export function ShotsProvider({
     // 'generating' so the skeleton shows immediately, before the POST resolves.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setGenerationState('generating')
-    void fetchShots(false)
+    void fetchShots('trigger')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -209,11 +237,12 @@ export function ShotsProvider({
     setVideoType(initialVideoType)
     setGenerationState(initialGenerationState)
     setHasPendingPayload(initialHasPendingPayload)
+    setRun(initialRun)
     // A real refresh cycle has now landed - safe for any field waiting on
     // touchedShotKeys to apply the (now current) value it's holding. See
     // refreshPending's own comment above.
     setRefreshPending(false)
-  }, [initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload])
+  }, [initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun])
 
   // Poll while generating so a tab that never fired its own POST (e.g. loaded mid-generation
   // from another tab/device) discovers completion. workbench/page.tsx is a server component
@@ -238,8 +267,12 @@ export function ShotsProvider({
         videoModel,
         hasPendingPayload,
         estimatedCredits,
+        run,
+        startError,
         confirmOpen,
+        confirmMode,
         openRetryConfirm,
+        openRemainingConfirm,
         closeRetryConfirm,
         confirmRetry,
         updateShotLocal,

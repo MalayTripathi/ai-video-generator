@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 
 export function RetryConfirmModal({
   open,
+  mode = 'regenerate',
   hasPendingPayload,
   estimatedCredits,
   replacesExisting,
@@ -12,6 +13,8 @@ export function RetryConfirmModal({
   onCancel,
 }: {
   open: boolean
+  // 'remaining' writes only the scenes a stopped run left unwritten, keeping every shot.
+  mode?: 'regenerate' | 'remaining'
   hasPendingPayload: boolean
   estimatedCredits: number
   replacesExisting: boolean
@@ -46,14 +49,16 @@ export function RetryConfirmModal({
         className="flex w-full max-w-[400px] flex-col gap-rc-sm rounded-frame border border-border-subtle bg-bg-surface p-rc-lg shadow-card-hover"
       >
         <span id="retry-confirm-title" className="text-section font-medium text-text-primary">
-          Generate the shot list again?
+          {mode === 'remaining' ? 'Generate the remaining shots?' : 'Generate the shot list again?'}
         </span>
         <span className="text-small leading-[1.5] text-text-secondary">
-          {hasPendingPayload
-            ? 'Your last generation already finished and is saved. Resuming just writes it to your project — no additional credits.'
-            : `This starts a new shot generation and uses approximately ${estimatedCredits} credits.`}
+          {mode === 'remaining'
+            ? 'This writes the scenes that were not finished. The shots you have stay as they are. You are charged only for the shots written.'
+            : hasPendingPayload
+              ? 'The scene plan from your last attempt is saved and is reused at no cost. Writing its shots is charged for the shots written.'
+              : `This starts a new shot generation and uses approximately ${estimatedCredits} credits.`}
         </span>
-        {replacesExisting && (
+        {mode === 'regenerate' && replacesExisting && (
           <span className="text-small leading-[1.5] text-status-failed-fg">
             The shots currently listed will be replaced, not added to.
           </span>
@@ -72,7 +77,7 @@ export function RetryConfirmModal({
             onClick={onConfirm}
             className="flex h-9 cursor-pointer items-center rounded-control border border-accent bg-accent px-rc-sm text-small font-medium text-white outline-none hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent active:bg-accent-active"
           >
-            {hasPendingPayload ? 'Resume' : 'Generate'}
+            {mode === 'remaining' ? 'Generate remaining' : hasPendingPayload ? 'Resume' : 'Generate'}
           </button>
         </div>
       </div>

@@ -332,7 +332,7 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   developer, not the agent.
 - Duration → shot-count/credit mapping lives in `src/lib/config/duration.ts`
   (`durationConfig`, keyed by `DurationTarget`) — the single source for
-  `targetShots`/`estimatedCredits`/`targetSecondsMax`. The intake duration
+  `targetShots`/`estimatedCredits` and the tier's seconds range. The intake duration
   tiles, shot generation, and `RetryConfirmModal`'s credit-cost copy all read
   from it; don't duplicate these numbers elsewhere. The same file exports
   `DEFAULT_DURATION_TARGET` (currently `'30-60s'`, the permanent product
@@ -341,19 +341,14 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   against the constant instead of a hardcoded string. Every billed generation
   outside the initial `pending` trigger (i.e. every retry) is confirmed
   through that modal before the request fires.
-- **`targetShots` is a hard maximum by instruction, not a structural cap**
-  — fewer shots than the tier is honored; more is discouraged, never
-  truncated. The tool-use API supports no array-count constraint beyond
-  `minItems` of 0 or 1, so `buildWriteShotsTool(targetShots)` cannot
-  enforce an upper bound structurally — enforcement is the system
-  prompt's "hard maximum" wording plus the tool's own description, and a
-  non-blocking amber intake hint. The intake check warns and must never
-  block (the regex has no semantics and false-positives readily);
-  `runShotsPipeline` must never truncate an over-count result (the call
-  is already paid for regardless of persisted row count) — it persists
-  in full and logs `[shots] over_count …`. `ProjectHeader` surfaces an
-  overshoot to the user, amber and non-blocking, so accept-and-log stays
-  actionable.
+- **Shot limits are enforced in code, never by prompt.** `targetShots` sizes only
+  the intake estimate and the pre-flight credit check. Generation keeps the
+  outline inside the tier's seconds range, stops at the shot ceiling (tier
+  maximum ÷ the video model's shortest shot) and the tier's maximum seconds,
+  and saves at most each chunk's cap, logging extras `[shots] over_count …`.
+  Durations are computed from the words spoken (`src/lib/shots/durations.ts`),
+  never chosen by Claude. The intake hint warns and must never block (its
+  regex has no semantics and false-positives readily).
 - `src/lib/config/pipeline.ts` is the single source for the pipeline's
   step/operation/provider vocabulary: `STEPS`/`Step`, `OPERATIONS`/
   `Operation`, `PROVIDERS`/`Provider`, the `STEP_OPERATIONS` map of which
@@ -561,7 +556,7 @@ row, with `projects`-style per-command policies (`user_id = auth.uid()`,
 split into SELECT/INSERT/UPDATE) rather than a join — see `usage`'s own
 paragraph below for why. Private `artifacts` Storage bucket.
 
-The shots route persists write_shots' detected video_type ONLY while the
+Shot generation persists the outline's detected video_type ONLY while the
 stored value is still 'auto'. A user's explicit intake choice is never
 overwritten by the model's detection.
 
@@ -581,7 +576,7 @@ independently:
   (`CAMERA_ORIGINS` filtered to drop `'override'`), so this is enforced
   structurally, not only by validation.
 
-`runShotsPipeline` sanitizes an unrecognized or missing origin to `'auto'`
+Shot generation (`write-chunk.ts`) sanitizes an unknown or missing origin to `'auto'`
 (the columns are `NOT NULL`) rather than nulling — `'auto'` never claims
 the description named a camera choice the model didn't report. Nothing
 ever backfills to `'derived'`: that would need a paid Claude call per shot
@@ -661,9 +656,8 @@ column** — a shared array cannot support independent per-row saves without
 a read-modify-write race, and the UI and the agent's tools write it
 concurrently. Its RLS mirrors `shots`'s single blanket policy, keyed on
 the denormalized `project_id` rather than joining through `shots`.
-`runShotsPipeline` writes dialogue as one uniform batch insert; no
-cleanup is needed on retry, since the `shots` delete-before-reinsert
-already cascades it.
+Each chunk writes its dialogue as one uniform batch insert; a
+regeneration's `shots` delete cascades it.
 
 **Dialogue speaker rule.** The speaker dropdown in the expanded shot card
 only ever lists elements bound to *that shot* via `shot_elements`, filtered
@@ -913,13 +907,12 @@ settles `failed`, keeps whatever shots were saved, and always clears
 **A generations row with a non-null `payload` means Claude has already
 been paid for; recovery replays it and never re-calls.**
 
-A retry or recovery run replaces the shot list wholesale: `runShotsPipeline` deletes all
-existing `shots` rows for the project (cascading `shot_elements`, which has `ON DELETE
-CASCADE` on both foreign keys) immediately before inserting the fresh/replayed batch,
-always sequenced after the payload is already durably persisted — a crash
-between the two still leaves the payload intact for the next retry to recover from.
+A generate run replaces the shot list wholesale once its outline payload is durably
+persisted: it deletes the project's `shots` (cascading `shot_elements`) and `scenes`, then
+writes the new scenes - a crash between the two leaves the payload for the next retry.
+Each chunk's payload is stored on its `shot_run_chunks` row before its shots are written.
 `elements` are never deleted: they're project-level and deduped by name, so
-`resolveElement` re-matches existing rows (including any reference image already
+`ElementResolver` re-matches existing rows (including any reference image already
 generated) on replay instead of creating duplicates. This is what makes the
 confirmation modal's "existing shots will be replaced" copy true rather than aspirational.
 

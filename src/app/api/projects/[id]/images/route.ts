@@ -1,4 +1,3 @@
-import { timingSafeEqual } from 'node:crypto'
 import { NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { tryLoadRailFigures } from '@/app/(app)/rail-figures'
@@ -7,6 +6,7 @@ import { createImageGateway } from '@/lib/images/gateway'
 import { mintAttemptId, recordFixedSpend } from '@/lib/credits/ledger'
 import { getBalance } from '@/lib/credits/balance'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
+import { continuationSecret, continuationSecretMatches } from '@/lib/continuation'
 import {
   INTERNAL_SECRET_HEADER,
   createContinueRun,
@@ -24,14 +24,6 @@ export const runtime = 'nodejs'
 // IMAGES_ROUTE_MAX_DURATION_S in src/lib/config/storyboard.ts, whose RUN_TIME_BUDGET_MS
 // is sized to fit inside it.
 export const maxDuration = 300
-
-function secretMatches(provided: string): boolean {
-  const expected = process.env.IMAGES_INTERNAL_SECRET
-  if (!expected) return false
-  const a = Buffer.from(provided)
-  const b = Buffer.from(expected)
-  return a.length === b.length && timingSafeEqual(a, b)
-}
 
 // Same shape as the image-prompts route's parser: shotIds is the request's explicit
 // scope - required, non-empty, no blanks, no duplicates - never inferred server-side.
@@ -57,7 +49,7 @@ function scheduleWorker(origin: string, run: ContinuationPayload) {
         gateway: createImageGateway(),
         mintAttemptId,
         recordFixedSpend,
-        continueRun: createContinueRun({ origin, secret: process.env.IMAGES_INTERNAL_SECRET }),
+        continueRun: createContinueRun({ origin, secret: continuationSecret() }),
       },
       run
     )
@@ -79,7 +71,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   // wrong or unconfigured secret is refused outright, never downgraded to the user path.
   const providedSecret = request.headers.get(INTERNAL_SECRET_HEADER)
   if (providedSecret !== null) {
-    if (!secretMatches(providedSecret)) {
+    if (!continuationSecretMatches(providedSecret)) {
       return NextResponse.json({ ok: false, error: 'Forbidden' }, { status: 403 })
     }
     const payload = parseContinuationPayload(body, projectId)

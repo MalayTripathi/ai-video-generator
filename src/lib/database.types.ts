@@ -334,6 +334,8 @@ export type Database = {
           image_quality: string
           language: string | null
           language_code: string | null
+          last_fit_at: string | null
+          last_manual_retime_at: string | null
           loudness_preset: string | null
           mix_duck_bypass: boolean | null
           mix_duck_depth_db: number | null
@@ -384,6 +386,8 @@ export type Database = {
           image_quality?: string
           language?: string | null
           language_code?: string | null
+          last_fit_at?: string | null
+          last_manual_retime_at?: string | null
           loudness_preset?: string | null
           mix_duck_bypass?: boolean | null
           mix_duck_depth_db?: number | null
@@ -434,6 +438,8 @@ export type Database = {
           image_quality?: string
           language?: string | null
           language_code?: string | null
+          last_fit_at?: string | null
+          last_manual_retime_at?: string | null
           loudness_preset?: string | null
           mix_duck_bypass?: boolean | null
           mix_duck_depth_db?: number | null
@@ -471,6 +477,53 @@ export type Database = {
           {
             foreignKeyName: "projects_template_source_id_fkey"
             columns: ["template_source_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      scenes: {
+        Row: {
+          created_at: string
+          id: string
+          location: string | null
+          position: number
+          project_id: string
+          summary: string | null
+          target_seconds: number | null
+          time_of_day: string | null
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          location?: string | null
+          position: number
+          project_id: string
+          summary?: string | null
+          target_seconds?: number | null
+          time_of_day?: string | null
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          location?: string | null
+          position?: number
+          project_id?: string
+          summary?: string | null
+          target_seconds?: number | null
+          time_of_day?: string | null
+          title?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scenes_project_id_fkey"
+            columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
             referencedColumns: ["id"]
@@ -559,6 +612,174 @@ export type Database = {
           },
         ]
       }
+      shot_run_chunks: {
+        Row: {
+          chunk_index: number
+          cost_usd: number
+          created_at: string
+          error: string | null
+          id: string
+          max_shots: number
+          payload: Json | null
+          project_id: string
+          run_id: string
+          scene_complete: boolean
+          scene_id: string
+          shots_saved: number
+          started_at: string | null
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          chunk_index: number
+          cost_usd?: number
+          created_at?: string
+          error?: string | null
+          id?: string
+          max_shots: number
+          payload?: Json | null
+          project_id: string
+          run_id: string
+          scene_complete?: boolean
+          scene_id: string
+          shots_saved?: number
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          chunk_index?: number
+          cost_usd?: number
+          created_at?: string
+          error?: string | null
+          id?: string
+          max_shots?: number
+          payload?: Json | null
+          project_id?: string
+          run_id?: string
+          scene_complete?: boolean
+          scene_id?: string
+          shots_saved?: number
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shot_run_chunks_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shot_run_chunks_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "shot_runs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shot_run_chunks_scene_id_fkey"
+            columns: ["scene_id"]
+            isOneToOne: false
+            referencedRelation: "scenes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shot_runs: {
+        Row: {
+          agent_generation_id: string | null
+          attempt_id: string
+          charged_at: string | null
+          created_at: string
+          finished_at: string | null
+          generation_id: string | null
+          heartbeat_at: string
+          id: string
+          kind: string
+          message_id: string | null
+          outline_cost_usd: number
+          project_id: string
+          status: string
+          stop_reason: string | null
+          total_scenes: number | null
+          turn_cost_usd: number | null
+          turn_settled_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          agent_generation_id?: string | null
+          attempt_id: string
+          charged_at?: string | null
+          created_at?: string
+          finished_at?: string | null
+          generation_id?: string | null
+          heartbeat_at?: string
+          id?: string
+          kind: string
+          message_id?: string | null
+          outline_cost_usd?: number
+          project_id: string
+          status?: string
+          stop_reason?: string | null
+          total_scenes?: number | null
+          turn_cost_usd?: number | null
+          turn_settled_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          agent_generation_id?: string | null
+          attempt_id?: string
+          charged_at?: string | null
+          created_at?: string
+          finished_at?: string | null
+          generation_id?: string | null
+          heartbeat_at?: string
+          id?: string
+          kind?: string
+          message_id?: string | null
+          outline_cost_usd?: number
+          project_id?: string
+          status?: string
+          stop_reason?: string | null
+          total_scenes?: number | null
+          turn_cost_usd?: number | null
+          turn_settled_at?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shot_runs_agent_generation_id_fkey"
+            columns: ["agent_generation_id"]
+            isOneToOne: false
+            referencedRelation: "generations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shot_runs_generation_id_fkey"
+            columns: ["generation_id"]
+            isOneToOne: false
+            referencedRelation: "generations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shot_runs_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shot_runs_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       shots: {
         Row: {
           binned_at: string | null
@@ -578,9 +799,10 @@ export type Database = {
           image_prompt_stale: boolean
           image_stale: boolean
           motion: string | null
+          narration_overflow: boolean
           order_index: number
           project_id: string
-          section_label: string | null
+          scene_id: string | null
           shot_key: string
           shot_size: string | null
           shot_size_origin: string
@@ -613,9 +835,10 @@ export type Database = {
           image_prompt_stale?: boolean
           image_stale?: boolean
           motion?: string | null
+          narration_overflow?: boolean
           order_index: number
           project_id: string
-          section_label?: string | null
+          scene_id?: string | null
           shot_key: string
           shot_size?: string | null
           shot_size_origin?: string
@@ -648,9 +871,10 @@ export type Database = {
           image_prompt_stale?: boolean
           image_stale?: boolean
           motion?: string | null
+          narration_overflow?: boolean
           order_index?: number
           project_id?: string
-          section_label?: string | null
+          scene_id?: string | null
           shot_key?: string
           shot_size?: string | null
           shot_size_origin?: string
@@ -671,6 +895,13 @@ export type Database = {
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shots_scene_id_fkey"
+            columns: ["scene_id"]
+            isOneToOne: false
+            referencedRelation: "scenes"
             referencedColumns: ["id"]
           },
         ]

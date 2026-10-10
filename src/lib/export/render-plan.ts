@@ -1,5 +1,5 @@
 import { CAPTION_STYLE_PRESETS, LOUDNESS_TARGETS } from '@/lib/config/storyboard'
-import { dbToGain, motionTransform, type DuckPoint, type FilmTimeline, type MusicPlay } from '@/lib/storyboard/film'
+import { dbToGain, motionTransform, type DuckPoint, type FilmTimeline, type MusicPlay, type VoicePiece } from '@/lib/storyboard/film'
 import type { Motion } from '@/lib/config/enums'
 import { captionLines, toAss, toSrt } from './captions'
 import { chaptersFfmetadata, chaptersTxt } from './chapters'
@@ -37,7 +37,8 @@ export type RenderPlan = {
   /** Between segment k and k+1: the dissolve's length in frames (0 = a hard cut). */
   joinFrames: number[]
   audio: {
-    voice: { path: string; gainDb: number } | null
+    /** `pieces`: where each shot's narration plays (film.ts voicePieces). */
+    voice: { path: string; gainDb: number; pieces: VoicePiece[] } | null
     /** The film's music schedule (buildFilmTimeline): its passes, where it ends, its end fade. */
     music: {
       path: string
@@ -142,7 +143,9 @@ export function buildRenderPlan(
     segments,
     joinFrames,
     audio: {
-      voice: timeline.audio.voice ? { path: timeline.audio.voice.path, gainDb: timeline.audio.voice.gainDb } : null,
+      voice: timeline.audio.voice
+        ? { path: timeline.audio.voice.path, gainDb: timeline.audio.voice.gainDb, pieces: timeline.audio.voice.pieces }
+        : null,
       music: timeline.audio.music
         ? {
             path: timeline.audio.music.path,
@@ -201,16 +204,66 @@ export function videoGraph(plan: RenderPlan, assPath: string | null, fontsDir: s
 }
 
 /**
- * The audio mix, ending in [amix]. `voiceInput` is an input index and `musicInputs` the
- * music file's input indices (musicInputCount of them), each null when the lane is absent
- * or muted - it is then omitted. With neither, a silent track keeps the file's shape.
+ * The voice pieces split into runs that each read the file forwards: one run when the
+ * picture keeps the voiceover's order (the usual case), more when shots were reordered so a
+ * later piece reads from earlier in the file. Each run is one input of the voice file.
  */
-export function audioGraph(plan: RenderPlan, voiceInput: number | null, musicInputs: number[] | null): string {
+export function voiceRuns(pieces: readonly VoicePiece[]): VoicePiece[][] {
+  const runs: VoicePiece[][] = []
+  for (const piece of pieces) {
+    const run = runs[runs.length - 1]
+    const last = run?.[run.length - 1]
+    if (run && last && piece.fromSec >= last.toSec - 1e-6) run.push(piece)
+    else runs.push([piece])
+  }
+  return runs
+}
+
+/** How many times the worker passes the voice file as an input - one per voice run. */
+export function voiceInputCount(plan: RenderPlan): number {
+  return plan.audio.voice ? voiceRuns(plan.audio.voice.pieces).length : 0
+}
+
+/**
+ * One voice run: the run's spans kept (aselect, on 10ms frames) and moved to their place on
+ * the film (asetpts), then the gaps filled with silence (aresample async). Half-open
+ * ranges, so a frame on a boundary belongs to exactly one piece.
+ */
+function voiceRunChain(run: readonly VoicePiece[], input: number, label: string, gainDb: number, total: string): string {
+  const inPiece = (v: string, p: VoicePiece) => `gte(${v},${n(p.fromSec)})*lt(${v},${n(p.toSec)})`
+  const select = run.map((p) => inPiece('t', p)).join('+')
+  const pts = run.map((p) => `${inPiece('T', p)}*(T-${n(p.fromSec)}+${n(p.atSec)})`).join('+')
+  return [
+    `[${input}:a]aresample=48000`,
+    'asetnsamples=n=480:p=0',
+    `aselect='${select}'`,
+    `asetpts='(${pts})/TB'`,
+    'aresample=48000:async=1:min_hard_comp=0.01:first_pts=0',
+    `volume=${n(gainDb)}dB`,
+    'apad',
+    `atrim=0:${total}${label}`,
+  ].join(',')
+}
+
+/**
+ * The audio mix, ending in [amix]. `voiceInputs` are the voice file's input indices (one per
+ * voice run) and `musicInputs` the music file's (musicInputCount of them), each null when
+ * the lane is absent or muted - it is then omitted. With neither, a silent track keeps the
+ * file's shape. Each shot's narration plays from its shot's start (the film's voice pieces).
+ */
+export function audioGraph(plan: RenderPlan, voiceInputs: number[] | null, musicInputs: number[] | null): string {
   const total = n(plan.totalSec)
   const parts: string[] = []
   const labels: string[] = []
-  if (voiceInput !== null && plan.audio.voice) {
-    parts.push(`[${voiceInput}:a]aresample=48000,volume=${n(plan.audio.voice.gainDb)}dB,apad,atrim=0:${total}[voice]`)
+  const voice = plan.audio.voice
+  const runs = voice ? voiceRuns(voice.pieces) : []
+  if (voice && voiceInputs && runs.length > 0 && voiceInputs.length === runs.length) {
+    if (runs.length === 1) {
+      parts.push(voiceRunChain(runs[0], voiceInputs[0], '[voice]', voice.gainDb, total))
+    } else {
+      runs.forEach((run, k) => parts.push(voiceRunChain(run, voiceInputs[k], `[vr${k}]`, voice.gainDb, total)))
+      parts.push(`${runs.map((_, k) => `[vr${k}]`).join('')}amix=inputs=${runs.length}:normalize=0:duration=longest[voice]`)
+    }
     labels.push('[voice]')
   }
   if (musicInputs && musicInputs.length === musicInputCount(plan) && plan.audio.music) {
@@ -296,7 +349,7 @@ export function musicGraph(music: NonNullable<RenderPlan['audio']['music']>, inp
 }
 
 export function hasAudio(plan: RenderPlan): boolean {
-  return plan.audio.voice !== null || plan.audio.music !== null
+  return (plan.audio.voice !== null && plan.audio.voice.pieces.length > 0) || plan.audio.music !== null
 }
 
 /** loudnorm's first pass (analysis) - print_format=json on stderr. */

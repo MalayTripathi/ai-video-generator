@@ -44,7 +44,6 @@ test('the rail updates after a shot settles, with no router.refresh()', async ({
         voice_over: 'Line 1.',
         visual_description: 'A harbour at dawn',
         duration_sec: 5,
-        section_label: null,
         image_prompt: 'A harbour at dawn, long enough to read as written.',
         image_prompt_edited: false,
         image_prompt_stale: false,

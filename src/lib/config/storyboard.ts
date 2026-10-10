@@ -74,9 +74,9 @@ export const STORYBOARD_SIGNED_URL_EXPIRES_S = 3600
 // a display figure - nothing times out or settles on it.
 export const IMAGE_ETA_ESTIMATE_MS = 45_000
 
-// Retime (Storyboard B2). The shortest and longest a boundary drag or Fit to voiceover can
-// make a shot. The video model's clip limit does not apply here - Step 6 handles a shot
-// longer than one clip.
+// Retime (Storyboard B2). A retime and Fit to voiceover keep a shot inside the project's
+// video model range (storyboardRetimeRange). These are the fallback range for a project
+// whose model isn't registered; MIN is also the shortest part a split may leave.
 export const STORYBOARD_MIN_SHOT_SEC = 1.0
 export const STORYBOARD_MAX_SHOT_SEC = 30
 

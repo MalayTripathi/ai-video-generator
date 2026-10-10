@@ -217,40 +217,25 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
     expect(ledgerRows[0].delta).toBe(-2)
   })
 
-  test('a turn that regenerates the whole shot list mid-turn bills the summed cost of BOTH operations as one charge - not just the agent_turn share', async () => {
-    const projectId = await seedProject(primary.user.id)
+  // A turn that regenerates the shot list starts the shot chain, and the chain's final run
+  // bills the whole action as one dynamic agent_turn row (tests/shot-chain.spec.ts). Here:
+  // when the chain has nothing more to write, the turn's own calls and the chain's are
+  // still one charge - the turn's cost is handed to the run, never charged on its own.
+  test('a turn that regenerates the whole shot list writes no agent_turn row of its own - the chain it started bills the turn once', async () => {
+    // Shot lengths are set from the project's video model, which intake always sets.
+    const projectId = await seedProject(primary.user.id, { video_model: 'wan-3.0' })
     await seedShot(projectId)
-
-    // Exact figures from a real captured turn (see docs/decisions.md / Task 5): three
-    // usage rows sharing one message_id - agent_turn $0.003969, generate_shots
-    // $0.008467, agent_turn $0.003967 - summing to $0.016403 -> 17 credits. Token
-    // counts computed by hand against the Haiku dev rates (input $1/M, output $5/M):
-    // 969in+600out=$0.003969, 467in+1600out=$0.008467, 967in+600out=$0.003967.
     const usage = (inputTokens: number, outputTokens: number) => ({
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
     })
-
     const gateway = scriptedGateway([
-      // Iteration 1: agent calls regenerate_all_shots.
       successMessage({}, 'regenerate_all_shots', usage(969, 600)),
-      // The nested runShotGeneration call this tool triggers - same shared gateway,
-      // consumed next regardless of which caller invoked it.
-      successMessage(
-        {
-          title: 'Regenerated',
-          message: 'Fresh shots.',
-          video_type: 'narrated_story',
-          shots: [{ voice_over: 'Fresh.', visual_description: 'Fresh.', dialogue: [], element_names: [] }],
-        },
-        'write_shots',
-        usage(467, 1600)
-      ),
-      // Iteration 2: no more tool calls, ends the loop.
-      textMessage('Regenerated the shot list.', usage(967, 600)),
+      textMessage('Rewriting the shot list now.', usage(967, 600)),
     ])
+    const scheduled: unknown[] = []
 
     const result = await runAgentTurn({
       config: getAgentStepConfig('workbench'),
@@ -262,72 +247,19 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
       clientId: crypto.randomUUID(),
       attemptId: crypto.randomUUID(),
       recordTurnSpend: realRecordDynamicSpend,
+      getBalance: async () => 1_000_000,
+      ensureSignupGrant: async () => {},
+      shotRuns: { ledger: { recordFixedSpend: async () => {}, recordDynamicSpend: realRecordDynamicSpend }, schedule: (run) => scheduled.push(run) },
     })
 
     expect(result.ok).toBe(true)
-    expect(gateway.getCallCount()).toBe(3)
-
-    const usageRows = await readUsageRows(projectId)
-    expect(usageRows.length).toBe(3)
-    const messageIds = new Set(usageRows.map((r) => r.message_id))
-    expect(messageIds.size).toBe(1)
-    const operations = usageRows.map((r) => r.operation).sort()
-    expect(operations).toEqual(['agent_turn', 'agent_turn', 'generate_shots'])
-
-    const ledgerRows = await readLedgerRows(projectId)
-    expect(ledgerRows.length).toBe(1)
-    // The whole turn is billed as one agent_turn charge, even though it included a
-    // separately-claimed generate_shots call.
-    expect(ledgerRows[0].operation).toBe('agent_turn')
-    expect(ledgerRows[0].delta).toBe(-17)
-    // The exact under-charge a dropped generate_shots contribution would produce -
-    // this is the assertion that would catch it going silently wrong.
-    expect(ledgerRows[0].delta).not.toBe(-8)
-    // Task 6: the nested runShotGeneration call here passes BILLED_BY_TURN, not the
-    // real recordFixedSpend - this is what that wiring actually produces (no second,
-    // fixed-price row) rather than just what the row count implies.
-    expect(ledgerRows.some((r) => r.operation === 'generate_shots')).toBe(false)
-  })
-
-  test('a regenerate_all_shots whose nested call spends and then fails (max_tokens) is still billed into the turn\'s one charge', async () => {
-    const projectId = await seedProject(primary.user.id)
-    await seedShot(projectId)
-    const usage = (inputTokens: number, outputTokens: number) => ({
-      input_tokens: inputTokens,
-      output_tokens: outputTokens,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-    })
-    // agent $0.0015 + nested $0.0015 (truncated, settles failed but still measured) +
-    // agent $0.0009 = $0.0039 -> 4 credits. Dropping the failed nested call would bill 3.
-    const gateway = scriptedGateway([
-      successMessage({}, 'regenerate_all_shots', usage(500, 200)),
-      truncatedMessage(
-        { title: 'x', message: 'y', video_type: 'narrated_story', shots: [] },
-        'write_shots',
-        usage(1000, 100)
-      ),
-      textMessage('That did not finish.', usage(400, 100)),
-    ])
-
-    const result = await runAgentTurn({
-      config: getAgentStepConfig('workbench'),
-      gateway,
-      supabase: admin,
-      projectId,
-      userId: primary.user.id,
-      content: 'regenerate all the shots',
-      clientId: crypto.randomUUID(),
-      attemptId: crypto.randomUUID(),
-      recordTurnSpend: realRecordDynamicSpend,
-    })
-    expect(result.ok).toBe(true)
-
-    const usageRows_ = await readUsageRows(projectId)
-    expect(usageRows_.find((r) => r.operation === 'generate_shots')!.estimated_cost).toBeGreaterThan(0)
-    const ledgerRows_ = await readLedgerRows(projectId)
-    expect(ledgerRows_.length).toBe(1)
-    expect(ledgerRows_[0].delta).toBe(-4)
+    expect(scheduled).toHaveLength(1)
+    // The turn's two calls are recorded; its cost is on the run, waiting for the chain.
+    expect((await readUsageRows(projectId)).map((r) => r.operation)).toEqual(['agent_turn', 'agent_turn'])
+    expect(await readLedgerRows(projectId)).toHaveLength(0)
+    const { data: run } = await admin.from('shot_runs').select('turn_cost_usd, turn_settled_at').eq('project_id', projectId).single()
+    expect(Number(run!.turn_cost_usd)).toBeCloseTo(0.003969 + 0.003967, 9)
+    expect(run!.turn_settled_at).not.toBeNull()
   })
 
   test('a turn that fails on its very first call writes no ledger row', async () => {

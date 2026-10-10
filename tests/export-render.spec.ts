@@ -30,8 +30,8 @@ test('renders the film at the asked size and length, with an audio stream, capti
     await runFfmpeg(bin!, ['-f', 'lavfi', '-i', 'sine=frequency=440:duration=3', '-c:a', 'aac', voice])
 
     const shots = [
-      { id: 's1', order_index: 0, duration_sec: 2, section_label: 'Opening', image_path: 'a' },
-      { id: 's2', order_index: 1, duration_sec: 2, section_label: 'Close', image_path: 'b', motion: 'pan_left' },
+      { id: 's1', order_index: 0, duration_sec: 2, scenes: { title: 'Opening' }, image_path: 'a' },
+      { id: 's2', order_index: 1, duration_sec: 2, scenes: { title: 'Close' }, image_path: 'b', motion: 'pan_left' },
     ]
     const read = {
       audioPath: 'voice',
@@ -73,7 +73,8 @@ test('renders the film at the asked size and length, with an audio stream, capti
     expect(probed.hasAudio).toBe(true)
     expect(progress.at(-1)).toBe(1)
 
-    expect(await readFile(out.srt!, 'utf8')).toContain('00:00:00,100 --> 00:00:01,000\nHello there')
+    // Each shot's narration plays from its shot's start, so the read's 0.1s lead-in is not.
+    expect(await readFile(out.srt!, 'utf8')).toContain('00:00:00,000 --> 00:00:00,900\nHello there')
     expect(await readFile(out.chaptersTxt!, 'utf8')).toBe('0:00 Opening\n0:02 Close\n')
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -89,8 +90,8 @@ test('renders the music bed looped to fit, and leaves it out past its end when n
     const music = path.join(dir, 'music.m4a')
     await runFfmpeg(bin!, ['-f', 'lavfi', '-i', 'sine=frequency=220:duration=1.5', '-c:a', 'aac', music])
     const shots = [
-      { id: 's1', order_index: 0, duration_sec: 2, section_label: null, image_path: 'a' },
-      { id: 's2', order_index: 1, duration_sec: 2, section_label: null, image_path: 'a' },
+      { id: 's1', order_index: 0, duration_sec: 2, scenes: null, image_path: 'a' },
+      { id: 's2', order_index: 1, duration_sec: 2, scenes: null, image_path: 'a' },
     ]
     const noMix = { mix_voice_gain_db: null, mix_music_gain_db: 0, mix_duck_depth_db: null, mix_duck_bypass: null }
     const settings = resolveExportSettings({}, { hasVoiceover: false, aspectRatio: '9:16' })

@@ -28,7 +28,7 @@ function shots(durations: number[]): FilmShot[] {
     id: `s${i}`,
     order_index: i,
     duration_sec: d,
-    section_label: null,
+    scenes: null,
     image_path: `img/${i}.webp`,
   }))
 }
@@ -189,9 +189,10 @@ test.describe('export music chain', () => {
     const p = plan({ durationSec: 20 })
     expect(p.audio.music).not.toBeNull()
     expect(musicInputCount(p)).toBe(1)
-    const graph = audioGraph(p, 0, [1])
+    const graph = audioGraph(p, [0], [1])
     expect(graph).toContain('[1:a]aresample=48000')
-    expect(graph).toMatch(/volume='if\(lt\(t,[\d.]+\),1,/) // the duck
+    // The duck; the word now plays from its shot's start, so its attack begins before 0.
+    expect(graph).toMatch(/volume='if\(lt\(t,-?[\d.]+\),1,/)
     expect(graph).toContain(`afade=t=out:st=${10 - MUSIC_END_FADE_SEC}:d=${MUSIC_END_FADE_SEC}`) // the picture-end fade
     expect(graph).toContain('amix=inputs=2:normalize=0')
     expect(loudnessAnalysisFilter(p)).toContain('[amix]loudnorm=')
@@ -202,7 +203,7 @@ test.describe('export music chain', () => {
     const plays = p.audio.music!.plays
     expect(plays.length).toBeGreaterThan(2)
     expect(musicInputCount(p)).toBe(2)
-    const graph = audioGraph(p, 0, [1, 2])
+    const graph = audioGraph(p, [0], [1, 2])
     const step = plays[1].startSec - plays[0].startSec
     // Each input is the file padded to two steps and looped; the odd passes start a step later.
     expect(graph).toContain(`[1:a]aresample=48000,apad=whole_dur=${2 * step}`)
@@ -218,7 +219,7 @@ test.describe('export music chain', () => {
     const p = plan({ durationSec: 20, muted: true })
     expect(p.audio.music).toBeNull()
     expect(musicInputCount(p)).toBe(0)
-    expect(audioGraph(p, 0, null)).not.toContain('[music]')
+    expect(audioGraph(p, [0], null)).not.toContain('[music]')
   })
 })
 

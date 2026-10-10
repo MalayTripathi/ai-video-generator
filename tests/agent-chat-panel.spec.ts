@@ -160,7 +160,7 @@ test.describe('agent chat panel', () => {
     await page.goto(`/projects/${projectId}/workbench`)
     await sendMessage(page, 'start over')
 
-    const toolLine = page.locator('[data-message-kind="tool_done"]', { hasText: 'Regenerated all shots' })
+    const toolLine = page.locator('[data-message-kind="tool_done"]', { hasText: 'Started rewriting all shots' })
     await expect(toolLine).toBeVisible()
     const settledBubble = page.getByText('Rebuilt the shot list from your brief.')
     await expect(settledBubble).toBeVisible()

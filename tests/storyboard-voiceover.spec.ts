@@ -582,18 +582,24 @@ test.describe('voiceover - Fit to voiceover (server)', () => {
 
     const fit = await fitToVoiceoverForUser(admin, primary.user.id, projectId)
     expect(fit.success).toBe(true)
+    // Each narrated shot is its spoken span + padding, rounded up to Wan 3.0's whole
+    // seconds and kept inside its 2-30s range.
+    const { data: project } = await admin.from('projects').select('voiceover_spans, last_fit_at').eq('id', projectId).single()
+    const spans = project!.voiceover_spans as { shotId: string; startSec: number; endSec: number }[]
     const { data: shots } = await admin.from('shots').select('id, film_duration_sec').in('id', shotIds)
-    const total = (shots ?? []).reduce((sum, s) => sum + (s.film_duration_sec ?? 0), 0)
-    // Two shots of at least the 1s minimum tile the ~3.4s read.
-    expect(total).toBeCloseTo(Math.round(SAMPLE_SECONDS * 10) / 10, 1)
+    const byId = new Map((shots ?? []).map((s) => [s.id, s.film_duration_sec]))
+    for (const span of spans) {
+      expect(byId.get(span.shotId)).toBe(Math.min(30, Math.max(2, Math.ceil(span.endSec - span.startSec + 0.25))))
+    }
+    expect(project!.last_fit_at).not.toBeNull()
 
     await admin.from('shots').update({ binned_at: new Date().toISOString() }).eq('id', shotIds[1])
     const refused = await fitToVoiceoverForUser(admin, primary.user.id, projectId)
     expect(refused).toMatchObject({ success: false })
   })
 
-  test('uses the true spans, past the video model’s clip limit, clamping only at 30s', async () => {
-    // The video model's own clip limit plays no part; the storyboard clamps at 30s.
+  test('uses the true spans, clamping at the video model’s longest shot', async () => {
+    // Wan 3.0: 2-30s. Spoken 14s, 6s and 40s, each + 0.25s padding, rounded up.
     const projectId = await seedProject(primary.user.id)
     const narration = ['The river rises.', 'The city wakes.', 'The night falls.']
     const shotIds = await seedShots(projectId, narration)
@@ -618,7 +624,7 @@ test.describe('voiceover - Fit to voiceover (server)', () => {
     expect(fit).toMatchObject({ success: true, clamped: [shotIds[2]] })
     const { data: shots } = await admin.from('shots').select('id, film_duration_sec').in('id', shotIds)
     const byId = new Map((shots ?? []).map((r) => [r.id, r.film_duration_sec]))
-    expect(shotIds.map((id) => byId.get(id))).toEqual([14, 6, 30])
+    expect(shotIds.map((id) => byId.get(id))).toEqual([15, 7, 30])
   })
 })
 

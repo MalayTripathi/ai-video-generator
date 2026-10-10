@@ -59,7 +59,7 @@ export const FILM_PROJECT_COLUMNS =
   'aspect_ratio, audio_path, voiceover_generated_at, voiceover_source, voiceover_spans, voiceover_words, total_duration_sec, voiceover_muted, mix_voice_gain_db, mix_music_gain_db, mix_duck_depth_db, mix_duck_bypass, music_muted, music_path, music_duration_sec, music_loop, export_motion, export_transition, caption_mode, caption_style, caption_position, loudness_preset'
 
 export const FILM_SHOT_COLUMNS =
-  'id, order_index, film_order, binned_at, duration_sec, film_duration_sec, section_label, motion, split_at, split_motion, transition_out, image_path'
+  'id, order_index, film_order, binned_at, duration_sec, film_duration_sec, scenes(title), motion, split_at, split_motion, transition_out, image_path'
 
 /** The project's aspect ratio, falling back to 9:16 as the Storyboard page does. */
 export function projectAspectRatio(value: string | null): AspectRatio {

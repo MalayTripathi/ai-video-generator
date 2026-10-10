@@ -18,6 +18,7 @@ import {
   orderDiffersFromScript,
   reorderWrites,
   retimeBounds,
+  storyboardRetimeRange,
   snapRetime,
   LANE_GUTTER_PX,
   laneLayout,
@@ -93,13 +94,13 @@ test.describe('lane geometry', () => {
 })
 
 test.describe('scene bands', () => {
-  test('consecutive shots with the same section_label form one band sized by their durations', () => {
+  test('consecutive shots in the same scene form one band sized by their durations', () => {
     const bands = groupBands([
-      { section_label: 'Origins', duration_sec: 5.5 },
-      { section_label: 'Origins', duration_sec: 6 },
-      { section_label: 'The work', duration_sec: 4.5 },
-      { section_label: 'The work', duration_sec: 7 },
-      { section_label: 'The work', duration_sec: 6 },
+      { scenes: { title: 'Origins' }, duration_sec: 5.5 },
+      { scenes: { title: 'Origins' }, duration_sec: 6 },
+      { scenes: { title: 'The work' }, duration_sec: 4.5 },
+      { scenes: { title: 'The work' }, duration_sec: 7 },
+      { scenes: { title: 'The work' }, duration_sec: 6 },
     ])
     expect(bands).toEqual([
       { name: 'Origins', seconds: 11.5, firstIndex: 0 },
@@ -107,13 +108,13 @@ test.describe('scene bands', () => {
     ])
   })
 
-  test('a label that recurs after another starts a new band; unlabelled shots group namelessly', () => {
+  test('a scene title that recurs after another starts a new band; shots with no scene group namelessly', () => {
     const bands = groupBands([
-      { section_label: 'A', duration_sec: 1 },
-      { section_label: 'B', duration_sec: 1 },
-      { section_label: 'A', duration_sec: 1 },
-      { section_label: null, duration_sec: 2 },
-      { section_label: '  ', duration_sec: 3 },
+      { scenes: { title: 'A' }, duration_sec: 1 },
+      { scenes: { title: 'B' }, duration_sec: 1 },
+      { scenes: { title: 'A' }, duration_sec: 1 },
+      { scenes: null, duration_sec: 2 },
+      { scenes: { title: '  ' }, duration_sec: 3 },
     ])
     expect(bands.map((b) => [b.name, b.seconds])).toEqual([
       ['A', 1],
@@ -206,15 +207,19 @@ function applyWrites(shots: LaneShot[], writes: { id: string; film_order: number
 }
 
 test.describe('retime bounds and snap', () => {
-  test('the floor is STORYBOARD_MIN_SHOT_SEC and the ceiling STORYBOARD_MAX_SHOT_SEC, never the video model', () => {
-    const bounds = retimeBounds(3)
-    expect(bounds).toEqual({ min: STORYBOARD_MIN_SHOT_SEC, max: STORYBOARD_MAX_SHOT_SEC })
-    expect(STORYBOARD_MIN_SHOT_SEC).toBe(1)
-    expect(STORYBOARD_MAX_SHOT_SEC).toBe(30)
-    expect(snapRetime(0.2, bounds)).toBe(1)
-    // Past Wan 2.5's 10s clip limit, up to the storyboard's own ceiling.
-    expect(snapRetime(14.2, bounds)).toBe(14.2)
-    expect(snapRetime(45, bounds)).toBe(30)
+  test('the range is the project video model\'s - shortest to longest shot', () => {
+    expect(storyboardRetimeRange('wan-3.0')).toEqual({ min: 2, max: 30 })
+    expect(storyboardRetimeRange('wan-2.5')).toEqual({ min: 5, max: 10 })
+    expect(storyboardRetimeRange('kling-v3-standard')).toEqual({ min: 3, max: 15 })
+    const bounds = retimeBounds(5, storyboardRetimeRange('kling-v3-standard'))
+    expect(bounds).toEqual({ min: 3, max: 15 })
+    expect(snapRetime(0.2, bounds)).toBe(3)
+    expect(snapRetime(45, bounds)).toBe(15)
+  })
+
+  test('an unregistered model falls back to the storyboard\'s own range, never another model\'s', () => {
+    expect(storyboardRetimeRange('no-such-model')).toEqual({ min: STORYBOARD_MIN_SHOT_SEC, max: STORYBOARD_MAX_SHOT_SEC })
+    expect(storyboardRetimeRange(null)).toEqual({ min: STORYBOARD_MIN_SHOT_SEC, max: STORYBOARD_MAX_SHOT_SEC })
   })
 
   test('a discrete model spans its allowed values; a continuous one its durationMin..durationMax', () => {
@@ -223,14 +228,15 @@ test.describe('retime bounds and snap', () => {
   })
 
   test('a shot already past the ceiling (or under the floor) is never forced back by the bounds', () => {
-    expect(retimeBounds(32)).toEqual({ min: 1, max: 32 })
-    expect(retimeBounds(0.8)).toEqual({ min: 0.8, max: 30 })
+    const range = storyboardRetimeRange('wan-3.0')
+    expect(retimeBounds(32, range)).toEqual({ min: 2, max: 32 })
+    expect(retimeBounds(0.8, range)).toEqual({ min: 0.8, max: 30 })
     // A shot with no length yet gets the plain bounds.
-    expect(retimeBounds(null)).toEqual({ min: 1, max: 30 })
+    expect(retimeBounds(null, range)).toEqual({ min: 2, max: 30 })
   })
 
   test('snaps to 0.1s', () => {
-    const bounds = retimeBounds(5)
+    const bounds = retimeBounds(5, { min: STORYBOARD_MIN_SHOT_SEC, max: STORYBOARD_MAX_SHOT_SEC })
     expect(snapRetime(4.5321, bounds)).toBe(4.5)
     expect(snapRetime(5.26, bounds)).toBe(5.3)
     expect(snapRetime(4.5 + RETIME_SNAP_SEC, bounds)).toBe(4.6)

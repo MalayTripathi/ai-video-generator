@@ -32,6 +32,7 @@ import type { AgentStepConfig, ToolLockScope } from './steps'
 import type { recordDynamicSpend } from '@/lib/credits/ledger'
 import type { getBalance } from '@/lib/credits/balance'
 import type { ensureSignupGrant } from '@/lib/credits/signup-grant'
+import { hasLiveShotRun, settleDeadShotRuns, settleShotRunTurn, type ShotRunLedger } from '@/lib/shots/runs'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type MessageRow = Tables<'messages'>
@@ -152,6 +153,12 @@ export async function runAgentTurn(params: {
   // `usage`. A gated config without getBalance is a wiring bug and throws before any write.
   getBalance?: typeof getBalance
   ensureSignupGrant?: typeof ensureSignupGrant
+  // Injected by the route: what a turn needs to start a shot-generation chain
+  // (regenerate_all_shots) and to settle one. Absent in a test that starts none.
+  shotRuns?: {
+    ledger: ShotRunLedger
+    schedule: (run: { userId: string; projectId: string; runId: string; chainDepth: 0 }) => void
+  }
 }): Promise<AgentTurnResult> {
   const { config, gateway, supabase, projectId, userId, content, clientId, attemptId, recordTurnSpend } = params
   if (config.toolEstimateUsd && !params.getBalance) {
@@ -302,6 +309,23 @@ export async function runAgentTurn(params: {
     }
   }
 
+  // A shot-generation chain - one this agent started, or the Generate shots button's -
+  // holds the agent for as long as it runs. A dead one is settled first, on this touch.
+  let shotRunLive: boolean
+  try {
+    if (params.shotRuns) await settleDeadShotRuns(supabase, params.shotRuns.ledger, projectId)
+    shotRunLive = await hasLiveShotRun(supabase, projectId)
+  } catch (err) {
+    console.error('[agent] shot-run check failed', err)
+    return failBeforeClaim('Something went wrong starting that - nothing was changed. Please try again.', 500)
+  }
+  if (shotRunLive) {
+    const reply = 'The shot list is still being written, so nothing was changed. Try again once it finishes.'
+    await insertAssistantReply(supabase, projectId, clientId, reply)
+    emit({ type: 'settled', content: reply, cost: 0, messageId: userMessage.id })
+    return { ok: false, status: 409, error: 'A shot list is still being written for this project.', reason: 'already_generating' }
+  }
+
   const claim = await claimGeneration({
     supabase,
     identity: { projectId, step: 'workbench', operation: 'agent_turn', shotId: null, elementId: null },
@@ -357,9 +381,14 @@ export async function runAgentTurn(params: {
   // Real settled dollar cost of every paid call this turn made, summed in memory as
   // each call settles - never re-derived from a `usage` query (see credit_ledger's
   // independence from `usage`, CLAUDE.md). Includes this turn's own agent_turn
-  // iterations (via markSettled below) and, when regenerate_all_shots actually spends,
-  // its separately-claimed generate_shots call (via dispatchAgentTool's result below).
+  // iterations (via markSettled below) and any nested paid tool call's cost (via
+  // dispatchAgentTool's result below). A shot chain's calls are not here: the run record
+  // carries them, and the chain's final run adds this total to them.
   let turnCostUsd = 0
+  // Set when regenerate_all_shots started a chain this turn: that run bills the turn (its
+  // final run writes the one agent_turn row) and releases the turn's lock, so the turn
+  // hands its own cost over instead of charging or settling here.
+  let shotRunId: string | null = null
 
   async function reserveAndSettle(
     estimatedInputTokens: number
@@ -422,6 +451,17 @@ export async function runAgentTurn(params: {
       history: history.filter(
         (m): m is { role: 'user' | 'assistant'; content: string } => m.role === 'user' || m.role === 'assistant'
       ),
+      shotRun:
+        params.shotRuns && params.getBalance && params.ensureSignupGrant
+          ? {
+              attemptId,
+              agentGenerationId: generation.id,
+              getBalance: params.getBalance,
+              ensureSignupGrant: params.ensureSignupGrant,
+              ledger: params.shotRuns.ledger,
+              schedule: params.shotRuns.schedule,
+            }
+          : undefined,
     }
 
     let finalText: string | null = null
@@ -494,6 +534,7 @@ export async function runAgentTurn(params: {
         if ('costUsd' in result && result.costUsd) {
           turnCostUsd += result.costUsd
         }
+        if (result.kind === 'applied' && result.shotRunId) shotRunId = result.shotRunId
         if (result.kind === 'applied') {
           await persistToolActivity({
             supabase,
@@ -548,13 +589,17 @@ export async function runAgentTurn(params: {
       outcome = { ok: true, status: 200, message: assistantRow }
     }
 
-    const { error: settleError } = await settleGeneration(supabase, generation.id, {
-      success: outcome.ok,
-      error: outcome.ok ? null : outcome.error,
-      clearPayload: true,
-    })
-    if (settleError) {
-      console.error('[agent] SETTLE update failed', settleError)
+    // A turn that started a shot chain leaves its claim held: the chain's final run
+    // releases it (chargeShotRun), so the agent stays locked until the shots are written.
+    if (shotRunId === null) {
+      const { error: settleError } = await settleGeneration(supabase, generation.id, {
+        success: outcome.ok,
+        error: outcome.ok ? null : outcome.error,
+        clearPayload: true,
+      })
+      if (settleError) {
+        console.error('[agent] SETTLE update failed', settleError)
+      }
     }
 
     // Only reachable if a throw happened between a reserve and that same iteration's
@@ -579,13 +624,14 @@ export async function runAgentTurn(params: {
     // though real Anthropic cost may already have been incurred and recorded in
     // `usage`. Provisional policy pending a decision on refunds.
     //
-    // Priced dynamically from turnCostUsd (summed in memory above) rather than
-    // generate_shots' fixed rate, even for a turn that included a regenerate_all_shots
-    // call: measured data shows the same operation costing noticeably more through the
-    // agent than through the workbench button, because the agent path carries chat
-    // history into the call. A fixed price would misreport whichever trigger it wasn't
-    // calibrated against - the whole call is billed as one agent_turn charge instead.
-    if (outcome.ok) {
+    // Priced dynamically from turnCostUsd (summed in memory above). A turn that started a
+    // shot chain (regenerate_all_shots) is priced dynamically too, never at
+    // generate_shots' fixed rate - the chain's final run writes its one agent_turn row
+    // from the turn's cost plus every chain call's, so this branch hands the cost over.
+    if (shotRunId !== null && params.shotRuns) {
+      // Whatever the turn's own outcome: the chain it started bills the whole action once.
+      await settleShotRunTurn(supabase, { ...params.shotRuns.ledger, recordDynamicSpend: recordTurnSpend }, shotRunId, turnCostUsd)
+    } else if (outcome.ok) {
       try {
         await recordTurnSpend({
           userId,

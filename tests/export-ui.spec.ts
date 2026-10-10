@@ -3,7 +3,7 @@ import sharp from 'sharp'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { buildFilmTimeline } from '../src/lib/storyboard/film'
+import { buildFilmTimeline, type FilmShot } from '../src/lib/storyboard/film'
 import { FILM_PROJECT_COLUMNS, FILM_SHOT_COLUMNS, filmInputFromRows } from '../src/lib/export/film-input'
 import { filmHash } from '../src/lib/export/film-hash'
 
@@ -72,7 +72,8 @@ async function seed() {
 async function serverHash(projectId: string) {
   const { data: project } = await admin.from('projects').select(FILM_PROJECT_COLUMNS).eq('id', projectId).single()
   const { data: shots } = await admin.from('shots').select(FILM_SHOT_COLUMNS).eq('project_id', projectId).order('order_index')
-  return filmHash(buildFilmTimeline(filmInputFromRows(project!, shots!)))
+  // The scenes embed is to-one (shots.scene_id); the typed client can't infer that here.
+  return filmHash(buildFilmTimeline(filmInputFromRows(project!, shots as unknown as FilmShot[])))
 }
 
 async function succeeded(projectId: string, hash: string, minutesAgo: number) {

@@ -20,7 +20,7 @@ export type DisplayShot = {
   id: string
   order_index: number
   shot_key: string
-  section_label: string | null
+  scene_title: string | null
   voice_over: string
   visual_description: string | null
   duration_sec: number | null

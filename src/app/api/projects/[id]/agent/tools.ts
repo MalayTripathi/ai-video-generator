@@ -5,8 +5,13 @@ import { SHOT_SIZES, CAMERA_ANGLES, CAMERA_MOVEMENTS, MODEL_REPORTABLE_CAMERA_OR
 import { stalenessFor, type ShotFieldChange } from '@/lib/shot-staleness'
 import { stepIndex } from '@/lib/config/pipeline'
 import { generateUniqueShotKeys, MAX_SHOT_KEY_INSERT_ATTEMPTS, isUniqueViolation } from '@/lib/shot-key'
-import { buildShotIndexBlock } from '@/lib/prompts/agent'
-import { runShotGeneration, BILLED_BY_TURN } from '@/app/api/projects/[id]/shots/logic'
+import { buildShotIndexBlock, type ShotIndexRow } from '@/lib/prompts/agent'
+import { runShotsRequest } from '@/app/api/projects/[id]/shots/logic'
+import type { ShotRunLedger } from '@/lib/shots/runs'
+// Type-only: credits/* import the service-role client (server-only); the agent route
+// injects the real functions through `shotRun` below.
+import type { getBalance } from '@/lib/credits/balance'
+import type { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { voiceOverIsValid, EMPTY_VOICEOVER_MESSAGE } from '@/lib/shot-voiceover'
 import { visualDescriptionIsValid, EMPTY_VISUAL_DESCRIPTION_MESSAGE } from '@/lib/shot-visual-description'
 
@@ -26,6 +31,19 @@ export type AgentToolContext = {
   // already excluded), oldest first. Context for a tool that makes its own model call -
   // never standing instruction. Optional so a handler test can build a context without it.
   history?: { role: 'user' | 'assistant'; content: string }[]
+  // What regenerate_all_shots needs to start a shot-generation chain on this turn's behalf:
+  // the turn's attempt id (the chain's single agent_turn ledger row dedupes on it), the
+  // turn's own agent_turn claim (held until the chain ends), and the injected credit
+  // readers, ledger writers and background scheduler. Absent in a handler test that
+  // never starts a chain - the tool then refuses.
+  shotRun?: {
+    attemptId: string
+    agentGenerationId: string
+    getBalance: typeof getBalance
+    ensureSignupGrant: typeof ensureSignupGrant
+    ledger: ShotRunLedger
+    schedule: (run: { userId: string; projectId: string; runId: string; chainDepth: 0 }) => void
+  }
 }
 
 export type AgentToolOutcome =
@@ -39,7 +57,10 @@ export type AgentToolOutcome =
   // it returns, so one that spends and then fails or only half-lands still owes its
   // measured cost to the turn's single ledger charge. The turn accumulates it whatever
   // the kind - never only on 'applied'.
-  | { kind: 'applied'; label: string; forModel: unknown; shotKey?: string; costUsd?: number }
+  //
+  // shotRunId is set only by regenerate_all_shots: the chain it started bills the turn,
+  // so the turn hands its own cost to that run instead of writing its own ledger row.
+  | { kind: 'applied'; label: string; forModel: unknown; shotKey?: string; costUsd?: number; shotRunId?: string }
   | { kind: 'refused'; label: string; forModel: unknown; shotKey?: string; costUsd?: number }
   | { kind: 'errored'; message: string; forModel: unknown; costUsd?: number }
   // Neither an action nor a failure: the tool did nothing and is handing the model something
@@ -99,15 +120,22 @@ async function loadDialogue(supabase: SupabaseServerClient, shotId: string) {
   return data ?? []
 }
 
+async function loadSceneTitle(supabase: SupabaseServerClient, sceneId: string | null): Promise<string | null> {
+  if (!sceneId) return null
+  const { data } = await supabase.from('scenes').select('title').eq('id', sceneId).maybeSingle()
+  return data?.title ?? null
+}
+
 async function rebuildShotIndex(supabase: SupabaseServerClient, projectId: string): Promise<string> {
   const { data } = await supabase
     .from('shots')
     .select(
-      'order_index, visual_description, voice_over, section_label, shot_size_origin, camera_angle_origin, camera_movement_origin'
+      'order_index, visual_description, voice_over, shot_size_origin, camera_angle_origin, camera_movement_origin, scenes(title)'
     )
     .eq('project_id', projectId)
     .order('order_index', { ascending: true })
-  return buildShotIndexBlock(data ?? [])
+  // The scenes embed is to-one (shots.scene_id); the typed client can't infer that here.
+  return buildShotIndexBlock((data ?? []) as unknown as ShotIndexRow[])
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +163,7 @@ export async function handleGetShot(input: unknown, ctx: AgentToolContext): Prom
       voice_over: shot.voice_over,
       visual_description: shot.visual_description,
       duration_sec: shot.duration_sec,
-      section_label: shot.section_label,
+      scene: (await loadSceneTitle(ctx.supabase, shot.scene_id)) ?? null,
       shot_size: shot.shot_size,
       shot_size_origin: shot.shot_size_origin,
       camera_angle: shot.camera_angle,
@@ -334,13 +362,6 @@ export async function handleUpdateShot(input: unknown, ctx: AgentToolContext): P
     }
   }
 
-  if (has(raw, 'section_label') && typeof raw.section_label === 'string') {
-    const trimmed = raw.section_label.trim() || null
-    if (trimmed !== shot.section_label) {
-      updates.section_label = trimmed
-    }
-  }
-
   if (has(raw, 'duration_sec') && typeof raw.duration_sec === 'number') {
     const rounded = Math.round(raw.duration_sec * 10) / 10
     if (rounded !== shot.duration_sec) {
@@ -455,7 +476,7 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
 
   const { data: existingShots } = await ctx.supabase
     .from('shots')
-    .select('id, order_index')
+    .select('id, order_index, scene_id')
     .eq('project_id', ctx.projectId)
     .order('order_index', { ascending: false })
   const shots = existingShots ?? []
@@ -491,6 +512,9 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
       return { kind: 'errored', message: error.message, forModel: { error: error.message } }
     }
   }
+
+  const neighbour = shots.find((s) => s.order_index === (newOrderIndex === 0 ? 0 : newOrderIndex - 1))
+  const neighbourSceneId = neighbour?.scene_id ?? null
 
   const camera: Record<string, string | null> = {
     shot_size: null,
@@ -537,7 +561,8 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
       voice_over: raw.voice_over.trim(),
       visual_description: visualDescription,
       duration_sec: typeof raw.duration_sec === 'number' ? raw.duration_sec : null,
-      section_label: typeof raw.section_label === 'string' ? raw.section_label.trim() || null : null,
+      // The scene of the shot it follows - or, at the start, of the shot it now precedes.
+      scene_id: neighbourSceneId,
       duration_locked: false,
       ...camera,
     })
@@ -598,46 +623,47 @@ export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolCo
     }
   }
 
-  // Captured only when this call actually spends (a fresh Claude call, not RECOVER) -
-  // onSettled is never invoked on the RECOVER path, so this stays undefined there and
-  // contributes nothing below.
-  let costUsd: number | undefined
-  const result = await runShotGeneration({
-    gateway: ctx.gateway,
+  if (!ctx.shotRun) {
+    return {
+      kind: 'refused',
+      label: "Couldn't regenerate shots",
+      forModel: { error: 'Regenerating the shot list is not available right now.' },
+    }
+  }
+
+  // Starts the same chain the Generate shots button does. Every provider call in it
+  // carries this turn's message_id; the chain's final run writes the turn's single
+  // dynamic agent_turn row and releases the turn's lock - never a fixed-price row.
+  const result = await runShotsRequest({
     supabase: ctx.supabase,
     projectId: ctx.projectId,
     userId: ctx.userId,
+    mode: 'generate',
     retry: true,
+    attemptId: ctx.shotRun.attemptId,
     messageId: ctx.messageId,
-    onSettled: (usd) => {
-      costUsd = usd
-    },
-    // This call's cost is already folded into the agent turn's own dynamic agent_turn
-    // charge (see this tool's costUsd return, and agent/logic.ts's accumulator) -
-    // BILLED_BY_TURN tells runShotGeneration to skip its own fixed-price
-    // generate_shots row, so the same Claude call is never billed twice. attemptId is
-    // required but inert here - it's never read once BILLED_BY_TURN short-circuits
-    // the write.
-    attemptId: crypto.randomUUID(),
-    recordFixedSpend: BILLED_BY_TURN,
+    agentGenerationId: ctx.shotRun.agentGenerationId,
+    getBalance: ctx.shotRun.getBalance,
+    ensureSignupGrant: ctx.shotRun.ensureSignupGrant,
+    ledger: ctx.shotRun.ledger,
   })
 
   if (!result.ok) {
     if (result.status === 409 || result.status === 402) {
-      return { kind: 'refused', label: "Couldn't regenerate shots", forModel: { error: result.error }, costUsd }
+      return { kind: 'refused', label: "Couldn't regenerate shots", forModel: { error: result.error } }
     }
-    return { kind: 'errored', message: result.error, forModel: { error: result.error }, costUsd }
+    return { kind: 'errored', message: result.error, forModel: { error: result.error } }
   }
 
-  // Cost is no longer embedded in forModel (the model never sees a dollar figure):
-  // runAgentTurn's own accumulator picks up costUsd above and folds it into the
-  // turn's single ledger charge, alongside the surrounding agent_turn iterations'
-  // own spend - see docs/decisions.md.
+  ctx.shotRun.schedule({ userId: ctx.userId, projectId: ctx.projectId, runId: result.runId, chainDepth: 0 })
   return {
     kind: 'applied',
-    label: 'Regenerated all shots',
-    forModel: { shot_count: result.data.shots.length },
-    costUsd,
+    label: 'Started rewriting all shots',
+    forModel: {
+      started: true,
+      note: 'The new shot list is being written in the background, scene by scene. The shot list fills in as it finishes.',
+    },
+    shotRunId: result.runId,
   }
 }
 

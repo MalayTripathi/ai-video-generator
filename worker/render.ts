@@ -4,6 +4,7 @@ import {
   audioGraph,
   hasAudio,
   musicInputCount,
+  voiceInputCount,
   loudnessAnalysisFilter,
   loudnessFinalFilter,
   parseLoudnessMeasure,
@@ -91,22 +92,25 @@ export async function renderExport(params: {
   // Inputs after the clips: voice, music, chapter metadata - each only when present.
   const audioArgs: string[] = []
   let next = clips.length
-  const voiceInput = plan.audio.voice && inputs.voice ? next++ : null
-  if (voiceInput !== null) audioArgs.push('-i', inputs.voice!)
+  // The voice file goes in once per voice run (voiceInputCount) - once unless shots were
+  // reordered against the voiceover.
+  const voiceCount = inputs.voice ? voiceInputCount(plan) : 0
+  const voiceInputs = voiceCount > 0 ? Array.from({ length: voiceCount }, () => next++) : null
+  for (let k = 0; k < voiceCount; k++) audioArgs.push('-i', inputs.voice!)
   // The music file goes in once, or twice for Loop to fit (musicInputCount).
   const musicCount = inputs.music ? musicInputCount(plan) : 0
   const musicInputs = musicCount > 0 ? Array.from({ length: musicCount }, () => next++) : null
   for (let k = 0; k < musicCount; k++) audioArgs.push('-i', inputs.music!)
-  const audio = audioGraph(plan, voiceInput, musicInputs)
+  const audio = audioGraph(plan, voiceInputs, musicInputs)
 
   // 3. Loudness analysis (loudnorm's first pass) over the mix alone.
   let measured = null
-  if (hasAudio(plan) && (voiceInput !== null || musicInputs !== null)) {
+  if (hasAudio(plan) && (voiceInputs !== null || musicInputs !== null)) {
     // The analysis graph sees only the audio inputs, so they are renumbered from 0.
-    const musicFrom = voiceInput !== null ? 1 : 0
+    const musicFrom = voiceCount
     const analysisAudio = audioGraph(
       plan,
-      voiceInput !== null ? 0 : null,
+      voiceInputs ? voiceInputs.map((_, k) => k) : null,
       musicInputs ? musicInputs.map((_, k) => musicFrom + k) : null
     )
     const { stderr } = await runFfmpeg(ffmpeg, [

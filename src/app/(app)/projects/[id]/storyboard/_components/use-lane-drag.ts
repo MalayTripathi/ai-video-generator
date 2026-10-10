@@ -23,6 +23,8 @@ export type LaneDragInputs = {
   readOnly: boolean
   retime: (shotId: string, seconds: number) => void
   reorder: (shotId: string, toLaneIndex: number) => void
+  /** The project's video model range a retime keeps to. */
+  retimeRange: RetimeBounds
 }
 
 type RetimeDrag = {
@@ -264,7 +266,7 @@ export function useLaneDrag({
       if (grip) {
         const index = slots.findIndex((s) => s.dataset.shotId === grip.dataset.shotId)
         const shot = inp.laneShots[index]
-        const bounds = shot ? retimeBounds(filmDuration(shot)) : null
+        const bounds = shot ? retimeBounds(filmDuration(shot), inp.retimeRange) : null
         if (!shot || !bounds || inp.layout.pxPerSecond <= 0) return
         e.preventDefault()
         grip.focus()

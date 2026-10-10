@@ -69,6 +69,27 @@ async function seed(specs: ShotSpec[], opts: { furthestStep?: number; aspectRati
   const projectId = project!.id as string
   seededProjects.push(projectId)
 
+  // Consecutive shots sharing a section get one scene, the way the label backfill made them.
+  const sceneAt: (string | null)[] = []
+  const sceneTitles: string[] = []
+  specs.forEach((spec, i) => {
+    const title = spec.section ?? null
+    if (title === null) sceneAt.push(null)
+    else if (i > 0 && (specs[i - 1].section ?? null) === title) sceneAt.push(sceneAt[i - 1])
+    else {
+      sceneTitles.push(title)
+      sceneAt.push(String(sceneTitles.length - 1))
+    }
+  })
+  const { data: scenes, error: sceneError } = sceneTitles.length
+    ? await admin
+        .from('scenes')
+        .insert(sceneTitles.map((title, position) => ({ project_id: projectId, position, title })))
+        .select('id, position')
+    : { data: [], error: null }
+  expect(sceneError).toBeNull()
+  const sceneId = (at: string | null) => (at === null ? null : scenes!.find((s) => s.position === Number(at))!.id)
+
   const rows = specs.map((spec, i) => ({
     project_id: projectId,
     order_index: i,
@@ -76,7 +97,7 @@ async function seed(specs: ShotSpec[], opts: { furthestStep?: number; aspectRati
     voice_over: spec.narration ?? `Line ${i + 1}.`,
     visual_description: spec.description ?? `Shot description ${i + 1}`,
     duration_sec: spec.duration === undefined ? 5 : spec.duration,
-    section_label: spec.section === undefined ? null : spec.section,
+    scene_id: sceneId(sceneAt[i]),
     image_prompt: `Prompt for shot ${i + 1}, long enough to read as written.`,
     image_prompt_edited: spec.edited ?? false,
     image_prompt_stale: false,
@@ -368,7 +389,7 @@ test.describe('storyboard page - picture lane', () => {
     })
   }
 
-  test('scene bands group consecutive section labels; counter and total read real data', async ({ page }) => {
+  test('scene bands group consecutive scenes; counter and total read real data', async ({ page }) => {
     const { projectId } = await seed([
       { state: 'ready', section: 'Origins', duration: 5.5 },
       { state: 'stale', section: 'Origins', duration: 6 },

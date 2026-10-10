@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { createClient } from '@/lib/supabase/server'
 import { stepIndex, isAgentStep, type AgentStep } from '@/lib/config/pipeline'
-import { AGENT_SYSTEM_PROMPT_V11, AGENT_TOOLS, buildShotIndexBlock } from '@/lib/prompts/agent'
+import { AGENT_SYSTEM_PROMPT_V12, AGENT_TOOLS, buildShotIndexBlock, type ShotIndexRow } from '@/lib/prompts/agent'
 import {
   AGENT_IMAGE_PROMPTS_SYSTEM_PROMPT_V1,
   AGENT_IMAGE_PROMPTS_TOOLS,
@@ -73,18 +73,19 @@ export type AgentStepConfig = {
 
 const WORKBENCH_CONFIG: AgentStepConfig = {
   step: 'workbench',
-  systemPrompt: AGENT_SYSTEM_PROMPT_V11,
+  systemPrompt: AGENT_SYSTEM_PROMPT_V12,
   tools: AGENT_TOOLS,
   dispatch: dispatchAgentTool,
   async buildContextBlock(supabase, projectId) {
     const { data } = await supabase
       .from('shots')
       .select(
-        'order_index, visual_description, voice_over, section_label, shot_size_origin, camera_angle_origin, camera_movement_origin'
+        'order_index, visual_description, voice_over, shot_size_origin, camera_angle_origin, camera_movement_origin, scenes(title)'
       )
       .eq('project_id', projectId)
       .order('order_index', { ascending: true })
-    return buildShotIndexBlock(data ?? [])
+    // The scenes embed is to-one (shots.scene_id); the typed client can't infer that here.
+  return buildShotIndexBlock((data ?? []) as unknown as ShotIndexRow[])
   },
   lock: {
     isLocked: (furthestStepIndex) => furthestStepIndex >= stepIndex('storyboard'),
