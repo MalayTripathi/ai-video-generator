@@ -1,6 +1,8 @@
 import OpenAI, { toFile } from 'openai'
 import { IMAGE_SDK_TIMEOUT_MS } from '@/lib/config/storyboard'
 import { assertProviderCallAllowed, guardedFetch, ImageLiveCallsBlockedError } from '@/lib/providers/live-call-guard'
+import { isProduction } from '@/lib/config/env'
+import { serverEnv } from '@/lib/config/env.server'
 
 export { ImageLiveCallsBlockedError }
 
@@ -53,15 +55,15 @@ export function createImageGateway(): ImageGateway {
     async generateReferenceImage(params) {
       assertLiveImageCallsAllowed()
 
-      if (process.env.NODE_ENV !== 'production') {
-        console.warn(`[images] LIVE call outside production — provider=openai model=${params.model}`)
+      if (!isProduction()) {
+        console.warn(`[images] LIVE call on local — provider=openai model=${params.model}`)
       }
 
       // maxRetries: 0 - same reasoning as ClaudeGateway: an SDK-level retry on a
       // partially generated response would be a silent second charge. This route's
       // own "one call, no retry" rule already forbids retrying at a higher level;
       // this just makes sure the SDK doesn't do it invisibly underneath that.
-      const client = new OpenAI({ maxRetries: 0, timeout: 120_000, fetch: guardedFetch('openai') })
+      const client = new OpenAI({ apiKey: serverEnv().providerKeys.openai, maxRetries: 0, timeout: 120_000, fetch: guardedFetch('openai') })
 
       const response = await client.images.generate({
         model: params.model,
@@ -90,15 +92,15 @@ export function createImageGateway(): ImageGateway {
     async generateStoryboardImage(params) {
       assertLiveImageCallsAllowed()
 
-      if (process.env.NODE_ENV !== 'production') {
+      if (!isProduction()) {
         console.warn(
-          `[images] LIVE call outside production — provider=openai model=${params.model} references=${params.references.length}`
+          `[images] LIVE call on local — provider=openai model=${params.model} references=${params.references.length}`
         )
       }
 
       // maxRetries: 0 for the same silent-second-charge reason as above. The timeout comes
       // from storyboard.ts, where the claim's stale window is derived from it.
-      const client = new OpenAI({ maxRetries: 0, timeout: IMAGE_SDK_TIMEOUT_MS, fetch: guardedFetch('openai') })
+      const client = new OpenAI({ apiKey: serverEnv().providerKeys.openai, maxRetries: 0, timeout: IMAGE_SDK_TIMEOUT_MS, fetch: guardedFetch('openai') })
 
       const response =
         params.references.length > 0

@@ -447,10 +447,11 @@ test.describe('assertWithinAllowance', () => {
     }
   })
 
-  test('disabled (default): performs no query at all', async () => {
+  test('disabled: performs no query at all', async () => {
     const originalEnabled = process.env.SPEND_CAP_ENABLED
     try {
-      delete process.env.SPEND_CAP_ENABLED
+      // Required in every environment (env.ts class A) - there is no unset default.
+      process.env.SPEND_CAP_ENABLED = '0'
 
       const throwingSupabase = {
         from() {

@@ -375,6 +375,19 @@ test.describe('generate_element_reference - success', () => {
 })
 
 test.describe('generate_element_reference - model and quality', () => {
+  // Local runs always carry IMAGE_QUALITY_DEV_CAP (required off production - env.ts class C).
+  // 'high' lowers nothing, so each call here carries the project's own quality unless a
+  // test sets its own cap.
+  let savedCap: string | undefined
+  test.beforeEach(() => {
+    savedCap = process.env.IMAGE_QUALITY_DEV_CAP
+    process.env.IMAGE_QUALITY_DEV_CAP = 'high'
+  })
+  test.afterEach(() => {
+    if (savedCap === undefined) delete process.env.IMAGE_QUALITY_DEV_CAP
+    else process.env.IMAGE_QUALITY_DEV_CAP = savedCap
+  })
+
   const run = (projectId: string, elementId: string, gateway: ReturnType<typeof successImageGateway>) =>
     runElementReferenceGeneration({
       gateway,

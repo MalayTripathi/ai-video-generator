@@ -6,23 +6,23 @@ import { createMusicGateway } from '../src/lib/music/gateway'
 import { assertProviderCallAllowed, guardedFetch } from '../src/lib/providers/live-call-guard'
 
 // Layer: api. The provider block (src/lib/providers/live-call-guard.ts) must hold under
-// NODE_ENV=production - the environment `next start` runs in, where the per-provider
-// opt-outs used to wave every call through. Each real gateway is driven with dummy keys
+// APP_ENV=production - where the per-provider opt-outs are not needed and every call would
+// otherwise pass. Each real gateway is driven with dummy keys
 // and a global fetch that records and throws, so a guard regression is a failed
 // assertion here, never a real request.
 
-// NODE_ENV is typed read-only by Next.js's env types; test-only mutation, restored below.
+// Test-only mutation, restored below.
 const env = process.env as Record<string, string | undefined>
-const SAVED_KEYS = ['NODE_ENV', 'BLOCK_PROVIDER_CALLS', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'ELEVENLABS_API_KEY']
+const SAVED_KEYS = ['APP_ENV', 'BLOCK_PROVIDER_CALLS', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'ELEVENLABS_API_KEY']
 
-test.describe('provider block under NODE_ENV=production', () => {
+test.describe('provider block under APP_ENV=production', () => {
   let saved: Record<string, string | undefined>
   let realFetch: typeof fetch
   let networkCalls: string[]
 
   test.beforeEach(() => {
     saved = Object.fromEntries(SAVED_KEYS.map((key) => [key, env[key]]))
-    env.NODE_ENV = 'production'
+    env.APP_ENV = 'production'
     env.BLOCK_PROVIDER_CALLS = '1'
     env.ANTHROPIC_API_KEY = 'blocked-test-key'
     env.OPENAI_API_KEY = 'blocked-test-key'
@@ -92,23 +92,23 @@ test.describe('provider block under NODE_ENV=production', () => {
 test.describe('assertProviderCallAllowed decision', () => {
   test('an opt-out is refused while the block is set, in production and out', { tag: '@smoke' }, () => {
     expect(() =>
-      assertProviderCallAllowed('anthropic', { BLOCK_PROVIDER_CALLS: '1', ALLOW_REAL_CLAUDE: '1', NODE_ENV: 'production' })
+      assertProviderCallAllowed('anthropic', { BLOCK_PROVIDER_CALLS: '1', ALLOW_REAL_CLAUDE: '1', APP_ENV: 'production' })
     ).toThrow(LiveCallsBlockedError)
     expect(() =>
-      assertProviderCallAllowed('openai', { BLOCK_PROVIDER_CALLS: '1', ALLOW_REAL_OPENAI_IMAGES: '1', NODE_ENV: 'development' })
+      assertProviderCallAllowed('openai', { BLOCK_PROVIDER_CALLS: '1', ALLOW_REAL_OPENAI_IMAGES: '1', APP_ENV: 'local' })
     ).toThrow(ImageLiveCallsBlockedError)
     expect(() =>
-      assertProviderCallAllowed('elevenlabs', { BLOCK_PROVIDER_CALLS: 'yes', ALLOW_REAL_ELEVENLABS: '1', NODE_ENV: 'production' })
+      assertProviderCallAllowed('elevenlabs', { BLOCK_PROVIDER_CALLS: 'yes', ALLOW_REAL_ELEVENLABS: '1', APP_ENV: 'production' })
     ).toThrow(VoiceoverLiveCallsBlockedError)
   })
 
   test('with the block off, production passes and development needs the exact opt-out', () => {
-    expect(() => assertProviderCallAllowed('anthropic', { NODE_ENV: 'production' })).not.toThrow()
-    expect(() => assertProviderCallAllowed('anthropic', { NODE_ENV: 'production', BLOCK_PROVIDER_CALLS: '0' })).not.toThrow()
-    expect(() => assertProviderCallAllowed('anthropic', { NODE_ENV: 'development' })).toThrow(LiveCallsBlockedError)
-    expect(() => assertProviderCallAllowed('anthropic', { NODE_ENV: 'development', ALLOW_REAL_CLAUDE: '0' })).toThrow(
+    expect(() => assertProviderCallAllowed('anthropic', { APP_ENV: 'production' })).not.toThrow()
+    expect(() => assertProviderCallAllowed('anthropic', { APP_ENV: 'production', BLOCK_PROVIDER_CALLS: '0' })).not.toThrow()
+    expect(() => assertProviderCallAllowed('anthropic', { APP_ENV: 'local' })).toThrow(LiveCallsBlockedError)
+    expect(() => assertProviderCallAllowed('anthropic', { APP_ENV: 'local', ALLOW_REAL_CLAUDE: '0' })).toThrow(
       LiveCallsBlockedError
     )
-    expect(() => assertProviderCallAllowed('elevenlabs', { NODE_ENV: 'development', ALLOW_REAL_ELEVENLABS: '1' })).not.toThrow()
+    expect(() => assertProviderCallAllowed('elevenlabs', { APP_ENV: 'local', ALLOW_REAL_ELEVENLABS: '1' })).not.toThrow()
   })
 })

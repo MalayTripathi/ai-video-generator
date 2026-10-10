@@ -158,11 +158,11 @@ test.describe('video model registry', () => {
 })
 
 test.describe('quality presets', () => {
-  test('low, medium, high map to the settled model / resolution / image quality', () => {
+  test('low, medium, high map to the settled model / resolution / image quality / image model', () => {
     expect(QUALITY_PRESETS).toEqual({
-      low: { videoModel: 'wan-3.0', videoResolution: '480p', imageQuality: 'low' },
-      medium: { videoModel: 'seedance-2.0-mini', videoResolution: '720p', imageQuality: 'medium' },
-      high: { videoModel: 'wan-3.0', videoResolution: '1080p', imageQuality: 'high' },
+      low: { videoModel: 'wan-3.0', videoResolution: '480p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' },
+      medium: { videoModel: 'seedance-2.0-mini', videoResolution: '720p', imageQuality: 'medium', imageModel: 'gpt-image-2.5-flare' },
+      high: { videoModel: 'wan-3.0', videoResolution: '1080p', imageQuality: 'high', imageModel: 'gpt-image-2.5-flare' },
     })
   })
 

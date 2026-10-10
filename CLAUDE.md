@@ -51,9 +51,10 @@ of finished work. Each is stated in full further down; these are the pointers.
     count, in user-facing copy.
 15. One schema change per `supabase migration new`, applied with `db push`, then
     `npm run types:db`.
-16. Development uses Haiku throughout. Production splits: Sonnet for
-    creative-judgement steps, Haiku for mechanical work. Mechanical work stays on
-    Haiku in production permanently.
+16. The model split lives in env, never in code: local uses Haiku throughout;
+    production uses Sonnet for creative-judgement steps and Haiku for mechanical
+    work, which stays on Haiku permanently. Boot requires every model var on
+    preview and production, so a missing one fails instead of defaulting.
 17. **Updating this file.**
     - **Corrections are always permitted.** If a change makes an existing line
       false, or a line is found to be wrong, fix that line in place — no
@@ -90,9 +91,12 @@ of finished work. Each is stated in full further down; these are the pointers.
     DELETE; balance is `SUM(delta)`, computed fresh, never a stored running total.
     All writes go through `src/lib/credits/ledger.ts`'s service-role functions —
     never add an `authenticated` INSERT/UPDATE/DELETE policy to the table.
-19. Every env var read anywhere in code is listed in `.env.example` with its
-    default and a one-line purpose, in the same change that introduces it.
-    `tests/env-drift.spec.ts` enforces it.
+19. Every env var is read only through `src/lib/config/env.ts` or `env.server.ts`,
+    declared in `ENV_VARS` with its class, and listed in `.env.example` with its
+    class and purpose, in the same change that introduces it.
+    `tests/env-drift.spec.ts` and `tests/env-source-guard.spec.ts` enforce it.
+20. Never add a code default for a class A or B env var beyond `env.ts`'s local
+    fallback, and never advise deleting env lines so that defaults apply.
 
 Read `src/lib/database.types.ts` for columns — never rely on this file for them.
 
@@ -276,23 +280,15 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   `WorkbenchShell`, or a `loading.tsx`.
 - Claude returns scripts as structured shots (JSON), not prose. One shot
   = one image = one voiceover segment.
-- Model and provider config lives in `src/lib/config/models.ts`, read from
-  env with defaults. Never hard-code a model name at a call site. Config
-  sections are added when a step is built, not ahead of it.
-- **Model policy.** Development is Haiku throughout. Production splits by the
-  kind of work: Sonnet for creative-judgement steps (shot generation, prompt
-  writing, the agent), Haiku for mechanical work. This is what the
-  `isProduction ? sonnet : haiku` ternary encodes. Mechanical work stays on
-  Haiku in production permanently, which is why `modelsConfig.camera`
-  deliberately sits outside that ternary — see the next bullet.
-- `modelsConfig.camera` deliberately does **not** use the
-  `isProduction ? sonnet : haiku` ternary every other section uses — it is
-  Haiku in both environments, a locked cost decision (mechanical enum
-  extraction, fired on nearly every description blur). Its `maxTokens`
-  default of 500 is deliberately small: `reserveUsage` reserves the full
-  `max_tokens` as its worst-case quote, so a shots-scale ceiling here would
-  over-reserve ~16x on every edit. Both stay overridable via
-  `CLAUDE_CAMERA_MODEL` / `CLAUDE_CAMERA_MAX_TOKENS`.
+- Claude and ElevenLabs model ids and caps come from env (class B) through
+  `src/lib/config/models.server.ts`; `models.ts` holds only the user-selectable
+  image and video model registries. Never hard-code a model name at a call site.
+  Config sections are added when a step is built, not ahead of it.
+- **Model policy** (hard rule 16): creative judgement is shot generation, prompt
+  writing and the agent. Camera derivation and the music prompt are mechanical —
+  Haiku in every environment, a locked cost decision. `CLAUDE_CAMERA_MAX_TOKENS`
+  (500) is deliberately small: `reserveUsage` reserves the full `max_tokens`, so a
+  shots-scale ceiling would over-reserve ~16x on every description edit.
 - **Video-model duration registry.** `src/lib/config/models.ts` exports
   `VIDEO_MODELS` (keyed by the literal string `projects.video_model` can
   hold — no normalization layer), `resolveVideoModel(id)`, and
@@ -305,15 +301,15 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   no CHECK: every write goes through `assertRegisteredVideoModel`.
   `resolveVideoModel` never falls back to another model's bounds; the
   header chip hides an unregistered value, never renders it raw.
-- Pricing lives in `src/lib/config/pricing.ts`, separate from
-  `models.ts` — the single place a rate is edited, and the single source
-  of `computeCost`, which turns a provider's raw usage report into the
+- Pricing lives in `src/lib/config/pricing.ts` (Claude's cards in the leaf
+  `claude-rates.ts`, which `env.ts` imports) — the only place a rate is edited,
+  and the single source of `computeCost`, which turns a provider's raw usage report into the
   `usage.estimated_cost`/`quantity`/`unit`/`raw_usage` figures — don't
   compute cost anywhere else. `RATE_VERSION` (a hand-bumped date string)
   is stamped onto every settled `usage` row so a past row's cost stays
   reconstructable even after rates change later. `pricing.ts` is
-  deliberately client-importable (rates aren't secrets) and holds Anthropic's
-  and OpenAI's real rates and ElevenLabs' placeholders; `FAL_RATES` is
+  deliberately client-importable (rates aren't secrets) and holds OpenAI's real
+  rates and ElevenLabs' placeholders; `FAL_RATES` is
   derived from `VIDEO_MODELS`, never hand-copied.
 - Credit prices live in `src/lib/config/credits.ts` (`PRICE_TABLE`, keyed on
   `(step, operation)` — never operation alone, since the same operation can price
@@ -423,7 +419,7 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
 | `src/lib/config/duration.ts` | Duration tier → `targetShots` / `estimatedCredits` / `targetSecondsMax`, `DEFAULT_DURATION_TARGET` |
 | `src/lib/config/enums.ts` | Shot-attribute and project-setting enums, and their model-reportable subsets |
 | `src/lib/config/pipeline.ts` | Step / operation / provider vocabulary, `STEP_OPERATIONS`, `stepOperationLabel`, `stepIndex` |
-| `src/lib/config/models.ts` | Per-call model + `maxTokens` config, `VIDEO_MODELS` duration registry, `resolveVideoModel`, `isDurationAllowed` |
+| `src/lib/config/models.ts` | Image and video registries, `VIDEO_MODELS` duration registry, `resolveVideoModel`, `isDurationAllowed`; per-call Claude/ElevenLabs config is `models.server.ts` |
 | `src/lib/quality/estimate.ts` | Quality picker rates, tier badges, frame credits, the intake/drawer estimate, `parseQualitySettings` |
 | `src/lib/generations/claim.ts` | The only reader/writer of `state`/`payload`/`started_at`/`queued_at`/`error`; claim, persist, settle |
 | `src/lib/usage/reserve-settle.ts` | `reserveUsage` / `settleUsage` and the throw/never-throw asymmetry |
@@ -450,10 +446,10 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   method's entry (`assertLiveCallsAllowed()` and its image/voiceover twins) and in
   the `fetch` every provider client is built with (`guardedFetch`). Lint forbids
   constructing an Anthropic or OpenAI client, or naming a provider host, outside
-  the gateways. `BLOCK_PROVIDER_CALLS` (any value but empty or `'0'`) refuses every
-  provider regardless of `NODE_ENV`, and refuses the `ALLOW_REAL_*` opt-outs; set it
-  in a deployment to stop all provider spend there. Without it, production passes
-  and anything else needs that provider's `ALLOW_REAL_*` to be exactly `'1'`. A
+  the gateways. `BLOCK_PROVIDER_CALLS=1` refuses every provider regardless of
+  `APP_ENV`, and refuses the `ALLOW_REAL_*` opt-outs; set it in a deployment to stop
+  all provider spend there. Without it, preview and production pass and local needs
+  that provider's `ALLOW_REAL_*` to be exactly `'1'`. A
   refusal throws the provider's typed blocked error (`LiveCallsBlockedError` etc.),
   never a plain `Error` — `settleUsage` detects it by `instanceof`, never by message
   text, to settle a blocked call at zero cost instead of the pre-flight quote.
@@ -465,8 +461,9 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
 - Automated test runs never make live provider calls: the block variable is
   always set. `playwright.config.ts` sets `BLOCK_PROVIDER_CALLS=1` for the runner
   and the server it starts (with every `ALLOW_REAL_*` forced to `''` there);
-  `tests/global-setup.ts` refuses to run without it or with any `ALLOW_REAL_*`
-  exported; `tests/load-env.ts` deletes the opt-outs and re-asserts the block after
+  `tests/global-setup.ts` refuses to run without it, with any `ALLOW_REAL_*`
+  exported, or against a server whose `/api/internal/provider-block` is not
+  blocked; `tests/load-env.ts` deletes the opt-outs and re-asserts the block after
   loading `.env.local`. There is no `test:live` script and nothing is tagged
   `@live`. The one sanctioned live-call path is `npm run dev` with the provider's
   `ALLOW_REAL_*=1` exported by hand in a developer's own shell, outside Playwright and CI.
@@ -876,9 +873,8 @@ provider call must go through `reserveUsage`/`settleUsage`, never a direct
 immediately before `reserveUsage` and enforces a per-user monthly spend
 ceiling by summing `estimated_cost` over the user's `usage` rows for the
 current calendar month — pending rows count, which is the whole reason
-they carry the quote. **It is wired but disabled by default**: off, it
-performs zero queries, gated by the `SPEND_CAP_ENABLED` env flag (default
-unset/off; the ceiling itself is `SPEND_CAP_MONTHLY_USD`, default $100).
+they carry the quote. With `SPEND_CAP_ENABLED=0` it performs zero queries;
+`SPEND_CAP_ENABLED` and the ceiling `SPEND_CAP_MONTHLY_USD` are both required.
 When enabled and a quote would exceed the ceiling, it throws
 `AllowanceExceededError`, which every route's `catch` block maps to a
 `402` response (Payment Required — not `429`, which would invite retry

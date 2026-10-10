@@ -98,6 +98,11 @@ export default async function globalSetup() {
     )
   }
 
+  // The server under test must refuse provider calls too. Playwright passes the block to a
+  // server it starts, but a dev server it reuses on :3000 keeps whatever env it was started
+  // with - so ask the server itself, and refuse the run before any spec executes.
+  await assertServerBlocksProviders()
+
   // Deliberately dynamic, and deliberately after the guard above. load-env.ts's module
   // evaluation deletes ALLOW_REAL_CLAUDE from process.env as one of its own side effects
   // (so a value left in .env.local from a manual live-debugging session can't leak into
@@ -160,5 +165,23 @@ export default async function globalSetup() {
   if (process.env.PW_SERVER === 'prod') {
     const created = await fillUserPool(FULL_RUN_USER_POOL)
     console.log(`[global-setup] fresh-user pool: created ${created}, reused ${FULL_RUN_USER_POOL - created}`)
+  }
+}
+
+async function assertServerBlocksProviders(): Promise<void> {
+  const url = 'http://localhost:3000/api/internal/provider-block'
+  let state: { blocked?: boolean; optOutsEmpty?: boolean }
+  try {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    state = await res.json()
+  } catch (err) {
+    throw new Error(`Could not confirm the server under test blocks provider calls (${url}): ${err instanceof Error ? err.message : err}`)
+  }
+  if (state.blocked !== true || state.optOutsEmpty !== true) {
+    throw new Error(
+      'The server under test can make live provider calls (BLOCK_PROVIDER_CALLS is not 1, or an ALLOW_REAL_* ' +
+        'is set). Stop it - most likely a dev server started by hand on :3000 - and rerun.'
+    )
   }
 }

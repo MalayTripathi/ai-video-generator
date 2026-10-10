@@ -396,3 +396,30 @@ untouched). The Storyboard voiceover already follows it.
   forward run of pieces from its own input of the voice file (`voiceRuns`); a heavily
   shuffled film opens the file many times.
 
+
+## Deploy: env for Vercel Preview and Production
+
+Boot validation (`src/lib/config/env.ts`) fails a Vercel build that is missing any of these. Set them
+per Vercel environment. `VERCEL_ENV` is set by Vercel and must equal `APP_ENV`.
+
+| Var | Preview | Production |
+|---|---|---|
+| `APP_ENV` | `preview` | `production` |
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` | project values | project values |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY` | real keys | real keys |
+| `INTERNAL_CONTINUATION_SECRET` | 32+ random chars, its own | 32+ random chars, its own |
+| `SPEND_CAP_ENABLED` / `SPEND_CAP_MONTHLY_USD` | `1` / Malay to set | Malay to set |
+| `CLAUDE_SHOTS_MODEL` | `claude-haiku-5-5` | `claude-sonnet-5` - **Malay to confirm** |
+| `CLAUDE_AGENT_MODEL` | `claude-haiku-5-5` | `claude-sonnet-5` - **Malay to confirm** |
+| `CLAUDE_IMAGE_PROMPTS_MODEL` | `claude-haiku-5-5` | `claude-sonnet-5` - **Malay to confirm** |
+| `CLAUDE_CAMERA_MODEL`, `CLAUDE_MUSIC_PROMPT_MODEL` | `claude-haiku-5-5` | `claude-haiku-5-5` (locked) |
+| `CLAUDE_SHOT_OUTLINE_MAX_TOKENS`, `CLAUDE_SHOTS_MAX_TOKENS` | `8000` | `8000` - **Malay to confirm** |
+| `CLAUDE_AGENT_MAX_TOKENS`, `CLAUDE_IMAGE_PROMPTS_MAX_TOKENS` | `8192` | `8192` - **Malay to confirm** |
+| `CLAUDE_CAMERA_MAX_TOKENS`, `CLAUDE_MUSIC_PROMPT_MAX_TOKENS` | `500` | `500` |
+| `VOICEOVER_PROVIDER` / `ELEVENLABS_VOICEOVER_MODEL` | `elevenlabs` / `eleven_v3` | `elevenlabs` / `eleven_v3` |
+| `MUSIC_PROVIDER` / `ELEVENLABS_MUSIC_MODEL` | `elevenlabs` / `music_v1` | `elevenlabs` / `music_v1` |
+| `IMAGE_QUALITY_DEV_CAP` | `low` | **must not be set** (boot fails) |
+| `BLOCK_PROVIDER_CALLS` | unset | unset (`1` stops all provider spend) |
+
+Not on Vercel: `ALLOW_REAL_*`, `PW_*` and `EXPORT_*`. The export worker's host needs `APP_ENV`,
+`NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and `SPEND_CAP_*`, and `FFMPEG_PATH` in its image.

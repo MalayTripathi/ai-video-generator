@@ -5,26 +5,11 @@
 // SPOKEN_WORDS_PER_SEC and SHOT_DURATION_PAD_SEC in src/lib/config/shots.ts. Free: it
 // reads the database and calls no provider. Run with `node scripts/measure-voiceover-wps.mjs`.
 
-import { readFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { createClient } from '@supabase/supabase-js'
+import { requireEnv } from './require-env.mjs'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-
-async function env(name) {
-  if (process.env[name]) return process.env[name]
-  const file = await readFile(join(root, '.env.local'), 'utf8').catch(() => '')
-  const line = file.split('\n').find((l) => l.startsWith(`${name}=`))
-  return line?.slice(name.length + 1).trim().replace(/^"|"$/g, '') || null
-}
-
-const url = await env('NEXT_PUBLIC_SUPABASE_URL')
-const key = await env('SUPABASE_SERVICE_ROLE_KEY')
-if (!url || !key) {
-  console.error('NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set (or in .env.local).')
-  process.exit(1)
-}
+const url = requireEnv('NEXT_PUBLIC_SUPABASE_URL')
+const key = requireEnv('SUPABASE_SERVICE_ROLE_KEY')
 const supabase = createClient(url, key, { auth: { persistSession: false } })
 
 // The same rule as src/lib/shots/durations.ts: inline audio tags are not spoken words.

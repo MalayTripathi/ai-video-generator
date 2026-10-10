@@ -1,5 +1,7 @@
 import { VOICEOVER_REQUEST_TIMEOUT_MS, VOICEOVER_SYNTH_TIMEOUT_MS } from '@/lib/config/storyboard'
 import { assertProviderCallAllowed, guardedFetch, VoiceoverLiveCallsBlockedError } from '@/lib/providers/live-call-guard'
+import { isProduction } from '@/lib/config/env'
+import { serverEnv } from '@/lib/config/env.server'
 
 export { VoiceoverLiveCallsBlockedError }
 
@@ -48,9 +50,7 @@ export function assertLiveVoiceoverCallsAllowed(): void {
 }
 
 function apiKey(): string {
-  const key = process.env.ELEVENLABS_API_KEY
-  if (!key) throw new Error('ELEVENLABS_API_KEY is not set')
-  return key
+  return serverEnv().providerKeys.elevenlabs
 }
 
 async function failure(res: Response): Promise<VoiceoverProviderError> {
@@ -62,8 +62,8 @@ export function createVoiceoverGateway(): VoiceoverGateway {
   return {
     async synthesize(params) {
       assertLiveVoiceoverCallsAllowed()
-      if (process.env.NODE_ENV !== 'production') {
-        console.warn(`[voiceover] LIVE call outside production — provider=elevenlabs model=${params.model} chars=${params.text.length}`)
+      if (!isProduction()) {
+        console.warn(`[voiceover] LIVE call on local — provider=elevenlabs model=${params.model} chars=${params.text.length}`)
       }
 
       // One request, no retry here: a retried request is a second charge. The worker retries
@@ -92,8 +92,8 @@ export function createVoiceoverGateway(): VoiceoverGateway {
 
     async align(params) {
       assertLiveVoiceoverCallsAllowed()
-      if (process.env.NODE_ENV !== 'production') {
-        console.warn(`[voiceover] LIVE call outside production — provider=elevenlabs forced-alignment bytes=${params.audio.length}`)
+      if (!isProduction()) {
+        console.warn(`[voiceover] LIVE call on local — provider=elevenlabs forced-alignment bytes=${params.audio.length}`)
       }
 
       const form = new FormData()

@@ -1,16 +1,17 @@
 import type { createClient } from '@/lib/supabase/server'
 import { formatCost } from '@/lib/format-cost'
+import { serverEnv } from '@/lib/config/env.server'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
 // Read live on every call, never cached at import time - a frozen module-level const
 // can't be flipped mid-process, which would make it untestable within one test run.
 export function isAllowanceEnabled(): boolean {
-  return process.env.SPEND_CAP_ENABLED === '1'
+  return serverEnv().spendCap.enabled
 }
 
 export function getMonthlyCeilingUsd(): number {
-  return Number(process.env.SPEND_CAP_MONTHLY_USD) || 100
+  return serverEnv().spendCap.monthlyUsd
 }
 
 export class AllowanceExceededError extends Error {

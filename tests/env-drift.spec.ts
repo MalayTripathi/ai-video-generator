@@ -2,30 +2,32 @@ import { test, expect } from '@playwright/test'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { ALLOW_FLAG, BLOCK_PROVIDER_CALLS } from '../src/lib/providers/live-call-guard'
+import { ENV_VARS, type EnvClass } from '../src/lib/config/env'
 import { RUN_GUARD_ENV } from './run-guard/guard'
 
 // Turns env drift into a test failure: every env var read anywhere in the code must be
-// listed in .env.example with a one-line purpose above it, and every var listed there must
-// be read by something (CLAUDE.md hard rule 19). A source-level scan, like enums-drift.
+// listed in .env.example with a one-line purpose above it, every var listed there must be
+// read by something, and each var's class (src/lib/config/env.ts ENV_VARS) must match how
+// .env.example lists it (CLAUDE.md hard rule 19). A source-level scan, like enums-drift.
 
 const ROOT = join(__dirname, '..')
-const SCAN_DIRS = ['src', 'scripts', 'tests']
+const SCAN_DIRS = ['src', 'worker', 'scripts', 'tests']
 const ROOT_FILES = ['playwright.config.ts', 'next.config.ts', 'eslint.config.mjs', 'postcss.config.mjs']
 const SOURCE = /\.(ts|tsx|mjs|js|cjs)$/
 const SKIP = new Set([relative(ROOT, __filename), 'src/lib/database.types.ts'])
 
 // Provided by the platform or the test runner, never set by us.
-const PLATFORM = new Set(['NODE_ENV', 'CI', 'TEST_WORKER_INDEX', 'NEXT_RUNTIME'])
+const PLATFORM = new Set(['NODE_ENV', 'NODE_OPTIONS', 'CI', 'TEST_WORKER_INDEX', 'NEXT_RUNTIME'])
 const PLATFORM_PREFIXES = ['VERCEL_']
-// Read by a provider SDK from the environment, not by our code.
-const SDK_READ = new Set(['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'])
 // Set by our own code for a child process it spawns; never configured by a person.
-const SET_BY_CODE = new Set(['PRE_ARGS', RUN_GUARD_ENV.CHILD])
+const SET_BY_CODE = new Set(['PRE_ARGS'])
 
 // Files that read env through a computed key. Each names where its names come from; a new
 // computed-key reader fails below until it is registered here.
 const INDIRECT_READERS: Record<string, string[]> = {
   'src/lib/providers/live-call-guard.ts': [BLOCK_PROVIDER_CALLS, ...Object.values(ALLOW_FLAG)],
+  // Reads the guard's injected env (env.server.ts providerGuardEnv) by ALLOW_FLAG's names.
+  'src/app/api/internal/provider-block/route.ts': Object.values(ALLOW_FLAG),
   'playwright.config.ts': Object.values(RUN_GUARD_ENV),
   // ALLOW_REAL_* prefix scan - the names are ALLOW_FLAG's, above.
   'tests/global-setup.ts': Object.values(ALLOW_FLAG),
@@ -34,19 +36,22 @@ const INDIRECT_READERS: Record<string, string[]> = {
   // Save and restore keys around a test (or copy env into a child); no new names.
   'tests/provider-block.spec.ts': [],
   'tests/service-role-client.spec.ts': [],
-  // An env(name) helper; its names are collected by the env('X') pattern.
-  'scripts/backfill-voiceover-words.mjs': [],
-  'scripts/cleanup-test-data.mjs': [],
-  'scripts/measure-voiceover-wps.mjs': [],
+  // The scripts' one env reader; its callers' names are collected by the requireEnv('X') pattern.
+  'scripts/require-env.mjs': [],
 }
 
 const NAME = '[A-Z][A-Z0-9_]*'
+// env.ts reads every class A-D var through parseEnv(source, ...), by a name it declares in
+// ENV_VARS; tests/env-validate.spec.ts proves each class's rule.
+const ENV_MODULE = 'src/lib/config/env.ts'
+const VALIDATED = new Set<EnvClass>(['A', 'B', 'C', 'D'])
 const READ_PATTERNS = [
   new RegExp(`process\\.env\\.(${NAME})`, 'g'),
   new RegExp(`process\\.env\\[\\s*['"\`](${NAME})['"\`]\\s*\\]`, 'g'),
   // An injected env param (live-call-guard's `env.NODE_ENV`) and the scripts' env('X').
   new RegExp(`\\benv\\.(${NAME})\\b`, 'g'),
   new RegExp(`\\benv\\(\\s*['"](${NAME})['"]\\s*\\)`, 'g'),
+  new RegExp(`\\b(?:require|optional)Env\\(\\s*['"](${NAME})['"]\\s*\\)`, 'g'),
 ]
 const DESTRUCTURE = /\{([^}]*)\}\s*=\s*process\.env\b/g
 const COMPUTED_KEY = /\b(?:process\.)?env\[\s*(?!['"`])/
@@ -80,6 +85,9 @@ function scan(): { read: Map<string, string>; unregistered: string[] } {
         if (new RegExp(`^${NAME}$`).test(name)) note(name, file)
       }
     }
+    if (file === ENV_MODULE) {
+      for (const [name, cls] of Object.entries(ENV_VARS)) if (VALIDATED.has(cls)) note(name, file)
+    }
     if (COMPUTED_KEY.test(text)) {
       if (file in INDIRECT_READERS) INDIRECT_READERS[file].forEach((name) => note(name, file))
       else unregistered.push(file)
@@ -88,7 +96,7 @@ function scan(): { read: Map<string, string>; unregistered: string[] } {
   return { read, unregistered }
 }
 
-type ExampleVar = { name: string; line: number; documented: boolean }
+type ExampleVar = { name: string; line: number; documented: boolean; commented: boolean }
 
 // A var is listed as `NAME=value`, or `# NAME=value` when optional and unset. The line
 // above its first listing must be a comment that is not itself a listing - its purpose.
@@ -102,7 +110,7 @@ function exampleVars(): ExampleVar[] {
     if (!m || seen.has(m[1])) return
     seen.add(m[1])
     const above = i > 0 ? lines[i - 1] : ''
-    vars.push({ name: m[1], line: i + 1, documented: above.startsWith('#') && !listing.test(above) })
+    vars.push({ name: m[1], line: i + 1, documented: above.startsWith('#') && !listing.test(above), commented: line.startsWith('#') })
   })
   return vars
 }
@@ -126,7 +134,7 @@ test.describe('env drift: code vs .env.example', () => {
     const { read } = scan()
     const unread = exampleVars()
       .map((v) => v.name)
-      .filter((name) => !read.has(name) && !SDK_READ.has(name))
+      .filter((name) => !read.has(name))
     expect(unread).toEqual([])
   })
 
@@ -135,5 +143,22 @@ test.describe('env drift: code vs .env.example', () => {
       .filter((v) => !v.documented)
       .map((v) => `${v.name} (line ${v.line})`)
     expect(undocumented).toEqual([])
+  })
+
+  test('every var in .env.example has a class in env.ts, and is listed the way its class says', () => {
+    // A, B and C are listed live with their dev values; D, E and F are listed commented out.
+    const wrong = exampleVars().flatMap((v) => {
+      const cls = ENV_VARS[v.name]
+      if (!cls) return [`${v.name} (line ${v.line}) has no class in env.ts ENV_VARS`]
+      const shouldComment = !['A', 'B', 'C'].includes(cls)
+      return v.commented === shouldComment ? [] : [`${v.name} is class ${cls}, so it must be ${shouldComment ? 'commented out' : 'uncommented'}`]
+    })
+    expect(wrong).toEqual([])
+  })
+
+  test('every var with a class in env.ts is listed in .env.example, PW_RUN_GUARD_CHILD included', () => {
+    const listed = new Set(exampleVars().map((v) => v.name))
+    expect(Object.keys(ENV_VARS).filter((name) => !listed.has(name))).toEqual([])
+    expect(listed.has(RUN_GUARD_ENV.CHILD)).toBe(true)
   })
 })

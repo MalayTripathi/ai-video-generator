@@ -1,6 +1,7 @@
 import { ASPECT_RATIOS, type AspectRatio } from '@/lib/config/enums'
 import type { ImagePriceKey } from '@/lib/config/credits'
-import { effectiveImageQuality, modelsConfig, parseImageQuality, resolveImageModel } from '@/lib/config/models'
+import { parseImageQuality, resolveImageModel } from '@/lib/config/models'
+import { effectiveImageQuality, modelsConfig } from '@/lib/config/models.server'
 import { STORYBOARD_IMAGE_SIZES } from '@/lib/config/storyboard'
 
 // Server-side: effectiveImageQuality reads IMAGE_QUALITY_DEV_CAP, which the browser never

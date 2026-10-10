@@ -12,15 +12,9 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { optionalEnv, requireEnv } from './require-env.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-
-async function apiKey() {
-  if (process.env.ELEVENLABS_API_KEY) return process.env.ELEVENLABS_API_KEY
-  const env = await readFile(join(root, '.env.local'), 'utf8').catch(() => '')
-  const line = env.split('\n').find((l) => l.startsWith('ELEVENLABS_API_KEY='))
-  return line?.slice('ELEVENLABS_API_KEY='.length).trim().replace(/^"|"$/g, '') ?? null
-}
 
 // Reads the voice list straight out of models.ts, so the list has one home.
 async function voiceList() {
@@ -35,7 +29,7 @@ async function voiceList() {
 async function get(path, key) {
   // Same kill switch as src/lib/providers/live-call-guard.ts: automated runs set it, and
   // no provider request leaves the process while it is on - free endpoints included.
-  const block = process.env.BLOCK_PROVIDER_CALLS
+  const block = optionalEnv('BLOCK_PROVIDER_CALLS')
   if (block !== undefined && block !== '' && block !== '0') {
     throw new Error('Blocked an ElevenLabs request: BLOCK_PROVIDER_CALLS is set.')
   }
@@ -44,8 +38,7 @@ async function get(path, key) {
 }
 
 async function main() {
-  const key = await apiKey()
-  if (!key) throw new Error('ELEVENLABS_API_KEY is not set (env or .env.local)')
+  const key = requireEnv('ELEVENLABS_API_KEY')
   const voices = await voiceList()
   const missing = []
 

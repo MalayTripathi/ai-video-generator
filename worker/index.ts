@@ -1,51 +1,30 @@
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { claimNext, failStuck } from './claim'
-import { createWorkerClient, ffmpegPath, FONTS_DIR, isProduction } from './config'
-import { runJob } from './job'
-import { runWorkerLoop } from './poll'
+import { validateAtBoot } from '@/lib/config/env'
 
 // The export worker: a standalone Node service (worker/Dockerfile in production, `npm run
-// worker` locally). Wait-and-watch - it polls for a queued export, claims it atomically,
-// renders it, and settles the row; the page polls the row. One job at a time. The poll
-// schedule (idle backoff, stuck sweep cadence) lives in poll.ts.
+// worker` locally). This file only boots it: load .env.local when present, validate the
+// environment, and only then load the worker itself. Static imports are hoisted and would
+// evaluate env-reading modules before the file load, so the worker is a dynamic import.
+//
+// The load cannot depend on APP_ENV - APP_ENV lives in that file. A deployed host has no
+// .env.local and supplies every var through its own environment, which is validated the
+// same way; a stray .env.local on a host would never override a var the host already set
+// (process.loadEnvFile keeps existing values).
 
 const envFile = path.resolve(process.cwd(), '.env.local')
-if (!isProduction && existsSync(envFile)) process.loadEnvFile(envFile)
+if (existsSync(envFile)) process.loadEnvFile(envFile)
 
-async function main() {
-  const ffmpeg = ffmpegPath()
-  if (!ffmpeg) throw new Error('No ffmpeg: set FFMPEG_PATH, or install the ffmpeg-static dev dependency.')
-  const db = createWorkerClient()
-  const fontsDir = existsSync(FONTS_DIR) ? FONTS_DIR : null
-  console.log(`[export] worker started (${isProduction ? 'production' : 'development'}), ffmpeg at ${ffmpeg}`)
-  let stopping = false
-  // An idle sleep can now be a minute long; a stop signal cuts it short so shutdown stays prompt.
-  let wake: (() => void) | null = null
-  const sleep = (ms: number) =>
-    new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, ms)
-      wake = () => {
-        clearTimeout(timer)
-        resolve()
-      }
-    })
-  for (const signal of ['SIGINT', 'SIGTERM'] as const)
-    process.on(signal, () => {
-      stopping = true
-      wake?.()
-    })
-  await runWorkerLoop({
-    claimNext: () => claimNext(db),
-    failStuck: () => failStuck(db),
-    runJob: (row) => runJob(db, row, { ffmpeg, fontsDir, isProduction }),
-    now: Date.now,
-    sleep,
-    shouldStop: () => stopping,
-  })
+try {
+  validateAtBoot('worker')
+} catch (err) {
+  console.error(err instanceof Error ? err.message : err)
+  process.exit(1)
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+import('./main')
+  .then(({ main }) => main())
+  .catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })

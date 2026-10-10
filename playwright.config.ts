@@ -5,11 +5,21 @@ import { defineConfig, devices, type ReporterDescription } from '@playwright/tes
 import { STEPS } from './src/lib/config/pipeline'
 import { API_SPECS, UI_SPECS } from './tests/spec-layers'
 import { appendStarted, countFromListOutput, evaluateRun, readLedger, RUN_GUARD_ENV } from './tests/run-guard/guard'
+import './tests/helpers/server-only-preload.cjs'
 
 // Every automated run blocks real provider calls (src/lib/providers/live-call-guard.ts),
 // in this runner, its workers, and the server below. global-setup.ts refuses to start
 // without it.
 process.env.BLOCK_PROVIDER_CALLS = '1'
+
+// `server-only` resolves to its empty module in this runner (the preload import above) and in every
+// worker it forks (NODE_OPTIONS, inherited) - see the preload file. The web server is given
+// the original NODE_OPTIONS back, so Next resolves `server-only` exactly as it ships.
+const SERVER_ONLY_PRELOAD = path.resolve(__dirname, 'tests/helpers/server-only-preload.cjs')
+const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS ?? ''
+if (!ORIGINAL_NODE_OPTIONS.includes(SERVER_ONLY_PRELOAD)) {
+  process.env.NODE_OPTIONS = `${ORIGINAL_NODE_OPTIONS} --require ${JSON.stringify(SERVER_ONLY_PRELOAD)}`.trim()
+}
 
 // PW_SERVER=prod (the full run) serves a production build; anything else is the dev
 // server, for targeted runs mid-task. A production run never reuses a server it did not
@@ -160,6 +170,7 @@ export default defineConfig({
     // there is no sanctioned way to make a live provider call through the server this
     // suite drives.
     env: {
+      NODE_OPTIONS: ORIGINAL_NODE_OPTIONS.replace(`--require ${JSON.stringify(SERVER_ONLY_PRELOAD)}`, '').trim(),
       BLOCK_PROVIDER_CALLS: '1',
       ALLOW_REAL_CLAUDE: '',
       ALLOW_REAL_OPENAI_IMAGES: '',

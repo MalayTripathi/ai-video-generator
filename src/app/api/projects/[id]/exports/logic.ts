@@ -75,7 +75,7 @@ async function projectGate(
 
 function outputSize(settings: ExportSettings | null) {
   if (!settings) return null
-  return (exportIsProduction ? EXPORT_OUTPUT_SIZES : EXPORT_DEV_SIZES)[settings.aspectRatio]
+  return (exportIsProduction() ? EXPORT_OUTPUT_SIZES : EXPORT_DEV_SIZES)[settings.aspectRatio]
 }
 
 function fileBase(createdAt: string): string {

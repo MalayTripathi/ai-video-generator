@@ -8,6 +8,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const srcRoot = path.resolve(process.cwd(), 'src')
+const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs', '.json'])
 
 function withTsExtension(filePath) {
   if (existsSync(filePath + '.ts')) return filePath + '.ts'
@@ -25,7 +26,8 @@ export async function resolve(specifier, context, nextResolve) {
   // resolves and plain Node does not.
   if ((specifier.startsWith('./') || specifier.startsWith('../')) && context.parentURL?.startsWith('file:')) {
     const base = path.resolve(path.dirname(fileURLToPath(context.parentURL)), specifier)
-    if (!path.extname(base) && !existsSync(base)) {
+    // `./env.server` is extensionless too: only a real code extension counts.
+    if (!CODE_EXTENSIONS.has(path.extname(base)) && !existsSync(base)) {
       const filePath = withTsExtension(base)
       if (filePath !== base) return { url: pathToFileURL(filePath).href, shortCircuit: true }
     }

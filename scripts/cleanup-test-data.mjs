@@ -23,22 +23,15 @@
 // *.done, so the next run lists afresh.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createJiti } from 'jiti'
 import { createClient } from '@supabase/supabase-js'
+import { requireEnv } from './require-env.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const jiti = createJiti(import.meta.url)
 const { listFolders, listObjectsUnder, removeStorageUnder } = await jiti.import(join(root, 'tests/storage-cleanup.ts'))
-
-async function env(name) {
-  if (process.env[name]) return process.env[name]
-  const file = await readFile(join(root, '.env.local'), 'utf8').catch(() => '')
-  const line = file.split('\n').find((l) => l.startsWith(`${name}=`))
-  return line?.slice(name.length + 1).trim().replace(/^["']|["']$/g, '')
-}
 
 const TMP = join(root, 'tmp')
 mkdirSync(TMP, { recursive: true })
@@ -69,7 +62,7 @@ const APPLY = args.includes('--apply')
 const INCLUDE_DELETED_OWNERS = args.includes('--include-deleted-owners')
 const INCLUDE_USERS = args.filter((a) => a.startsWith('--include-user=')).map((a) => a.split('=')[1])
 
-const admin = createClient(await env('NEXT_PUBLIC_SUPABASE_URL'), await env('SUPABASE_SERVICE_ROLE_KEY'), {
+const admin = createClient(requireEnv('NEXT_PUBLIC_SUPABASE_URL'), requireEnv('SUPABASE_SERVICE_ROLE_KEY'), {
   auth: { autoRefreshToken: false, persistSession: false },
 })
 

@@ -1,19 +1,9 @@
 import { IMAGE_MODEL_IDS, IMAGE_QUALITIES, type ImageModelId, type ImageQuality, type QualityPresetId, type VideoResolution } from './enums'
+import { isProduction } from './env'
 
-const isProduction = process.env.NODE_ENV === 'production'
-
-// Provider selection for Step 4 voiceover. ElevenLabs is the only implementation; any
-// other value is refused by the voiceover routes before a claim.
-const voiceoverProvider = 'elevenlabs' as const
-if (process.env.VOICEOVER_PROVIDER && process.env.VOICEOVER_PROVIDER !== 'elevenlabs') {
-  console.error(`[models] VOICEOVER_PROVIDER="${process.env.VOICEOVER_PROVIDER}" is not implemented; using elevenlabs`)
-}
-
-// Provider selection for Step 4 background music - same shape as the voiceover selector.
-const musicProvider = 'elevenlabs' as const
-if (process.env.MUSIC_PROVIDER && process.env.MUSIC_PROVIDER !== 'elevenlabs') {
-  console.error(`[models] MUSIC_PROVIDER="${process.env.MUSIC_PROVIDER}" is not implemented; using elevenlabs`)
-}
+// Client-safe: the image and video model registries a person picks from, and the Claude
+// reasoning settings. The env-driven Claude and ElevenLabs config (modelsConfig) and the
+// image dev cap are server-only, in models.server.ts.
 
 // Video-model registry - the single source for every image-to-video model: its fal
 // endpoint, duration bounds, resolutions, audio and reference support, and per-second
@@ -217,7 +207,7 @@ export function assertRegisteredVideoModel(id: string): VideoModelId {
 export function resolveVideoModel(id: string | null): VideoModelConfig | null {
   if (!id) return null
   if (isRegisteredVideoModel(id)) return VIDEO_MODELS[id]
-  if (!isProduction) {
+  if (!isProduction()) {
     throw new UnknownVideoModelError(id)
   }
   console.error(`[models] Unrecognized video model id "${id}" - no duration bounds available`)
@@ -345,19 +335,6 @@ export function parseImageQuality(value: string): ImageQuality {
   throw new InvalidImageQualityError(value, 'projects.image_quality')
 }
 
-// The quality an image request actually sends - and is priced at. Outside production an
-// optional IMAGE_QUALITY_DEV_CAP lowers it (never raises it) to keep development spend
-// down; production always sends the project's own quality. Gate, provider call and ledger
-// all read this one function, so the charge always follows the quality actually used.
-export function effectiveImageQuality(projectQuality: ImageQuality): ImageQuality {
-  if (isProduction) return projectQuality
-  const cap = process.env.IMAGE_QUALITY_DEV_CAP
-  if (!cap) return projectQuality
-  const capIndex = (IMAGE_QUALITIES as readonly string[]).indexOf(cap)
-  if (capIndex === -1) throw new InvalidImageQualityError(cap, 'IMAGE_QUALITY_DEV_CAP')
-  return IMAGE_QUALITIES[Math.min(IMAGE_QUALITIES.indexOf(projectQuality), capIndex)]
-}
-
 // Thinking and effort, set explicitly per operation - never the model's default. A forced
 // tool_choice skips thinking on Haiku 5.5 (the response starts with the tool call), so
 // every forced route says 'disabled', and its max_tokens covers output alone; the agent
@@ -377,143 +354,6 @@ export function claudeReasoningParams(section: {
 }): { thinking?: { type: 'adaptive' | 'disabled' }; output_config?: { effort: ClaudeEffort } } {
   if (!CLAUDE_REASONING_MODELS.has(section.model)) return {}
   return { thinking: { type: section.reasoning.thinking }, output_config: { effort: section.reasoning.effort } }
-}
-
-export type ModelsConfig = {
-  // Shot generation's outline call: the scenes, in order. Same model as the chunks.
-  shotOutline: {
-    provider: 'anthropic'
-    model: string
-    maxTokens: number
-    reasoning: ClaudeReasoning
-  }
-  // Shot generation's chunk calls: up to SHOTS_PER_CHUNK shots of one scene each
-  // (config/shots.ts). maxTokens is sized with it so a chunk finishes well inside 300s.
-  shots: {
-    provider: 'anthropic'
-    model: string
-    maxTokens: number
-    reasoning: ClaudeReasoning
-  }
-  camera: {
-    provider: 'anthropic'
-    model: string
-    maxTokens: number
-    reasoning: ClaudeReasoning
-  }
-  agent: {
-    provider: 'anthropic'
-    model: string
-    maxTokens: number
-    reasoning: ClaudeReasoning
-  }
-  // Quality is not here: it is the project's own `image_quality`, through
-  // effectiveImageQuality.
-  // Element reference images. The model and provider come from resolveImageModel; the
-  // quality is the project's. Storyboard frames have no section: their size follows the
-  // project's aspect ratio (STORYBOARD_IMAGE_SIZES, storyboard.ts).
-  elements: {
-    size: '1024x1024'
-  }
-  imagePrompts: {
-    provider: 'anthropic'
-    model: string
-    maxTokens: number
-    reasoning: ClaudeReasoning
-  }
-  // Voices are not here: they are a per-language list, VOICEOVER_VOICES below.
-  voiceover: {
-    provider: 'elevenlabs'
-    model: string
-  }
-  music: {
-    provider: 'elevenlabs'
-    model: string
-  }
-  musicPrompt: {
-    provider: 'anthropic'
-    model: string
-    maxTokens: number
-    reasoning: ClaudeReasoning
-  }
-  // Future steps (video prompts) each get their own section here as they're
-  // implemented - keep this type and the object below in sync.
-}
-
-const shotsModel = process.env.CLAUDE_SHOTS_MODEL ?? (isProduction ? 'claude-sonnet-5' : 'claude-haiku-5-5')
-
-export const modelsConfig: ModelsConfig = {
-  shotOutline: {
-    provider: 'anthropic',
-    model: shotsModel,
-    maxTokens: Number(process.env.CLAUDE_SHOT_OUTLINE_MAX_TOKENS) || 8000,
-    reasoning: { thinking: 'disabled', effort: 'medium' },
-  },
-  shots: {
-    provider: 'anthropic',
-    model: shotsModel,
-    maxTokens: Number(process.env.CLAUDE_SHOTS_MAX_TOKENS) || 8000,
-    reasoning: { thinking: 'disabled', effort: 'medium' },
-  },
-  camera: {
-    provider: 'anthropic',
-    // Haiku PERMANENTLY, including production - a locked cost decision, not a dev
-    // default like every other section's isProduction ternary. Deriving 1-3 enum
-    // values from a sentence is mechanical work that never benefits from Sonnet's
-    // extra quality, and this call fires on nearly every visual-description blur, so
-    // the cost delta compounds across every edit of every shot. Still overridable via
-    // CLAUDE_CAMERA_MODEL for ops flexibility, but the default is Haiku in both envs.
-    model: process.env.CLAUDE_CAMERA_MODEL ?? 'claude-haiku-5-5',
-    // Small ceiling on purpose: reserveUsage reserves the FULL max_tokens as its
-    // worst-case pre-flight quote (see src/lib/usage/quote.ts), and this call fires on
-    // nearly every description edit. 500 leaves room for the new tokenizer's ~30% more
-    // tokens on a 1-3 enum-field answer without a shots-scale reservation.
-    maxTokens: Number(process.env.CLAUDE_CAMERA_MAX_TOKENS) || 500,
-    reasoning: { thinking: 'disabled', effort: 'low' },
-  },
-  agent: {
-    provider: 'anthropic',
-    // Creative-judgement work (CLAUDE.md rule 16 names "the agent" explicitly), so this
-    // follows the prompts/shots isProduction ternary - unlike camera's permanent-Haiku
-    // carve-out, which is locked because that call is purely mechanical.
-    model:
-      process.env.CLAUDE_AGENT_MODEL ??
-      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-5-5'),
-    maxTokens: Number(process.env.CLAUDE_AGENT_MAX_TOKENS) || 8192,
-    // The one route with tool_choice auto, so the only one where thinking runs.
-    reasoning: { thinking: 'adaptive', effort: 'medium' },
-  },
-  elements: {
-    size: '1024x1024',
-  },
-  imagePrompts: {
-    provider: 'anthropic',
-    model:
-      process.env.CLAUDE_IMAGE_PROMPTS_MODEL ??
-      (isProduction ? 'claude-sonnet-5' : 'claude-haiku-5-5'),
-    maxTokens: Number(process.env.CLAUDE_IMAGE_PROMPTS_MAX_TOKENS) || 8192,
-    reasoning: { thinking: 'disabled', effort: 'medium' },
-  },
-  voiceover: {
-    provider: voiceoverProvider,
-    // eleven_v3 is required: scripts carry inline audio tags ([slowly], [warmly]) that
-    // older models would read aloud as words.
-    model: process.env.ELEVENLABS_VOICEOVER_MODEL ?? 'eleven_v3',
-  },
-  music: {
-    provider: musicProvider,
-    // Instrumental only - the request always sets force_instrumental.
-    model: process.env.ELEVENLABS_MUSIC_MODEL ?? 'music_v1',
-  },
-  musicPrompt: {
-    provider: 'anthropic',
-    // Haiku in every environment, like camera: one short line of instruments, mood and
-    // tempo is mechanical summarising, fired once per project and free to the user.
-    model: process.env.CLAUDE_MUSIC_PROMPT_MODEL ?? 'claude-haiku-5-5',
-    // Small ceiling for the same reason as camera: reserveUsage reserves all of it.
-    maxTokens: Number(process.env.CLAUDE_MUSIC_PROMPT_MAX_TOKENS) || 500,
-    reasoning: { thinking: 'disabled', effort: 'low' },
-  },
 }
 
 // Narration voices, four per language (two male, two female), picked by hand from the

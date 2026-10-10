@@ -5,10 +5,12 @@ import { IMAGE_MODELS } from '../src/lib/config/models'
 import { OPENAI_RATES } from '../src/lib/config/pricing'
 import { STEP_OPERATIONS, stepOperationLabel } from '../src/lib/config/pipeline'
 
-// modelsConfig (and isProduction) are evaluated once at import, so each env scenario loads
-// models.ts fresh in its own child process - through the repo's alias loader, since
-// models.ts imports its enums by an extensionless path plain Node can't resolve.
+// Each env scenario loads the models module fresh in its own child process - through the
+// repo's alias loader, since these modules import by extensionless paths plain Node can't
+// resolve. models.server.ts (modelsConfig, effectiveImageQuality) is server-only, so its
+// child runs under the react-server condition, as Next's server bundle does.
 const MODELS_URL = 'file://' + path.resolve(__dirname, '../src/lib/config/models.ts')
+const MODELS_SERVER_URL = 'file://' + path.resolve(__dirname, '../src/lib/config/models.server.ts')
 const ALIAS_LOADER_URL = 'file://' + path.resolve(__dirname, 'helpers/ts-alias-loader.mjs')
 
 // The image-model env vars this module used to read. Deleted from every child below, and
@@ -24,10 +26,14 @@ const RETIRED_IMAGE_ENV_KEYS = [
 const CONFIG_ENV_KEYS = [...RETIRED_IMAGE_ENV_KEYS, 'IMAGE_QUALITY_DEV_CAP']
 
 /** Evaluates `expression` (with `m` = the models module) in a fresh child, under `env`. */
-function inModels(expression: string, env: Record<string, string>): Promise<{ ok: boolean; value?: unknown; message?: string }> {
+function inModels(
+  expression: string,
+  env: Record<string, string>,
+  server = false
+): Promise<{ ok: boolean; value?: unknown; message?: string }> {
   const script = `
     require('node:module').register(${JSON.stringify(ALIAS_LOADER_URL)})
-    import(${JSON.stringify(MODELS_URL)}).then(
+    import(${JSON.stringify(server ? MODELS_SERVER_URL : MODELS_URL)}).then(
       (m) => process.stdout.write(JSON.stringify({ ok: true, value: ${expression} })),
       (err) => process.stdout.write(JSON.stringify({ ok: false, message: err.message }))
     ).catch((err) => process.stdout.write(JSON.stringify({ ok: false, message: err.message })))
@@ -37,7 +43,8 @@ function inModels(expression: string, env: Record<string, string>): Promise<{ ok
     if (!(key in env)) delete childEnv[key]
   }
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['-e', script], { env: childEnv as NodeJS.ProcessEnv })
+    const args = server ? ['--conditions=react-server', '-e', script] : ['-e', script]
+    const child = spawn(process.execPath, args, { env: childEnv as NodeJS.ProcessEnv })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => (stdout += chunk))
@@ -71,7 +78,7 @@ test.describe('image model registry', () => {
   test('the retired image env vars are never read - setting them changes nothing', async () => {
     const junk = Object.fromEntries(RETIRED_IMAGE_ENV_KEYS.map((key) => [key, key.includes('PROVIDER') ? 'fal' : 'gpt-image-1-mini']))
     expect(await inModels(RESOLVE_ALL, junk)).toEqual(await inModels(RESOLVE_ALL, {}))
-    const config = await inModels('m.modelsConfig.elements', junk)
+    const config = await inModels('m.modelsConfig.elements', { ...junk, IMAGE_QUALITY_DEV_CAP: 'low' }, true)
     expect(config).toEqual({ ok: true, value: { size: '1024x1024' } })
   })
 
@@ -93,34 +100,29 @@ test.describe('image model registry', () => {
   })
 })
 
+// Whether the cap is required, and refused on production, is env.ts's rule (class C) - see
+// tests/env-validate.spec.ts. Here: what a valid cap does to the quality sent.
 test.describe('image quality dev cap', () => {
   const sent = (env: Record<string, string>) =>
-    inModels("['low', 'medium', 'high'].map((q) => m.effectiveImageQuality(q))", env)
+    inModels("['low', 'medium', 'high'].map((q) => m.effectiveImageQuality(q))", { APP_ENV: 'local', ...env }, true)
 
-  test('unset, every project quality is sent as asked', async () => {
-    expect(await sent({ NODE_ENV: 'development' })).toEqual({ ok: true, value: ['low', 'medium', 'high'] })
+  test('a high cap sends every project quality as asked', async () => {
+    expect(await sent({ IMAGE_QUALITY_DEV_CAP: 'high' })).toEqual({ ok: true, value: ['low', 'medium', 'high'] })
   })
 
-  test('outside production it lowers the quality sent, never raises it', async () => {
-    expect(await sent({ NODE_ENV: 'development', IMAGE_QUALITY_DEV_CAP: 'medium' })).toEqual({
+  test('it lowers the quality sent, never raises it', async () => {
+    expect(await sent({ IMAGE_QUALITY_DEV_CAP: 'medium' })).toEqual({
       ok: true,
       value: ['low', 'medium', 'medium'],
     })
-    expect(await sent({ NODE_ENV: 'development', IMAGE_QUALITY_DEV_CAP: 'low' })).toEqual({
+    expect(await sent({ IMAGE_QUALITY_DEV_CAP: 'low' })).toEqual({
       ok: true,
       value: ['low', 'low', 'low'],
     })
   })
 
-  test('it never applies in production', async () => {
-    expect(await sent({ NODE_ENV: 'production', IMAGE_QUALITY_DEV_CAP: 'low' })).toEqual({
-      ok: true,
-      value: ['low', 'medium', 'high'],
-    })
-  })
-
   test('an unrecognised cap fails loudly instead of being ignored', async () => {
-    const result = await sent({ NODE_ENV: 'development', IMAGE_QUALITY_DEV_CAP: 'ultra' })
+    const result = await sent({ IMAGE_QUALITY_DEV_CAP: 'ultra' })
     expect(result.ok).toBe(false)
     expect(result.message).toContain('IMAGE_QUALITY_DEV_CAP')
   })

@@ -17,15 +17,19 @@ import path from 'node:path'
 // and without changing module resolution for the rest of the suite.
 
 const MODULE_URL = 'file://' + path.resolve(__dirname, '../src/lib/supabase/service-role.ts')
+// The module reaches env.server.ts by the repo's '@/' alias and extensionless paths, which
+// plain Node can't resolve on its own.
+const ALIAS_LOADER_URL = 'file://' + path.resolve(__dirname, 'helpers/ts-alias-loader.mjs')
 
 function runInServerContext(envOverrides: Record<string, string | undefined>) {
   const script = `
+    require('node:module').register(${JSON.stringify(ALIAS_LOADER_URL)})
     import(${JSON.stringify(MODULE_URL)}).then((m) => {
       try {
         const client = m.createServiceRoleClient()
         process.stdout.write(JSON.stringify({ ok: true, hasFrom: typeof client.from === 'function' }))
       } catch (err) {
-        process.stdout.write(JSON.stringify({ ok: false, errorName: err && err.constructor && err.constructor.name }))
+        process.stdout.write(JSON.stringify({ ok: false, errorName: err && err.constructor && err.constructor.name, varName: err && err.varName }))
       }
     })
   `
@@ -46,10 +50,11 @@ function runInServerContext(envOverrides: Record<string, string | undefined>) {
 }
 
 test.describe('createServiceRoleClient', () => {
-  test('throws MissingServiceRoleKeyError when SUPABASE_SERVICE_ROLE_KEY is unset, never falling back', async () => {
+  test('throws an EnvError naming SUPABASE_SERVICE_ROLE_KEY when it is unset, never falling back', async () => {
     const output = runInServerContext({ SUPABASE_SERVICE_ROLE_KEY: undefined })
     expect(output.ok).toBe(false)
-    expect(output.errorName).toBe('MissingServiceRoleKeyError')
+    expect(output.errorName).toBe('EnvError')
+    expect(output.varName).toBe('SUPABASE_SERVICE_ROLE_KEY')
   })
 
   test('returns a client when the key is present', async () => {
@@ -92,6 +97,10 @@ test.describe('service-role client isolation', () => {
       path.resolve(__dirname, '../src/app/api/projects/[id]/voiceover/align/route.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/exports/logic.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/music/route.ts'),
+      // Shot-run continuation: secret-authenticated, with no user session for RLS to scope.
+      path.resolve(__dirname, '../src/app/api/projects/[id]/shots/route.ts'),
+      // Runs the shot chain in after(), past the request and the user's session.
+      path.resolve(__dirname, '../src/app/api/projects/[id]/shots/schedule.ts'),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []

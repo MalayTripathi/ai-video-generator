@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { assertProviderCallAllowed, guardedFetch, LiveCallsBlockedError } from '@/lib/providers/live-call-guard'
+import { isProduction } from '@/lib/config/env'
+import { serverEnv } from '@/lib/config/env.server'
 
 export { LiveCallsBlockedError }
 
@@ -71,16 +73,16 @@ export function createClaudeGateway(): ClaudeGateway {
     async createMessage(params, hooks) {
       assertLiveCallsAllowed()
 
-      if (process.env.NODE_ENV !== 'production') {
+      if (!isProduction()) {
         console.warn(
-          `[claude] LIVE call outside production — model=${params.model} kind=${describeCall(params)}`
+          `[claude] LIVE call on local — model=${params.model} kind=${describeCall(params)}`
         )
       }
 
       // maxRetries: 0 is deliberate - an SDK-level retry on a partially
       // generated response is a silent second charge. Every retry in this
       // app is user-initiated and confirmed. Do not "fix" this later.
-      const client = new Anthropic({ maxRetries: 0, timeout: 600_000, fetch: guardedFetch('anthropic') })
+      const client = new Anthropic({ apiKey: serverEnv().providerKeys.anthropic, maxRetries: 0, timeout: 600_000, fetch: guardedFetch('anthropic') })
 
       // Always streams, even though most callers don't read the deltas: a long shot
       // generation can exceed any sane non-streaming timeout. hooks.onTextDelta, when

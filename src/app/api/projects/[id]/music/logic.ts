@@ -9,7 +9,8 @@ import type { ensureSignupGrant as ensureSignupGrantType } from '@/lib/credits/s
 import type { mintAttemptId as mintAttemptIdType, recordFixedSpend as recordFixedSpendType } from '@/lib/credits/ledger'
 import type { MusicGateway } from '@/lib/music/gateway'
 import { creditsFor } from '@/lib/config/credits'
-import { claudeReasoningParams, modelsConfig } from '@/lib/config/models'
+import { claudeReasoningParams } from '@/lib/config/models'
+import { modelsConfig } from '@/lib/config/models.server'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 import {
   MUSIC_STALE_AFTER_MS,

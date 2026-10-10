@@ -22,7 +22,7 @@ import {
   expectedImagePromptsOutputTokens,
   type ImagePromptsHistoryEntry,
 } from '@/lib/prompts/image-prompts'
-import { modelsConfig } from '@/lib/config/models'
+import { modelsConfig } from '@/lib/config/models.server'
 import { estimateExpectedCallCost } from '@/lib/usage/quote'
 import { buildImagePromptsRequest } from '@/app/api/projects/[id]/image-prompts/logic'
 import { dispatchAgentTool, type AgentToolContext, type AgentToolOutcome } from './tools'

@@ -5,7 +5,8 @@ import { stepIndex } from '../src/lib/config/pipeline'
 import { scriptedGateway, successMessage } from './helpers/claude-fakes'
 import { CAMERA_FIELD_NAMES } from '../src/lib/prompts/camera-derivation'
 import { runCameraDerivation } from '../src/app/api/projects/[id]/shots/[shotId]/camera/logic'
-import { CLAUDE_REASONING_MODELS, claudeReasoningParams, modelsConfig, type ClaudeReasoning } from '../src/lib/config/models'
+import { CLAUDE_REASONING_MODELS, claudeReasoningParams, type ClaudeReasoning } from '../src/lib/config/models'
+import { modelsConfig } from '../src/lib/config/models.server'
 
 // Thinking and effort are set explicitly per operation, never left to the model default,
 // and only sent to a model whose reasoning is tuned (CLAUDE_REASONING_MODELS).

@@ -8,7 +8,8 @@ import type { ensureSignupGrant as ensureSignupGrantType } from '@/lib/credits/s
 import type { mintAttemptId as mintAttemptIdType, recordFixedSpend as recordFixedSpendType } from '@/lib/credits/ledger'
 import { VoiceoverProviderError, type VoiceoverGateway } from '@/lib/voiceover/gateway'
 import { creditsFor } from '@/lib/config/credits'
-import { findVoice, modelsConfig } from '@/lib/config/models'
+import { findVoice } from '@/lib/config/models'
+import { modelsConfig } from '@/lib/config/models.server'
 import { ELEVENLABS_ALIGNMENT_MODEL, type UsageBreakdown } from '@/lib/config/pricing'
 import {
   VOICEOVER_ALIGN_STALE_AFTER_MS,

@@ -1477,3 +1477,47 @@ tab can say so.
 tokens (cache reads and writes included) on a 5× card. chars/4 undercounts the new tokenizer by
 about 30%, so `quoteClaudeCall` chooses the card from the estimate × 1.5. A quote then can't be priced on
 the standard card for a call that really lands on the long one.
+
+## Strict env: one validated reader, explicit APP_ENV, no silent defaults
+
+**Why the environment is validated at boot instead of defaulted at each read.** Code defaults hid
+two real problems: a `.env.local` still running an old model, and a missing continuation secret
+that degraded a background run instead of failing. `src/lib/config/env.ts` now classifies every
+var (A required, B required off local, C the image dev cap, D tuning, E opt-ins, F test runner) and
+parses the whole environment before Next (dev, start and build, via `next.config.ts` and
+`instrumentation.ts`) or the export worker starts. A local default exists only for class B, and each
+one is announced at boot. A malformed tuning value throws rather than falling back, because
+`Number('abc') || 8000` silently running at 8000 is exactly the failure being removed.
+
+**Why `APP_ENV` is explicit, not inferred.** `NODE_ENV=production` is set by every `next build` and
+`next start`, including the local production build `test:full` and `test:failed` serve, so it
+cannot tell local from deployed. `VERCEL_ENV` exists only on Vercel, and the export worker will not
+run there. When `VERCEL_ENV` is present it must equal `APP_ENV` (`development` counts as `local`),
+which catches a mislabelled deploy at build. Preview takes production rules for every decision
+except the image dev cap, which is required on preview so preview image spend stays capped.
+
+**Why production model values come only from env.** The old `isProduction ? sonnet : haiku`
+ternaries meant a deploy missing a model var silently ran whatever the code picked. Every Claude
+and ElevenLabs model var is now required on preview and production, and validated against the rate
+cards and the supported ElevenLabs set, so a typo or an unpriced model fails the build.
+
+**Why there are two env modules.** `env.ts` is client-safe: it reads the `NEXT_PUBLIC_*` pair by
+literal name, so Next inlines them, and `APP_ENV` is inlined by `next.config.ts`'s `env`.
+`env.server.ts` imports `server-only`, so importing a secret into a client bundle fails the build
+instead of leaking.
+
+**Why tests preload a `server-only` stub instead of setting the `react-server` condition.** The
+condition also swaps React for its server build, and every spec that imports a client component
+then fails to load. `tests/helpers/server-only-preload.cjs` resolves only `server-only`, only in the
+Playwright runner and its workers. The web server gets its original `NODE_OPTIONS`. The worker runs
+under `--conditions=react-server`, since it never loads React.
+
+**Why no shared module reads env at import.** Playwright loads spec files, and the run guard
+lists them, before global setup loads `.env.local`. A module that validated on import
+(`modelsConfig`, `exportIsProduction`) would make listing fail. Such values are read on first use,
+and the boot check is what guarantees they are valid.
+
+**Why the server is asked whether it is blocked.** Playwright passes `BLOCK_PROVIDER_CALLS=1` only to
+a server it starts. A dev server it reuses on :3000 keeps its own env. Global setup asks
+`/api/internal/provider-block` (two booleans, 404 off local) and refuses the run before any spec
+executes.

@@ -1,6 +1,8 @@
 import { MUSIC_REQUEST_TIMEOUT_MS } from '@/lib/config/storyboard'
 import { assertLiveVoiceoverCallsAllowed } from '@/lib/voiceover/gateway'
 import { guardedFetch } from '@/lib/providers/live-call-guard'
+import { isProduction } from '@/lib/config/env'
+import { serverEnv } from '@/lib/config/env.server'
 
 // The one place ElevenLabs Music is called. Server-side only: the key never reaches a
 // client. Every request goes through guardedFetch. Tests inject hand-written fakes instead of this (tests/helpers/music-fakes.ts).
@@ -26,9 +28,7 @@ export class MusicProviderError extends Error {
 }
 
 function apiKey(): string {
-  const key = process.env.ELEVENLABS_API_KEY
-  if (!key) throw new Error('ELEVENLABS_API_KEY is not set')
-  return key
+  return serverEnv().providerKeys.elevenlabs
 }
 
 export function createMusicGateway(): MusicGateway {
@@ -36,8 +36,8 @@ export function createMusicGateway(): MusicGateway {
     async compose(params) {
       // Same provider, same live-call guard as the voiceover (ALLOW_REAL_ELEVENLABS).
       assertLiveVoiceoverCallsAllowed()
-      if (process.env.NODE_ENV !== 'production') {
-        console.warn(`[music] LIVE call outside production — provider=elevenlabs model=${params.model} ms=${params.lengthMs}`)
+      if (!isProduction()) {
+        console.warn(`[music] LIVE call on local — provider=elevenlabs model=${params.model} ms=${params.lengthMs}`)
       }
 
       // One request, no retry: a retried request is a second charge.

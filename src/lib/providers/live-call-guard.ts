@@ -1,4 +1,5 @@
 import type { Provider } from '@/lib/config/pipeline'
+import { providerGuardEnv } from '@/lib/config/env.server'
 
 // The one decision point for whether a real, billed provider request may leave the
 // process. Enforced twice per gateway: at the gateway method's entry, and again inside
@@ -6,9 +7,9 @@ import type { Provider } from '@/lib/config/pipeline'
 // cannot reach the network by a path that forgot the entry check.
 //
 // BLOCK_PROVIDER_CALLS is the automated-run kill switch: any non-empty value other than
-// '0' blocks every provider, regardless of NODE_ENV, and refuses the ALLOW_REAL_* opt-outs
+// '0' blocks every provider, regardless of APP_ENV, and refuses the ALLOW_REAL_* opt-outs
 // while it is set. Playwright sets it for every run and for the server it starts. With it
-// unset, production passes and anything else needs its provider's ALLOW_REAL_* === '1' -
+// unset, preview and production pass and local needs its provider's ALLOW_REAL_* === '1' -
 // a flag the developer sets by hand, never the repo.
 
 export type GuardedProvider = Extract<Provider, 'anthropic' | 'openai' | 'elevenlabs'>
@@ -38,7 +39,7 @@ function blockedMessage(provider: GuardedProvider, reason: 'block' | 'block_refu
   if (reason === 'block_refused_opt_out') {
     return head + `${flag} was refused because ${BLOCK_PROVIDER_CALLS} is set, which blocks every provider call.`
   }
-  return head + `live calls outside production require ${flag}=1, and this flag is set by the developer only.`
+  return head + `live calls on local require ${flag}=1, and this flag is set by the developer only.`
 }
 
 export class LiveCallsBlockedError extends Error {
@@ -68,19 +69,20 @@ const BLOCKED_ERROR: Record<GuardedProvider, new (message?: string) => Error> = 
   elevenlabs: VoiceoverLiveCallsBlockedError,
 }
 
-export function providerCallsBlocked(env: Env = process.env): boolean {
+export function providerCallsBlocked(env: Env = providerGuardEnv()): boolean {
   const value = env[BLOCK_PROVIDER_CALLS]
   return value !== undefined && value !== '' && value !== '0'
 }
 
 /** Throws the provider's typed blocked error unless a real call is permitted. `env` is
- * injectable so a test can exercise every branch without touching process.env. */
-export function assertProviderCallAllowed(provider: GuardedProvider, env: Env = process.env): void {
+ * injectable so a test can exercise every branch without touching the real environment. */
+export function assertProviderCallAllowed(provider: GuardedProvider, env: Env = providerGuardEnv()): void {
   const optedIn = env[ALLOW_FLAG[provider]] === '1'
   if (providerCallsBlocked(env)) {
     throw new BLOCKED_ERROR[provider](blockedMessage(provider, optedIn ? 'block_refused_opt_out' : 'block'))
   }
-  if (env.NODE_ENV === 'production') return
+  // Preview counts as production here (env.ts isProduction); only local needs the opt-in.
+  if (env.APP_ENV === 'preview' || env.APP_ENV === 'production') return
   if (optedIn) return
   throw new BLOCKED_ERROR[provider](blockedMessage(provider, 'no_opt_out'))
 }
