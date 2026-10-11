@@ -6,8 +6,17 @@ import { parseDurationTarget } from '@/lib/config/duration'
 import { assertRegisteredVideoModel } from '@/lib/config/models'
 import { parseQualitySettings } from '@/lib/quality/estimate'
 import { VIDEO_TYPES, ASPECT_RATIOS } from '@/lib/config/enums'
+import { shotGenerationCredits } from '@/lib/config/credits'
+import { readBalance } from '@/lib/credits/balance'
+import type { IntakeState } from './types'
 
-export async function createProjectFromIntake(formData: FormData) {
+/**
+ * Creates the project, then the Workbench starts writing its shot list. Unless the person
+ * chose to create it without writing shots, the balance is checked first: a balance that
+ * can't cover the shot list creates nothing and hands back both figures, so the person
+ * sees them before anything begins.
+ */
+export async function createProjectFromIntake(_previous: IntakeState, formData: FormData): Promise<IntakeState> {
   const supabase = await createClient()
   const {
     data: { user },
@@ -45,6 +54,12 @@ export async function createProjectFromIntake(formData: FormData) {
   })
   const videoModel = assertRegisteredVideoModel(quality.videoModel)
   const templateSourceId = (formData.get('template_source_id') as string | null)?.trim() || null
+
+  if (formData.get('write_shots') !== 'no') {
+    const requiredCredits = shotGenerationCredits(durationTarget)
+    const { balance } = await readBalance(supabase, user.id, { fresh: true })
+    if (balance < requiredCredits) return { shortfall: { requiredCredits, balanceCredits: balance } }
+  }
 
   const { data: project, error } = await supabase
     .from('projects')

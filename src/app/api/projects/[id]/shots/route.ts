@@ -11,7 +11,7 @@ import { SHOTS_INTERNAL_SECRET_HEADER, acceptShotsContinuation, parseShotsContin
 
 // The background run lives inside this invocation (after()), so it gets the route's full
 // duration. Must stay a literal here (Vercel Hobby's 300s ceiling); mirrors
-// SHOTS_ROUTE_MAX_DURATION_S in src/lib/config/shots.ts, whose SHOT_RUN_BUDGET_MS is sized
+// SHOTS_ROUTE_MAX_DURATION_S in src/lib/config/shot-timing.ts, whose derived run budget is sized
 // to fit inside it.
 export const maxDuration = 300
 

@@ -4,8 +4,10 @@ import path from 'node:path'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
-import { successMessage, textMessage, throwingGateway, scriptedGateway, truncatedMessage } from './helpers/claude-fakes'
+import { SIGNUP_GRANT_CREDITS, usdToCredits } from '../src/lib/config/credits'
+import { computeCost } from '../src/lib/config/pricing'
+import { modelsConfig } from '../src/lib/config/models.server'
+import { successMessage, textMessage, throwingGateway, scriptedGateway } from './helpers/claude-fakes'
 import { runAgentTurn } from '../src/app/api/projects/[id]/agent/logic'
 import { grantAndReadBalance } from './helpers/ledger-child'
 import { getAgentStepConfig } from '../src/app/api/projects/[id]/agent/steps'
@@ -130,7 +132,7 @@ async function readUserMessageId(projectId: string) {
 test.describe('runAgentTurn - credit ledger wiring', () => {
   test('a multi-call turn writes exactly one dynamic-spend row, attributed to the turn - not one row per Claude call', async () => {
     const projectId = await seedProject(primary.user.id)
-    const shotId = await seedShot(projectId)
+    await seedShot(projectId)
     const shotNumber = 1
 
     const gateway = scriptedGateway([
@@ -179,10 +181,10 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
 
   test('rounds once on the summed total, not once per call - 3 calls at $0.0004/$0.0003/$0.0006 bill 2 credits, not 3', async () => {
     const projectId = await seedProject(primary.user.id)
-    const shotId = await seedShot(projectId)
+    await seedShot(projectId)
 
-    // Haiku dev rates (src/lib/config/pricing.ts): output $5/1M tokens = $0.000005/tok.
-    // 80/60/120 output tokens -> exactly $0.0004 / $0.0003 / $0.0006 per call.
+    // The agent model's own output price, from pricing.ts - never a hard-coded rate. Output
+    // token counts are chosen so the three calls cost exactly $0.0004 / $0.0003 / $0.0006.
     // Per-call usdToCredits would give ceil(0.4)+ceil(0.3)+ceil(0.6) = 1+1+1 = 3 (each
     // floored up to at least 1 credit). Rounding once on the summed $0.0013 gives
     // ceil(1.3) = 2 - the two methods disagree, which is exactly what this gate checks.
@@ -192,11 +194,16 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 0,
     })
+    const callCost = (outputTokens: number) => computeCost('anthropic', modelsConfig.agent.model, usage(outputTokens)).estimatedCost!
+    const usdPerOutputToken = callCost(1_000_000) / 1_000_000
+    const [a, b, c] = [0.0004, 0.0003, 0.0006].map((usd) => Math.round(usd / usdPerOutputToken))
+    expect([a, b, c].map(callCost).map((usd) => Math.round(usd * 1e7) / 1e7)).toEqual([0.0004, 0.0003, 0.0006])
+    expect([a, b, c].reduce((n, t) => n + usdToCredits(callCost(t)), 0)).toBe(3)
 
     const gateway = scriptedGateway([
-      successMessage({ shot_number: 1, voice_over: 'v1' }, 'update_shot', usage(80)),
-      successMessage({ shot_number: 1, voice_over: 'v2' }, 'update_shot', usage(60)),
-      textMessage('Done.', usage(120)),
+      successMessage({ shot_number: 1, voice_over: 'v1' }, 'update_shot', usage(a)),
+      successMessage({ shot_number: 1, voice_over: 'v2' }, 'update_shot', usage(b)),
+      textMessage('Done.', usage(c)),
     ])
 
     const result = await runAgentTurn({
@@ -249,7 +256,10 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
       recordTurnSpend: realRecordDynamicSpend,
       getBalance: async () => 1_000_000,
       ensureSignupGrant: async () => {},
-      shotRuns: { ledger: { recordFixedSpend: async () => {}, recordDynamicSpend: realRecordDynamicSpend }, schedule: (run) => scheduled.push(run) },
+      shotRuns: { ledger: { recordFixedSpend: async () => {}, recordDynamicSpend: realRecordDynamicSpend }, start: async (run) => {
+        scheduled.push(run)
+        return true
+      } },
     })
 
     expect(result.ok).toBe(true)
@@ -258,7 +268,12 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
     expect((await readUsageRows(projectId)).map((r) => r.operation)).toEqual(['agent_turn', 'agent_turn'])
     expect(await readLedgerRows(projectId)).toHaveLength(0)
     const { data: run } = await admin.from('shot_runs').select('turn_cost_usd, turn_settled_at').eq('project_id', projectId).single()
-    expect(Number(run!.turn_cost_usd)).toBeCloseTo(0.003969 + 0.003967, 9)
+    // The turn's own two calls, costed by pricing.ts at the agent model's rates.
+    const turnCost = [usage(969, 600), usage(967, 600)].reduce(
+      (sum, u) => sum + computeCost('anthropic', modelsConfig.agent.model, u).estimatedCost!,
+      0
+    )
+    expect(Number(run!.turn_cost_usd)).toBeCloseTo(turnCost, 9)
     expect(run!.turn_settled_at).not.toBeNull()
   })
 

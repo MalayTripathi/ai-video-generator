@@ -8,7 +8,7 @@ import type { AspectRatio } from '@/lib/config/enums'
 import { isRegisteredVideoModel } from '@/lib/config/models'
 import { QualityPicker } from '@/components/quality/quality-picker'
 import { maxShotSeconds, parseQualitySettings, type QualitySettings } from '@/lib/quality/estimate'
-import { isVideoSettingsLocked, type ShotTrim } from '@/lib/projects/settings'
+import { isVideoSettingsLocked, type ShotLengthChange } from '@/lib/projects/settings'
 import { previewProjectSettingsTrims, saveProjectSettings } from '@/app/(app)/projects/[id]/actions'
 
 export type SettingsProject = {
@@ -51,11 +51,11 @@ const sameSettings = (a: QualitySettings, b: QualitySettings) =>
   a.imageQuality === b.imageQuality &&
   a.imageModel === b.imageModel
 
-type Confirm = { trims: ShotTrim[]; modelChanged: boolean }
+type Confirm = { trims: ShotLengthChange[]; modelChanged: boolean }
 
 // The header settings chip and the drawer it opens (canvas section 18). Changes are
 // staged: nothing is written until Apply, which confirms first when the change has
-// consequences - over-length shots to trim, or video prompts to mark stale.
+// consequences - shots the new model cannot make at their length, or video prompts to mark stale.
 export function SettingsChip({ project, label }: { project: SettingsProject; label: string }) {
   const router = useRouter()
   const saved = savedSettings(project)
@@ -119,7 +119,7 @@ export function SettingsChip({ project, label }: { project: SettingsProject; lab
       await commit(staged, 0)
       return
     }
-    let trims: ShotTrim[] = []
+    let trims: ShotLengthChange[] = []
     const savedModel = project.video_model
     const lowers = !isRegisteredVideoModel(savedModel) || maxShotSeconds(staged.videoModel) < maxShotSeconds(savedModel)
     if (lowers) {
@@ -229,7 +229,6 @@ export function SettingsChip({ project, label }: { project: SettingsProject; lab
             {confirm && (
               <ApplyConfirm
                 confirm={confirm}
-                maxSeconds={maxShotSeconds(staged.videoModel)}
                 busy={busy}
                 onCancel={() => setConfirm(null)}
                 onConfirm={() => commit(staged, confirm.trims.length)}
@@ -244,13 +243,11 @@ export function SettingsChip({ project, label }: { project: SettingsProject; lab
 
 function ApplyConfirm({
   confirm,
-  maxSeconds,
   busy,
   onCancel,
   onConfirm,
 }: {
   confirm: Confirm
-  maxSeconds: number
   busy: boolean
   onCancel: () => void
   onConfirm: () => void
@@ -267,8 +264,10 @@ function ApplyConfirm({
 
   const count = confirm.trims.length
   const title =
-    count > 0 ? `${count} ${count === 1 ? 'shot is' : 'shots are'} longer than ${maxSeconds}s` : 'Change the video model?'
-  const confirmLabel = count > 0 ? `Trim ${count} ${count === 1 ? 'shot' : 'shots'} and apply` : 'Apply changes'
+    count > 0
+      ? `${count} ${count === 1 ? 'shot needs a length' : 'shots need a length'} this model can make`
+      : 'Change the video model?'
+  const confirmLabel = count > 0 ? `Change ${count} ${count === 1 ? 'length' : 'lengths'} and apply` : 'Apply changes'
 
   return (
     <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 p-rc-md" onClick={onCancel}>
@@ -294,14 +293,16 @@ function ApplyConfirm({
                 <span className="text-small tabular-nums text-text-primary">
                   Shot {trim.number} · {trim.fromSeconds}s → {trim.toSeconds}s
                 </span>
-                {trim.hasDialogue && (
+                {(trim.hasDialogue || trim.overflow) && (
                   <span className="flex items-center gap-[6px] text-meta text-status-active-fg">
                     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" className="flex-none">
                       <path d="M6 1.25 11 10.5H1L6 1.25Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
                       <rect x="5.4" y="4.5" width="1.2" height="3.2" fill="currentColor" />
                       <rect x="5.4" y="8.4" width="1.2" height="1.2" fill="currentColor" />
                     </svg>
-                    Has dialogue — speech may be cut.
+                    {trim.overflow
+                      ? 'Its narration runs longer than this model allows — speech will run past the clip.'
+                      : 'Has dialogue — speech may be cut.'}
                   </span>
                 )}
               </li>

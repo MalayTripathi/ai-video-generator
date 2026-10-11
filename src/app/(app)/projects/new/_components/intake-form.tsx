@@ -1,6 +1,7 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useActionState, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { displayTitle } from '@/lib/display-title'
 import { durationConfig, DEFAULT_DURATION_TARGET, type DurationTarget } from '@/lib/config/duration'
 import type { AspectRatio } from '@/lib/config/enums'
@@ -8,6 +9,8 @@ import { DEFAULT_QUALITY_PRESET } from '@/lib/config/models'
 import { QualityPicker } from '@/components/quality/quality-picker'
 import { estimateCredits, parseQualitySettings, presetSettings, type QualitySettings } from '@/lib/quality/estimate'
 import { VIDEO_TYPES } from '@/lib/video-type-labels'
+import { shotGenerationCredits } from '@/lib/config/credits'
+import { formatCredits } from '@/lib/format-credits'
 import { createProjectFromIntake } from '../actions'
 import type { TemplateProject } from '../types'
 import { BuildButton } from './build-button'
@@ -68,7 +71,9 @@ function tileClass(selected: boolean) {
     : 'flex cursor-pointer flex-col items-center justify-center gap-rc-2xs rounded-control border border-border-strong bg-bg-surface text-text-secondary outline-none hover:border-border-strong-hover hover:bg-bg-surface-hover has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent has-[:focus-visible]:outline-offset-2'
 }
 
-export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject[] }) {
+export function IntakeForm({ recentProjects, balance }: { recentProjects: TemplateProject[]; balance: number | null }) {
+  // A refused submit hands back the balance the server read, which is newer than the page's.
+  const [state, formAction] = useActionState(createProjectFromIntake, null)
   const [template, setTemplate] = useState<TemplateProject | null>(null)
   const [sourceText, setSourceText] = useState('')
   const [videoType, setVideoType] = useState(DEFAULTS.videoType)
@@ -87,7 +92,13 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
       ? `You mentioned around ${requestedShotCount} shots, but the shot list for ${durationConfig[durationTarget].label} is capped at ${targetShots}. Pick a longer duration if you need more, or the brief will be trimmed to fit.`
       : null
 
+  // The whole video's estimate - shown, never a gate. What gates is the shot list's own
+  // figure (shotGenerationCredits): the Workbench's pre-flight check, checked here first.
   const estimate = Math.round(estimateCredits({ durationTarget, aspectRatio, ...quality }) / 10) * 10
+  const shotListCredits = shotGenerationCredits(durationTarget)
+  const balanceCredits = state?.shortfall.balanceCredits ?? balance
+  // An unreadable balance is unknown, not zero: the submit's own check is the gate then.
+  const short = balanceCredits !== null && balanceCredits < shotListCredits
 
   function dropPrefilled(field: PrefillableField) {
     setPrefilled((prev) => {
@@ -121,7 +132,7 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
   }
 
   return (
-    <form action={createProjectFromIntake} className="flex flex-col gap-rc-lg">
+    <form action={formAction} className="flex flex-col gap-rc-lg">
       <input type="hidden" name="template_source_id" value={template?.id ?? ''} />
       <input type="hidden" name="language" value={template?.language ?? ''} />
       <input type="hidden" name="quality_preset" value={quality.preset} />
@@ -291,10 +302,43 @@ export function IntakeForm({ recentProjects }: { recentProjects: TemplateProject
       />
 
       <div className="flex flex-col gap-rc-2xs">
-        <span className="text-meta text-text-secondary" data-testid="intake-estimate">
-          ≈ <span className="tabular-nums">{estimate.toLocaleString('en-US')}</span> credits
+        <span className="text-meta text-text-secondary">
+          <span data-testid="intake-estimate">
+            Estimated ≈ <span className="tabular-nums">{estimate.toLocaleString('en-US')}</span> credits
+          </span>
+          {!short && balanceCredits !== null && (
+            <>
+              {' · '}
+              <span data-testid="intake-balance" className="tabular-nums">
+                {formatCredits(balanceCredits)}
+              </span>{' '}
+              left
+            </>
+          )}
         </span>
-        <BuildButton disabled={sourceText.trim().length === 0} />
+        {short && (
+          // Over balance: a limit the person can lift, not an error - the button disables
+          // and Add credits is the group's only accent.
+          <span role="status" data-testid="intake-shortfall" className="text-meta text-status-active-fg">
+            Writing the shot list needs <span className="tabular-nums">{formatCredits(shotListCredits)}</span> credits ·{' '}
+            <span className="tabular-nums">{formatCredits(balanceCredits!)}</span> left ·{' '}
+            <Link href="/credits" className="font-medium text-accent hover:underline">
+              Add credits
+            </Link>
+          </span>
+        )}
+        <BuildButton disabled={sourceText.trim().length === 0 || short} />
+        {short && (
+          <button
+            type="submit"
+            name="write_shots"
+            value="no"
+            disabled={sourceText.trim().length === 0}
+            className="flex h-8 cursor-pointer items-center justify-center rounded-control text-small font-medium text-text-secondary outline-none hover:bg-bg-inset hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:text-text-quiet disabled:hover:bg-transparent"
+          >
+            Create the project without writing shots
+          </button>
+        )}
       </div>
     </form>
   )

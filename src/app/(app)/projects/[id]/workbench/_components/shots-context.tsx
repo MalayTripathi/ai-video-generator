@@ -6,6 +6,7 @@ import type { DisplayShot } from './types'
 import { derivePhase, type Phase } from './derive-phase'
 import { stepIndex } from '@/lib/config/pipeline'
 import { usePageVisible } from '@/lib/hooks/use-page-visible'
+import { SHOT_STATUS_POLL_MS } from '@/lib/config/shots'
 import type { ShotRunView } from './shot-run-view'
 
 type ShotsContextValue = {
@@ -15,7 +16,7 @@ type ShotsContextValue = {
   videoType: string | null
   videoModel: string | null
   hasPendingPayload: boolean
-  estimatedCredits: number
+  shotListCredits: number
   // The latest shot run: progress while writing, why it stopped, what is left.
   run: ShotRunView
   // Set when the server refused a start for credits (402) - the prior state is untouched.
@@ -74,7 +75,7 @@ export function ShotsProvider({
   initialHasPendingPayload,
   initialFurthestStep,
   initialRun,
-  estimatedCredits,
+  shotListCredits,
   children,
 }: {
   projectId: string
@@ -85,7 +86,7 @@ export function ShotsProvider({
   initialHasPendingPayload: boolean
   initialFurthestStep: number
   initialRun: ShotRunView
-  estimatedCredits: number
+  shotListCredits: number
   children: ReactNode
 }) {
   const router = useRouter()
@@ -244,18 +245,46 @@ export function ShotsProvider({
     setRefreshPending(false)
   }, [initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun])
 
-  // Poll while generating so a tab that never fired its own POST (e.g. loaded mid-generation
-  // from another tab/device) discovers completion. workbench/page.tsx is a server component
-  // that re-reads the project row on every refresh - no separate GET route needed. Paused
-  // while the tab is hidden; refreshes once on return.
+  // Poll while generating - a tab that never fired its own POST (loaded mid-generation, or
+  // on another device) follows the run too. Each poll is a lightweight status read (never
+  // router.refresh(), which re-renders the layout and page); the next starts only after the
+  // previous returns. When the claim has settled the page refreshes once for the finished
+  // list. Paused while the tab is hidden; polls at once on return. The first poll otherwise
+  // waits an interval, so it never reads a retried claim's old 'failed' before the POST
+  // has reclaimed it.
+  const resumedRef = useRef(false)
   const visible = usePageVisible(() => {
-    if (phase === 'generating') router.refresh()
+    resumedRef.current = true
   })
   useEffect(() => {
     if (phase !== 'generating' || !visible) return
-    const interval = setInterval(() => router.refresh(), 3000)
-    return () => clearInterval(interval)
-  }, [phase, visible, router])
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/projects/${projectId}/shots/status`, { cache: 'no-store' })
+        if (cancelled) return
+        if (response.ok) {
+          const status = (await response.json()) as { generationState: string | null; run: ShotRunView }
+          if (cancelled) return
+          setRun(status.run)
+          if (status.generationState === 'succeeded' || status.generationState === 'failed') {
+            router.refresh()
+            return
+          }
+        }
+      } catch {
+        // A dropped poll is retried on the next tick.
+      }
+      if (!cancelled) timer = setTimeout(poll, SHOT_STATUS_POLL_MS)
+    }
+    timer = setTimeout(poll, resumedRef.current ? 0 : SHOT_STATUS_POLL_MS)
+    resumedRef.current = false
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [phase, visible, projectId, router])
 
   return (
     <ShotsContext.Provider
@@ -266,7 +295,7 @@ export function ShotsProvider({
         videoType,
         videoModel,
         hasPendingPayload,
-        estimatedCredits,
+        shotListCredits,
         run,
         startError,
         confirmOpen,

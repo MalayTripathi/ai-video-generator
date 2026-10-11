@@ -283,6 +283,8 @@ export const INTERNAL_SECRET_HEADER = 'x-images-internal-secret'
 export function createContinueRun(params: {
   origin: string
   secret: string | undefined
+  /** The deployment protection bypass (continuation.ts deploymentBypassHeaders). */
+  headers?: Record<string, string>
   fetchImpl?: typeof fetch
   timeoutMs?: number
 }): (payload: ContinuationPayload) => Promise<boolean> {
@@ -295,7 +297,7 @@ export function createContinueRun(params: {
     }
     const res = await (params.fetchImpl ?? fetch)(`${params.origin}/api/projects/${payload.projectId}/images`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', [INTERNAL_SECRET_HEADER]: params.secret },
+      headers: { ...params.headers, 'Content-Type': 'application/json', [INTERNAL_SECRET_HEADER]: params.secret },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(params.timeoutMs ?? IMAGE_HANDOFF_TIMEOUT_MS),
     })

@@ -86,3 +86,61 @@ export function acceptWithinLimits(
   }
   return { accepted, limitReached: shots >= limits.ceiling || seconds >= limits.maxSec - 1e-9 }
 }
+
+/**
+ * The project's unreserved seconds: the tier's maximum less what every scene holds - its
+ * reservation, or what it has already written past it. Scenes overrun their reservation
+ * only out of this, never out of another scene's reservation.
+ */
+export function unreservedSeconds(tierMaxSec: number, scenes: readonly { reservedSec: number; writtenSec: number }[]): number {
+  const held = scenes.reduce((sum, s) => sum + Math.max(s.reservedSec, s.writtenSec), 0)
+  return Math.max(0, tierMaxSec - held)
+}
+
+export type ChunkAcceptance = {
+  /** How many of the chunk's shots (in order) are saved. */
+  accepted: number
+  /** Unreserved seconds the accepted shots took past the scene's reservation. */
+  slackUsed: number
+  /** The scene's seconds are spent: its reservation is written, or a shot was turned away by it. */
+  sceneBudgetReached: boolean
+  /** The project's shot ceiling or maximum seconds was reached. */
+  projectLimitReached: boolean
+}
+
+/**
+ * How many of a chunk's shots one scene keeps. Each must fit the scene's reserved seconds,
+ * drawing on the project's unreserved seconds only past them, and the project's ceiling and
+ * maximum seconds as a backstop. Pure; the caller applies `slackUsed` before its next await,
+ * so scenes finishing together never both take the same unreserved seconds.
+ */
+export function acceptChunkShots(
+  durations: readonly number[],
+  scene: { reservedSec: number; writtenSec: number },
+  slackLeft: number,
+  totals: RunningTotals,
+  limits: { ceiling: number; maxSec: number }
+): ChunkAcceptance {
+  const eps = 1e-9
+  let written = scene.writtenSec
+  let slackUsed = 0
+  let accepted = 0
+  for (const d of durations) {
+    const extra = Math.max(0, written + d - Math.max(scene.reservedSec, written))
+    if (extra > slackLeft - slackUsed + eps) {
+      return { accepted, slackUsed, sceneBudgetReached: true, projectLimitReached: false }
+    }
+    const project = acceptWithinLimits([d], { shots: totals.shots + accepted, seconds: totals.seconds + (written - scene.writtenSec) }, limits)
+    if (project.accepted === 0) return { accepted, slackUsed, sceneBudgetReached: false, projectLimitReached: true }
+    slackUsed += extra
+    written += d
+    accepted += 1
+  }
+  return {
+    accepted,
+    slackUsed,
+    // Its reservation written: the scene is done, whatever slack is left for other scenes.
+    sceneBudgetReached: written >= scene.reservedSec - eps,
+    projectLimitReached: totals.shots + accepted >= limits.ceiling,
+  }
+}

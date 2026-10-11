@@ -11,9 +11,10 @@ are not lost.
 - **A 150-shot storyboard batch outruns the image chain when frames are slow.** 17 runs of a
   150s budget at three in parallel start 102-204 frames (120s-45s per frame); 150 fit only
   if a frame averages <= ~73s. The rest settle failed, uncharged and retryable.
-- **Agent edits don't recompute a shot's duration from its words.** Shot generation sets
-  every duration from the words spoken (`src/lib/shots/durations.ts`); the agent's
-  `update_shot` / `insert_shot` still write whatever `duration_sec` the model gives.
+- **The agent's `update_shot` doesn't recompute a shot's duration from its words.** Shot
+  generation and `insert_shot` set durations from the words spoken
+  (`src/lib/shots/durations.ts`); `update_shot` takes the model's `duration_sec`, rounded up to
+  a length the video model renders.
 - **`ElementResolver` matches only on current name, so a renamed element gets duplicated on
   regeneration.** `ElementResolver.resolve` (`src/lib/shots/write-chunk.ts`) dedups
   purely by `lower(name)`. If a user renames an element (a character, or the project's
@@ -367,19 +368,28 @@ untouched). The Storyboard voiceover already follows it.
 
 ## Shot generation (Models Task 4)
 
-- **Re-measure the chunk size on Sonnet before production.** `SHOTS_PER_CHUNK` (8), the
-  chunk's `max_tokens` (now 8,000) and the 120s `SHOT_RUN_BUDGET_MS` were set from one Haiku
-  4.5 `generate_shots` row (316 output tokens/shot, ~26 tokens/s end to end). Re-derive them
-  from the `[shots] chunk ... outputTokens=` logs of real Sonnet runs; each is a config value.
-- **Re-measure on Haiku 5.5 after the live run.** Take throughput and output tokens per shot
-  from the `[shots] chunk ... outputTokens=` logs of the first live Haiku 5.5 runs, then set
-  `SHOTS_PER_CHUNK` and `SHOT_RUN_BUDGET_MS` from the measured values (Haiku 5.5's tokenizer
-  counts ~30% more tokens per shot than the 4.5 figures above). Re-cut `AGENT_TURN_ESTIMATE`
-  from the same runs' `agent_turn` rows - it was calibrated on Haiku 4.5.
+- **Measure Sonnet's shot chain timing (Sonnet 5.5 switch).** `SHOT_CHAIN_TIMING`
+  (`src/lib/config/shot-timing.ts`) holds a labelled estimate for Sonnet (40 tok/s, Haiku's
+  overheads), giving a ~50s run budget. Replace it with the `[shots] chunk ... outputTokens=`
+  timings of real Sonnet runs; the budget re-derives itself.
+- **Re-measure Haiku 5.5's chain timing on a deployed run.** The measured 54 tok/s and 22s of
+  writes per chunk come from one local run on an overloaded dev process (n=6 chunks); a
+  preview run will likely show faster writes and a longer budget.
+- **Re-cut `AGENT_TURN_ESTIMATE` on Haiku 5.5** from live `agent_turn` rows - it was
+  calibrated on Haiku 4.5.
 - **Image prompts are one call capped at 8,192 output tokens (≈29 shots).** A full list on the
   3-5 min and 8-10 min tiers can exceed it and truncate, and one call that size can't finish
   inside Hobby's 300s either. Batching belongs in Task 5, which moves image prompts onto the
   shot-chain design.
+- **Re-measure voiceover synthesis speed, and measure it for Hindi.** The part size
+  (`VOICEOVER_CHUNK_MAX_CHARS`, ~3,222) comes from one English read (5,000 chars in ~128s).
+  Devanagari text may synthesise at a different rate per character.
+- **A story can be written shorter than its tier's minimum.** Each scene's seconds are
+  reserved and capped, and the word budget steers the model toward them, but a scene the model
+  reports finished early stays finished; the run completes under the minimum. Re-asking a short
+  scene would be a paid call per scene - not done (Task 4b decision).
+- **A refused agent chain start leaves the generate_shots claim failed.** The old shot list
+  stays, but the Workbench then shows the cut-short banner until a regenerate.
 - **Re-measure words per second and padding as voiceovers accumulate.** Both come from one
   English read (2.19 words/s; gaps p50 0.12s, max 0.21s). `node scripts/measure-voiceover-wps.mjs`
   reports them per language and voice; other languages use the English pace until measured.
@@ -408,7 +418,8 @@ per Vercel environment. `VERCEL_ENV` is set by Vercel and must equal `APP_ENV`.
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` | project values | project values |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY` | real keys | real keys |
 | `INTERNAL_CONTINUATION_SECRET` | 32+ random chars, its own | 32+ random chars, its own |
-| `SPEND_CAP_ENABLED` / `SPEND_CAP_MONTHLY_USD` | `1` / Malay to set | Malay to set |
+| `SPEND_CAP_ENABLED` / `SPEND_CAP_MONTHLY_USD` | `1` / a low cap, e.g. `5` (never `0`) | Malay to set |
+| `VERCEL_AUTOMATION_BYPASS_SECRET` | provided by Vercel once "Protection Bypass for Automation" is on - required | provided by Vercel if protection is on, else unset |
 | `CLAUDE_SHOTS_MODEL` | `claude-haiku-5-5` | `claude-sonnet-5` - **Malay to confirm** |
 | `CLAUDE_AGENT_MODEL` | `claude-haiku-5-5` | `claude-sonnet-5` - **Malay to confirm** |
 | `CLAUDE_IMAGE_PROMPTS_MODEL` | `claude-haiku-5-5` | `claude-sonnet-5` - **Malay to confirm** |
@@ -423,3 +434,19 @@ per Vercel environment. `VERCEL_ENV` is set by Vercel and must equal `APP_ENV`.
 
 Not on Vercel: `ALLOW_REAL_*`, `PW_*` and `EXPORT_*`. The export worker's host needs `APP_ENV`,
 `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and `SPEND_CAP_*`, and `FFMPEG_PATH` in its image.
+
+## Task 4c: the agent receives only the shots a turn needs (split from Task 4b)
+
+Today the Workbench and Image prompts agents send a one-line-per-shot index of every shot
+(`buildShotIndexBlock` / `buildImagePromptIndexBlock`) on every call of a turn - ~20-30 tokens a
+line, up to 8 calls a turn. Design agreed in Task 4b's Phase 0:
+- A scene table of contents (~10 tokens a scene: title, shot-number range, count) instead of the
+  full index.
+- Pinned lines for the shots the user's message names, parsed server-side ("shot 12",
+  "shots 3-5", "#7", lists), plus any shots touched earlier in the turn.
+- A new read tool `list_shots({ from, to } | { scene } | { query })` returning index lines, at
+  most 40 a call.
+- `insert_shot` returns the neighbouring +/-3 lines, not the full index.
+- The same on Image prompts; the agent prompt moves to V13.
+- Measure the block on a 300-shot fixture before and after (the audit's ~36k figure was not
+  reproducible from the current block).

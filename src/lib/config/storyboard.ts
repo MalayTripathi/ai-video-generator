@@ -99,9 +99,29 @@ export const DRAG_THRESHOLD_PX = 4
 // Voiceover (Storyboard C1). Voices and the model live in models.ts; every size, limit and
 // timing number lives here.
 
-// eleven_v3's per-request character limit (GET /v1/models, max_characters_request_*). A
-// longer script is read in several requests, split between shots, never mid-shot.
-export const VOICEOVER_CHUNK_MAX_CHARS = 5000
+// eleven_v3's per-request character limit (GET /v1/models, max_characters_request_*).
+export const ELEVEN_V3_MAX_CHARS_PER_REQUEST = 5000
+
+// The provider request timeout for one text-to-speech call. Two waves of it, plus the
+// part writes and the finish, fit the route's maxDuration.
+export const VOICEOVER_SYNTH_TIMEOUT_MS = 110_000
+
+// Measured synthesis speed: a 5,000-character part took ~128s (Vercel Hobby audit, one
+// English read) - ~39 characters a second. Re-measure as reads accumulate (roadmap).
+export const VOICEOVER_SYNTH_CHARS_PER_SEC = 5000 / 128
+
+// The share of the synthesis timeout a part is sized to fill, leaving room for a slower
+// read than the one measured.
+export const VOICEOVER_SYNTH_TIMEOUT_FILL = 0.75
+
+// The longest part of a script read in one request, derived so a part finishes inside its
+// synthesis timeout: ~39 chars/s x 110s x 0.75 = ~3,222 characters, under the provider's
+// own per-request limit. A longer script is read in several requests, split between shots,
+// never mid-shot.
+export const VOICEOVER_CHUNK_MAX_CHARS = Math.min(
+  ELEVEN_V3_MAX_CHARS_PER_REQUEST,
+  Math.floor((VOICEOVER_SYNTH_CHARS_PER_SEC * VOICEOVER_SYNTH_TIMEOUT_MS * VOICEOVER_SYNTH_TIMEOUT_FILL) / 1000)
+)
 
 // The most requests one voiceover may take. Bounds the whole read's length and, with the
 // timeout below, the claim's stale window.
@@ -119,10 +139,6 @@ export const VOICEOVER_ROUTE_MAX_DURATION_S = 300
 // How many parts of one read are synthesised at once. Kept under the ElevenLabs plan's
 // concurrent-request limit; a 4-part read runs in two waves.
 export const VOICEOVER_CHUNK_CONCURRENCY = 2
-
-// The provider request timeout for one text-to-speech call. Two waves of it, plus the
-// part writes and the finish, fit the route's maxDuration.
-export const VOICEOVER_SYNTH_TIMEOUT_MS = 110_000
 
 // A 429 (concurrent-request limit) is refused before any audio is made, so it is retried
 // after each of these waits in turn; past the last, the part fails, uncharged and resumable.

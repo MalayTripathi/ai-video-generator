@@ -47,6 +47,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     expectedCredits,
     getBalance,
     ensureSignupGrant,
+    recordFixedSpend,
     mintAttemptId,
   })
   if (!result.ok) return refusalResponse(result)

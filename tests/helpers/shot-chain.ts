@@ -4,7 +4,7 @@ import { admin } from '../supabase-test-session'
 import { runShotsRequest, type ShotsRequestMode, type ShotsRequestResult } from '../../src/app/api/projects/[id]/shots/logic'
 import { runShotsWorker, type ShotsContinuationPayload, type ShotsWorkerResult } from '../../src/app/api/projects/[id]/shots/worker'
 import type { ShotRunLedger } from '../../src/lib/shots/runs'
-import { successMessage } from './claude-fakes'
+import { successMessage, truncatedMessage } from './claude-fakes'
 
 // The shot-generation chain run in-process against fakes: the request phase, then every
 // run of the chain, each continuation queued and run after the one that handed it on (as a
@@ -74,14 +74,20 @@ export function parseChunkAsk(params: Anthropic.MessageCreateParams): ChunkAsk {
 
 export type ChainCall = { tool: string; at: number; ask: ChunkAsk | null }
 
+/** A chunk's answer. `truncated` returns it as cut short at max_tokens; `scene_complete`
+ * left out is a truncated answer that stopped inside the shots array. */
+export type FakeChunkAnswer = { shots: Partial<FakeShot>[]; scene_complete?: boolean; truncated?: boolean }
+
 /**
  * A gateway answering the outline with `outline` and every chunk with `chunk(ask, n)` - n
- * counting that scene's chunks from 0, each chunk after `delayMs`. Records each call.
+ * counting that scene's chunks from 0, each chunk after `delayMs` (or `delayFor(ask, n)`).
+ * Records each call.
  */
 export function chainGateway(params: {
   outline: unknown
-  chunk: (ask: ChunkAsk, chunkOfScene: number) => { shots: FakeShot[]; scene_complete: boolean }
+  chunk: (ask: ChunkAsk, chunkOfScene: number) => FakeChunkAnswer
   delayMs?: number
+  delayFor?: (ask: ChunkAsk, chunkOfScene: number) => number
   usage?: { input_tokens: number; output_tokens: number }
 }): ClaudeGateway & { calls: ChainCall[] } {
   const calls: ChainCall[] = []
@@ -97,10 +103,12 @@ export function chainGateway(params: {
       }
       const ask = parseChunkAsk(p)
       calls.push({ tool, at, ask })
-      if (params.delayMs) await new Promise((r) => setTimeout(r, params.delayMs))
       const n = perScene.get(ask.scenePosition) ?? 0
       perScene.set(ask.scenePosition, n + 1)
-      return successMessage(params.chunk(ask, n), 'write_shots', params.usage)
+      const delay = params.delayFor ? params.delayFor(ask, n) : params.delayMs
+      if (delay) await new Promise((r) => setTimeout(r, delay))
+      const { truncated, ...answer } = params.chunk(ask, n)
+      return truncated ? truncatedMessage(answer, 'write_shots', params.usage) : successMessage(answer, 'write_shots', params.usage)
     },
   }
 }
@@ -128,10 +136,11 @@ export async function runChain(params: {
   ledger?: ShotRunLedger
   balance?: number | (() => number)
   runBudgetMs?: number
-  chainLimit?: number
   concurrency?: number
   /** Return false to refuse a hand-off; 'drop' accepts it but never runs it (a dead chain). */
   handOff?: (payload: ShotsContinuationPayload) => boolean | 'drop'
+  /** The chain's client - a faultyClient to kill or slow a write. The request phase always uses admin. */
+  workerClient?: typeof admin
 }): Promise<{ request: ShotsRequestResult; runs: ChainRun[] }> {
   const ledger = params.ledger ?? NO_LEDGER
   const balance = () => (typeof params.balance === 'function' ? params.balance() : (params.balance ?? 1_000_000))
@@ -167,7 +176,7 @@ export async function runChainFrom(
     const startedAt = Date.now()
     const result = await runShotsWorker(
       {
-        supabase: admin,
+        supabase: params.workerClient ?? admin,
         gateway: params.gateway,
         ledger,
         readBalance: async () => balance(),
@@ -177,7 +186,6 @@ export async function runChainFrom(
           return decision !== false
         },
         runBudgetMs: params.runBudgetMs,
-        chainLimit: params.chainLimit,
         concurrency: params.concurrency,
       },
       payload
@@ -234,4 +242,47 @@ export async function readRun(runId: string) {
     .single()
   if (error) throw new Error(error.message)
   return data
+}
+
+type WriteOp = 'insert' | 'update' | 'upsert' | 'delete'
+
+/**
+ * The admin client with a fault on chosen writes: `kill` throws when the write is issued
+ * (the invocation died there - nothing after it runs), `delayMs` holds it before it runs (a
+ * slow write, for a request landing meanwhile). Reads pass straight through.
+ */
+export function faultyClient(fault: {
+  when: (table: string, op: WriteOp, values: unknown) => boolean
+  kill?: boolean
+  delayMs?: number
+  /** Called once when the fault first triggers. */
+  onTrigger?: () => void
+}): typeof admin {
+  let triggered = false
+  return new Proxy(admin, {
+    get(target, prop, receiver) {
+      if (prop !== 'from') {
+        const value = Reflect.get(target, prop, receiver)
+        return typeof value === 'function' ? value.bind(target) : value
+      }
+      return (table: string) => {
+        const builder = target.from(table as never) as unknown as Record<string, unknown>
+        return new Proxy(builder, {
+          get(b, p) {
+            const value = b[p as string]
+            if (typeof value !== 'function') return value
+            if (!['insert', 'update', 'upsert', 'delete'].includes(String(p))) return (value as (...a: unknown[]) => unknown).bind(b)
+            return (...args: unknown[]) => {
+              if (!fault.when(table, p as WriteOp, args[0])) return (value as (...a: unknown[]) => unknown).apply(b, args)
+              if (!triggered) fault.onTrigger?.()
+              triggered = true
+              if (fault.kill) throw new Error(`killed at ${table}.${String(p)}`)
+              const next = (value as (...a: unknown[]) => PromiseLike<unknown>).apply(b, args)
+              return { then: (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => new Promise((r) => setTimeout(r, fault.delayMs ?? 0)).then(() => next).then(res, rej) }
+            }
+          },
+        })
+      }
+    },
+  }) as typeof admin
 }

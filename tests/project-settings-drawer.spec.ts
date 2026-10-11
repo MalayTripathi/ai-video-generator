@@ -76,7 +76,7 @@ test.describe('Project settings drawer', () => {
     expect(project!.quality_preset).toBe('medium')
   })
 
-  test('a lower maximum lists the over-length shots, flags dialogue, and trims them on confirm', async ({ page }) => {
+  test("a model that can't make some shots' lengths lists them with their new length, flags dialogue, and applies on confirm", async ({ page }) => {
     const projectId = await seedProject()
     const ids = await seedShots(projectId, [8, 22, 18])
     const { data: character } = await admin
@@ -95,7 +95,7 @@ test.describe('Project settings drawer', () => {
 
     const confirm = page.getByTestId('project-settings-confirm')
     await expect(confirm).toBeVisible()
-    await expect(confirm.getByText('2 shots are longer than 15s')).toBeVisible()
+    await expect(confirm.getByText('2 shots need a length this model can make')).toBeVisible()
     const rows = confirm.getByTestId('project-settings-trim')
     await expect(rows).toHaveCount(2)
     await expect(rows.nth(0)).toContainText('Shot 2 · 22s → 15s')
@@ -112,10 +112,11 @@ test.describe('Project settings drawer', () => {
       .select('duration_sec, film_duration_sec, video_prompt_stale')
       .eq('project_id', projectId)
       .order('order_index')
+    // Only the length Kling can't make changes (no film length was set).
     expect(shots).toEqual([
       { duration_sec: 8, film_duration_sec: null, video_prompt_stale: true },
-      { duration_sec: 15, film_duration_sec: 15, video_prompt_stale: true },
-      { duration_sec: 15, film_duration_sec: 15, video_prompt_stale: true },
+      { duration_sec: 15, film_duration_sec: null, video_prompt_stale: true },
+      { duration_sec: 15, film_duration_sec: null, video_prompt_stale: true },
     ])
     const { data: project } = await admin
       .from('projects')

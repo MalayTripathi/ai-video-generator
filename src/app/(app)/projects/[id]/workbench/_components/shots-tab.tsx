@@ -176,7 +176,7 @@ export function ShotsTab() {
     shots,
     phase,
     hasPendingPayload,
-    estimatedCredits,
+    shotListCredits,
     run,
     startError,
     confirmOpen,
@@ -201,7 +201,7 @@ export function ShotsTab() {
       open={confirmOpen}
       mode={confirmMode}
       hasPendingPayload={hasPendingPayload}
-      estimatedCredits={estimatedCredits}
+      shotListCredits={shotListCredits}
       replacesExisting={phase === 'partial'}
       onConfirm={confirmRetry}
       onCancel={closeRetryConfirm}
@@ -254,9 +254,21 @@ export function ShotsTab() {
         <NoShotsEmptyState onRebuild={openRetryConfirm} />
       </>
     )
+  // A list whose scene plan still has scenes unwritten (a run from before a run could only
+  // end 'completed' with every scene written) keeps "Generate remaining shots" in reach.
+  const remaining = !readOnly && canGenerateRemaining(run)
   return (
     <div className="flex flex-col gap-rc-sm">
+      {remaining && modal}
       {readOnly && <ReadOnlyBanner />}
+      {remaining && (
+        <GenerationPartialBanner
+          onRetry={openRetryConfirm}
+          onRemaining={openRemainingConfirm}
+          stoppedForCredits={stoppedForCredits}
+          refused={refused}
+        />
+      )}
       <ShotList shots={shots} />
     </div>
   )

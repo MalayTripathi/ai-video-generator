@@ -7,7 +7,7 @@ import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { isAgentStep, stepIndex, type AgentStep } from '@/lib/config/pipeline'
 import { runAgentTurn, type AgentStreamEvent } from './logic'
 import { getAgentStepConfig } from './steps'
-import { SHOT_RUN_LEDGER, scheduleShotsWorker } from '../shots/schedule'
+import { SHOT_RUN_LEDGER, startShotsChain } from '../shots/schedule'
 
 // Covers the 180s agent_turn stale-claim window with margin; the whole request is held
 // open for the turn (see docs/decisions.md).
@@ -100,7 +100,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           recordTurnSpend: recordDynamicSpend,
           getBalance,
           ensureSignupGrant,
-          shotRuns: { ledger: SHOT_RUN_LEDGER, schedule: (run) => scheduleShotsWorker(origin, run) },
+          shotRuns: { ledger: SHOT_RUN_LEDGER, start: startShotsChain(origin) },
         })
       } finally {
         try {

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getBalance } from '@/lib/credits/balance'
+import { recordFixedSpend } from '@/lib/credits/ledger'
 import { tryLoadRailFigures } from '@/app/(app)/rail-figures'
 import { loadImageStatuses } from './logic'
 
@@ -19,7 +20,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ ok: false, error: 'Not authenticated' }, { status: 401 })
 
-  const result = await loadImageStatuses({ supabase, projectId, userId: user.id, getBalance })
+  const result = await loadImageStatuses({ supabase, projectId, userId: user.id, getBalance, recordFixedSpend })
   if (!result.ok) return NextResponse.json({ ok: false, error: result.error }, { status: result.status })
   // The rail's spend figures ride on every status read; the page applies them when a poll
   // shows a shot has settled (its charge lands at settle).

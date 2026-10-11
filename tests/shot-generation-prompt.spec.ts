@@ -35,20 +35,21 @@ test.describe('the outline', () => {
 })
 
 test.describe('buildChunkUserMessage', () => {
-  test('carries the scene, its elements, the shot before, the cap and the split rule', () => {
+  test("carries the scene, its elements, the shot before, the cap and the scene's word budget", () => {
     const message = buildChunkUserMessage({
       scene: { position: 2, title: 'The Storm', summary: 'Waves rise.', location: 'Cliff', time_of_day: 'night', target_seconds: 20 },
       elementNames: ['Mara', 'Lighthouse'],
       previousShot: { voice_over: 'She climbed the stairs.', visual_description: 'Spiral stairs.' },
-      writtenSeconds: 6,
+      secondsLeft: 14,
+      wordBudget: 27,
       maxShots: 8,
-      maxWordsPerShot: 65,
     })
     expect(message).toContain('Scene 3: The Storm')
     expect(message).toContain('Mara, Lighthouse')
     expect(message).toContain('She climbed the stairs.')
     expect(message).toContain('about 14 seconds')
     expect(message).toContain('at most 8 shots')
-    expect(message).toContain('longer than 65 words')
+    expect(message).toContain('about 27 words in total')
+    expect(message).not.toMatch(/longer than \d+ words/)
   })
 })

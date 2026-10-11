@@ -156,9 +156,10 @@ async function center(page: Page, locator: ReturnType<Page['locator']>) {
 }
 
 test.describe('storyboard editing - retime', () => {
-  test('a boundary drag shows the tooltip and pending Total, snaps to 0.1s, and saves only film_duration_sec on drop', { tag: '@smoke' }, async ({
+  test("a boundary drag shows the tooltip and pending Total, snaps to a length the video model makes, and saves only film_duration_sec on drop", { tag: '@smoke' }, async ({
     page,
   }) => {
+    // Wan 2.5 makes exactly 5s or 10s: a drag well to the right lands on 10s.
     const { projectId, ids } = await seed([{ state: 'ready' }, { state: 'ready' }, { state: 'ready' }])
     await open(page, projectId)
     await expect(page.getByTestId('timeline-total')).toHaveText('Total 0:15 · provisional')
@@ -166,26 +167,21 @@ test.describe('storyboard editing - retime', () => {
     const start = await center(page, grip(page, ids[0]))
     await page.mouse.move(start.x, start.y)
     await page.mouse.down()
-    await page.mouse.move(start.x + 60, start.y, { steps: 6 })
+    await page.mouse.move(start.x + 400, start.y, { steps: 8 })
 
     const tooltip = page.getByTestId('retime-tooltip')
     await expect(tooltip).toBeVisible()
-    await expect(tooltip).toHaveText(/^5\.0s → \d+\.\ds$/)
+    await expect(tooltip).toHaveText('5.0s → 10.0s')
     const pending = page.getByTestId('timeline-total-pending')
     await expect(pending).toBeVisible()
     await expect(pending).toContainText('pending')
     await expect(page.getByTestId('timeline-total')).toBeHidden()
-    const label = (await tooltip.textContent())!
-    const seconds = Number(label.split('→')[1].trim().replace('s', ''))
-    expect(seconds).toBeGreaterThan(5)
-    // Snapped: one decimal, exactly.
-    expect(Math.round(seconds * 10)).toBeCloseTo(seconds * 10, 6)
 
     await page.mouse.up()
     await expect(tooltip).toBeHidden()
     await expect(page.getByTestId('timeline-total')).toBeVisible()
-    await expect(block(page, ids[0])).toContainText(`${seconds.toFixed(1)}s`)
-    await expect.poll(async () => (await row(projectId, ids[0])).film_duration_sec).toBe(seconds)
+    await expect(block(page, ids[0])).toContainText('10.0s')
+    await expect.poll(async () => (await row(projectId, ids[0])).film_duration_sec).toBe(10)
     const saved = await row(projectId, ids[0])
     // Script length untouched; retime is free and marks nothing stale.
     expect(saved.duration_sec).toBe(5)
@@ -219,7 +215,7 @@ test.describe('storyboard editing - retime', () => {
     await expect.poll(async () => (await row(projectId, ids[1])).film_duration_sec).toBe(MODEL_MIN)
   })
 
-  test('the last shot has an end handle, and ←/→ on a focused boundary nudges ±0.1s, saving each press', async ({
+  test("the last shot has an end handle, and ←/→ on a focused boundary steps to the model's next length, saving each press", async ({
     page,
   }) => {
     const { projectId, ids } = await seed([{ state: 'ready' }, { state: 'ready' }])
@@ -229,15 +225,17 @@ test.describe('storyboard editing - retime', () => {
     const box = (await end.boundingBox())!
     expect(box.width).toBeGreaterThanOrEqual(8)
 
+    // Wan 2.5: 5s -> 10s, held there, then back to 5s.
     await grip(page, ids[0]).focus()
     await page.keyboard.press('ArrowRight')
+    await expect(grip(page, ids[0])).toHaveAttribute('aria-valuetext', '10.0s')
+    await expect.poll(async () => (await row(projectId, ids[0])).film_duration_sec).toBe(10)
     await page.keyboard.press('ArrowRight')
-    await page.keyboard.press('ArrowRight')
-    await expect(grip(page, ids[0])).toHaveAttribute('aria-valuetext', '5.3s')
-    await expect.poll(async () => (await row(projectId, ids[0])).film_duration_sec).toBe(5.3)
+    await expect(grip(page, ids[0])).toHaveAttribute('aria-valuetext', '10.0s')
+    await expect(page.getByTestId('timeline-total')).toHaveText('Total 0:15 · provisional')
     await page.keyboard.press('ArrowLeft')
-    await expect(grip(page, ids[0])).toHaveAttribute('aria-valuetext', '5.2s')
-    await expect.poll(async () => (await row(projectId, ids[0])).film_duration_sec).toBe(5.2)
+    await expect(grip(page, ids[0])).toHaveAttribute('aria-valuetext', '5.0s')
+    await expect.poll(async () => (await row(projectId, ids[0])).film_duration_sec).toBe(5)
     await expect(page.getByTestId('timeline-total')).toHaveText('Total 0:10 · provisional')
   })
 
@@ -458,19 +456,19 @@ test.describe('storyboard editing - saves', () => {
 
     await grip(page, ids[0]).focus()
     await page.keyboard.press('ArrowRight')
-    await expect(block(page, ids[0])).toContainText('5.1s')
+    await expect(block(page, ids[0])).toContainText('10.0s')
     const before = polls
     await expect.poll(() => polls, { timeout: 20000 }).toBeGreaterThan(before)
     // The save is still held; a poll has landed; the edit stands.
-    await expect(block(page, ids[0])).toContainText('5.1s')
-    await expect(grip(page, ids[0])).toHaveAttribute('aria-valuetext', '5.1s')
+    await expect(block(page, ids[0])).toContainText('10.0s')
+    await expect(grip(page, ids[0])).toHaveAttribute('aria-valuetext', '10.0s')
 
     release()
-    await expect.poll(async () => (await row(projectId, ids[0])).film_duration_sec).toBe(5.1)
-    await expect(block(page, ids[0])).toContainText('5.1s')
+    await expect.poll(async () => (await row(projectId, ids[0])).film_duration_sec).toBe(10)
+    await expect(block(page, ids[0])).toContainText('10.0s')
   })
 
-  test('the server actions refuse off-grid and out-of-range lengths and a locked storyboard, and never write script values', async () => {
+  test("the server actions refuse any length the video model can't make and a locked storyboard, and never write script values", async () => {
     const { saveFilmDurationForUser, saveFilmOrderForUser, setShotBinnedForUser } = await import(
       '../src/app/(app)/projects/[id]/storyboard/actions'
     )
@@ -481,8 +479,10 @@ test.describe('storyboard editing - saves', () => {
     expect((await saveFilmDurationForUser(admin, uid, projectId, ids[0], 0.9)).success).toBe(false)
     expect((await saveFilmDurationForUser(admin, uid, projectId, ids[0], MODEL_MAX + 0.1)).success).toBe(false)
     expect((await saveFilmDurationForUser(admin, uid, projectId, ids[0], 5.25)).success).toBe(false)
+    // Inside the range but not a length Wan 2.5 makes (5s or 10s).
+    expect((await saveFilmDurationForUser(admin, uid, projectId, ids[0], 6)).success).toBe(false)
     expect(await saveFilmDurationForUser(admin, uid, projectId, ids[0], 5)).toEqual({ success: true, unchanged: true })
-    expect(await saveFilmDurationForUser(admin, uid, projectId, ids[0], 6.2)).toEqual({ success: true })
+    expect(await saveFilmDurationForUser(admin, uid, projectId, ids[0], 10)).toEqual({ success: true })
     // Inside the video model's range, up to its longest shot.
     expect((await saveFilmDurationForUser(admin, uid, projectId, ids[1], 25)).success).toBe(false)
     expect(await saveFilmDurationForUser(admin, uid, projectId, ids[1], MODEL_MAX)).toEqual({ success: true })
@@ -496,16 +496,16 @@ test.describe('storyboard editing - saves', () => {
       [0, 5],
       [1, 5],
     ])
-    expect(rows[0].film_duration_sec).toBe(6.2)
+    expect(rows[0].film_duration_sec).toBe(10)
     expect(rows.map((r) => r.film_order)).toEqual([1, 0])
     expect(rows.every((r) => !r.image_stale && !r.image_prompt_stale && !r.video_prompt_stale)).toBe(true)
 
     // Another user's project is not found; a storyboard past its step is never frozen.
     expect((await saveFilmDurationForUser(admin, crypto.randomUUID(), projectId, ids[0], 5)).success).toBe(false)
     const advanced = await seed([{ state: 'not_generated' }], { furthestStep: stepIndex('video_prompts') })
-    const saved = await saveFilmDurationForUser(admin, uid, advanced.projectId, advanced.ids[0], 6)
+    const saved = await saveFilmDurationForUser(admin, uid, advanced.projectId, advanced.ids[0], 10)
     expect(saved).toEqual({ success: true })
-    expect((await row(advanced.projectId, advanced.ids[0])).film_duration_sec).toBe(6)
+    expect((await row(advanced.projectId, advanced.ids[0])).film_duration_sec).toBe(10)
   })
 })
 

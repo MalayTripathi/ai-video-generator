@@ -7,11 +7,13 @@ import {
   MODEL_REPORTABLE_CAMERA_ORIGINS,
 } from '@/lib/config/enums'
 
-// v1 - shot generation's chunk call: writes up to N shots of one planned scene, continuing
-// from the shot before it. Durations are computed in code from the words spoken, so a
-// spoken shot's duration_sec is ignored; only a silent shot's is used. Bump the suffix
-// (and this comment) on any content change so usage logs / evals can be attributed.
-export const SHOT_CHUNK_SYSTEM_PROMPT_V1 = `You are writing the shots for one scene of a short narrated video, from a scene plan.
+// v2 - shot generation's chunk call: writes up to N shots of one planned scene, continuing
+// from the shot before it, within the scene's word budget (v2: the budget replaced "pace
+// the scene to its planned length" and the per-shot word allowance). Durations are computed
+// in code from the words spoken, so a spoken shot's duration_sec is ignored; only a silent
+// shot's is used. Bump the suffix (and this comment) on any content change so usage logs /
+// evals can be attributed.
+export const SHOT_CHUNK_SYSTEM_PROMPT_V2 = `You are writing the shots for one scene of a short narrated video, from a scene plan.
 
 Write the shots as structured data via the write_shots tool - never as free-text JSON in your reply. Call write_shots exactly once.
 
@@ -24,7 +26,7 @@ For each shot, write:
 - dialogue: spoken lines by name, only when a character speaks on camera - usually empty
 - element_names: every character, location, and prop visible or referenced in this shot, each with a type and a short visual description - use the exact names from the scene plan for recurring elements, so they resolve to one shared asset instead of a duplicate
 
-Write voice_over and dialogue in the project's target language. Pace the scene so its shots together run about the scene's planned length. Continue the story from the shot before this one, without repeating it.
+Write voice_over and dialogue in the project's target language. Each request gives this scene's narration budget in words: keep the narration and dialogue of all the shots you write within it - a shot's length is set by its spoken words, and shots past the budget are not kept. Continue the story from the shot before this one, without repeating it.
 
 Set scene_complete to true when the shots you wrote finish this scene, or false when the scene needs more shots than you were allowed to write - the next request continues it from your last shot.`
 
@@ -164,15 +166,13 @@ export function buildChunkUserMessage(params: {
   }
   elementNames: readonly string[]
   previousShot: PreviousShotForPrompt | null
-  /** Seconds of this scene already written by earlier requests. */
-  writtenSeconds: number
+  /** Seconds of this scene's reservation not yet written. */
+  secondsLeft: number
+  /** Spoken words those seconds hold (chunkWordBudget). */
+  wordBudget: number
   maxShots: number
-  /** Narration longer than this many words is split into two shots. */
-  maxWordsPerShot: number
 }): string {
   const { scene } = params
-  const left =
-    scene.target_seconds !== null ? Math.max(0, scene.target_seconds - params.writtenSeconds) : null
   const previous = params.previousShot
     ? `Shot before this one:
 Narration: ${params.previousShot.voice_over || '(none)'}
@@ -183,9 +183,9 @@ Summary: ${scene.summary ?? ''}
 Location: ${scene.location ?? 'unspecified'}
 Time of day: ${scene.time_of_day ?? 'unspecified'}
 Recurring elements in this scene: ${params.elementNames.length > 0 ? params.elementNames.join(', ') : 'none named'}
-${left !== null ? `Planned length still to write for this scene: about ${left} seconds` : ''}
+Narration budget for the rest of this scene: about ${params.wordBudget} words in total, across every shot (about ${Math.round(params.secondsLeft)} seconds of film). Shots past it are not kept.
 
 ${previous}
 
-Write at most ${params.maxShots} shots for this scene now, continuing from the shot before. Split any narration longer than ${params.maxWordsPerShot} words into two shots.`
+Write at most ${params.maxShots} shots for this scene now, continuing from the shot before.`
 }

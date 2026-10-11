@@ -132,12 +132,16 @@ test.describe('wiring-identity - source-level guard against a type-compatible wr
     expect(stripComments(source)).not.toMatch(/\brecordFixedSpend\b/)
   })
 
-  test('agent/route.ts wires the real shot-run ledger and scheduler into runAgentTurn', () => {
+  // The chain's first run is handed to its own invocation of the shots route - never run
+  // inside the agent turn's after(), which would share the turn's 300s.
+  test('agent/route.ts wires the real shot-run ledger and the own-invocation chain start into runAgentTurn', () => {
     const source = read('src/app/api/projects/[id]/agent/route.ts')
     const imported = importLine(source, '../shots/schedule')
     expect(imported).toMatch(/\bSHOT_RUN_LEDGER\b/)
-    expect(imported).toMatch(/\bscheduleShotsWorker\b/)
-    expect(stripComments(extractCallBlock(source, 'runAgentTurn'))).toMatch(/shotRuns:\s*\{\s*ledger:\s*SHOT_RUN_LEDGER,/)
+    expect(imported).toMatch(/\bstartShotsChain\b/)
+    expect(imported).not.toMatch(/\bscheduleShotsWorker\b/)
+    const block = stripComments(extractCallBlock(source, 'runAgentTurn'))
+    expect(block).toMatch(/shotRuns:\s*\{\s*ledger:\s*SHOT_RUN_LEDGER,\s*start:\s*startShotsChain\(origin\)/)
   })
 
   // Same exception for Step 3's two regeneration tools: their nested

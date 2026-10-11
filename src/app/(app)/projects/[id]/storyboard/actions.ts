@@ -60,8 +60,11 @@ export async function saveFilmDurationForUser(
   if (!shot) return { success: false, error: 'Shot not found' }
 
   const committed = filmDuration(shot)
-  if (!isRetimeAllowed(seconds, retimeBounds(committed, storyboardRetimeRange(project.videoModel)))) {
-    return { success: false, error: 'That length is outside the allowed range' }
+  // Only a length the shot's video model renders is saved; an unregistered model has none.
+  const range = storyboardRetimeRange(project.videoModel, shot)
+  if (!range.model) return { success: false, error: "This project's video model isn't available, so shot lengths can't be set." }
+  if (!isRetimeAllowed(seconds, retimeBounds(committed, range))) {
+    return { success: false, error: "That length isn't one this video model can make" }
   }
   if (seconds === committed) return { success: true, unchanged: true }
 

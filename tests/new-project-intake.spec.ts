@@ -269,3 +269,53 @@ test.describe('New Project intake', () => {
     })
   })
 })
+
+test.describe('New Project intake - the balance check', () => {
+  test('a balance short of the shot list shows the needed amount and the balance, disables Build, and still lets the project be created without writing shots', async ({ page, context }) => {
+    const { user, cookie } = await createTestSession()
+    try {
+      // 10 credits: short of the 30-60s shot list's 2 x 8 = 16.
+      const { error } = await admin.from('credit_ledger').insert([
+        { user_id: user.id, kind: 'signup_grant', delta: 5000, dedupe_key: `signup_grant:${user.id}`, price_version: 'test' },
+        {
+          user_id: user.id,
+          kind: 'spend',
+          delta: -4990,
+          step: 'workbench',
+          operation: 'agent_turn',
+          attempt_id: crypto.randomUUID(),
+          pricing_mode: 'dynamic',
+          dedupe_key: `agent_turn:${crypto.randomUUID()}`,
+          price_version: 'test',
+        },
+      ])
+      expect(error).toBeNull()
+      await context.addCookies([cookie])
+      await page.route('**/api/projects/*/shots', (route) => route.abort())
+      await page.goto('/projects/new')
+
+      const shortfall = page.getByTestId('intake-shortfall')
+      await expect(shortfall).toContainText('Writing the shot list needs 16 credits')
+      await expect(shortfall).toContainText('10 left')
+      await expect(shortfall.getByRole('link', { name: 'Add credits' })).toHaveAttribute('href', '/credits')
+      // The whole video's estimate stays shown, labelled as one - it gates nothing.
+      await expect(page.getByTestId('intake-estimate')).toContainText('Estimated')
+
+      await page.getByPlaceholder(/describe your idea/i).fill('A short video about lighthouses')
+      await expect(page.getByRole('button', { name: 'Build workbench' })).toBeDisabled()
+      await page.getByRole('button', { name: 'Create the project without writing shots' }).click()
+      await page.waitForURL(/\/projects\/[0-9a-f-]+\/workbench$/, { waitUntil: 'commit' })
+      const projectId = page.url().match(/\/projects\/([0-9a-f-]+)\/workbench$/)?.[1]
+      const { data: project } = await admin.from('projects').select('user_id, source_text').eq('id', projectId!).single()
+      expect(project).toEqual({ user_id: user.id, source_text: 'A short video about lighthouses' })
+    } finally {
+      await deleteTestUser(user.id)
+    }
+  })
+
+  test('with enough credits the estimate line shows the balance left and no shortfall', async ({ page }) => {
+    await page.goto('/projects/new')
+    await expect(page.getByTestId('intake-balance')).toBeVisible()
+    await expect(page.getByTestId('intake-shortfall')).toHaveCount(0)
+  })
+})

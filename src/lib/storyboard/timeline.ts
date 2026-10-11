@@ -1,6 +1,8 @@
 import type { ImageState } from './image-state'
 import type { AspectRatio } from '@/lib/config/enums'
-import { isRegisteredVideoModel, VIDEO_MODELS, videoModelBounds } from '@/lib/config/models'
+import { isDurationAllowed, videoModelBounds, type VideoModelConfig } from '@/lib/config/models'
+import { nearestModelDuration, stepModelDuration } from '@/lib/shots/durations'
+import { effectiveVideoModel } from '@/lib/shots/effective-model'
 import { IMAGE_ETA_ESTIMATE_MS, RETIME_SNAP_SEC, STORYBOARD_IMAGE_SIZES, STORYBOARD_MAX_SHOT_SEC, STORYBOARD_MIN_SHOT_SEC } from '@/lib/config/storyboard'
 
 // Pure geometry and copy rules for the Storyboard timeline (canvas 15a/15c). No React, so
@@ -94,12 +96,20 @@ export function orderDiffersFromScript<T extends FilmOrdered & Binnable & { id: 
   return film.some((id, i) => id !== script[i])
 }
 
-export type RetimeBounds = { min: number; max: number }
+/**
+ * The lengths a retime may set. With the project's video model (`model`), only lengths it
+ * renders - its allowed values, or its grid inside its range - so a drag or nudge never
+ * saves a length clip generation would refuse. Without one (an unregistered model, never
+ * expected) the Storyboard's own range on its 0.1s grid.
+ */
+export type RetimeBounds = { min: number; max: number; model?: VideoModelConfig | null }
 
-// The range a retime may set: the project's video model's shortest to longest shot
-// (storyboardRetimeRange), each widened to the shot's committed length when that already
-// sits outside - a nudge never forces a shot shorter (or longer) than it is.
+// The range a retime may set. With a model it is the model's own lengths, whatever the
+// shot holds now - a shot saved at a length the model can't make snaps onto one at its
+// first retime. Without one, the range widens to the shot's committed length, so a nudge
+// never forces a shot shorter (or longer) than it is.
 export function retimeBounds(committedSec: number | null, range: RetimeBounds): RetimeBounds {
+  if (range.model) return range
   const committed = committedSec !== null && committedSec > 0 ? committedSec : null
   return {
     min: committed === null ? range.min : Math.min(range.min, committed),
@@ -110,21 +120,33 @@ export function retimeBounds(committedSec: number | null, range: RetimeBounds): 
 // The retime range for a project: its video model's shot lengths. A project whose model
 // isn't registered (never expected - every write is checked) gets the Storyboard's own
 // fallback range rather than another model's.
-export function storyboardRetimeRange(videoModel: string | null): RetimeBounds {
-  const config = isRegisteredVideoModel(videoModel) ? VIDEO_MODELS[videoModel] : null
-  return config ? videoModelBounds(config) : { min: STORYBOARD_MIN_SHOT_SEC, max: STORYBOARD_MAX_SHOT_SEC }
+export function storyboardRetimeRange(videoModel: string | null, shot?: { id: string }): RetimeBounds {
+  const config = effectiveVideoModel({ video_model: videoModel }, shot)
+  return config ? { ...videoModelBounds(config), model: config } : { min: STORYBOARD_MIN_SHOT_SEC, max: STORYBOARD_MAX_SHOT_SEC }
 }
 
-// Snapped to 0.1s, then clamped - so a bound that is itself off-grid is still reachable.
+// A dragged length: the nearest one the model renders (or, without a model, 0.1s), clamped.
 export function snapRetime(seconds: number, bounds: RetimeBounds): number {
+  const clamped = Math.min(bounds.max, Math.max(bounds.min, seconds))
+  if (bounds.model) return nearestModelDuration(clamped, bounds.model)
   const steps = Math.round(seconds / RETIME_SNAP_SEC)
   const snapped = Math.round(steps * RETIME_SNAP_SEC * 10) / 10
   return Math.min(bounds.max, Math.max(bounds.min, snapped))
 }
 
-// A value a retime save may hold: inside the bounds, and on the 0.1s grid or exactly a bound.
+// A nudge: the next length the model renders above or below the shot's (Wan 2.5: 5 <-> 10),
+// held at the model's edge; without a model, 0.1s.
+export function nudgeRetime(committedSec: number | null, direction: 1 | -1, bounds: RetimeBounds): number {
+  if (bounds.model) return stepModelDuration(committedSec ?? bounds.min, bounds.model, direction)
+  return snapRetime((committedSec ?? 0) + direction * RETIME_SNAP_SEC, bounds)
+}
+
+// A value a retime save may hold: one the model renders; without a model, inside the
+// bounds and on the 0.1s grid or exactly a bound.
 export function isRetimeAllowed(seconds: number, bounds: RetimeBounds): boolean {
-  if (!Number.isFinite(seconds) || seconds < bounds.min || seconds > bounds.max) return false
+  if (!Number.isFinite(seconds)) return false
+  if (bounds.model) return isDurationAllowed(bounds.model, seconds)
+  if (seconds < bounds.min || seconds > bounds.max) return false
   const onGrid = Math.abs(seconds / RETIME_SNAP_SEC - Math.round(seconds / RETIME_SNAP_SEC)) < 1e-6
   return onGrid || seconds === bounds.min || seconds === bounds.max
 }

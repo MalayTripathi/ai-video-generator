@@ -3,7 +3,6 @@
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, type KeyboardEvent, type RefObject } from 'react'
 import {
   FIT_COLLAPSE_BREAKPOINT_PX,
-  RETIME_SNAP_SEC,
   STORYBOARD_ZOOM_STEPS,
 } from '@/lib/config/storyboard'
 import { speechBars } from '@/lib/storyboard/voiceover'
@@ -22,7 +21,7 @@ import {
   laneTotalSeconds,
   retimeBounds,
   rulerTicks,
-  snapRetime,
+  nudgeRetime,
   ZERO_BLOCK_PX,
 } from '@/lib/storyboard/timeline'
 import { FORCED_CUT_REASON, type ResolvedJoin } from '@/lib/storyboard/motion'
@@ -499,7 +498,7 @@ export function TimelineCard() {
       const shot = laneRef.current.find((s) => s.id === shotId)
       if (!shot) return
       const committed = filmDuration(shot)
-      retime(shotId, snapRetime((committed ?? 0) + direction * RETIME_SNAP_SEC, retimeBounds(committed, retimeRange)))
+      retime(shotId, nudgeRetime(committed, direction, retimeBounds(committed, retimeRange)))
     },
     [retime, retimeRange]
   )

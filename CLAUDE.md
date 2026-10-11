@@ -217,8 +217,8 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   moves in the model's own step (whole seconds for every fal model) within bounds
   resolved from the project's `video_model` — never a fixed constant, and never frame
   counts or a provider name in copy. A **saved duration invalid for the
-  current model** is per-shot: amber on that shot's own stepper, value
-  never silently rewritten, copy naming the way out. An **aggregate
+  current model** is per-shot: amber on its stepper, rewritten only by a confirmed
+  model change (`applyProjectSettings`). Every path saves only renderable lengths. An **aggregate
   over-target overrun** (sum vs. `durationConfig[...].targetSecondsMax`)
   is project-level: stated once on the header's Current total, and
   deliberately not repeated on every locked shot's stepper.
@@ -331,20 +331,18 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   developer, not the agent.
 - Duration → shot-count/credit mapping lives in `src/lib/config/duration.ts`
   (`durationConfig`, keyed by `DurationTarget`) — the single source for
-  `targetShots`/`estimatedCredits` and the tier's seconds range. The intake duration
-  tiles, shot generation, and `RetryConfirmModal`'s credit-cost copy all read
-  from it; don't duplicate these numbers elsewhere. The same file exports
+  `targetShots` and the tier's seconds range; every shot-list credit figure is
+  `credits.ts`'s `shotGenerationCredits` over it. Don't duplicate these numbers elsewhere. The same file exports
   `DEFAULT_DURATION_TARGET` (currently `'30-60s'`, the permanent product
   default, not a placeholder) — `intake-form.tsx`'s pre-selected tile reads
   from it rather than carrying its own literal, so intake tests assert
   against the constant instead of a hardcoded string. Every billed generation
   outside the initial `pending` trigger (i.e. every retry) is confirmed
-  through that modal before the request fires.
+  through `RetryConfirmModal` before the request fires.
 - **Shot limits are enforced in code, never by prompt.** `targetShots` sizes only
   the intake estimate and the pre-flight credit check. Generation keeps the
-  outline inside the tier's seconds range, stops at the shot ceiling (tier
-  maximum ÷ the video model's shortest shot) and the tier's maximum seconds,
-  and saves at most each chunk's cap, logging extras `[shots] over_count …`.
+  outline inside the tier's seconds range, saves each scene's shots within its
+  reserved seconds (`acceptChunkShots`) and each chunk's cap, recording extras per chunk.
   Durations are computed from the words spoken (`src/lib/shots/durations.ts`),
   never chosen by Claude. The intake hint warns and must never block (its
   regex has no semantics and false-positives readily).
@@ -416,7 +414,7 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
 | Module | Owns |
 |---|---|
 | `src/lib/config/pricing.ts` | Provider rates, `computeCost`, `RATE_VERSION`, `TOOL_USE_SYSTEM_OVERHEAD_TOKENS` |
-| `src/lib/config/duration.ts` | Duration tier → `targetShots` / `estimatedCredits` / `targetSecondsMax`, `DEFAULT_DURATION_TARGET` |
+| `src/lib/config/duration.ts` | Duration tier → `targetShots` / `targetSecondsMax`, `DEFAULT_DURATION_TARGET` |
 | `src/lib/config/enums.ts` | Shot-attribute and project-setting enums, and their model-reportable subsets |
 | `src/lib/config/pipeline.ts` | Step / operation / provider vocabulary, `STEP_OPERATIONS`, `stepOperationLabel`, `stepIndex` |
 | `src/lib/config/models.ts` | Image and video registries, `VIDEO_MODELS` duration registry, `resolveVideoModel`, `isDurationAllowed`; per-call Claude/ElevenLabs config is `models.server.ts` |

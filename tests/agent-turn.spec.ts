@@ -1006,7 +1006,10 @@ test.describe('handleRegenerateAllShots', () => {
       getBalance: async () => 1_000_000,
       ensureSignupGrant: async () => {},
       ledger: { recordFixedSpend: async () => {}, recordDynamicSpend: async () => {} },
-      schedule: (run) => scheduled.push(run),
+      start: async (run) => {
+        scheduled.push(run)
+        return true
+      },
     }
   }
 

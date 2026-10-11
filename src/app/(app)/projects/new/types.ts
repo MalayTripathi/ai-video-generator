@@ -13,3 +13,6 @@ export type TemplateProject = {
   image_model: string
   created_at: string
 }
+
+/** What a refused submit hands back: writing the shot list needs more credits than the user has. */
+export type IntakeState = { shortfall: { requiredCredits: number; balanceCredits: number } } | null

@@ -7,13 +7,15 @@ import { stepIndex } from '@/lib/config/pipeline'
 import { generateUniqueShotKeys, MAX_SHOT_KEY_INSERT_ATTEMPTS, isUniqueViolation } from '@/lib/shot-key'
 import { buildShotIndexBlock, type ShotIndexRow } from '@/lib/prompts/agent'
 import { runShotsRequest } from '@/app/api/projects/[id]/shots/logic'
-import type { ShotRunLedger } from '@/lib/shots/runs'
+import { finishShotRun, type ShotRunLedger } from '@/lib/shots/runs'
 // Type-only: credits/* import the service-role client (server-only); the agent route
 // injects the real functions through `shotRun` below.
 import type { getBalance } from '@/lib/credits/balance'
 import type { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { voiceOverIsValid, EMPTY_VOICEOVER_MESSAGE } from '@/lib/shot-voiceover'
 import { visualDescriptionIsValid, EMPTY_VISUAL_DESCRIPTION_MESSAGE } from '@/lib/shot-visual-description'
+import { computeShotDuration, roundUpToModelDuration } from '@/lib/shots/durations'
+import { effectiveVideoModel } from '@/lib/shots/effective-model'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type ShotRow = Tables<'shots'>
@@ -42,7 +44,8 @@ export type AgentToolContext = {
     getBalance: typeof getBalance
     ensureSignupGrant: typeof ensureSignupGrant
     ledger: ShotRunLedger
-    schedule: (run: { userId: string; projectId: string; runId: string; chainDepth: 0 }) => void
+    /** Hands the chain's first run to its own invocation of the shots route. True when accepted. */
+    start: (run: { userId: string; projectId: string; runId: string; chainDepth: 0 }) => Promise<boolean>
   }
 }
 
@@ -58,11 +61,12 @@ export type AgentToolOutcome =
   // measured cost to the turn's single ledger charge. The turn accumulates it whatever
   // the kind - never only on 'applied'.
   //
-  // shotRunId is set only by regenerate_all_shots: the chain it started bills the turn,
-  // so the turn hands its own cost to that run instead of writing its own ledger row.
+  // shotRunId is set only by regenerate_all_shots, on the run it created: the chain bills
+  // the turn, so the turn hands its own cost to that run instead of writing its own ledger
+  // row - also when the run's start was refused and it ended at once ('errored').
   | { kind: 'applied'; label: string; forModel: unknown; shotKey?: string; costUsd?: number; shotRunId?: string }
   | { kind: 'refused'; label: string; forModel: unknown; shotKey?: string; costUsd?: number }
-  | { kind: 'errored'; message: string; forModel: unknown; costUsd?: number }
+  | { kind: 'errored'; message: string; forModel: unknown; costUsd?: number; shotRunId?: string }
   // Neither an action nor a failure: the tool did nothing and is handing the model something
   // to act on (a question to put to the user, an input to correct). Persists no message
   // and emits no event - the user sees only what the model then says. Not a message kind.
@@ -258,6 +262,12 @@ function dialogueUnchanged(
   return current.every((row, i) => row.element_id === next[i].element_id && row.line === next[i].line)
 }
 
+// The project's video model and language - what a shot length the agent sets must fit.
+async function loadDurationContext(ctx: AgentToolContext) {
+  const { data } = await ctx.supabase.from('projects').select('video_model, language').eq('id', ctx.projectId).maybeSingle()
+  return { videoModel: data?.video_model ?? null, language: data?.language ?? null }
+}
+
 export async function handleUpdateShot(input: unknown, ctx: AgentToolContext): Promise<AgentToolOutcome> {
   const raw = (input ?? {}) as Record<string, unknown>
   const shot = await loadShotByNumber(ctx.supabase, ctx.projectId, raw.shot_number)
@@ -362,11 +372,15 @@ export async function handleUpdateShot(input: unknown, ctx: AgentToolContext): P
     }
   }
 
-  if (has(raw, 'duration_sec') && typeof raw.duration_sec === 'number') {
-    const rounded = Math.round(raw.duration_sec * 10) / 10
-    if (rounded !== shot.duration_sec) {
-      updates.duration_sec = rounded
-      updates.duration_locked = true
+  if (has(raw, 'duration_sec') && typeof raw.duration_sec === 'number' && Number.isFinite(raw.duration_sec)) {
+    // Up to the next length the shot's video model renders - never a length it can't make.
+    const model = effectiveVideoModel({ video_model: (await loadDurationContext(ctx)).videoModel }, shot)
+    if (model) {
+      const seconds = roundUpToModelDuration(raw.duration_sec, model)
+      if (seconds !== shot.duration_sec) {
+        updates.duration_sec = seconds
+        updates.duration_locked = true
+      }
     }
   }
 
@@ -550,6 +564,20 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
     }
   }
 
+  // Its length is computed from its words, as generation's are - a renderable length for
+  // the project's video model; the model's duration_sec only counts for a silent shot.
+  const durationContext = await loadDurationContext(ctx)
+  const durationModel = effectiveVideoModel({ video_model: durationContext.videoModel })
+  const duration = durationModel
+    ? computeShotDuration({
+        narration: raw.voice_over.trim(),
+        dialogue: [],
+        silentEstimateSec: typeof raw.duration_sec === 'number' ? raw.duration_sec : null,
+        language: durationContext.language,
+        model: durationModel,
+      })
+    : null
+
   let insertError: { message: string } | null = null
   let insertedShotKey: string | null = null
   for (let attempt = 0; attempt < MAX_SHOT_KEY_INSERT_ATTEMPTS; attempt++) {
@@ -560,7 +588,8 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
       shot_key: shotKey,
       voice_over: raw.voice_over.trim(),
       visual_description: visualDescription,
-      duration_sec: typeof raw.duration_sec === 'number' ? raw.duration_sec : null,
+      duration_sec: duration?.seconds ?? null,
+      narration_overflow: duration?.narrationOverflow ?? false,
       // The scene of the shot it follows - or, at the start, of the shot it now precedes.
       scene_id: neighbourSceneId,
       duration_locked: false,
@@ -655,7 +684,13 @@ export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolCo
     return { kind: 'errored', message: result.error, forModel: { error: result.error } }
   }
 
-  ctx.shotRun.schedule({ userId: ctx.userId, projectId: ctx.projectId, runId: result.runId, chainDepth: 0 })
+  // The chain runs in its own invocation of the shots route, never in this turn's 300s.
+  const started = await ctx.shotRun.start({ userId: ctx.userId, projectId: ctx.projectId, runId: result.runId, chainDepth: 0 })
+  if (!started) {
+    await finishShotRun(ctx.supabase, ctx.shotRun.ledger, result.runId, { status: 'failed', stopReason: 'error' })
+    const message = "The new shot list couldn't be started. Nothing was changed."
+    return { kind: 'errored', message, forModel: { error: message }, shotRunId: result.runId }
+  }
   return {
     kind: 'applied',
     label: 'Started rewriting all shots',

@@ -1,7 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { applyProjectSettings, previewSettingsTrims, type ApplySettingsResult, type ShotTrim } from '@/lib/projects/settings'
+import { applyProjectSettings, previewSettingsLengthChanges, type ApplySettingsResult, type ShotLengthChange } from '@/lib/projects/settings'
 
 export async function updateProjectTitle(projectId: string, title: string) {
   const trimmed = title.trim()
@@ -27,14 +27,14 @@ export async function updateProjectTitle(projectId: string, title: string) {
 export async function previewProjectSettingsTrims(
   projectId: string,
   videoModel: string
-): Promise<{ trims: ShotTrim[] | null; error: string | null }> {
+): Promise<{ trims: ShotLengthChange[] | null; error: string | null }> {
   const supabase = await createClient()
   const {
     data: { user },
   } = await supabase.auth.getUser()
   if (!user) return { trims: null, error: 'Not authenticated' }
   try {
-    return { trims: await previewSettingsTrims(supabase, user.id, projectId, videoModel), error: null }
+    return { trims: await previewSettingsLengthChanges(supabase, user.id, projectId, videoModel), error: null }
   } catch (error) {
     console.error('[settings] preview failed', projectId, error)
     return { trims: null, error: 'Could not check shot lengths. Try again.' }

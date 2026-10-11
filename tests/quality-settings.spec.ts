@@ -15,7 +15,7 @@ import {
   tierBadges,
   UnsupportedQualityError,
 } from '../src/lib/quality/estimate'
-import { applyProjectSettings, previewSettingsTrims } from '../src/lib/projects/settings'
+import { applyProjectSettings, previewSettingsLengthChanges } from '../src/lib/projects/settings'
 
 const TIERS = Object.keys(durationConfig) as DurationTarget[]
 const PRESETS = Object.keys(QUALITY_PRESETS) as (keyof typeof QUALITY_PRESETS)[]
@@ -134,12 +134,15 @@ async function seedProject(overrides: Record<string, unknown> = {}) {
   return data!.id as string
 }
 
-async function seedShots(projectId: string, shots: { seconds: number; film?: number | null; binned?: boolean; prompt?: boolean }[]) {
+async function seedShots(
+  projectId: string,
+  shots: { seconds: number; film?: number | null; binned?: boolean; prompt?: boolean; voice?: string }[]
+) {
   const rows = shots.map((shot, i) => ({
     project_id: projectId,
     order_index: i,
     shot_key: `bbbb${KEY_ALPHABET[i]}`,
-    voice_over: `Line ${i + 1}.`,
+    voice_over: shot.voice ?? `Line ${i + 1}.`,
     duration_sec: shot.seconds,
     film_duration_sec: shot.film ?? null,
     binned_at: shot.binned ? new Date().toISOString() : null,
@@ -183,10 +186,69 @@ async function readShots(projectId: string) {
 
 const KLING_720 = { preset: 'custom', videoModel: 'kling-v3-standard', videoResolution: '720p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' }
 
-test.describe('project settings apply', () => {
-  test('preview lists in-film shots over the new maximum and flags the ones with dialogue', async () => {
+test.describe('project settings apply - every new length is one the new model can make', () => {
+  test("Wan 2.5's fixed 5s/10s: each shot snaps to the length nearest it that still covers its voice; one whose voice fits neither takes 10s, flagged", async () => {
     const projectId = await seedProject()
-    // Kling's maximum is 15s. Shot 2 is over by film length, shot 4 is binned.
+    const words = (n: number) => Array.from({ length: n }, (_, i) => `w${i}`).join(' ')
+    const ids = await seedShots(projectId, [
+      { seconds: 7, voice: words(4) }, // needs 2.1s: 5 and 10 cover it, 5 is nearer
+      { seconds: 9, voice: words(20) }, // needs 9.5s: only 10 covers it
+      { seconds: 6, voice: words(30) }, // needs 14.1s: nothing covers it
+      { seconds: 10, voice: words(4) }, // already renderable - untouched
+    ])
+    const changes = await previewSettingsLengthChanges(admin, primary.user.id, projectId, 'wan-2.5')
+    expect(changes!.map((c) => [c.number, c.toSeconds, c.overflow])).toEqual([
+      [1, 5, false],
+      [2, 10, false],
+      [3, 10, true],
+    ])
+    const result = await applyProjectSettings(
+      admin,
+      primary.user.id,
+      projectId,
+      { preset: 'custom', videoModel: 'wan-2.5', videoResolution: '720p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' },
+      3
+    )
+    expect(result).toEqual({ ok: true, trimmed: 3 })
+    const { data } = await admin.from('shots').select('id, duration_sec, narration_overflow').eq('project_id', projectId).order('order_index')
+    expect(data!.map((s) => [s.duration_sec, s.narration_overflow])).toEqual([
+      [5, false],
+      [10, false],
+      [10, true],
+      [10, false],
+    ])
+    expect(data![0].id).toBe(ids[0])
+  })
+
+  test('a model with a higher minimum (Seedance 2.0 Mini, 4-15s) lifts a 2s and a 3s shot to 4s', async () => {
+    const projectId = await seedProject()
+    await seedShots(projectId, [{ seconds: 2 }, { seconds: 3, film: 3 }, { seconds: 6 }])
+    const changes = await previewSettingsLengthChanges(admin, primary.user.id, projectId, 'seedance-2.0-mini')
+    expect(changes!.map((c) => [c.number, c.fromSeconds, c.toSeconds])).toEqual([
+      [1, 2, 4],
+      [2, 3, 4],
+    ])
+    const result = await applyProjectSettings(
+      admin,
+      primary.user.id,
+      projectId,
+      { preset: 'custom', videoModel: 'seedance-2.0-mini', videoResolution: '720p', imageQuality: 'low', imageModel: 'gpt-image-2.5-flare' },
+      2
+    )
+    expect(result).toEqual({ ok: true, trimmed: 2 })
+    const shots = await readShots(projectId)
+    expect(shots.map((s) => [s.duration_sec, s.film_duration_sec])).toEqual([
+      [4, null],
+      [4, 4],
+      [6, null],
+    ])
+  })
+})
+
+test.describe('project settings apply', () => {
+  test('preview lists every shot - in the film or binned - the new model cannot make at its length, and flags the ones with dialogue', async () => {
+    const projectId = await seedProject()
+    // Kling is 3-15s. Shot 2 is over by film length; shot 4 is binned, but could return to the film.
     const ids = await seedShots(projectId, [
       { seconds: 8 },
       { seconds: 12, film: 22 },
@@ -196,18 +258,18 @@ test.describe('project settings apply', () => {
     ])
     await addDialogue(projectId, ids[2])
 
-    const trims = await previewSettingsTrims(admin, primary.user.id, projectId, 'kling-v3-standard')
-    expect(trims).toEqual([
-      { shotId: ids[1], number: 2, fromSeconds: 22, toSeconds: 15, hasDialogue: false },
-      { shotId: ids[2], number: 3, fromSeconds: 18, toSeconds: 15, hasDialogue: true },
+    const changes = await previewSettingsLengthChanges(admin, primary.user.id, projectId, 'kling-v3-standard')
+    expect(changes).toEqual([
+      { shotId: ids[1], number: 2, fromSeconds: 22, toSeconds: 15, hasDialogue: false, overflow: false },
+      { shotId: ids[2], number: 3, fromSeconds: 18, toSeconds: 15, hasDialogue: true, overflow: false },
+      { shotId: ids[3], number: 4, fromSeconds: 24, toSeconds: 15, hasDialogue: false, overflow: false },
     ])
 
-    // A model with a higher maximum trims nothing.
-    const higher = await previewSettingsTrims(admin, primary.user.id, projectId, 'wan-3.0')
-    expect(higher).toEqual([])
+    // The project's own model changes nothing.
+    expect(await previewSettingsLengthChanges(admin, primary.user.id, projectId, 'wan-3.0')).toEqual([])
   })
 
-  test('apply trims both duration fields, marks video prompts stale and never advances the step', async () => {
+  test('apply gives both duration fields a renderable length in one write, marks video prompts stale and never advances the step', async () => {
     const projectId = await seedProject()
     const ids = await seedShots(projectId, [
       { seconds: 8, prompt: true },
@@ -216,16 +278,17 @@ test.describe('project settings apply', () => {
       { seconds: 24, binned: true },
     ])
 
-    const result = await applyProjectSettings(admin, primary.user.id, projectId, KLING_720, 2)
-    expect(result).toEqual({ ok: true, trimmed: 2 })
+    const result = await applyProjectSettings(admin, primary.user.id, projectId, KLING_720, 3)
+    expect(result).toEqual({ ok: true, trimmed: 3 })
 
     const shots = await readShots(projectId)
     const byId = new Map(shots.map((shot) => [shot.id, shot]))
     expect(byId.get(ids[0])).toMatchObject({ duration_sec: 8, film_duration_sec: null })
-    expect(byId.get(ids[1])).toMatchObject({ duration_sec: 15, film_duration_sec: 15 })
-    expect(byId.get(ids[2])).toMatchObject({ duration_sec: 15, film_duration_sec: 15 })
-    // The binned shot is not in the film, so it is not trimmed.
-    expect(byId.get(ids[3])).toMatchObject({ duration_sec: 24, film_duration_sec: null })
+    // Only the field the model can't make changes: the script length 12 stays.
+    expect(byId.get(ids[1])).toMatchObject({ duration_sec: 12, film_duration_sec: 15 })
+    expect(byId.get(ids[2])).toMatchObject({ duration_sec: 15, film_duration_sec: null })
+    // A binned shot can return to the film, so it gets a renderable length too.
+    expect(byId.get(ids[3])).toMatchObject({ duration_sec: 15, film_duration_sec: null })
     expect(shots.every((shot) => shot.video_prompt_stale)).toBe(true)
 
     expect(await readProject(projectId)).toEqual({
@@ -270,7 +333,7 @@ test.describe('project settings apply', () => {
     expect(after).toMatchObject({ duration_sec: 28, video_prompt_stale: false })
   })
 
-  test('when the over-length shots differ from what was confirmed, nothing is written', async () => {
+  test('when the shots needing a new length differ from what was confirmed, nothing is written', async () => {
     const projectId = await seedProject()
     await seedShots(projectId, [{ seconds: 20 }, { seconds: 25 }])
 

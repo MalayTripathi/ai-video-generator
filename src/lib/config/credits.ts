@@ -1,12 +1,10 @@
 import type { Step, Operation } from './pipeline'
 import type { ImageQuality, VideoResolution } from './enums'
 import { OPENAI_RATES, videoUsdPerSecond } from './pricing'
+import { durationConfig, parseDurationTarget } from './duration'
 
 // Single source of truth for every credit value in the product - no credit number
-// may appear anywhere else in the codebase. (durationConfig's estimatedCredits in
-// duration.ts is a pre-existing, separate concern: a rough upfront UI estimate shown
-// before generation, not the actual per-operation price charged - see CLAUDE.md's
-// module map.)
+// may appear anywhere else in the codebase.
 
 export const USD_PER_CREDIT = 0.001
 
@@ -196,4 +194,18 @@ export function creditsFor({
     default:
       return entry.credits * quantity
   }
+}
+
+/**
+ * The credits writing a project's shot list needs available before it starts: 2 per shot
+ * at the duration tier's target shot count. The one figure behind every shot-generation
+ * number - the 402 pre-flight (generate, retry and remaining), its banner, the confirm
+ * modal and the intake balance check. Charging is on shots actually saved.
+ */
+export function shotGenerationCredits(durationTarget: string | null): number {
+  return creditsFor({
+    step: 'workbench',
+    operation: 'generate_shots',
+    quantity: durationConfig[parseDurationTarget(durationTarget)].targetShots,
+  })
 }

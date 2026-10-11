@@ -625,6 +625,7 @@ export type Database = {
           run_id: string
           scene_complete: boolean
           scene_id: string
+          shots_returned: number
           shots_saved: number
           started_at: string | null
           status: string
@@ -642,6 +643,7 @@ export type Database = {
           run_id: string
           scene_complete?: boolean
           scene_id: string
+          shots_returned?: number
           shots_saved?: number
           started_at?: string | null
           status?: string
@@ -659,6 +661,7 @@ export type Database = {
           run_id?: string
           scene_complete?: boolean
           scene_id?: string
+          shots_returned?: number
           shots_saved?: number
           started_at?: string | null
           status?: string
@@ -851,7 +854,7 @@ export type Database = {
           video_prompt_stale?: boolean
           video_status?: string
           visual_description?: string | null
-          voice_over: string
+          voice_over?: string
         }
         Update: {
           binned_at?: string | null

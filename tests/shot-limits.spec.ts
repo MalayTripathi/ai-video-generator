@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { VIDEO_MODELS } from '../src/lib/config/models'
 import { durationConfig } from '../src/lib/config/duration'
 import { SHOT_DURATION_PAD_SEC, SHOT_ORDER_BASE, spokenWordsPerSec } from '../src/lib/config/shots'
-import { computeShotDuration, maxNarrationWordsPerShot, roundUpToModelDuration, spokenWordCount } from '../src/lib/shots/durations'
+import { chunkWordBudget, computeShotDuration, roundUpToModelDuration, spokenWordCount } from '../src/lib/shots/durations'
 import { acceptWithinLimits, chunkSizes, fitOutlineSeconds, sceneMaxShots, shotCeiling } from '../src/lib/shots/limits'
 import { chunkShotOrderIndex, resequence } from '../src/lib/shots/positions'
 
@@ -69,8 +69,9 @@ test.describe('shot durations - computed from words, never chosen by Claude', ()
     }
   })
 
-  test('the split rule names the most words one shot can hold at the model maximum', () => {
-    expect(maxNarrationWordsPerShot(kling, 'en')).toBe(Math.floor(15 * 2.17))
+  test("a chunk's word budget is its scene's remaining seconds at the spoken pace, less room for padding and rounding", () => {
+    expect(chunkWordBudget(40, 'en')).toBe(Math.floor(40 * 2.17 * 0.9))
+    expect(chunkWordBudget(0, 'en')).toBe(0)
     expect(SHOT_DURATION_PAD_SEC).toBe(0.25)
   })
 })

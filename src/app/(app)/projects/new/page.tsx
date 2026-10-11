@@ -1,6 +1,8 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getCurrentUser } from '@/lib/auth/current-user'
+import { readBalance } from '@/lib/credits/balance'
+import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { TopBar } from '@/app/(app)/dashboard/top-bar'
 import { IntakeForm } from './_components/intake-form'
 import { PreviewPane } from './_components/preview-pane'
@@ -14,14 +16,22 @@ export default async function NewProjectPage() {
     redirect('/login')
   }
 
-  const { data: recentProjects } = await supabase
-    .from('projects')
-    .select(
-      'id, title, source_text, video_type, aspect_ratio, duration_target, language, quality_preset, video_model, video_resolution, image_quality, image_model, created_at'
-    )
-    .eq('user_id', user.id)
-    .order('created_at', { ascending: false })
-    .limit(8)
+  // The layout renders in parallel and may not have granted a new user's signup credits
+  // yet, so the page grants first (idempotent), then reads the balance fresh - a brand-new
+  // user never sees a shortfall that isn't real.
+  const [{ data: recentProjects }, balance] = await Promise.all([
+    supabase
+      .from('projects')
+      .select(
+        'id, title, source_text, video_type, aspect_ratio, duration_target, language, quality_preset, video_model, video_resolution, image_quality, image_model, created_at'
+      )
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(8),
+    ensureSignupGrant(user.id)
+      .then(() => readBalance(supabase, user.id, { fresh: true }))
+      .catch(() => null),
+  ])
 
   return (
     <>
@@ -36,7 +46,10 @@ export default async function NewProjectPage() {
               An idea, a script, a screenplay. Anything works.
             </p>
           </div>
-          <IntakeForm recentProjects={(recentProjects ?? []) as TemplateProject[]} />
+          <IntakeForm
+            recentProjects={(recentProjects ?? []) as TemplateProject[]}
+            balance={balance?.balance ?? null}
+          />
         </div>
         <div className="w-px flex-none bg-border-subtle" />
         <PreviewPane />

@@ -3,17 +3,12 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database, Json, Tables } from '@/lib/database.types'
 import { ClaudeRefusalError, throwIfRefused, type ClaudeGateway } from '@/lib/claude'
 import type { UsageBreakdown } from '@/lib/config/pricing'
-import { claudeReasoningParams, resolveVideoModel, videoModelBounds, type VideoModelConfig } from '@/lib/config/models'
+import { claudeReasoningParams, videoModelBounds, type VideoModelConfig } from '@/lib/config/models'
+import { effectiveVideoModel } from '@/lib/shots/effective-model'
 import { modelsConfig } from '@/lib/config/models.server'
 import { durationConfig, parseDurationTarget, type DurationConfig } from '@/lib/config/duration'
 import { CLASSIFIABLE_VIDEO_TYPES } from '@/lib/config/enums'
-import {
-  SHOT_CHAIN_LIMIT,
-  SHOT_CHUNK_CONCURRENCY,
-  SHOT_HANDOFF_TIMEOUT_MS,
-  SHOT_RUN_BUDGET_MS,
-  SHOTS_PER_CHUNK,
-} from '@/lib/config/shots'
+import { SHOT_CHUNK_CONCURRENCY, SHOT_HANDOFF_TIMEOUT_MS, SHOTS_PER_CHUNK, shotRunBudgetMs } from '@/lib/config/shots'
 import { persistGenerationPayload } from '@/lib/generations/claim'
 import { assertWithinAllowance, estimateInputTokens, quoteClaudeCall, reserveUsage, settleUsage, settledStatus } from '@/lib/usage'
 import { isUniqueViolation } from '@/lib/shot-key'
@@ -23,14 +18,14 @@ import {
   buildOutlineDynamicBlock,
 } from '@/lib/prompts/shot-outline'
 import {
-  SHOT_CHUNK_SYSTEM_PROMPT_V1,
+  SHOT_CHUNK_SYSTEM_PROMPT_V2,
   buildChunkProjectBlock,
   buildChunkUserMessage,
   buildChunkWriteShotsTool,
   type PreviousShotForPrompt,
 } from '@/lib/prompts/shot-chunk'
-import { acceptWithinLimits, fitOutlineSeconds, sceneMaxShots, shotCeiling } from '@/lib/shots/limits'
-import { maxNarrationWordsPerShot } from '@/lib/shots/durations'
+import { acceptChunkShots, fitOutlineSeconds, sceneMaxShots, shotCeiling, unreservedSeconds } from '@/lib/shots/limits'
+import { chunkWordBudget } from '@/lib/shots/durations'
 import { ElementResolver, insertChunkShots, prepareChunkShots, sanitizeEnum } from '@/lib/shots/write-chunk'
 import {
   deleteChunkProvisionalShots,
@@ -49,10 +44,14 @@ import { shotCredits } from './logic'
 // generate_shots claim's payload, then the scenes). Every run then writes chunks: one
 // Claude request per chunk, up to SHOTS_PER_CHUNK shots of one scene, scenes in parallel
 // and each scene's chunks in order, so a chunk continues from the shot before it. A chunk's
-// payload is stored on its chunk row before its shots are written. At the time budget a
-// run stops starting chunks, lets its in-flight ones drain, and hands the rest to a fresh
-// run - so runs never overlap and its running totals are exact. The final run ends the run
-// record (finishShotRun): re-sequence, settle the claim, one ledger row.
+// payload is stored on its chunk row before its shots are written. Each scene writes into
+// its own reserved seconds (the outline's, fixed before any chunk runs), so the order
+// chunks finish in never decides which scene gets written. At the time budget (derived per
+// model, shot-timing.ts) a run stops starting chunks, lets its in-flight ones drain, and
+// hands the rest to a fresh run - as long as it saved something (the progress guard). Runs
+// never overlap, so its running totals are exact. The final run ends the run record
+// (finishShotRun): re-sequence, mark terminal, settle the claim, one ledger row. A run ends
+// 'completed' only when every outline scene is written.
 
 type Client = SupabaseClient<Database>
 type SceneRow = Pick<
@@ -77,7 +76,8 @@ export function parseShotsContinuationPayload(raw: unknown, projectId: string): 
   if (typeof v.userId !== 'string' || v.userId === '') return null
   if (v.projectId !== projectId) return null
   if (typeof v.runId !== 'string' || v.runId === '') return null
-  if (typeof v.chainDepth !== 'number' || !Number.isInteger(v.chainDepth) || v.chainDepth < 1) return null
+  // 0 is a chain's first run started in its own invocation (the agent's regenerate_all_shots).
+  if (typeof v.chainDepth !== 'number' || !Number.isInteger(v.chainDepth) || v.chainDepth < 0) return null
   return { userId: v.userId, projectId, runId: v.runId, chainDepth: v.chainDepth }
 }
 
@@ -86,13 +86,16 @@ export function parseShotsContinuationPayload(raw: unknown, projectId: string): 
 export const SHOTS_INTERNAL_SECRET_HEADER = 'x-shots-internal-secret'
 
 /**
- * The hand-off to a fresh invocation of the shots route. Resolves true only on the
- * continuation's 202. A missing secret is a deploy misconfiguration: logged and refused,
- * so the run stops with its unwritten scenes left for "Generate remaining shots".
+ * The hand-off to a fresh invocation of the shots route - a run continuing the chain, or
+ * (chainDepth 0) the agent starting one outside its own turn. Resolves true only on the
+ * route's 202. A missing secret is a deploy misconfiguration: logged and refused, so the
+ * run stops with its unwritten scenes left for "Generate remaining shots". `headers` carries
+ * the deployment protection bypass (continuation.ts).
  */
 export function createShotsContinueRun(params: {
   origin: string
   secret: string | undefined
+  headers?: Record<string, string>
   fetchImpl?: typeof fetch
 }): (payload: ShotsContinuationPayload) => Promise<boolean> {
   return async (payload) => {
@@ -104,7 +107,7 @@ export function createShotsContinueRun(params: {
     }
     const res = await (params.fetchImpl ?? fetch)(`${params.origin}/api/projects/${payload.projectId}/shots`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', [SHOTS_INTERNAL_SECRET_HEADER]: params.secret },
+      headers: { ...params.headers, 'Content-Type': 'application/json', [SHOTS_INTERNAL_SECRET_HEADER]: params.secret },
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(SHOT_HANDOFF_TIMEOUT_MS),
     })
@@ -139,9 +142,8 @@ export type ShotsWorkerDeps = {
   readBalance: (userId: string) => Promise<number>
   /** Hands the rest of the run to a fresh invocation. Resolves true only when accepted. */
   continueRun: (payload: ShotsContinuationPayload) => Promise<boolean>
-  /** Test seams - production always uses the config/shots.ts values. */
+  /** Test seams - production always derives the budget (shot-timing.ts) and uses config/shots.ts. */
   runBudgetMs?: number
-  chainLimit?: number
   concurrency?: number
 }
 
@@ -167,6 +169,8 @@ type SceneState = {
   seconds: number
   nextChunkIndex: number
   maxShots: number
+  /** The scene's reserved seconds - its share of the tier, fixed by the outline. */
+  reservedSec: number
   lastShot: PreviousShotForPrompt | null
   /** A replayable payload a dead chunk of this scene left behind (paid for, never applied). */
   orphan: { chunkId: string; payload: Json } | null
@@ -175,8 +179,7 @@ type SceneState = {
 export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContinuationPayload | (Omit<ShotsContinuationPayload, 'chainDepth'> & { chainDepth: 0 })): Promise<ShotsWorkerResult> {
   const { supabase, gateway, ledger } = deps
   const { userId, projectId, runId, chainDepth } = payload
-  const budget = deps.runBudgetMs ?? SHOT_RUN_BUDGET_MS
-  const chainLimit = deps.chainLimit ?? SHOT_CHAIN_LIMIT
+  const budget = deps.runBudgetMs ?? shotRunBudgetMs(modelsConfig.shots.model, modelsConfig.shots.maxTokens)
   const concurrency = deps.concurrency ?? SHOT_CHUNK_CONCURRENCY
   const runStart = Date.now()
   let chunksRun = 0
@@ -202,7 +205,8 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
     return { outcome: 'finished', status, stopReason, chunks: chunksRun }
   }
 
-  const model = project ? safeResolveVideoModel(project.video_model) : null
+  // A new shot has no model of its own yet - the project's is every new shot's.
+  const model = project ? effectiveVideoModel(project) : null
   if (!project || !model) {
     console.error(`[shots] run ${runId}: project not found or its video model is unregistered`)
     return finish('failed', 'error')
@@ -231,6 +235,9 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
     if (!outline.ok) return finish('failed', outline.refused ? 'refused' : 'error')
     outlineElementNames = outline.elementNames
   }
+  // Progress, for the guard: the outline, or any shot saved by this run.
+  const outlineWritten = run.total_scenes === null
+  let savedThisRun = 0
 
   // ---- State -------------------------------------------------------------------------------
   const [scenesResult, chunksResult, shotsResult, elements] = await Promise.all([
@@ -273,14 +280,28 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   let reservedShots = 0
 
   const failedInRun = new Set(chunks.filter((c) => c.run_id === runId && c.status === 'failed').map((c) => c.scene_id))
+  // Scenes already written: a chunk marked them complete. Only these let a run end
+  // 'completed' - a scene with no shots never is.
+  const completed = new Set(scenes.filter((sc) => chunks.some((c) => c.scene_id === sc.id && c.scene_complete)).map((sc) => sc.id))
+  const reservedOf = (scene: SceneRow) => scene.target_seconds ?? tier.targetSeconds / Math.max(1, scenes.length)
+  const writtenOf = (sceneId: string) =>
+    shots.filter((s) => s.scene_id === sceneId).reduce((sum, s) => sum + (s.duration_sec ?? 0), 0)
+  // The tier's seconds no scene holds - the only seconds a scene may overrun its own into.
+  // Held in an object so the lanes and the code after them see one value.
+  const slack = {
+    left: unreservedSeconds(
+      tier.targetSecondsMax,
+      scenes.map((sc) => ({ reservedSec: reservedOf(sc), writtenSec: writtenOf(sc.id) }))
+    ),
+  }
   const queue: SceneState[] = []
   for (const scene of scenes) {
+    if (completed.has(scene.id) || failedInRun.has(scene.id)) continue
     const sceneChunks = chunks.filter((c) => c.scene_id === scene.id)
-    if (sceneChunks.some((c) => c.scene_complete) || failedInRun.has(scene.id)) continue
     const sceneShots = shots.filter((s) => s.scene_id === scene.id)
-    const seconds = sceneShots.reduce((sum, s) => sum + (s.duration_sec ?? 0), 0)
-    const maxShots = sceneMaxShots(scene.target_seconds ?? tier.targetSeconds / Math.max(1, scenes.length), bounds.min)
-    if (sceneShots.length >= maxShots || (scene.target_seconds !== null && seconds >= scene.target_seconds)) continue
+    const seconds = writtenOf(scene.id)
+    const reservedSec = reservedOf(scene)
+    const maxShots = sceneMaxShots(reservedSec, bounds.min)
     const last = sceneShots.at(-1) ?? lastShotBefore(shots, scenes, scene.position)
     const orphan = sceneChunks.find((c) => c.run_id !== runId && c.status !== 'succeeded' && c.payload !== null)
     queue.push({
@@ -292,25 +313,32 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       seconds,
       nextChunkIndex: sceneChunks.reduce((max, c) => Math.max(max, c.chunk_index + 1), 0),
       maxShots,
+      reservedSec,
       lastShot: last ? { voice_over: last.voice_over, visual_description: last.visual_description } : null,
       orphan: orphan ? { chunkId: orphan.id, payload: orphan.payload! } : null,
     })
   }
   const projectBlock = buildChunkProjectBlock(project, scenes)
-  const maxWords = maxNarrationWordsPerShot(model, project.language)
 
   // ---- Chunk pool ---------------------------------------------------------------------------
   // Held in an object so the lanes' closures and the code after them see one value.
   const control: { stop: { status: Exclude<ShotRunStatus, 'running'>; reason: ShotRunStopReason } | null } = { stop: null }
-  let failures = 0
+  // Chunks that failed on an error (provider, refusal, write) - the run then ends 'error'
+  // rather than 'incomplete'.
+  let errors = 0
   // Chunks the model's safety checks declined - the run then ends 'refused', not 'error'.
   let refusals = 0
 
-  const runChunk = async (state: SceneState): Promise<'again' | 'done' | 'failed'> => {
-    const cap = Math.min(SHOTS_PER_CHUNK, state.maxShots - state.shots, ceiling - totals.shots - reservedShots)
+  /**
+   * One chunk of one scene. 'again': the scene continues in its next chunk. 'done': the
+   * scene is written. 'left': the scene stays unwritten or incomplete for this run (no
+   * shot fitted, or the answer was cut short before a whole shot). 'error': the chunk failed.
+   */
+  const runChunk = async (state: SceneState): Promise<'again' | 'done' | 'left' | 'error'> => {
+    const cap = Math.min(SHOTS_PER_CHUNK, Math.max(1, state.maxShots - state.shots), ceiling - totals.shots - reservedShots)
     if (cap <= 0) {
-      if (ceiling - totals.shots - reservedShots <= 0) control.stop ??= { status: 'completed', reason: 'ceiling' }
-      return 'done'
+      console.warn(`[shots] run ${runId}: the project's shot ceiling leaves no room for scene ${state.scene.position}`)
+      return 'left'
     }
 
     // Balance re-check: what is left after this run's saved-but-uncharged shots.
@@ -320,11 +348,11 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
     } catch (err) {
       console.error(`[shots] run ${runId}: balance read failed`, err)
       control.stop ??= { status: 'failed', reason: 'error' }
-      return 'failed'
+      return 'error'
     }
     if (available < shotCredits(cap)) {
       control.stop ??= { status: 'stopped', reason: 'balance' }
-      return 'failed'
+      return 'left'
     }
 
     const chunkIndex = state.nextChunkIndex++
@@ -339,6 +367,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
         max_shots: cap,
         status: 'running',
         shots_saved: 0,
+        shots_returned: 0,
         cost_usd: 0,
         payload: state.orphan?.payload ?? null,
         error: null,
@@ -351,7 +380,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       .single()
     if (chunkError || !chunkRow) {
       console.error(`[shots] run ${runId}: could not start a chunk of scene ${state.scene.position}`, chunkError?.message)
-      return isUniqueViolation(chunkError) ? 'done' : 'failed'
+      return isUniqueViolation(chunkError) ? 'left' : 'error'
     }
     chunksRun += 1
     reservedShots += cap
@@ -379,17 +408,18 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
         state.orphan = null
       } else {
         const tool = buildChunkWriteShotsTool(cap)
+        const secondsLeft = Math.max(0, state.reservedSec - state.seconds)
         const userMessage = buildChunkUserMessage({
           scene: state.scene,
           elementNames: state.elementNames,
           previousShot: state.lastShot,
-          writtenSeconds: state.seconds,
+          secondsLeft,
+          wordBudget: chunkWordBudget(secondsLeft, project.language),
           maxShots: cap,
-          maxWordsPerShot: maxWords,
         })
         const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
           model: modelsConfig.shots.model,
-          estimatedInputTokens: estimateInputTokens({ texts: [SHOT_CHUNK_SYSTEM_PROMPT_V1, projectBlock, userMessage], tools: [tool] }),
+          estimatedInputTokens: estimateInputTokens({ texts: [SHOT_CHUNK_SYSTEM_PROMPT_V2, projectBlock, userMessage], tools: [tool] }),
           maxTokens: modelsConfig.shots.maxTokens,
         })
         await assertWithinAllowance({ supabase, userId, quotedCost: estimatedCost })
@@ -398,7 +428,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
           model: modelsConfig.shots.model,
           max_tokens: modelsConfig.shots.maxTokens,
           system: [
-            { type: 'text', text: SHOT_CHUNK_SYSTEM_PROMPT_V1, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: SHOT_CHUNK_SYSTEM_PROMPT_V2, cache_control: { type: 'ephemeral' } },
             { type: 'text', text: projectBlock, cache_control: { type: 'ephemeral' } },
           ],
           tools: [tool],
@@ -445,25 +475,33 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       if (caught instanceof ClaudeRefusalError) refusals += 1
       console.error(`[shots] run ${runId}: chunk of scene ${state.scene.position} failed`, caught)
       await settleChunk({ status: 'failed', error: caught instanceof Error ? caught.message : 'Chunk failed' })
-      return 'failed'
+      return 'error'
     }
 
-    // Durations computed in code; the limits decide how many are saved - synchronously,
-    // before any await, so chunks finishing together never both claim the same headroom.
-    const prepared = prepareChunkShots(input, { language: project.language, model })
-    const room = acceptWithinLimits(
+    // Durations computed in code; the scene's reserved seconds and the project's limits
+    // decide how many are saved - synchronously, before any await, so chunks finishing
+    // together never both claim the same unreserved seconds or headroom. An answer cut short
+    // at max_tokens keeps only its complete shots.
+    const truncated = stopReason === 'max_tokens'
+    const prepared = prepareChunkShots(input, { language: project.language, model, truncated })
+    const acceptance = acceptChunkShots(
       prepared.shots.slice(0, cap).map((s) => s.seconds),
+      { reservedSec: state.reservedSec, writtenSec: state.seconds },
+      slack.left,
       totals,
       { ceiling, maxSec: tier.targetSecondsMax }
     )
-    const accepted = prepared.shots.slice(0, room.accepted)
+    const accepted = prepared.shots.slice(0, acceptance.accepted)
+    const acceptedSeconds = accepted.reduce((sum, s) => sum + s.seconds, 0)
     if (prepared.shots.length > accepted.length) {
       console.warn(
         `[shots] over_count project=${projectId} run=${runId} scene=${state.scene.position} asked=${cap} returned=${prepared.shots.length} saved=${accepted.length}`
       )
     }
+    if (acceptance.projectLimitReached) console.warn(`[shots] run ${runId}: the project's shot limits are reached`)
+    slack.left -= acceptance.slackUsed
     totals.shots += accepted.length
-    totals.seconds += accepted.reduce((sum, s) => sum + s.seconds, 0)
+    totals.seconds += acceptedSeconds
     reservedShots -= cap
 
     try {
@@ -477,38 +515,48 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
         accepted
       )
     } catch (err) {
+      slack.left += acceptance.slackUsed
       totals.shots -= accepted.length
-      totals.seconds -= accepted.reduce((sum, s) => sum + s.seconds, 0)
+      totals.seconds -= acceptedSeconds
       console.error(`[shots] run ${runId}: writing scene ${state.scene.position}'s shots failed`, err)
-      await settleChunk({ status: 'failed', error: err instanceof Error ? err.message : 'Write failed' })
-      return 'failed'
+      await settleChunk({ status: 'failed', shots_returned: prepared.shots.length, error: err instanceof Error ? err.message : 'Write failed' })
+      return 'error'
     }
 
     unchargedShots += accepted.length
+    savedThisRun += accepted.length
     state.shots += accepted.length
-    state.seconds += accepted.reduce((sum, s) => sum + s.seconds, 0)
+    state.seconds += acceptedSeconds
     const last = accepted.at(-1)
     if (last) state.lastShot = { voice_over: last.voice_over, visual_description: last.visual_description }
-    if (room.limitReached) control.stop ??= { status: 'completed', reason: 'ceiling' }
 
-    const truncated = stopReason === 'max_tokens'
+    // A scene is written only once it has shots: when the model says it is finished (never
+    // on a truncated answer), when its reserved seconds are spent, or at its shot count.
     const sceneComplete =
-      !truncated &&
-      (prepared.sceneComplete ||
-        accepted.length === 0 ||
-        state.shots >= state.maxShots ||
-        (state.scene.target_seconds !== null && state.seconds >= state.scene.target_seconds))
-    // A truncated answer was never "returned successfully": its saved shots stay, the
-    // chunk is failed and its payload cleared, so a later run asks afresh.
+      state.shots > 0 && (prepared.sceneComplete || acceptance.sceneBudgetReached || state.shots >= state.maxShots)
+    const reason =
+      accepted.length > 0 || sceneComplete
+        ? null
+        : truncated
+          ? 'The answer was cut short before a whole shot'
+          : prepared.shots.length === 0
+            ? 'No usable shots were returned'
+            : "No shot fitted the scene's seconds"
+    // A truncated answer's kept shots are saved and its payload cleared: the next chunk
+    // continues the scene from its last whole shot, and nothing is left to replay.
     await settleChunk({
-      status: truncated ? 'failed' : 'succeeded',
+      status: reason ? 'failed' : 'succeeded',
       shots_saved: accepted.length,
+      shots_returned: prepared.shots.length,
       scene_complete: sceneComplete,
       payload: null,
-      error: truncated ? 'The answer was cut short' : null,
+      error: reason,
     })
-    if (truncated) return 'failed'
-    return sceneComplete ? 'done' : 'again'
+    if (sceneComplete) {
+      completed.add(state.scene.id)
+      return 'done'
+    }
+    return reason ? 'left' : 'again'
   }
 
   const active = new Set<string>()
@@ -521,18 +569,25 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       await heartbeatShotRun(supabase, run)
       active.delete(state.scene.id)
       if (result !== 'again') queue.splice(queue.indexOf(state), 1)
-      if (result === 'failed') failures += 1
+      if (result === 'error') errors += 1
     }
   }
   await Promise.all(Array.from({ length: Math.max(1, concurrency) }, lane))
 
   if (control.stop) return finish(control.stop.status, control.stop.reason)
-  if (queue.length === 0) return finish(failures > 0 ? 'failed' : 'completed', refusals > 0 ? 'refused' : failures > 0 ? 'error' : null)
+  if (queue.length === 0) {
+    // Every scene was tried. 'completed' only when every outline scene is written.
+    if (scenes.every((sc) => completed.has(sc.id))) return finish('completed', null)
+    const unwritten = scenes.filter((sc) => !completed.has(sc.id)).length
+    console.warn(`[shots] run ${runId} ends with ${unwritten} scene(s) unwritten or incomplete, left for Generate remaining shots`)
+    return finish('failed', refusals > 0 ? 'refused' : errors > 0 ? 'error' : 'incomplete')
+  }
 
-  // Budget reached with scenes still to write: hand the rest to a fresh run.
-  if (chainDepth >= chainLimit) {
-    console.warn(`[shots] chain limit reached for run ${runId}; ${queue.length} scene(s) left for Generate remaining shots`)
-    return finish('failed', 'chain_limit')
+  // Budget reached with scenes still to write. The progress guard: hand off only if this
+  // run saved something (or wrote the outline) - a run that saved nothing would only repeat.
+  if (!outlineWritten && savedThisRun === 0) {
+    console.warn(`[shots] run ${runId} saved no shots in this invocation; ${queue.length} scene(s) left for Generate remaining shots`)
+    return finish('failed', 'no_progress')
   }
   let accepted = false
   try {
@@ -542,14 +597,6 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   }
   if (!accepted) return finish('failed', 'error')
   return { outcome: 'continued', chunks: chunksRun }
-}
-
-function safeResolveVideoModel(id: string | null): VideoModelConfig | null {
-  try {
-    return resolveVideoModel(id)
-  } catch {
-    return null
-  }
 }
 
 function lastShotBefore(

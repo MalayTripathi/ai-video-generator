@@ -41,10 +41,10 @@ const INDIRECT_READERS: Record<string, string[]> = {
 }
 
 const NAME = '[A-Z][A-Z0-9_]*'
-// env.ts reads every class A-D var through parseEnv(source, ...), by a name it declares in
-// ENV_VARS; tests/env-validate.spec.ts proves each class's rule.
+// env.ts reads every class A-D and G var through parseEnv(source, ...), by a name it declares
+// in ENV_VARS; tests/env-validate.spec.ts proves each class's rule.
 const ENV_MODULE = 'src/lib/config/env.ts'
-const VALIDATED = new Set<EnvClass>(['A', 'B', 'C', 'D'])
+const VALIDATED = new Set<EnvClass>(['A', 'B', 'C', 'D', 'G'])
 const READ_PATTERNS = [
   new RegExp(`process\\.env\\.(${NAME})`, 'g'),
   new RegExp(`process\\.env\\[\\s*['"\`](${NAME})['"\`]\\s*\\]`, 'g'),
@@ -124,8 +124,9 @@ test.describe('env drift: code vs .env.example', () => {
 
   test('every env var the code reads is listed in .env.example', () => {
     const listed = new Set(exampleVars().map((v) => v.name))
+    // A platform var we declare a class for (G) is ours to document, prefix or not.
     const missing = [...scan().read.entries()]
-      .filter(([name]) => !listed.has(name) && !isPlatform(name) && !SET_BY_CODE.has(name))
+      .filter(([name]) => !listed.has(name) && (!isPlatform(name) || name in ENV_VARS) && !SET_BY_CODE.has(name))
       .map(([name, file]) => `${name} (read in ${file})`)
     expect(missing).toEqual([])
   })
@@ -146,7 +147,7 @@ test.describe('env drift: code vs .env.example', () => {
   })
 
   test('every var in .env.example has a class in env.ts, and is listed the way its class says', () => {
-    // A, B and C are listed live with their dev values; D, E and F are listed commented out.
+    // A, B and C are listed live with their dev values; D, E, F and G are listed commented out.
     const wrong = exampleVars().flatMap((v) => {
       const cls = ENV_VARS[v.name]
       if (!cls) return [`${v.name} (line ${v.line}) has no class in env.ts ENV_VARS`]

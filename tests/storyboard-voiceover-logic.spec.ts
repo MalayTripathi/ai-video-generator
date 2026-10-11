@@ -19,6 +19,16 @@ import {
 import { stripMp3Headers, concatMp3 } from '../src/lib/voiceover/audio'
 import { VIDEO_MODELS } from '../src/lib/config/models'
 import { SHOT_DURATION_PAD_SEC } from '../src/lib/config/shots'
+import {
+  ELEVEN_V3_MAX_CHARS_PER_REQUEST,
+  VOICEOVER_ATTEMPT_DEADLINE_MS,
+  VOICEOVER_CHUNK_CONCURRENCY,
+  VOICEOVER_CHUNK_MAX_CHARS,
+  VOICEOVER_MAX_CHUNKS,
+  VOICEOVER_MAX_SCRIPT_CHARS,
+  VOICEOVER_SYNTH_CHARS_PER_SEC,
+  VOICEOVER_SYNTH_TIMEOUT_MS,
+} from '../src/lib/config/storyboard'
 import { evenAlignment } from './helpers/voiceover-fakes'
 
 // Pure rules for the Storyboard voiceover (canvas 15f / 15c c). No DB, no network.
@@ -305,5 +315,21 @@ test.describe('mp3 joining', () => {
     expect(stripMp3Headers(part)).toEqual(frame(null))
     expect(concatMp3([part])).toBe(part)
     expect(concatMp3([part, part])).toEqual(Buffer.concat([frame(null), frame(null)]))
+  })
+})
+
+test.describe('voiceover part size - derived from the measured synthesis speed', () => {
+  test('a part is sized to finish inside its synthesis timeout, under the provider limit, and every part of the longest script starts before the deadline', () => {
+    // ~39 chars/s (5,000 chars in ~128s) x 110s x 0.75.
+    expect(VOICEOVER_CHUNK_MAX_CHARS).toBe(Math.floor((5000 / 128) * 110 * 0.75))
+    expect(VOICEOVER_CHUNK_MAX_CHARS).toBeLessThanOrEqual(ELEVEN_V3_MAX_CHARS_PER_REQUEST)
+    const partSeconds = VOICEOVER_CHUNK_MAX_CHARS / VOICEOVER_SYNTH_CHARS_PER_SEC
+    expect(partSeconds).toBeLessThan(VOICEOVER_SYNTH_TIMEOUT_MS / 1000)
+    // The first part was 5,000 chars (~128s), past the 110s timeout.
+    expect(5000 / VOICEOVER_SYNTH_CHARS_PER_SEC).toBeGreaterThan(VOICEOVER_SYNTH_TIMEOUT_MS / 1000)
+    // The last wave of the longest script starts inside the attempt deadline.
+    const waves = Math.ceil(VOICEOVER_MAX_CHUNKS / VOICEOVER_CHUNK_CONCURRENCY)
+    expect((waves - 1) * partSeconds * 1000).toBeLessThan(VOICEOVER_ATTEMPT_DEADLINE_MS)
+    expect(VOICEOVER_MAX_SCRIPT_CHARS).toBe(VOICEOVER_CHUNK_MAX_CHARS * VOICEOVER_MAX_CHUNKS)
   })
 })

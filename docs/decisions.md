@@ -1418,8 +1418,8 @@ row (`shot_run_chunks.scene_complete`), so "Generate remaining shots" knows whic
 unwritten across runs.
 
 **Why runs drain before they hand off.** The images chain hands off at its budget while its
-in-flight calls drain, so two runs overlap. Shot runs instead stop starting chunks at 120s,
-let the in-flight ones finish (the slowest ~154s), then hand off - well inside 300s. Runs never
+in-flight calls drain, so two runs overlap. Shot runs instead stop starting chunks at their
+derived budget (Task 4b, below), let the in-flight ones finish, then hand off - inside 300s. Runs never
 overlap, so one run's in-memory running totals (shots against the ceiling, seconds against
 the tier maximum, saved-but-uncharged shots against the balance) are exact.
 
@@ -1521,3 +1521,97 @@ and the boot check is what guarantees they are valid.
 a server it starts. A dev server it reuses on :3000 keeps its own env. Global setup asks
 `/api/internal/provider-block` (two booleans, 404 off local) and refuses the run before any spec
 executes.
+
+## Shot chain fixes: reserved seconds, a derived budget, honest ends (Task 4b)
+
+**Why each scene writes into seconds reserved for it.** The Oct 10 live run let parallel chunks
+take the tier's seconds in the order they finished: scene 5 wrote 62s against a 25s plan, scene 4
+got none and scene 6 never started. A scene's `target_seconds` (fixed by `fitOutlineSeconds`
+before any chunk runs) is now its reservation; a chunk keeps shots only while they fit it
+(`acceptChunkShots`). Only the tier's unreserved seconds - its maximum less what every scene holds
+- are shared first-come, and only to absorb rounding past a reservation. The chunk is told its
+budget in words (the scene's remaining seconds x the spoken pace x 0.9, leaving room for each
+shot's padding and rounding up), not a per-shot allowance.
+
+**Why a run is 'completed' only when every scene is written.** A scene with no shots is never
+complete; a run that ends with any outline scene unwritten or incomplete is `failed/incomplete`,
+so the claim settles failed, the Workbench shows the partial banner and "Generate remaining
+shots" writes exactly those scenes. Hitting the ceiling no longer ends every lane as
+`completed/ceiling`.
+
+**Why a progress guard replaces the chain limit.** A one-scene project at the 300-shot ceiling
+needs ~38 chunks in series - more runs than any fixed limit sized for parallel scenes. A run that
+wrote the outline or saved a shot hands off; the first run that saves none ends the chain
+(`no_progress`). Every run saves at least one shot and a project holds at most its ceiling, so the
+chain is bounded by construction.
+
+**Why the run budget is derived, and from max_tokens.** A chunk started at the budget must still
+drain and hand off inside 300s. `shot-timing.ts` computes, per Claude model, the slowest chunk
+(setup + max_tokens at the slowest measured speed + writes) and gives the budget as what is left
+after it, the hand-off and a margin: ~101s for Haiku 5.5 (measured Oct 10: 54 tok/s at worst, 3s
+setup, 22s writes), ~50s for Sonnet 5 (an estimate until its live measurement). max_tokens is never
+lowered to fit; a model whose budget derives to nothing fails boot. Writes were measured on an
+overloaded dev process, so the figure is conservative.
+
+**Why a truncated chunk keeps its whole shots.** A chunk cut short at max_tokens is parsed from
+partial JSON, so its last shot can look whole with its text cut mid-sentence. The last shot is kept
+only when the answer went on to `scene_complete`; every kept shot has every key. The chunk
+succeeds, the scene stays open and the next chunk continues from its last whole shot. A chunk
+that kept nothing leaves its scene incomplete for "Generate remaining shots".
+
+**Why re-ordering is one upsert, and why `voice_over` has a default.** PostgREST offers no
+multi-row write with per-row values except an upsert, and there is no RPC. The order index's
+unique constraint is deferrable, so one statement can permute it; one statement is one
+transaction, so a kill leaves the old order or the new one. Postgres checks NOT NULL on the
+proposed insert row before it resolves the conflict, so `voice_over` (the one required field that
+is not an identity column) defaults to `''`: an upsert then carries only `id`, `project_id`,
+`shot_key`, `order_index` and the column it changes - never a field a person may be editing. An
+upsert would re-insert a row deleted underneath it, so a shot delete and a model change are
+refused while a run is live; the agent is already locked out then.
+
+**Why a run is terminal only after its writes, and dead runs wait for the stale window.** The
+Oct 10 run was charged by a poll's page render while the worker was still re-ordering, because the
+run was marked terminal first. Now the order is re-sequence (still `running`), mark terminal,
+settle the claim, charge. Dead-chain settlement touches a running run only past its heartbeat's
+window and a terminal-uncharged run only past its `finished_at` window, so no page view or poll
+settles or charges a run whose worker may still be writing. A run killed after its last scene ends
+`completed` when its stale window passes.
+
+**Why the Workbench polls a status read.** `router.refresh()` every 3s re-rendered the layout and
+page (15 round trips) and queued behind slow renders. The status read is two round trips; the
+next poll starts after the previous returns, and the page refreshes once when the claim settles.
+
+**Why the agent starts the chain through the shots route.** Run 0 scheduled in the agent route's
+`after()` shared the turn's 300s. The agent now hands it to the shots route's continuation path
+(`chainDepth: 0`), so it gets its own invocation; a refused start fails the run at once and the
+turn still bills only itself.
+
+**Why one function prices the shot list, and intake checks it.** The 402 used 2 x target shots
+while the retry modal showed a hand-set ~240. `shotGenerationCredits` is now the only figure: the
+402 (generate, retry and remaining), its banner, the modal and the intake check. Intake refuses to
+start a shot list the balance can't cover and offers to create the project without writing shots.
+The whole-video estimate stays a labelled estimate and gates nothing.
+
+**Why every duration path snaps to the model.** Drag and nudge snapped to 0.1s, the stepper's save,
+the agent's update and a model change wrote whatever arrived, so Wan 2.5 could hold 7.3s and a 4s
+minimum model 2s - failures found only at clip generation. Every path now saves only a length the
+shot's model renders (`effectiveVideoModel`, the one seam a per-shot model override will change).
+A model change gives each shot the renderable length nearest its own that still covers its voice
+(measured span, else words); none covering it means the model's longest, flagged
+`narration_overflow`. It is confirmed in the drawer, so it is not a silent rewrite.
+
+**Why voiceover parts are sized from measured speed.** A 5,000-character part took ~128s against a
+110s synthesis timeout. Parts are now ~39 chars/s x 110s x 0.75 (~3,222 characters), and the
+four-part script cap follows (~12,900; the longest tier needs ~8,000).
+
+**Why a read is fitted before it is linked, and recovered after.** Fitting after linking meant a
+kill mid-fit left linked audio, half-fitted shots and an unsettled claim. The fit is now one upsert
+from the new read's own spans, then one link write that also stamps the fit, then settle and
+charge. Linking and settling are two tables, so a kill between them is still possible: a claim left
+`generating` past its window whose read is the linked one is settled and charged (deduped by
+attempt id) by the next status read or voiceover request - never as a failure.
+
+**Why continuation calls carry the deployment bypass.** A protected preview answers a self-call
+without Vercel's automation bypass header with its login page, so every hand-off was refused.
+`VERCEL_AUTOMATION_BYPASS_SECRET` (class G: required on preview, optional on production, unused
+locally) is sent on the shots, images and agent-start hand-offs.

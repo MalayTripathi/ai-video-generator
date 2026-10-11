@@ -26,6 +26,9 @@ import {
 } from '@/lib/elements/write'
 import type { ElementType } from '@/lib/config/enums'
 import type { DisplayElement } from './_components/types'
+import { isDurationAllowed } from '@/lib/config/models'
+import { effectiveVideoModel } from '@/lib/shots/effective-model'
+import { hasLiveShotRun } from '@/lib/shots/runs'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -58,7 +61,7 @@ async function loadOwnedShot(supabase: SupabaseServerClient, shotId: string, use
   const { data } = await supabase
     .from('shots')
     .select(
-      'id, project_id, voice_over, visual_description, duration_sec, shot_size, shot_size_origin, camera_angle, camera_angle_origin, camera_movement, camera_movement_origin, projects!inner(user_id)'
+      'id, project_id, voice_over, visual_description, duration_sec, shot_size, shot_size_origin, camera_angle, camera_angle_origin, camera_movement, camera_movement_origin, projects!inner(user_id, video_model)'
     )
     .eq('id', shotId)
     .eq('projects.user_id', userId)
@@ -191,29 +194,44 @@ export async function updateShotVisualDescription(
 }
 
 export async function updateShotDuration(shotId: string, value: number): Promise<ShotFieldSaveResult> {
-  const field: ShotField = 'duration_sec'
   const supabase = await createClient()
   const {
     data: { user },
   } = await supabase.auth.getUser()
-  if (!user) return { field, success: false, error: 'Not authenticated' }
+  if (!user) return { field: 'duration_sec', success: false, error: 'Not authenticated' }
+  return saveShotDurationForUser(supabase, user.id, shotId, value)
+}
 
-  const shot = await loadOwnedShot(supabase, shotId, user.id)
+/** updateShotDuration's body, with the caller's client - so it is testable without a request. */
+export async function saveShotDurationForUser(
+  supabase: SupabaseServerClient,
+  userId: string,
+  shotId: string,
+  value: number
+): Promise<ShotFieldSaveResult> {
+  const field: ShotField = 'duration_sec'
+  const shot = await loadOwnedShot(supabase, shotId, userId)
   if (!shot) return { field, success: false, error: 'Shot not found' }
   const lockRefusal = await workbenchLockRefusal(supabase, shot.project_id)
   if (lockRefusal) {
     return { field, success: false, error: lockRefusal }
   }
 
-  const rounded = Math.round(value * 10) / 10
-  if (rounded === shot.duration_sec) return { field, success: true, unchanged: true }
+  // Only a length the shot's video model renders is ever saved - never rounded or clamped
+  // into one here; the stepper only offers valid lengths.
+  const model = effectiveVideoModel(shot.projects as unknown as { video_model: string | null }, shot)
+  if (!model) return { field, success: false, error: "This project's video model isn't available, so shot lengths can't be set." }
+  if (!Number.isFinite(value) || !isDurationAllowed(model, value)) {
+    return { field, success: false, error: "That length isn't one this video model can make." }
+  }
+  if (value === shot.duration_sec) return { field, success: true, unchanged: true }
 
   // No staleness is set for a duration edit - see CLAUDE.md's staleness table. Locking
   // the duration is the whole point of this write: it protects the value from Step 3's
   // voiceover-writeback, which only touches shots where duration_locked is false.
   const { error } = await supabase
     .from('shots')
-    .update({ duration_sec: rounded, duration_locked: true })
+    .update({ duration_sec: value, duration_locked: true })
     .eq('id', shotId)
   if (error) return { field, success: false, error: error.message }
 
@@ -447,6 +465,16 @@ export async function deleteShotForUser(
       error: "This project's workbench is locked - later steps have already started, so shots can no longer be deleted here.",
     }
   }
+
+  // Never while a shot run is writing: its end re-sequences the list in one batched write,
+  // which would bring a shot deleted underneath it back as a blank row.
+  let running: boolean
+  try {
+    running = await hasLiveShotRun(supabase, shot.project_id)
+  } catch {
+    return { success: false, error: PROJECT_READ_FAILED_MESSAGE }
+  }
+  if (running) return { success: false, error: 'The shot list is still being written. Delete shots once it has finished.' }
 
   const { error: deleteError } = await supabase.from('shots').delete().eq('id', shotId)
   if (deleteError) return { success: false, error: deleteError.message }

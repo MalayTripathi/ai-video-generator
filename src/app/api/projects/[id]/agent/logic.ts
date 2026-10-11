@@ -162,10 +162,11 @@ export async function runAgentTurn(params: {
   getBalance?: typeof getBalance
   ensureSignupGrant?: typeof ensureSignupGrant
   // Injected by the route: what a turn needs to start a shot-generation chain
-  // (regenerate_all_shots) and to settle one. Absent in a test that starts none.
+  // (regenerate_all_shots) and to settle one. Absent in a test that starts none. `start`
+  // hands the chain's first run to its own invocation - it never runs inside this turn.
   shotRuns?: {
     ledger: ShotRunLedger
-    schedule: (run: { userId: string; projectId: string; runId: string; chainDepth: 0 }) => void
+    start: (run: { userId: string; projectId: string; runId: string; chainDepth: 0 }) => Promise<boolean>
   }
 }): Promise<AgentTurnResult> {
   const { config, gateway, supabase, projectId, userId, content, clientId, attemptId, recordTurnSpend } = params
@@ -467,7 +468,7 @@ export async function runAgentTurn(params: {
               getBalance: params.getBalance,
               ensureSignupGrant: params.ensureSignupGrant,
               ledger: params.shotRuns.ledger,
-              schedule: params.shotRuns.schedule,
+              start: params.shotRuns.start,
             }
           : undefined,
     }
@@ -547,7 +548,9 @@ export async function runAgentTurn(params: {
         if ('costUsd' in result && result.costUsd) {
           turnCostUsd += result.costUsd
         }
-        if (result.kind === 'applied' && result.shotRunId) shotRunId = result.shotRunId
+        // A run regenerate_all_shots created - started, or refused at its hand-off and failed -
+        // is where this turn's cost goes.
+        if ((result.kind === 'applied' || result.kind === 'errored') && result.shotRunId) shotRunId = result.shotRunId
         if (result.kind === 'applied') {
           await persistToolActivity({
             supabase,

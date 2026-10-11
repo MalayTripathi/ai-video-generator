@@ -4,11 +4,9 @@ import type { Database } from '@/lib/database.types'
 // service-role client (server-only); the route injects the real functions.
 import type { getBalance as getBalanceType } from '@/lib/credits/balance'
 import type { ensureSignupGrant as ensureSignupGrantType } from '@/lib/credits/signup-grant'
-import { creditsFor } from '@/lib/config/credits'
-import { durationConfig, parseDurationTarget } from '@/lib/config/duration'
-import { isRegisteredVideoModel, VIDEO_MODELS, videoModelBounds } from '@/lib/config/models'
+import { creditsFor, shotGenerationCredits } from '@/lib/config/credits'
+import { isRegisteredVideoModel } from '@/lib/config/models'
 import { claimGeneration, settleGeneration, type BlockedReason } from '@/lib/generations/claim'
-import { shotCeiling } from '@/lib/shots/limits'
 import { hasLiveShotRun, settleDeadShotRuns, type ShotRunLedger } from '@/lib/shots/runs'
 
 type Client = SupabaseClient<Database>
@@ -101,9 +99,7 @@ export async function runShotsRequest(params: {
     return { ok: false, status: 500, error: 'Could not check for a running generation' }
   }
 
-  const tier = durationConfig[parseDurationTarget(project.duration_target)]
   let totalScenes: number | null = null
-  let heldShots = tier.targetShots
   if (mode === 'remaining') {
     const scenes = await unwrittenSceneCount(supabase, projectId)
     if (scenes.error) return { ok: false, status: 500, error: scenes.error }
@@ -111,13 +107,12 @@ export async function runShotsRequest(params: {
       return { ok: false, status: 409, error: 'Every scene already has its shots.', reason: 'nothing_remaining' }
     }
     totalScenes = scenes.total
-    const ceiling = shotCeiling(tier.targetSecondsMax, videoModelBounds(VIDEO_MODELS[project.video_model]).min)
-    heldShots = Math.min(tier.targetShots, ceiling)
   }
 
   // Pre-flight: before any claim or provider call, so a refusal writes nothing. Charging is
-  // on shots actually saved; this only holds back the tier's target.
-  const requiredCredits = shotCredits(heldShots)
+  // on shots actually saved; this only holds back the tier's target - the same figure for
+  // generate, retry and remaining, and the one the Workbench and intake show.
+  const requiredCredits = shotGenerationCredits(project.duration_target)
   let balanceCredits: number
   try {
     await ensureSignupGrant(userId)

@@ -2,12 +2,13 @@
 
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
+import { formatCredits } from '@/lib/format-credits'
 
 export function RetryConfirmModal({
   open,
   mode = 'regenerate',
   hasPendingPayload,
-  estimatedCredits,
+  shotListCredits,
   replacesExisting,
   onConfirm,
   onCancel,
@@ -16,7 +17,8 @@ export function RetryConfirmModal({
   // 'remaining' writes only the scenes a stopped run left unwritten, keeping every shot.
   mode?: 'regenerate' | 'remaining'
   hasPendingPayload: boolean
-  estimatedCredits: number
+  /** credits.ts shotGenerationCredits - what starting needs available; the 402 check's figure. */
+  shotListCredits: number
   replacesExisting: boolean
   onConfirm: () => void
   onCancel: () => void
@@ -53,10 +55,10 @@ export function RetryConfirmModal({
         </span>
         <span className="text-small leading-[1.5] text-text-secondary">
           {mode === 'remaining'
-            ? 'This writes the scenes that were not finished. The shots you have stay as they are. You are charged only for the shots written.'
+            ? `This writes the scenes that were not finished. The shots you have stay as they are. Starting needs ${formatCredits(shotListCredits)} credits available; you are charged only for the shots written.`
             : hasPendingPayload
-              ? 'The scene plan from your last attempt is saved and is reused at no cost. Writing its shots is charged for the shots written.'
-              : `This starts a new shot generation and uses approximately ${estimatedCredits} credits.`}
+              ? `The scene plan from your last attempt is saved and is reused at no cost. Starting needs ${formatCredits(shotListCredits)} credits available; you are charged only for the shots written.`
+              : `This starts a new shot generation. Starting needs ${formatCredits(shotListCredits)} credits available; you are charged only for the shots written.`}
         </span>
         {mode === 'regenerate' && replacesExisting && (
           <span className="text-small leading-[1.5] text-status-failed-fg">

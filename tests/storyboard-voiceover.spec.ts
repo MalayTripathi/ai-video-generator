@@ -18,6 +18,7 @@ import {
 import { deriveVoiceoverStatus, loadImageStatuses } from '../src/app/api/projects/[id]/images/status/logic'
 import { fitToVoiceoverForUser, removeVoiceoverForUser } from '../src/app/(app)/projects/[id]/storyboard/actions'
 import { grantAndReadBalance, realRecordFixedSpend } from './helpers/ledger-child'
+import { faultyClient } from './helpers/shot-chain'
 import {
   SAMPLE_SECONDS,
   concurrentVoiceoverGateway,
@@ -117,6 +118,7 @@ async function requestGenerate(userId: string, projectId: string, expectedCredit
     getBalance: readBalance,
     ensureSignupGrant: ensureGrant,
     mintAttemptId: () => crypto.randomUUID(),
+    recordFixedSpend: realRecordFixedSpend,
   })
 }
 
@@ -233,70 +235,86 @@ test.describe('voiceover - generate', () => {
   })
 
   test('a long script is read in parts; a failure mid-chain charges nothing and a retry resumes only the missing part', async () => {
-    const projectId = await seedProject(primary.user.id)
-    const long = (word: string) => Array.from({ length: 700 }, () => word).join(' ') + '.'
-    await seedShots(projectId, [long('alpha'), long('bravo')])
-    const script = await scriptFor(projectId)
-    expect(script.text.length).toBeGreaterThan(5000)
+    // Its own user: these reads cost enough that, on the shared fixed user, they would
+    // trip the per-user monthly allowance for the tests running beside them.
+    const { user } = await createTestSession()
+    try {
+      const projectId = await seedProject(user.id)
+      // Each shot fits one part (VOICEOVER_CHUNK_MAX_CHARS, ~3,222); the two need two parts.
+      const long = (word: string) => Array.from({ length: 450 }, () => word).join(' ') + '.'
+      await seedShots(projectId, [long('alpha'), long('bravo')])
+      const script = await scriptFor(projectId)
+      expect(script.text.length).toBeGreaterThan(5000)
 
-    const failing = successVoiceoverGateway({ failSynthesizeOnCall: 2 })
-    const first = await generate(primary.user.id, projectId, failing)
-    expect(first.outcome.ok).toBe(false)
-    expect(failing.synthesizeCalls).toHaveLength(2)
-    expect((await rows(projectId)).ledger).toHaveLength(0)
+      const failing = successVoiceoverGateway({ failSynthesizeOnCall: 2 })
+      const first = await generate(user.id, projectId, failing)
+      expect(first.outcome.ok).toBe(false)
+      expect(failing.synthesizeCalls).toHaveLength(2)
+      expect((await rows(projectId)).ledger).toHaveLength(0)
 
-    const retry = successVoiceoverGateway()
-    const second = await generate(primary.user.id, projectId, retry)
-    expect(second.outcome).toEqual({ ok: true })
-    // Part one was paid for in the failed run and is reused, never read again.
-    expect(retry.synthesizeCalls).toHaveLength(1)
-    expect(retry.synthesizeCalls[0].text).toBe(failing.synthesizeCalls[1].text)
+      const retry = successVoiceoverGateway()
+      const second = await generate(user.id, projectId, retry)
+      expect(second.outcome).toEqual({ ok: true })
+      // Part one was paid for in the failed run and is reused, never read again.
+      expect(retry.synthesizeCalls).toHaveLength(1)
+      expect(retry.synthesizeCalls[0].text).toBe(failing.synthesizeCalls[1].text)
 
-    const after = await rows(projectId)
-    expect(after.ledger).toHaveLength(1)
-    expect(after.ledger[0].delta).toBe(-creditsFor({ step: 'storyboard', operation: 'voiceover', quantity: script.text.length }))
-    const vo = await projectVoiceover(projectId)
-    expect(vo.total_duration_sec).toBeCloseTo(SAMPLE_SECONDS * 2, 3)
-    const spans = vo.voiceover_spans as { startSec: number }[]
-    expect(spans[1].startSec).toBeGreaterThanOrEqual(SAMPLE_SECONDS - 0.001)
+      const after = await rows(projectId)
+      expect(after.ledger).toHaveLength(1)
+      expect(after.ledger[0].delta).toBe(-creditsFor({ step: 'storyboard', operation: 'voiceover', quantity: script.text.length }))
+      const vo = await projectVoiceover(projectId)
+      expect(vo.total_duration_sec).toBeCloseTo(SAMPLE_SECONDS * 2, 3)
+      const spans = vo.voiceover_spans as { startSec: number }[]
+      expect(spans[1].startSec).toBeGreaterThanOrEqual(SAMPLE_SECONDS - 0.001)
+    } finally {
+      await deleteTestUser(user.id)
+    }
   })
 
   test('parts split at shot boundaries are read concurrently up to the cap; a failed part keeps the others paid and a retry reads only it', async () => {
-    const projectId = await seedProject(primary.user.id)
-    // ~3,000 characters each: no two fit one 5,000-character request, so each shot is its own part.
-    const narration = ['alpha', 'bravo', 'charlie'].map((word) => Array.from({ length: 500 }, () => word).join(' ') + '.')
-    await seedShots(projectId, narration)
+    // Its own user: these reads cost enough that, on the shared fixed user, they would
+    // trip the per-user monthly allowance for the tests running beside them.
+    const { user } = await createTestSession()
+    try {
+      const projectId = await seedProject(user.id)
+      // ~2,100-2,800 characters each: each fits one part (VOICEOVER_CHUNK_MAX_CHARS, ~3,222) and
+      // no two fit together, so each shot is its own part.
+      const narration = ['alpha', 'bravo', 'charlie'].map((word) => Array.from({ length: 350 }, () => word).join(' ') + '.')
+      await seedShots(projectId, narration)
 
-    expect(VOICEOVER_CHUNK_CONCURRENCY).toBe(2)
-    const failing = concurrentVoiceoverGateway({ holdUntil: 3, failWhen: (text) => text.startsWith('bravo') })
-    const first = await generate(primary.user.id, projectId, failing)
-    expect(first.outcome.ok).toBe(false)
-    // Never more than the cap in flight, and each part was exactly one shot's narration.
-    expect(failing.peakInFlight()).toBe(VOICEOVER_CHUNK_CONCURRENCY)
-    expect(failing.synthesizeCalls.map((c) => c.text).sort()).toEqual([...narration].sort())
+      expect(VOICEOVER_CHUNK_CONCURRENCY).toBe(2)
+      const failing = concurrentVoiceoverGateway({ holdUntil: 3, failWhen: (text) => text.startsWith('bravo') })
+      const first = await generate(user.id, projectId, failing)
+      expect(first.outcome.ok).toBe(false)
+      // Never more than the cap in flight, and each part was exactly one shot's narration.
+      expect(failing.peakInFlight()).toBe(VOICEOVER_CHUNK_CONCURRENCY)
+      expect(failing.synthesizeCalls.map((c) => c.text).sort()).toEqual([...narration].sort())
 
-    const afterFail = await rows(projectId)
-    expect(afterFail.ledger).toHaveLength(0)
-    expect(afterFail.gens[0].state).toBe('failed')
-    expect(afterFail.usage.map((u) => u.status).sort()).toEqual(['failed', 'succeeded', 'succeeded'])
-    // Both paid parts persisted around the failed middle one.
-    const parts = (afterFail.gens[0].payload as { parts: (object | null)[] }).parts
-    expect(parts[0]).not.toBeNull()
-    expect(parts[1] ?? null).toBeNull()
-    expect(parts[2]).not.toBeNull()
+      const afterFail = await rows(projectId)
+      expect(afterFail.ledger).toHaveLength(0)
+      expect(afterFail.gens[0].state).toBe('failed')
+      expect(afterFail.usage.map((u) => u.status).sort()).toEqual(['failed', 'succeeded', 'succeeded'])
+      // Both paid parts persisted around the failed middle one.
+      const parts = (afterFail.gens[0].payload as { parts: (object | null)[] }).parts
+      expect(parts[0]).not.toBeNull()
+      expect(parts[1] ?? null).toBeNull()
+      expect(parts[2]).not.toBeNull()
 
-    const retry = successVoiceoverGateway()
-    const second = await generate(primary.user.id, projectId, retry)
-    expect(second.outcome).toEqual({ ok: true })
-    expect(retry.synthesizeCalls.map((c) => c.text)).toEqual([narration[1]])
+      const retry = successVoiceoverGateway()
+      const second = await generate(user.id, projectId, retry)
+      expect(second.outcome).toEqual({ ok: true })
+      expect(retry.synthesizeCalls.map((c) => c.text)).toEqual([narration[1]])
 
-    const after = await rows(projectId)
-    expect(after.ledger).toHaveLength(1)
-    const vo = await projectVoiceover(projectId)
-    expect(vo.total_duration_sec).toBeCloseTo(SAMPLE_SECONDS * 3, 3)
-    const spans = vo.voiceover_spans as { startSec: number }[]
-    expect(spans[1].startSec).toBeGreaterThanOrEqual(SAMPLE_SECONDS - 0.001)
-    expect(spans[2].startSec).toBeGreaterThanOrEqual(SAMPLE_SECONDS * 2 - 0.001)
+      const after = await rows(projectId)
+      expect(after.ledger).toHaveLength(1)
+      const vo = await projectVoiceover(projectId)
+      expect(vo.total_duration_sec).toBeCloseTo(SAMPLE_SECONDS * 3, 3)
+      const spans = vo.voiceover_spans as { startSec: number }[]
+      expect(spans[1].startSec).toBeGreaterThanOrEqual(SAMPLE_SECONDS - 0.001)
+      expect(spans[2].startSec).toBeGreaterThanOrEqual(SAMPLE_SECONDS * 2 - 0.001)
+    } finally {
+      await deleteTestUser(user.id)
+    }
   })
 
   test('a 429 is retried after a backoff and the read completes, charged once', async () => {
@@ -400,6 +418,7 @@ test.describe('voiceover - upload and align', () => {
       expectedCredits,
       getBalance: readBalance,
       ensureSignupGrant: ensureGrant,
+      recordFixedSpend: realRecordFixedSpend,
     })
   }
 
@@ -544,6 +563,7 @@ test.describe('voiceover - alignment timeout', () => {
         expectedCredits: price,
         getBalance: readBalance,
         ensureSignupGrant: ensureGrant,
+        recordFixedSpend: realRecordFixedSpend,
       })
 
     const req = await align()
@@ -669,5 +689,82 @@ test.describe('voiceover - status derivation', () => {
     expect(deriveVoiceoverStatus(none, [failed], null, now).state).toBe('failed')
     const laterSuccess = { ...failed, operation: 'align_voiceover', state: 'succeeded', updated_at: '2026-09-25T10:04:00Z' }
     expect(deriveVoiceoverStatus(read, [failed, laterSuccess], null, now).state).toBe('present')
+  })
+})
+
+test.describe('voiceover - fit and link are safe to kill', () => {
+  test.setTimeout(120000)
+  // Each test has its own user: the spend allowance is a per-user monthly sum, and these
+  // reads must not push the shared fixed user over it for the tests running beside them.
+
+  test("a new read's fit is one batched write of the shots, made before the read is linked; the link stamps the fit", async () => {
+    const { user } = await createTestSession()
+    try {
+      const projectId = await seedProject(user.id)
+      await seedShots(projectId, ['First line here.', 'Second line here.', 'Third line here.'])
+      const writes: string[] = []
+      const counting = faultyClient({
+        when: (table, op) => {
+          if (table === 'shots' || table === 'projects') writes.push(`${table}.${op}`)
+          return false
+        },
+      })
+      const req = await requestGenerate(user.id, projectId)
+      if (!req.ok) throw new Error('request failed')
+      const outcome = await runVoiceoverWorker(
+        { supabase: counting, gateway: successVoiceoverGateway(), recordFixedSpend: realRecordFixedSpend },
+        { userId: user.id, projectId, generationId: req.generationId }
+      )
+      expect(outcome).toEqual({ ok: true })
+      // One upsert of every fitted length, then the one link write - never a write per shot.
+      expect(writes.filter((w) => w.startsWith('shots.'))).toEqual(['shots.upsert'])
+      expect(writes.indexOf('shots.upsert')).toBeLessThan(writes.lastIndexOf('projects.update'))
+      const { data } = await admin.from('shots').select('film_duration_sec').eq('project_id', projectId)
+      expect((data ?? []).every((s) => s.film_duration_sec !== null)).toBe(true)
+      const { data: project } = await admin.from('projects').select('last_fit_at, audio_path').eq('id', projectId).single()
+      expect(project!.last_fit_at).not.toBeNull()
+      expect(project!.audio_path).not.toBeNull()
+    } finally {
+      await deleteTestUser(user.id)
+    }
+  })
+
+  test('killed after the link, before the claim settles: inside the stale window nothing completes it; past it, the next status read settles and charges it once', async () => {
+    const { user } = await createTestSession()
+    try {
+      const projectId = await seedProject(user.id)
+      await seedShots(projectId, ['First line here.', 'Second line here.'])
+      const req = await requestGenerate(user.id, projectId)
+      if (!req.ok) throw new Error('request failed')
+      const killed = faultyClient({
+        when: (table, op, values) => table === 'generations' && op === 'update' && Object.hasOwn(values as object, 'state'),
+        kill: true,
+      })
+      await expect(
+        runVoiceoverWorker(
+          { supabase: killed, gateway: successVoiceoverGateway(), recordFixedSpend: realRecordFixedSpend },
+          { userId: user.id, projectId, generationId: req.generationId }
+        )
+      ).rejects.toThrow(/killed at generations.update/)
+      expect((await projectVoiceover(projectId)).audio_path).not.toBeNull()
+      expect((await rows(projectId)).gens[0].state).toBe('generating')
+
+      const status = () =>
+        loadImageStatuses({ supabase: admin, projectId, userId: user.id, getBalance: readBalance, recordFixedSpend: realRecordFixedSpend })
+      await status()
+      expect((await rows(projectId)).gens[0].state).toBe('generating')
+      expect((await rows(projectId)).ledger).toHaveLength(0)
+
+      const old = new Date(Date.now() - 20 * 60_000).toISOString()
+      await admin.from('generations').update({ started_at: old }).eq('id', req.generationId)
+      await status()
+      await status()
+      const after = await rows(projectId)
+      expect(after.gens[0].state).toBe('succeeded')
+      expect(after.ledger).toHaveLength(1)
+      expect(after.ledger[0].operation).toBe('voiceover')
+    } finally {
+      await deleteTestUser(user.id)
+    }
   })
 })

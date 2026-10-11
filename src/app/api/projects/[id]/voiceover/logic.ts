@@ -43,6 +43,7 @@ import {
 } from '@/lib/storyboard/voiceover'
 import { liveImageCommittedCredits } from '../images/logic'
 import { autoFitAfterVoiceover } from '@/lib/storyboard/apply-fit'
+import { completeLinkedVoiceoverForProject } from '@/lib/voiceover/complete-linked'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type GenerationRow = Tables<'generations'>
@@ -143,8 +144,11 @@ export function voiceoverDir(userId: string, projectId: string): string {
   return `${userId}/${projectId}/voiceover`
 }
 
-// The current-voiceover columns a finished read writes, in one update - then the auto-fit.
-async function linkVoiceover(
+// A finished read: first the shots are fitted to it (one batched write, from its own spans),
+// then the current-voiceover columns are written in one update - the commit point, which
+// also stamps the fit. The caller then settles the claim and charges; a kill between the
+// link and those is completed past the stale window (lib/voiceover/complete-linked.ts).
+export async function linkVoiceover(
   supabase: SupabaseServerClient,
   projectId: string,
   fields: {
@@ -160,10 +164,13 @@ async function linkVoiceover(
     words: [number, number][] | null
   }
 ): Promise<string | null> {
+  // The new read's spans are fitted before it is linked (free; see autoFitAfterVoiceover).
+  const { fitted } = await autoFitAfterVoiceover(supabase, projectId, fields.spans)
   const now = new Date().toISOString()
   const { error } = await supabase
     .from('projects')
     .update({
+      ...(fitted ? { last_fit_at: now } : {}),
       audio_path: fields.audioPath,
       voiceover_alignment_path: fields.alignmentPath,
       voice_id: fields.voiceId,
@@ -179,8 +186,6 @@ async function linkVoiceover(
     })
     .eq('id', projectId)
   if (error) return error.message
-  // The alignment is saved: fit the shots to it (free; see autoFitAfterVoiceover).
-  await autoFitAfterVoiceover(supabase, projectId)
   return null
 }
 
@@ -245,6 +250,8 @@ export async function runVoiceoverRequest(params: {
   getBalance: typeof getBalanceType
   ensureSignupGrant: typeof ensureSignupGrantType
   mintAttemptId: typeof mintAttemptIdType
+  /** Completes a read linked by a run killed before it settled (complete-linked.ts). */
+  recordFixedSpend: typeof recordFixedSpendType
 }): Promise<GenerateRequestResult> {
   const { supabase, projectId, userId, voiceId, expectedCredits } = params
 
@@ -277,6 +284,8 @@ export async function runVoiceoverRequest(params: {
     return { ok: false, status: 409, error: 'The price changed', code: 'price_changed', credits }
   }
 
+  // A read a killed run linked but never settled is completed first, past its stale window.
+  await completeLinkedVoiceoverForProject({ supabase, userId, projectId, recordFixedSpend: params.recordFixedSpend })
   const busy = await inFlightRefusal(supabase, projectId)
   if (busy) return busy
 
@@ -652,6 +661,8 @@ export async function runAlignRequest(params: {
   expectedCredits: number
   getBalance: typeof getBalanceType
   ensureSignupGrant: typeof ensureSignupGrantType
+  /** Completes a read linked by a run killed before it settled (complete-linked.ts). */
+  recordFixedSpend: typeof recordFixedSpendType
 }): Promise<AlignRequestResult> {
   const { supabase, projectId, userId, attemptId, ext, expectedCredits } = params
   if (!UUID.test(attemptId) || !UPLOAD_EXTS.has(ext)) return { ok: false, status: 400, error: 'Invalid upload' }
@@ -680,6 +691,7 @@ export async function runAlignRequest(params: {
     return { ok: false, status: 409, error: 'The price changed', code: 'price_changed', credits }
   }
 
+  await completeLinkedVoiceoverForProject({ supabase, userId, projectId, recordFixedSpend: params.recordFixedSpend })
   const busy = await inFlightRefusal(supabase, projectId)
   if (busy) return busy
 

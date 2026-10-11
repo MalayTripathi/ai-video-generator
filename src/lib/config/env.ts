@@ -1,5 +1,6 @@
 import { IMAGE_QUALITIES, type ImageQuality } from './enums'
 import { isPricedClaudeModel } from './claude-rates'
+import { shotChainTimingProblem, shotRunBudgetMs } from './shot-timing'
 
 // The environment: with env.server.ts, the only modules that read process.env (CLAUDE.md
 // hard rule 19; tests/env-source-guard.spec.ts enforces it). Every var is declared here with
@@ -21,8 +22,11 @@ export type AppEnv = (typeof APP_ENVS)[number]
  * D  optional tuning - unset takes the code default silently; a malformed value throws.
  * E  ALLOW_REAL_* - developer-only live-call opt-ins (live-call-guard.ts).
  * F  PW_* - test runner; set by npm scripts, the run guard or per command, never in .env.local.
+ * G  VERCEL_AUTOMATION_BYPASS_SECRET - provided by Vercel once "Protection Bypass for
+ *    Automation" is on: required on preview (a protected deployment refuses a chain's hand-off
+ *    without it), optional on production, unused on local.
  */
-export type EnvClass = 'A' | 'B' | 'C' | 'D' | 'E' | 'F'
+export type EnvClass = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G'
 
 const CLAUDE_DEV_MODEL = 'claude-haiku-5-5'
 
@@ -84,6 +88,7 @@ export const ENV_VARS: Record<string, EnvClass> = {
   PW_RUN_GUARD_DRY_RUN: 'F',
   PW_FULL_RUN_SCRIPT: 'F',
   PW_RUN_GUARD_CHILD: 'F',
+  VERCEL_AUTOMATION_BYPASS_SECRET: 'G',
 }
 
 export const SUPPORTED_ELEVENLABS = {
@@ -141,6 +146,8 @@ export type NextEnv = {
   supabase: SupabaseEnv
   providerKeys: { anthropic: string; openai: string; elevenlabs: string }
   continuationSecret: string
+  /** Sent on a chain's call to its own route so a protected deployment lets it through. */
+  deploymentBypassSecret: string | null
   spendCap: SpendCapEnv
   claude: ClaudeEnv
   elevenlabs: { voiceoverProvider: 'elevenlabs'; voiceoverModel: string; musicProvider: 'elevenlabs'; musicModel: string }
@@ -272,6 +279,10 @@ function parseModels(source: EnvSource, appEnv: AppEnv, warnings: string[]) {
     musicPromptModel: model('CLAUDE_MUSIC_PROMPT_MODEL'),
     musicPromptMaxTokens: cap('CLAUDE_MUSIC_PROMPT_MAX_TOKENS'),
   }
+  // The shot chain's run budget is derived from the model's speed and these caps; a model
+  // the chain cannot fit inside 300s fails boot instead of being cut off mid-chunk.
+  const timingProblem = shotChainTimingProblem(claude.shotsModel, claude.shotsMaxTokens, claude.shotOutlineMaxTokens)
+  if (timingProblem) throw new EnvError('CLAUDE_SHOTS_MODEL', timingProblem)
   const elevenlabs = {
     voiceoverProvider: oneOf('VOICEOVER_PROVIDER', b('VOICEOVER_PROVIDER'), SUPPORTED_ELEVENLABS.provider),
     voiceoverModel: oneOf('ELEVENLABS_VOICEOVER_MODEL', b('ELEVENLABS_VOICEOVER_MODEL'), SUPPORTED_ELEVENLABS.voiceoverModel),
@@ -279,6 +290,13 @@ function parseModels(source: EnvSource, appEnv: AppEnv, warnings: string[]) {
     musicModel: oneOf('ELEVENLABS_MUSIC_MODEL', b('ELEVENLABS_MUSIC_MODEL'), SUPPORTED_ELEVENLABS.musicModel),
   }
   return { claude, elevenlabs }
+}
+
+function parseDeploymentBypassSecret(source: EnvSource, appEnv: AppEnv): string | null {
+  const name = 'VERCEL_AUTOMATION_BYPASS_SECRET'
+  if (appEnv === 'preview') return required(source, name)
+  if (appEnv === 'production') return present(source[name]) ? source[name]!.trim() : null
+  return null
 }
 
 /** Validates `source` for one process kind. Throws EnvError naming the first bad var. */
@@ -302,6 +320,7 @@ export function parseEnv<S extends EnvScope>(source: EnvSource, scope: S): Parse
       elevenlabs: required(source, 'ELEVENLABS_API_KEY'),
     },
     continuationSecret: secret,
+    deploymentBypassSecret: parseDeploymentBypassSecret(source, appEnv),
     spendCap: parseSpendCap(source),
     ...parseModels(source, appEnv, warnings),
     imageQualityDevCap: parseImageQualityDevCap(source, appEnv),
@@ -318,14 +337,15 @@ export function describeEnv(env: NextEnv | WorkerEnv): [label: string, value: st
   if ('claude' in env) {
     const c = env.claude
     rows.push(
-      ['Shot generation', `${c.shotsModel}  (outline max ${tokens(c.shotOutlineMaxTokens)}, chunk max ${tokens(c.shotsMaxTokens)})`],
+      ['Shot generation', `${c.shotsModel}  (outline max ${tokens(c.shotOutlineMaxTokens)}, chunk max ${tokens(c.shotsMaxTokens)}, run budget ${Math.round(shotRunBudgetMs(c.shotsModel, c.shotsMaxTokens) / 1000)}s)`],
       ['Camera', `${c.cameraModel}  (max ${tokens(c.cameraMaxTokens)})`],
       ['Agent', `${c.agentModel}  (max ${tokens(c.agentMaxTokens)})`],
       ['Image prompts', `${c.imagePromptsModel}  (max ${tokens(c.imagePromptsMaxTokens)})`],
       ['Music prompt', `${c.musicPromptModel}  (max ${tokens(c.musicPromptMaxTokens)})`],
       ['Voiceover', `${env.elevenlabs.voiceoverProvider} / ${env.elevenlabs.voiceoverModel}`],
       ['Music', `${env.elevenlabs.musicProvider} / ${env.elevenlabs.musicModel}`],
-      ['Image quality cap', env.imageQualityDevCap ?? 'none']
+      ['Image quality cap', env.imageQualityDevCap ?? 'none'],
+      ['Deployment protection bypass', env.deploymentBypassSecret ? 'set' : 'not set']
     )
   }
   rows.push(

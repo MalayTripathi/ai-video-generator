@@ -79,7 +79,6 @@ test.describe('shot chain - a long list across several runs', () => {
       gateway,
       ledger: REAL_LEDGER,
       runBudgetMs: budget,
-      chainLimit: 60,
       concurrency: 3,
     })
     expect(request.ok).toBe(true)
@@ -344,7 +343,10 @@ test.describe('shot chain - the agent path', () => {
       recordTurnSpend: realRecordDynamicSpend,
       getBalance: async () => 1_000_000,
       ensureSignupGrant: async () => {},
-      shotRuns: { ledger: REAL_LEDGER, schedule: (run) => scheduled.push(run) },
+      shotRuns: { ledger: REAL_LEDGER, start: async (run) => {
+        scheduled.push(run)
+        return true
+      } },
     })
     expect(turn.ok).toBe(true)
     expect(scheduled).toHaveLength(1)
@@ -363,7 +365,7 @@ test.describe('shot chain - the agent path', () => {
       clientId: crypto.randomUUID(),
       attemptId: crypto.randomUUID(),
       recordTurnSpend: realRecordDynamicSpend,
-      shotRuns: { ledger: REAL_LEDGER, schedule: () => {} },
+      shotRuns: { ledger: REAL_LEDGER, start: async () => true },
     })
     expect(blocked).toMatchObject({ ok: false, status: 409 })
 

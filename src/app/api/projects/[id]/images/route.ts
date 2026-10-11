@@ -6,7 +6,7 @@ import { createImageGateway } from '@/lib/images/gateway'
 import { mintAttemptId, recordFixedSpend } from '@/lib/credits/ledger'
 import { getBalance } from '@/lib/credits/balance'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
-import { continuationSecret, continuationSecretMatches } from '@/lib/continuation'
+import { continuationSecret, deploymentBypassHeaders, continuationSecretMatches } from '@/lib/continuation'
 import {
   INTERNAL_SECRET_HEADER,
   createContinueRun,
@@ -49,7 +49,7 @@ function scheduleWorker(origin: string, run: ContinuationPayload) {
         gateway: createImageGateway(),
         mintAttemptId,
         recordFixedSpend,
-        continueRun: createContinueRun({ origin, secret: continuationSecret() }),
+        continueRun: createContinueRun({ origin, secret: continuationSecret(), headers: deploymentBypassHeaders() }),
       },
       run
     )

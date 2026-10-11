@@ -18,7 +18,8 @@ type Client = SupabaseClient<Database>
 export type ShotRunRow = Tables<'shot_runs'>
 export type ShotRunChunkRow = Tables<'shot_run_chunks'>
 export type ShotRunStatus = 'running' | 'completed' | 'stopped' | 'failed'
-export type ShotRunStopReason = 'balance' | 'error' | 'chain_limit' | 'stale' | 'ceiling' | 'refused'
+// 'chain_limit' is only on runs from before the progress guard replaced the chain limit.
+export type ShotRunStopReason = 'balance' | 'error' | 'chain_limit' | 'stale' | 'ceiling' | 'refused' | 'no_progress' | 'incomplete'
 
 /** The ledger writers a charge may need - fixed for a button run, dynamic for an agent run. */
 export type ShotRunLedger = {
@@ -29,6 +30,21 @@ export type ShotRunLedger = {
 /** Whether a run is still going: 'running' and heartbeat younger than the stale window. */
 export function isLiveShotRun(run: Pick<ShotRunRow, 'status' | 'heartbeat_at'>, now: number = Date.now()): boolean {
   return run.status === 'running' && new Date(run.heartbeat_at).getTime() > now - SHOT_RUN_STALE_AFTER_MS
+}
+
+/**
+ * Whether a read of this run should hand it to settleDeadShotRuns: a 'running' run whose
+ * heartbeat has aged out, or a terminal run still uncharged whose finish is older than the
+ * stale window. Never a run whose worker may still be writing - a page view or a poll must
+ * not settle or charge a live run.
+ */
+export function needsDeadRunSettlement(
+  run: Pick<ShotRunRow, 'status' | 'heartbeat_at' | 'finished_at' | 'charged_at'>,
+  now: number = Date.now()
+): boolean {
+  if (run.status === 'running') return !isLiveShotRun(run, now)
+  if (run.charged_at !== null) return false
+  return run.finished_at !== null && new Date(run.finished_at).getTime() <= now - SHOT_RUN_STALE_AFTER_MS
 }
 
 /** An agent run: billed as the turn's single dynamic agent_turn row, after the turn ends. */
@@ -52,32 +68,35 @@ export async function heartbeatShotRun(supabase: Client, run: Pick<ShotRunRow, '
 }
 
 /**
- * Re-sequences a project's shots to 0..n-1 in scene order (see positions.ts). Two passes
- * through negative values, because the (project_id, order_index) unique index would
- * otherwise reject a shot moving onto an index another still holds.
+ * Re-sequences a project's shots to 0..n-1 in scene order (see positions.ts) as one write:
+ * a single upsert keyed on id, so it lands whole or not at all. The order index's unique
+ * constraint is deferred to the end of the statement, so the permutation never collides
+ * with itself mid-write. Each row carries only its identity columns and order_index -
+ * never a field a person may be editing. Re-running it is a no-op once the order is right.
  */
 export async function resequenceProjectShots(supabase: Client, projectId: string): Promise<{ error: string | null }> {
   const { data, error } = await supabase
     .from('shots')
-    .select('id, order_index, scenes(position)')
+    .select('id, order_index, shot_key, scenes(position)')
     .eq('project_id', projectId)
   if (error) return { error: error.message }
-  type Row = { id: string; order_index: number; scenes: { position: number } | null }
-  const moves = resequence(
-    ((data ?? []) as unknown as Row[]).map((r) => ({ id: r.id, order_index: r.order_index, scenePosition: r.scenes?.position ?? null }))
-  )
+  type Row = { id: string; order_index: number; shot_key: string; scenes: { position: number } | null }
+  const rows = (data ?? []) as unknown as Row[]
+  const moves = resequence(rows.map((r) => ({ id: r.id, order_index: r.order_index, scenePosition: r.scenes?.position ?? null })))
+  if (moves.length === 0) return { error: null }
+  const keys = new Map(rows.map((r) => [r.id, r.shot_key]))
   const updatedAt = new Date().toISOString()
-  for (const pass of [(i: number) => -(i + 1), (i: number) => i]) {
-    for (const move of moves) {
-      const { error: moveError } = await supabase
-        .from('shots')
-        .update({ order_index: pass(move.order_index), updated_at: updatedAt })
-        .eq('id', move.id)
-        .eq('project_id', projectId)
-      if (moveError) return { error: moveError.message }
-    }
-  }
-  return { error: null }
+  const { error: writeError } = await supabase.from('shots').upsert(
+    moves.map((move) => ({
+      id: move.id,
+      project_id: projectId,
+      shot_key: keys.get(move.id)!,
+      order_index: move.order_index,
+      updated_at: updatedAt,
+    })),
+    { onConflict: 'id', defaultToNull: false }
+  )
+  return { error: writeError?.message ?? null }
 }
 
 /**
@@ -107,44 +126,95 @@ const GENERATION_ERRORS: Record<Exclude<ShotRunStatus, 'running' | 'completed'>,
 }
 
 /**
- * Ends a run: marks it terminal (only if still 'running' - a second finisher is a no-op),
- * re-sequences the project's shots, settles the generate_shots claim and charges the run.
- * The outline is durable in `scenes` once written, so the claim's payload is cleared then.
+ * Ends a run, in an order that makes "terminal" mean every write is done:
+ *   1. re-sequence the shots - while the run still reads as running, so nothing settles or
+ *      charges it meanwhile (a page view or poll never touches a live run);
+ *   2. mark it terminal - the commit point, only if still 'running' (a second finisher is a
+ *      no-op);
+ *   3. settle the generate_shots claim, then 4. charge the run (completeFinishedShotRun).
+ * A kill before 2 leaves the run 'running' until its stale window, when settleDeadShotRuns
+ * finishes it again (the re-sequence is idempotent); a kill after 2 leaves 3-4 for
+ * settleDeadShotRuns to redo once the stale window has passed. `afterDeath` is that dead-
+ * chain path: it marks the run terminal even if the re-sequence fails, so a run never stays
+ * 'running' forever.
  */
 export async function finishShotRun(
   supabase: Client,
   ledger: ShotRunLedger,
   runId: string,
-  outcome: { status: Exclude<ShotRunStatus, 'running'>; stopReason: ShotRunStopReason | null }
+  outcome: { status: Exclude<ShotRunStatus, 'running'>; stopReason: ShotRunStopReason | null },
+  options: { afterDeath?: boolean } = {}
 ): Promise<{ finished: boolean }> {
+  const { data: current, error: readError } = await supabase
+    .from('shot_runs')
+    .select('id, project_id, status')
+    .eq('id', runId)
+    .maybeSingle()
+  if (readError || !current) {
+    console.error(`[shots] could not read run ${runId} to finish it`, readError?.message)
+    return { finished: false }
+  }
+  if (current.status !== 'running') return { finished: false }
+
+  const { error: seqError } = await resequenceProjectShots(supabase, current.project_id)
+  if (seqError) {
+    console.error(`[shots] re-sequence failed for run ${runId}`, seqError)
+    // Left running: the dead-chain settlement finishes it after the stale window.
+    if (!options.afterDeath) return { finished: false }
+  }
+
   const now = new Date().toISOString()
   const { data: rows, error } = await supabase
     .from('shot_runs')
     .update({ status: outcome.status, stop_reason: outcome.stopReason, finished_at: now, updated_at: now })
     .eq('id', runId)
     .eq('status', 'running')
-    .select('id, project_id, generation_id, total_scenes')
+    .select('id')
   if (error) {
     console.error(`[shots] could not finish run ${runId}`, error.message)
     return { finished: false }
   }
-  const run = rows?.[0]
-  if (!run) return { finished: false }
+  if ((rows ?? []).length === 0) return { finished: false }
 
-  const { error: seqError } = await resequenceProjectShots(supabase, run.project_id)
-  if (seqError) console.error(`[shots] re-sequence failed for run ${runId}`, seqError)
-
-  if (run.generation_id) {
-    const { error: settleError } = await settleGeneration(supabase, run.generation_id, {
-      success: outcome.status === 'completed',
-      error: outcome.status === 'completed' ? null : GENERATION_ERRORS[outcome.status],
-      clearPayload: run.total_scenes !== null,
-    })
-    if (settleError) console.error(`[shots] claim settle failed for run ${runId}`, settleError)
-  }
-
-  await chargeShotRun(supabase, ledger, runId)
+  await completeFinishedShotRun(supabase, ledger, runId)
   return { finished: true }
+}
+
+/**
+ * Steps 3-4 of a run's end, for a terminal run: settles its generate_shots claim (unless a
+ * newer run has since taken the claim) and charges it. Both are safe to repeat. The outline
+ * is durable in `scenes` once written, so the claim's payload is cleared then.
+ */
+async function completeFinishedShotRun(supabase: Client, ledger: ShotRunLedger, runId: string): Promise<void> {
+  const { data: run, error } = await supabase
+    .from('shot_runs')
+    .select('id, project_id, status, generation_id, total_scenes, created_at')
+    .eq('id', runId)
+    .maybeSingle()
+  if (error || !run || run.status === 'running') {
+    if (error) console.error(`[shots] could not read run ${runId} to settle it`, error.message)
+    return
+  }
+  if (run.generation_id) {
+    // The claim row is the project's one generate_shots lock: a run started after this one
+    // reclaimed it, and its state is that run's now.
+    const { data: newer } = await supabase
+      .from('shot_runs')
+      .select('id')
+      .eq('project_id', run.project_id)
+      .gt('created_at', run.created_at)
+      .limit(1)
+    if ((newer ?? []).length === 0) {
+      const status = run.status as Exclude<ShotRunStatus, 'running'>
+      const { error: settleError } = await settleGeneration(supabase, run.generation_id, {
+        success: status === 'completed',
+        error: status === 'completed' ? null : GENERATION_ERRORS[status],
+        clearPayload: run.total_scenes !== null,
+      })
+      if (settleError) console.error(`[shots] claim settle failed for run ${runId}`, settleError)
+    }
+  }
+  await chargeShotRun(supabase, ledger, runId)
 }
 
 /**
@@ -241,11 +311,14 @@ export async function settleShotRunTurn(supabase: Client, ledger: ShotRunLedger,
 
 /**
  * Settles whatever a dead chain left behind, on the first request that touches the
- * project after its stale window: a 'running' run whose heartbeat has aged out is failed
- * (its half-written chunks' shots are removed, their payloads kept for a replay), and any
- * terminal run still uncharged is charged. An agent run whose turn never handed over its
- * cost is charged without it once the run itself is past the stale window. Returns
- * whether anything changed, so a caller that already read the run can re-read it.
+ * project after its stale window - never sooner, so a page view or a poll can never settle
+ * or charge a run whose worker is still writing:
+ *   - a 'running' run whose heartbeat has aged out is finished 'failed/stale' (its half-
+ *     written chunks' shots are removed, their payloads kept for a replay);
+ *   - a terminal run still uncharged whose finish is older than the stale window has its
+ *     claim settled and its charge written (the worker died between the two);
+ *   - an agent run whose turn never handed over its cost is charged without it.
+ * Returns whether anything changed, so a caller that already read the run can re-read it.
  */
 export async function settleDeadShotRuns(supabase: Client, ledger: ShotRunLedger, projectId: string): Promise<{ changed: boolean }> {
   const { data: runs, error } = await supabase
@@ -263,22 +336,36 @@ export async function settleDeadShotRuns(supabase: Client, ledger: ShotRunLedger
     if (run.status === 'running') {
       if (isLiveShotRun(run, now)) continue
       await abandonRunningChunks(supabase, projectId, run.id)
-      const { finished } = await finishShotRun(supabase, ledger, run.id, { status: 'failed', stopReason: 'stale' })
+      // A chain that died after its last scene (mid re-sequence, say) wrote everything: it
+      // ends 'completed', not 'failed' with nothing left to generate.
+      const outcome = (await everySceneWritten(supabase, projectId))
+        ? ({ status: 'completed', stopReason: null } as const)
+        : ({ status: 'failed', stopReason: 'stale' } as const)
+      const { finished } = await finishShotRun(supabase, ledger, run.id, outcome, { afterDeath: true })
       changed ||= finished
       continue
     }
+    const finishedAt = run.finished_at ? new Date(run.finished_at).getTime() : 0
+    if (finishedAt > now - SHOT_RUN_STALE_AFTER_MS) continue
     if (isAgentShotRun(run) && run.turn_settled_at === null) {
-      const finishedAt = run.finished_at ? new Date(run.finished_at).getTime() : 0
-      if (finishedAt > now - SHOT_RUN_STALE_AFTER_MS) continue
       console.warn(`[shots] agent run ${run.id} charged without its turn's own cost - the turn never handed it over`)
       await settleShotRunTurn(supabase, ledger, run.id, 0)
       changed = true
       continue
     }
-    const { charged } = await chargeShotRun(supabase, ledger, run.id)
-    changed ||= charged
+    console.warn(`[shots] run ${run.id} finished but was never charged - completing it`)
+    await completeFinishedShotRun(supabase, ledger, run.id)
+    changed = true
   }
   return { changed }
+}
+
+/** Whether the project has a scene plan and every scene in it has a chunk that finished it. */
+async function everySceneWritten(supabase: Client, projectId: string): Promise<boolean> {
+  const { data, error } = await supabase.from('scenes').select('id, shot_run_chunks(scene_complete)').eq('project_id', projectId)
+  if (error) return false
+  const scenes = (data ?? []) as { shot_run_chunks: { scene_complete: boolean }[] }[]
+  return scenes.length > 0 && scenes.every((sc) => sc.shot_run_chunks.some((c) => c.scene_complete))
 }
 
 async function abandonRunningChunks(supabase: Client, projectId: string, runId: string): Promise<void> {

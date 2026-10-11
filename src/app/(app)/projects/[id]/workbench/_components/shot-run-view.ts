@@ -32,7 +32,11 @@ export function shotRunProgressLine(view: ShotRunView): string {
   return `Writing scene ${current} of ${view.totalScenes}`
 }
 
-/** A run that stopped with scenes unwritten - from a failure or the balance - can be continued. */
+/**
+ * Whenever no run is going and the scene plan has scenes not yet written - unwritten, or
+ * started and not finished - "Generate remaining shots" writes exactly those, whatever the
+ * last run ended as.
+ */
 export function canGenerateRemaining(view: ShotRunView): boolean {
-  return (view.status === 'stopped' || view.status === 'failed') && view.totalScenes !== null && view.unwrittenScenes > 0
+  return view.status !== null && view.status !== 'running' && view.totalScenes !== null && view.unwrittenScenes > 0
 }

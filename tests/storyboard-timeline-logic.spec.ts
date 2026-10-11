@@ -207,12 +207,12 @@ function applyWrites(shots: LaneShot[], writes: { id: string; film_order: number
 }
 
 test.describe('retime bounds and snap', () => {
-  test('the range is the project video model\'s - shortest to longest shot', () => {
-    expect(storyboardRetimeRange('wan-3.0')).toEqual({ min: 2, max: 30 })
-    expect(storyboardRetimeRange('wan-2.5')).toEqual({ min: 5, max: 10 })
-    expect(storyboardRetimeRange('kling-v3-standard')).toEqual({ min: 3, max: 15 })
+  test('the range is the project video model\'s - shortest to longest shot, and its own lengths', () => {
+    expect(storyboardRetimeRange('wan-3.0')).toMatchObject({ min: 2, max: 30 })
+    expect(storyboardRetimeRange('wan-2.5')).toMatchObject({ min: 5, max: 10 })
+    expect(storyboardRetimeRange('kling-v3-standard')).toMatchObject({ min: 3, max: 15, model: VIDEO_MODELS['kling-v3-standard'] })
     const bounds = retimeBounds(5, storyboardRetimeRange('kling-v3-standard'))
-    expect(bounds).toEqual({ min: 3, max: 15 })
+    expect(bounds).toMatchObject({ min: 3, max: 15 })
     expect(snapRetime(0.2, bounds)).toBe(3)
     expect(snapRetime(45, bounds)).toBe(15)
   })
@@ -227,15 +227,21 @@ test.describe('retime bounds and snap', () => {
     expect(videoModelBounds(VIDEO_MODELS['seedance-1.0-pro'])).toEqual({ min: 2, max: 12 })
   })
 
-  test('a shot already past the ceiling (or under the floor) is never forced back by the bounds', () => {
+  test("with a model, a retime always lands on a length the model renders - a shot saved outside it snaps onto one", () => {
     const range = storyboardRetimeRange('wan-3.0')
-    expect(retimeBounds(32, range)).toEqual({ min: 2, max: 32 })
-    expect(retimeBounds(0.8, range)).toEqual({ min: 0.8, max: 30 })
-    // A shot with no length yet gets the plain bounds.
-    expect(retimeBounds(null, range)).toEqual({ min: 2, max: 30 })
+    expect(retimeBounds(32, range)).toBe(range)
+    expect(snapRetime(32, retimeBounds(32, range))).toBe(30)
+    expect(snapRetime(7.4, range)).toBe(7) // whole seconds only
+    expect(isRetimeAllowed(7.5, range)).toBe(false)
   })
 
-  test('snaps to 0.1s', () => {
+  test('without a model, a shot already past the ceiling (or under the floor) is never forced back by the bounds', () => {
+    const range = { min: STORYBOARD_MIN_SHOT_SEC, max: STORYBOARD_MAX_SHOT_SEC }
+    expect(retimeBounds(32, range)).toEqual({ min: STORYBOARD_MIN_SHOT_SEC, max: 32 })
+    expect(retimeBounds(null, range)).toEqual(range)
+  })
+
+  test('without a model, snaps to 0.1s', () => {
     const bounds = retimeBounds(5, { min: STORYBOARD_MIN_SHOT_SEC, max: STORYBOARD_MAX_SHOT_SEC })
     expect(snapRetime(4.5321, bounds)).toBe(4.5)
     expect(snapRetime(5.26, bounds)).toBe(5.3)

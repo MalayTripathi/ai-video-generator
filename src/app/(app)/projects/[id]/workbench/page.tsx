@@ -15,9 +15,9 @@ import { getElementGenerateAffordability } from './affordability'
 import { getProjectElementsForUser, type ElementGroup } from '@/lib/elements/read'
 import type { DisplayDialogueLine, DisplayShot } from './_components/types'
 import type { Tables } from '@/lib/database.types'
-import { durationConfig, type DurationTarget } from '@/lib/config/duration'
+import { shotGenerationCredits } from '@/lib/config/credits'
 import { recordDynamicSpend, recordFixedSpend } from '@/lib/credits/ledger'
-import { isLiveShotRun, settleDeadShotRuns } from '@/lib/shots/runs'
+import { needsDeadRunSettlement, settleDeadShotRuns } from '@/lib/shots/runs'
 import { shotRunView, type ShotRunView } from './_components/shot-run-view'
 import type { CameraOrigin } from '@/lib/config/enums'
 
@@ -163,7 +163,7 @@ export default async function WorkbenchPage({
     // whether a dead chain needs settling on this load.
     supabase
       .from('shot_runs')
-      .select('status, stop_reason, total_scenes, heartbeat_at, charged_at')
+      .select('status, stop_reason, total_scenes, heartbeat_at, finished_at, charged_at')
       .eq('project_id', projectId)
       .order('created_at', { ascending: false })
       .limit(1)
@@ -181,12 +181,13 @@ export default async function WorkbenchPage({
   }
 
   // A dead chain is settled on the first load after its stale window (and a terminal run
-  // whose charge failed is retried), then the page renders from a fresh read - so a run
-  // that died never leaves the generating state spinning.
+  // whose charge never landed is completed), then the page renders from a fresh read - so a
+  // run that died never leaves the generating state spinning. Never sooner: a load while
+  // the worker is still writing must not settle or charge it.
   let generationState = generation?.state ?? null
   let run = latestRun
   let shotsRows = firstShotsRows
-  if (run && ((run.status === 'running' && !isLiveShotRun(run)) || (run.status !== 'running' && run.charged_at === null))) {
+  if (run && needsDeadRunSettlement(run)) {
     const { changed } = await settleDeadShotRuns(supabase, { recordFixedSpend, recordDynamicSpend }, projectId)
     if (changed) {
       // Settling re-sequences the shots (and drops a dead chunk's half-written ones).
@@ -201,7 +202,7 @@ export default async function WorkbenchPage({
           .maybeSingle(),
         supabase
           .from('shot_runs')
-          .select('status, stop_reason, total_scenes, heartbeat_at, charged_at')
+          .select('status, stop_reason, total_scenes, heartbeat_at, finished_at, charged_at')
           .eq('project_id', projectId)
           .order('created_at', { ascending: false })
           .limit(1)
@@ -275,10 +276,7 @@ export default async function WorkbenchPage({
   const agentMessages = buildAgentMessages(messageRows ?? [], shotNumberByKey, costByMessageId, creditsByMessageId)
 
   const hasPendingPayload = generation?.payload != null
-  const estimatedCredits =
-    project.duration_target && project.duration_target in durationConfig
-      ? durationConfig[project.duration_target as DurationTarget].estimatedCredits
-      : durationConfig['1-2min'].estimatedCredits
+  const shotListCredits = shotGenerationCredits(project.duration_target)
 
   return (
     <ShotsProvider
@@ -290,7 +288,7 @@ export default async function WorkbenchPage({
       initialRun={runView}
       initialHasPendingPayload={hasPendingPayload}
       initialFurthestStep={project.furthest_step}
-      estimatedCredits={estimatedCredits}
+      shotListCredits={shotListCredits}
     >
       <AssetsProvider
         projectId={projectId}

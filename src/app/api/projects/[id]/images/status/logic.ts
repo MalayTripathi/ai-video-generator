@@ -7,6 +7,8 @@ import { deriveImageState, type ImageState } from '@/lib/storyboard/image-state'
 import { liveImageCommittedCredits, storyboardImageCredits, storyboardThumbPath } from '../logic'
 import { isLiveClaim } from '@/lib/generations/claim'
 import { liveAudioCommittedCredits } from '@/lib/voiceover/committed'
+import { completeLinkedVoiceover } from '@/lib/voiceover/complete-linked'
+import type { recordFixedSpend as recordFixedSpendType } from '@/lib/credits/ledger'
 import { type WordBoundary } from '@/lib/storyboard/motion'
 import { type VoiceoverSpan } from '@/lib/storyboard/voiceover'
 import { currentRead } from '@/lib/export/film-input'
@@ -163,6 +165,12 @@ export async function loadImageStatuses(params: {
   userId: string
   getBalance: typeof getBalanceType
   project?: StatusProjectRow
+  /**
+   * The ledger writer, to complete a read whose audio was linked but whose claim was never
+   * settled (complete-linked.ts) - from the rows this read already has, past the stale
+   * window only. Absent: such a claim is only reported.
+   */
+  recordFixedSpend?: typeof recordFixedSpendType
 }): Promise<ImageStatusResult> {
   const { supabase, projectId, userId, getBalance } = params
 
@@ -202,7 +210,7 @@ export async function loadImageStatuses(params: {
       .eq('operation', 'generate_image'),
     supabase
       .from('generations')
-      .select('operation, state, started_at, queued_at, updated_at, payload')
+      .select('id, operation, state, started_at, queued_at, updated_at, payload')
       .eq('project_id', projectId)
       .eq('step', 'storyboard')
       .in('operation', ['voiceover', 'align_voiceover', 'background_music']),
@@ -249,7 +257,20 @@ export async function loadImageStatuses(params: {
     }
   })
 
-  const audioClaims = voiceoverClaimsResult.data ?? []
+  let audioClaims = voiceoverClaimsResult.data ?? []
+  if (params.recordFixedSpend) {
+    const completed = await completeLinkedVoiceover({
+      supabase,
+      userId,
+      projectId,
+      rows: audioClaims,
+      audioPath: project.audio_path,
+      recordFixedSpend: params.recordFixedSpend,
+    })
+    if (completed.length > 0) {
+      audioClaims = audioClaims.map((row) => (completed.includes(row.id) ? { ...row, state: 'succeeded', payload: null } : row))
+    }
+  }
   const voiceover = deriveVoiceoverStatus(
     project,
     audioClaims.filter((row) => row.operation !== 'background_music'),

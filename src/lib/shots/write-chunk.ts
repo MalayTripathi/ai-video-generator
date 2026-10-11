@@ -91,13 +91,49 @@ export function parseRawShots(rawShots: unknown): RawShot[] {
 
 export type PreparedShot = RawShot & { seconds: number; narrationOverflow: boolean }
 
-/** Parsed shots with their code-computed durations, in order. */
+// Every key write_shots requires on a shot. A shot an answer cut short at max_tokens left
+// without one of them was still being written.
+const REQUIRED_SHOT_KEYS = [
+  'voice_over',
+  'visual_description',
+  'shot_size',
+  'camera_angle',
+  'camera_movement',
+  'shot_size_origin',
+  'camera_angle_origin',
+  'camera_movement_origin',
+  'duration_sec',
+  'dialogue',
+  'element_names',
+] as const
+
+/**
+ * The shots of an answer cut short at max_tokens that were written in full. The tool input
+ * is parsed from partial JSON, so the shot being written when the answer stopped can look
+ * whole with its text cut mid-sentence: the last shot is kept only when the answer went on
+ * to `scene_complete` (the shots array had closed), and every kept shot has every key.
+ */
+export function completeShotsOfTruncated(rawInput: unknown): unknown[] {
+  const input = (rawInput ?? {}) as { shots?: unknown; scene_complete?: unknown }
+  if (!Array.isArray(input.shots)) return []
+  const closed = typeof input.scene_complete === 'boolean'
+  const candidates = closed ? input.shots : input.shots.slice(0, -1)
+  return candidates.filter(
+    (v) => typeof v === 'object' && v !== null && REQUIRED_SHOT_KEYS.every((k) => Object.hasOwn(v as object, k))
+  )
+}
+
+/**
+ * Parsed shots with their code-computed durations, in order. A truncated answer keeps only
+ * its complete shots and never reports its scene complete - the next chunk continues it.
+ */
 export function prepareChunkShots(
   rawInput: unknown,
-  ctx: { language: string | null; model: VideoModelConfig }
+  ctx: { language: string | null; model: VideoModelConfig; truncated?: boolean }
 ): { shots: PreparedShot[]; sceneComplete: boolean } {
   const input = (rawInput ?? {}) as { shots?: unknown; scene_complete?: unknown }
-  const shots = parseRawShots(input.shots).map((shot) => {
+  const rawShots = ctx.truncated ? completeShotsOfTruncated(rawInput) : input.shots
+  const shots = parseRawShots(rawShots).map((shot) => {
     const { seconds, narrationOverflow } = computeShotDuration({
       narration: shot.voice_over,
       dialogue: shot.dialogue.map((d) => d.line),
@@ -107,7 +143,7 @@ export function prepareChunkShots(
     })
     return { ...shot, seconds, narrationOverflow }
   })
-  return { shots, sceneComplete: input.scene_complete === true }
+  return { shots, sceneComplete: !ctx.truncated && input.scene_complete === true }
 }
 
 /**

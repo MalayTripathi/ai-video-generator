@@ -7,6 +7,7 @@ import { loadAgentMessages } from '@/lib/load-agent-messages'
 import { stepIndex } from '@/lib/config/pipeline'
 import { ASPECT_RATIOS, type AspectRatio } from '@/lib/config/enums'
 import { getBalance } from '@/lib/credits/balance'
+import { recordFixedSpend } from '@/lib/credits/ledger'
 import { loadImageStatuses, IMAGE_STATUS_PROJECT_COLUMNS } from '@/app/api/projects/[id]/images/status/logic'
 import { loadExports, type ExportsData } from '@/app/api/projects/[id]/exports/logic'
 import { STATUS_POLL_INTERVAL_MS } from '@/lib/config/storyboard'
@@ -64,7 +65,7 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
   ).then(({ data }) => (data ?? []) as unknown as StoryboardShot[])
   const [shots, status, exportsResult, agentMessages] = await Promise.all([
     shotsPromise,
-    loadImageStatuses({ supabase, projectId, userId: user.id, getBalance, project }),
+    loadImageStatuses({ supabase, projectId, userId: user.id, getBalance, project, recordFixedSpend }),
     // Export history's first paint, from the same function its poll reads.
     loadExports({ supabase, projectId, userId: user.id, projectVerified: true }),
     loadAgentMessages(supabase, projectId, shotsPromise),

@@ -44,6 +44,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     expectedCredits: body.expectedCredits,
     getBalance,
     ensureSignupGrant,
+    recordFixedSpend,
   })
   if (!result.ok) return refusalResponse(result)
 
