@@ -1686,3 +1686,14 @@ with its shots, for "Generate remaining shots", which starts both counts again.
 **Rejected: per-batch holds and dropping on overrun.** Per-batch holds keep the mid-story
 balance stop and a ledger row per batch. Dropping on overrun throws away paid output; the
 person decides what to cut on the Workbench.
+
+## Vercel branch deploys: specific branches before the `**` catch-all
+*Supports: the `vercel.json` bullet in `## Code conventions`.*
+
+Only `master` (production) and `preview` deploy; every other branch is blocked by
+`git.deploymentEnabled`. Vercel applies these entries in order, so each specific `true`
+entry must come before the `"**": false` catch-all. With `"**"` listed first, a push to
+`preview` created no deployment; it deployed once `"**"` was moved last. A local minimatch
+check passed on the broken order because it tested each pattern independently, ignoring
+order — so it cannot verify this config, and order has to be checked by reading the file.
+`**` rather than `*` is used so branch names containing `/` are blocked too.

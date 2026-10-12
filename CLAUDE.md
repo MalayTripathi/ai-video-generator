@@ -251,6 +251,8 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   The proxy verifies with `getClaims()`; route handlers, server actions and the
   `(app)` layout verify with `getUser()` (layout and pages via the `cache()`d
   `getCurrentUser`, `src/lib/auth/current-user.ts`).
+- In `vercel.json`'s `git.deploymentEnabled`, list every specific `true` branch before the
+  `"**": false` catch-all — Vercel applies the entries in order.
 - **Data access.** Independent reads run in parallel; a read waits only on the read it
   depends on. No `select('*')` on a page, layout or poll endpoint — name the columns.
   Aggregates are computed in Postgres (a `security_invoker` view or a `(count)` embed),
