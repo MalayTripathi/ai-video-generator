@@ -1,4 +1,12 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "regions": ["sin1"],
-  "fluid": true
+  "fluid": true,
+  "git": {
+    "deploymentEnabled": {
+      "master": true,
+      "preview": true,
+      "**": false
+    }
+  }
 }
