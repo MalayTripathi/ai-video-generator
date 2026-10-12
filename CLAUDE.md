@@ -533,9 +533,9 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   created, never to "all of this user's rows." A test that asserts something
   *inherently* a global-per-user fact — an empty state, an exact row count or dollar
   figure for the user this month, a credit balance it drains or reads exactly, or RLS
-  isolation between two users — keeps its own fresh, never-attempted
-  `createTestSession()` user instead of sharing `primary`/`secondary`. Do not "fix"
-  these by switching them to a fixed user.
+  isolation between two users — claims a wiped pool user (`createTestSession()`,
+  returned by `releaseTestUser`; tests never create users), never `primary`/`secondary`.
+  Do not "fix" these by switching them to a fixed user.
 - **`tests/global-teardown.ts` cleans up the fixed users' rows once per
   run.** It must stay a `globalTeardown`, never an `afterEach` — the suite
   is `fullyParallel`, so per-test cleanup of *shared* fixed-user data

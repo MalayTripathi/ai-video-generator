@@ -501,7 +501,7 @@ test.describe('agent chat panel', () => {
       provider: 'anthropic',
       model: 'claude-haiku-4-5-20251001',
       status: 'pending',
-      estimated_cost: 0.5,
+      estimated_cost: 0.005,
     })
 
     const secondRequestBodies: { content: string; clientId: string }[] = []

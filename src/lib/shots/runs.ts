@@ -6,7 +6,7 @@ import type { Database, Tables } from '@/lib/database.types'
 import type { placeHold, settleHold } from '@/lib/credits/ledger'
 import { creditsFor, usdToCredits } from '@/lib/config/credits'
 import { refreshGenerationHeartbeat, settleGeneration } from '@/lib/generations/claim'
-import { SHOT_RUN_STALE_AFTER_MS, SHOTS_PER_CHUNK } from '@/lib/config/shots'
+import { SHOT_ORDER_CHUNK_STRIDE, SHOT_RUN_STALE_AFTER_MS } from '@/lib/config/shots'
 import { chunkShotOrderIndex, resequence } from './positions'
 
 // The shot-run record: one row per shot-generation user action (Generate shots, Generate
@@ -154,7 +154,7 @@ export async function deleteChunkProvisionalShots(
     .delete()
     .eq('project_id', projectId)
     .gte('order_index', from)
-    .lte('order_index', from + SHOTS_PER_CHUNK - 1)
+    .lte('order_index', from + SHOT_ORDER_CHUNK_STRIDE - 1)
   return { error: error?.message ?? null }
 }
 

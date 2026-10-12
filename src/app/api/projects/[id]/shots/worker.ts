@@ -8,7 +8,15 @@ import { effectiveVideoModel } from '@/lib/shots/effective-model'
 import { modelsConfig } from '@/lib/config/models.server'
 import { durationConfig, parseDurationTarget, type DurationConfig } from '@/lib/config/duration'
 import { CLASSIFIABLE_VIDEO_TYPES } from '@/lib/config/enums'
-import { SHOT_CHUNK_CONCURRENCY, SHOT_HANDOFF_TIMEOUT_MS, SHOTS_PER_CHUNK, shotRunBudgetMs } from '@/lib/config/shots'
+import {
+  SCENE_BATCH_FACTOR,
+  SCENE_EMPTY_ANSWER_LIMIT,
+  SCENE_EXTRA_REQUESTS,
+  SHOT_CHUNK_CONCURRENCY,
+  SHOT_HANDOFF_TIMEOUT_MS,
+  SHOTS_PER_CHUNK,
+  shotRunBudgetMs,
+} from '@/lib/config/shots'
 import { persistGenerationPayload } from '@/lib/generations/claim'
 import { assertWithinAllowance, estimateInputTokens, quoteClaudeCall, reserveUsage, settleUsage, settledStatus } from '@/lib/usage'
 import { isUniqueViolation } from '@/lib/shot-key'
@@ -24,7 +32,7 @@ import {
   buildChunkWriteShotsTool,
   type PreviousShotForPrompt,
 } from '@/lib/prompts/shot-chunk'
-import { fitOutlineSeconds, sceneMaxShots, sceneRequestLimitSec, shotCeiling } from '@/lib/shots/limits'
+import { chunkSizes, fitOutlineSeconds, sceneMaxShots, sceneRequestLimitSec, shotCeiling } from '@/lib/shots/limits'
 import { chunkWordBudget } from '@/lib/shots/durations'
 import { ElementResolver, insertChunkShots, prepareChunkShots, sanitizeEnum } from '@/lib/shots/write-chunk'
 import {
@@ -35,7 +43,7 @@ import {
   type ShotRunStatus,
   type ShotRunStopReason,
 } from '@/lib/shots/runs'
-import { creditsFor, usdToCredits } from '@/lib/config/credits'
+import { creditsFor, shotCountFor, usdToCredits } from '@/lib/config/credits'
 
 // The shot-generation chain: one background run of it. Service-role client, so every read
 // and write below is scoped explicitly by project (and the project by user, at load).
@@ -180,6 +188,12 @@ type SceneState = {
   lastShot: PreviousShotForPrompt | null
   /** A replayable payload a dead chunk of this scene left behind (paid for, never applied). */
   orphan: { chunkId: string; payload: Json } | null
+  /** This run's requests for the scene, and the most it gets: its expected batches times
+   * SCENE_BATCH_FACTOR plus SCENE_EXTRA_REQUESTS. Reaching it leaves the scene incomplete. */
+  requests: number
+  maxRequests: number
+  /** Answers in a row, this run, that saved no complete shot (SCENE_EMPTY_ANSWER_LIMIT). */
+  emptyAnswers: number
 }
 
 export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContinuationPayload | (Omit<ShotsContinuationPayload, 'chainDepth'> & { chainDepth: 0 })): Promise<ShotsWorkerResult> {
@@ -326,6 +340,17 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
     const targetSec = targetOf(scene)
     const last = sceneShots.at(-1) ?? lastShotBefore(shots, scenes, scene.position)
     const orphan = sceneChunks.find((c) => c.run_id !== runId && c.status !== 'succeeded' && c.payload !== null)
+    // A run continued by a hand-off keeps both per-scene limits: its own chunks of the scene
+    // count as requests, and its trailing retried empty answers - the one 'succeeded' shape
+    // that saved nothing and did not close the scene - as answers in a row.
+    const sceneRunChunks = runChunks.filter((c) => c.scene_id === scene.id).sort((a, b) => a.chunk_index - b.chunk_index)
+    let emptyAnswers = 0
+    for (let i = sceneRunChunks.length - 1; i >= 0; i--) {
+      const c = sceneRunChunks[i]
+      if (c.status !== 'succeeded' || c.shots_saved > 0 || c.scene_complete) break
+      emptyAnswers += 1
+    }
+    const maxShots = sceneMaxShots(targetSec, bounds.min)
     queue.push({
       scene,
       elementNames:
@@ -334,11 +359,14 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       shots: sceneShots.length,
       seconds: writtenOf(scene.id),
       nextChunkIndex: sceneChunks.reduce((max, c) => Math.max(max, c.chunk_index + 1), 0),
-      maxShots: sceneMaxShots(targetSec, bounds.min),
+      maxShots,
       targetSec,
       limitSec: sceneRequestLimitSec(targetSec, tierRange),
       lastShot: last ? { voice_over: last.voice_over, visual_description: last.visual_description } : null,
       orphan: orphan ? { chunkId: orphan.id, payload: orphan.payload! } : null,
+      requests: sceneRunChunks.length,
+      maxRequests: chunkSizes(Math.min(maxShots, shotCountFor(targetSec))).length * SCENE_BATCH_FACTOR + SCENE_EXTRA_REQUESTS,
+      emptyAnswers,
     })
   }
   const projectBlock = buildChunkProjectBlock(project, scenes)
@@ -396,9 +424,15 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   /**
    * One chunk of one scene. 'again': the scene continues in its next chunk. 'done': the
    * scene is written. 'left': the scene stays unwritten or incomplete for this run (no
-   * request allowed, or the answer was cut short before a whole shot). 'error': the chunk failed.
+   * request allowed, its request cap reached, or a second answer in a row with no complete
+   * shot). 'error': the chunk failed.
    */
   const runChunk = async (state: SceneState): Promise<'again' | 'done' | 'left' | 'error'> => {
+    // The request cap stops a scene without writing it: it stays incomplete with its shots.
+    if (!state.orphan && state.requests >= state.maxRequests) {
+      console.warn(`[shots] run ${runId}: scene ${state.scene.position} reached its ${state.maxRequests} requests; left incomplete`)
+      return 'left'
+    }
     if (!state.orphan && !mayRequest(state)) {
       if (totals.shots + inFlightShots >= ceiling) console.warn(`[shots] run ${runId}: the project's shot ceiling is reached`)
       return closeScene(state)
@@ -451,6 +485,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       return isUniqueViolation(chunkError) ? 'left' : 'error'
     }
     chunksRun += 1
+    state.requests += 1
     inFlightShots += cap
 
     let costUsd = 0
@@ -598,8 +633,13 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
     // its last complete shot.
     const sceneComplete =
       state.shots > 0 && (prepared.sceneComplete || (!truncated && state.seconds >= state.targetSec - 1e-9) || !mayRequest(state))
+    // An answer with no new complete shot is retried once (SCENE_EMPTY_ANSWER_LIMIT). The
+    // retried one settles 'succeeded' with nothing saved - the shape a hand-off counts - and
+    // only the one that reaches the limit fails, leaving the scene incomplete.
+    const empty = saved.length === 0 && !sceneComplete
+    state.emptyAnswers = empty ? state.emptyAnswers + 1 : 0
     const reason =
-      saved.length > 0 || sceneComplete
+      !empty || state.emptyAnswers < SCENE_EMPTY_ANSWER_LIMIT
         ? null
         : truncated
           ? 'The answer was cut short before a whole shot'

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { creditsFor } from '../src/lib/config/credits'
@@ -163,7 +163,7 @@ test.describe('voiceover - generate', () => {
       expect(after.usage).toHaveLength(0)
       expect(after.ledger).toHaveLength(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -267,7 +267,7 @@ test.describe('voiceover - generate', () => {
       const spans = vo.voiceover_spans as { startSec: number }[]
       expect(spans[1].startSec).toBeGreaterThanOrEqual(SAMPLE_SECONDS - 0.001)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -313,7 +313,7 @@ test.describe('voiceover - generate', () => {
       expect(spans[1].startSec).toBeGreaterThanOrEqual(SAMPLE_SECONDS - 0.001)
       expect(spans[2].startSec).toBeGreaterThanOrEqual(SAMPLE_SECONDS * 2 - 0.001)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -725,7 +725,7 @@ test.describe('voiceover - fit and link are safe to kill', () => {
       expect(project!.last_fit_at).not.toBeNull()
       expect(project!.audio_path).not.toBeNull()
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -764,7 +764,7 @@ test.describe('voiceover - fit and link are safe to kill', () => {
       expect(after.ledger).toHaveLength(1)
       expect(after.ledger[0].operation).toBe('voiceover')
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

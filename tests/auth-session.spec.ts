@@ -1,5 +1,5 @@
 import { test, expect, request as playwrightRequest, type APIRequestContext } from '@playwright/test'
-import { createTestSession, deleteTestUser } from './supabase-test-session'
+import { createTestSession, releaseTestUser } from './supabase-test-session'
 
 // The session boundary as a request sees it: the proxy refreshes an expired access token
 // from the refresh token and hands the page the new cookie; pages redirect a signed-out
@@ -70,7 +70,7 @@ test.describe('an expired access token', () => {
       expect(parsed.refresh_token).not.toBe(session.refresh_token)
       expect(parsed.expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000))
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -83,7 +83,7 @@ test.describe('an expired access token', () => {
       })
       await expectLoginRedirect(res)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import sharp from 'sharp'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { CREDIT_PRICE_VERSION, SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
@@ -330,7 +330,7 @@ test.describe('storyboard images - request validation and gate', () => {
       expect(await usageRows(projectId)).toHaveLength(0)
       expect(await ledgerRows(projectId)).toHaveLength(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -361,7 +361,7 @@ test.describe('storyboard images - request validation and gate', () => {
 
       await releaseClaims(projectA)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 

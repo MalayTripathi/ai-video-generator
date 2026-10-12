@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { DEFAULT_DURATION_TARGET } from '../src/lib/config/duration'
 import { DEFAULT_QUALITY_PRESET, QUALITY_PRESETS } from '../src/lib/config/models'
@@ -139,7 +139,7 @@ test.describe('New Project intake', () => {
       await page.getByTestId('new-project-empty').click()
       await page.waitForURL('/projects/new', { waitUntil: 'commit' })
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -264,7 +264,7 @@ test.describe('New Project intake', () => {
           image_model: 'gpt-image-2',
         })
       } finally {
-        await deleteTestUser(user.id)
+        await releaseTestUser(user.id)
       }
     })
   })
@@ -309,7 +309,7 @@ test.describe('New Project intake - the balance check', () => {
       const { data: project } = await admin.from('projects').select('user_id, source_text').eq('id', projectId!).single()
       expect(project).toEqual({ user_id: user.id, source_text: 'A short video about lighthouses' })
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 

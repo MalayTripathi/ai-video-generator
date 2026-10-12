@@ -76,8 +76,6 @@ function buildStorageState(session: any, supabaseUrl: string) {
   }
 }
 
-const FULL_RUN_USER_POOL = 48
-
 export default async function globalSetup() {
   // No automated run may make a real, billed provider call. playwright.config.ts sets
   // BLOCK_PROVIDER_CALLS=1 for the runner and the server it starts; refuse to run without
@@ -147,12 +145,10 @@ export default async function globalSetup() {
     )
   }
 
-  // Full runs top the pool up to the fresh users the few global-per-user specs need (see
-  // createTestSession), in parallel and off the tests' own clock; users left unclaimed by
-  // an earlier run are reused, not recreated. Sessions are still minted per test, spread
-  // across the run under Supabase's auth rate limit. Sized to the fresh users
-  // a full run creates; a short pool only costs speed (the rest are minted on demand),
-  // and teardown logs the counts to keep it tuned. Targeted runs mint on demand instead.
+  // Every run uses the fixed-size user pool (USER_POOL_MAX): tests claim a user and release
+  // it wiped, and never create one. Users a killed run left claimed are released first, then
+  // the pool is topped up to its maximum - a no-op unless a user went missing. Sessions are
+  // still minted per test, spread across the run under Supabase's auth rate limit.
   const { pruneClaimedUsers, fillUserPool, sweepOrphanedTestUsers } = await import('./supabase-test-session')
   await pruneClaimedUsers()
   // A killed run never reaches its tests' cleanup or globalTeardown; this run does it.
@@ -162,10 +158,8 @@ export default async function globalSetup() {
   } catch (err) {
     console.error('[global-setup] orphaned-user sweep failed - continuing:', err)
   }
-  if (process.env.PW_SERVER === 'prod') {
-    const created = await fillUserPool(FULL_RUN_USER_POOL)
-    console.log(`[global-setup] fresh-user pool: created ${created}, reused ${FULL_RUN_USER_POOL - created}`)
-  }
+  const created = await fillUserPool()
+  if (created > 0) console.log(`[global-setup] user pool: created ${created} missing user(s)`)
 }
 
 async function assertServerBlocksProviders(): Promise<void> {

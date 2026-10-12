@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { framePrice } from './helpers/prices'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 
@@ -253,7 +253,7 @@ test.describe('Step 3 footer button', () => {
       await dialog.getByRole('button', { name: 'Cancel' }).click()
       await expect(page.getByRole('dialog')).toHaveCount(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -362,7 +362,7 @@ test.describe('Step 3 footer button', () => {
       await expect(page.getByText('Not enough credits for the last two frames')).toBeVisible()
       expect(advanceCalls).toBe(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

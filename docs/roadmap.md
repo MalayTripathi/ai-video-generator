@@ -411,9 +411,9 @@ untouched). The Storyboard voiceover already follows it.
   refund or an excess spend more often than a button run.
 - **Measure Sonnet's average shot length.** The quote's average is Haiku's; Sonnet may write
   longer or shorter shots for the same brief.
-- **A model that truncates every answer keeps a scene asking.** A truncated answer saves its whole
-  shots and the scene continues (D2), so a scene stops only at its share of the tier maximum, the
-  shot ceiling or the progress guard - each request costs a call.
+- **The per-scene request cap assumes the measured average shot.** A scene gets twice its
+  expected batches at 8.45s a shot, plus 2. A model writing much shorter shots on a long scene reaches the
+  cap first and leaves it incomplete; re-check the cap with the average-shot calibration.
 - **Voice placement when shots are reordered against the read.** The export renders each
   forward run of pieces from its own input of the voice file (`voiceRuns`); a heavily
   shuffled film opens the file many times.

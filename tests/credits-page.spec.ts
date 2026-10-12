@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { createClient } from '@supabase/supabase-js'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { aggregateCreditsPeriod, type ProjectMeta } from '../src/app/(app)/credits/aggregate'
 import type { LedgerRow } from '../src/app/(app)/credits/data'
 import { operationUnitLabel } from '../src/app/(app)/credits/operation-unit-label'
@@ -167,8 +167,8 @@ test.describe('credit_ledger RLS', () => {
       const { data: ownRowsForA } = await admin.from('credit_ledger').select('id').eq('user_id', userA.id)
       expect(ownRowsForA!.length).toBe(1)
     } finally {
-      await deleteTestUser(userA.id)
-      await deleteTestUser(userB.id)
+      await releaseTestUser(userA.id)
+      await releaseTestUser(userB.id)
     }
   })
 })
@@ -187,7 +187,7 @@ test.describe('credits page', () => {
       await expect(page.getByTestId('credits-balance')).toHaveText(SIGNUP_GRANT_CREDITS.toLocaleString('en-US'))
       await expect(page.getByText('No credit activity yet')).toHaveCount(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -236,7 +236,7 @@ test.describe('credits page', () => {
       await expect(page.getByTestId('credits-balance')).toHaveText('4,983')
       await expect(page.getByTestId('credits-spent-this-period')).toHaveText('17')
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

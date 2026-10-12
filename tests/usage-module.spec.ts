@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { APIError } from '@anthropic-ai/sdk'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { reserveUsage, settleUsage, quoteClaudeCall, assertWithinAllowance, AllowanceExceededError } from '../src/lib/usage'
 
@@ -421,7 +421,7 @@ test.describe('assertWithinAllowance', () => {
       else process.env.SPEND_CAP_ENABLED = originalEnabled
       if (originalCeiling === undefined) delete process.env.SPEND_CAP_MONTHLY_USD
       else process.env.SPEND_CAP_MONTHLY_USD = originalCeiling
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 

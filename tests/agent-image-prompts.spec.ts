@@ -16,9 +16,10 @@ import { IMAGE_PROMPTS_INSTRUCTION_MAX_CHARS } from '../src/lib/prompts/image-pr
 const GOOD_PROMPT =
   'A cold, blue-toned wide shot of the harbour at dawn, mist on the water, documentary framing, muted palette, no people.'
 
-// Haiku dev rates: input $1/M, output $5/M. These three calls cost $0.0015 + $0.0015 +
-// $0.0009 = $0.0039 -> 4 credits rounded once on the total. Rounding per call would give
-// 2 + 2 + 1 = 5, so the delta distinguishes the two.
+// Haiku 5.5 dev rates: input $0.10/M, output $0.50/M. These three calls cost $0.0015 +
+// $0.0015 + $0.0009 = $0.0039 -> 4 credits rounded once on the total. Rounding per call would
+// give 2 + 2 + 1 = 5, and dropping the nested call 3, so the delta distinguishes all three.
+// The token counts are large enough that the total stays above the 1-credit minimum.
 const usage = (inputTokens: number, outputTokens: number) => ({
   input_tokens: inputTokens,
   output_tokens: outputTokens,
@@ -158,7 +159,7 @@ test.describe('the Step 3 agent tool set', () => {
   })
 
   test('an unknown step is rejected rather than defaulted', () => {
-    expect(() => getAgentStepConfig('video_prompts' as never)).toThrow()
+    expect(() => getAgentStepConfig('not_a_step' as never)).toThrow()
   })
 })
 
@@ -169,14 +170,14 @@ test.describe('runAgentTurn - Step 3 regeneration tools', () => {
     const target = shots[1]
 
     const gateway = scriptedGateway([
-      successMessage({ shot_number: 2, instruction: 'make it feel colder' }, 'regenerate_image_prompt', usage(500, 200)),
+      successMessage({ shot_number: 2, instruction: 'make it feel colder' }, 'regenerate_image_prompt', usage(5000, 2000)),
       // The nested write_image_prompts call the tool triggers - same shared gateway.
       successMessage(
         { prompts: [{ shot_key: target.shot_key, image_prompt: GOOD_PROMPT }] },
         'write_image_prompts',
-        usage(1000, 100)
+        usage(10000, 1000)
       ),
-      textMessage('Rewrote it colder.', usage(400, 100)),
+      textMessage('Rewrote it colder.', usage(4000, 1000)),
     ])
 
     const result = await turn(projectId, gateway, 'make shot 2 feel colder')
@@ -214,13 +215,13 @@ test.describe('runAgentTurn - Step 3 regeneration tools', () => {
     const shots = await seedShots(projectId, 3)
 
     const gateway = scriptedGateway([
-      successMessage({}, 'regenerate_all_image_prompts', usage(500, 200)),
+      successMessage({}, 'regenerate_all_image_prompts', usage(5000, 2000)),
       successMessage(
         { prompts: shots.map((s) => ({ shot_key: s.shot_key, image_prompt: GOOD_PROMPT })) },
         'write_image_prompts',
-        usage(1000, 100)
+        usage(10000, 1000)
       ),
-      textMessage('Rewrote all of them.', usage(400, 100)),
+      textMessage('Rewrote all of them.', usage(4000, 1000)),
     ])
 
     const result = await turn(projectId, gateway, 'rewrite every prompt')
@@ -252,9 +253,9 @@ test.describe('runAgentTurn - Step 3 regeneration tools', () => {
       const returned = tool === 'regenerate_image_prompt' ? [] : [{ shot_key: shots[0].shot_key, image_prompt: GOOD_PROMPT }]
 
       const gateway = scriptedGateway([
-        successMessage(input, tool, usage(500, 200)),
-        successMessage({ prompts: returned }, 'write_image_prompts', usage(1000, 100)),
-        textMessage('Not all of it landed.', usage(400, 100)),
+        successMessage(input, tool, usage(5000, 2000)),
+        successMessage({ prompts: returned }, 'write_image_prompts', usage(10000, 1000)),
+        textMessage('Not all of it landed.', usage(4000, 1000)),
       ])
       let settledUsd = -1
       const result = await turn(projectId, gateway, 'redo them', {
@@ -281,8 +282,8 @@ test.describe('runAgentTurn - Step 3 regeneration tools', () => {
     const projectId = await seedProject()
     await seedShots(projectId, 1)
     const gateway = scriptedGateway([
-      successMessage({ shot_number: 9 }, 'regenerate_image_prompt', usage(500, 200)),
-      textMessage('No such shot.', usage(400, 100)),
+      successMessage({ shot_number: 9 }, 'regenerate_image_prompt', usage(5000, 2000)),
+      textMessage('No such shot.', usage(4000, 1000)),
     ])
     expect((await turn(projectId, gateway, 'redo shot 9')).ok).toBe(true)
     // $0.0015 + $0.0009 = $0.0024 -> 3 credits: only the two agent calls.
@@ -523,12 +524,12 @@ test.describe('runAgentTurn - Step 3 balance gate', () => {
     await seedShots(projectId, 3)
     let seenBalanceFor = 0
     const gateway = scriptedGateway([])
-    // 1 credit is below any realistic estimate for a turn with a tool call.
+    // A turn always needs at least 1 credit, so an empty balance is refused.
     const result = await turn(projectId, gateway, 'rewrite every prompt', {
       getBalance: async (userId: string) => {
         seenBalanceFor++
         expect(userId).toBe(primary.user.id)
-        return 1
+        return 0
       },
     })
     expect(result.ok).toBe(false)
@@ -537,8 +538,8 @@ test.describe('runAgentTurn - Step 3 balance gate', () => {
   })
 
   // The gate's figure is an estimate of a real turn (up to three agent calls plus the
-  // largest tool call at its expected size), not the per-call max_tokens ceiling - which,
-  // at ~90 credits for a 3-shot project on the dev model, refused turns that cost ~5.
+  // largest tool call at its expected size), not the per-call max_tokens ceiling, which
+  // refused turns costing a fraction of it.
   test('a balance that covers a realistic turn is not refused (the old ceiling quote would have refused it)', async () => {
     const projectId = await seedProject()
     await seedShots(projectId, 3)
@@ -552,11 +553,11 @@ test.describe('runAgentTurn - Step 3 balance gate', () => {
     const projectId = await seedProject()
     await seedShots(projectId, 3)
     const gateway = scriptedGateway([])
-    const result = await turn(projectId, gateway, 'make it colder', { getBalance: async () => 5 })
+    // Every turn needs at least 1 credit, so an empty balance is below any estimate.
+    const result = await turn(projectId, gateway, 'make it colder', { getBalance: async () => 0 })
     expect(result.ok).toBe(false)
     const reply = (await messageRows(projectId)).find((m) => m.role === 'assistant')!
-    expect(reply.content).toMatch(/\b5\b/)
-    expect(reply.content).toMatch(/credits/i)
+    expect(reply.content).toMatch(/needs roughly [1-9][\d,]* and you have 0\b/)
   })
 
   test('the Workbench config is never balance-gated', async () => {

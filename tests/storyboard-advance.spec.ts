@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { framePrice } from './helpers/prices'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
@@ -120,7 +120,7 @@ test.describe('runAdvanceToStoryboard', () => {
       // Pre-flight only: the real spend is recorded by the storyboard generation route.
       expect(await ledgerRowsFor(projectId)).toBe(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -153,7 +153,7 @@ test.describe('runAdvanceToStoryboard', () => {
       expect(project.furthest_step).toBe(stepIndex('image_prompts'))
       expect(await ledgerRowsFor(projectId)).toBe(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -179,7 +179,7 @@ test.describe('runAdvanceToStoryboard', () => {
       expect(project.furthest_step).toBe(stepIndex('storyboard'))
       expect(await ledgerRowsFor(projectId)).toBe(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -201,7 +201,7 @@ test.describe('runAdvanceToStoryboard', () => {
       if (!result.ok) throw new Error('unreachable')
       expect(result.data.requiredCredits).toBe(8 * PER_SHOT)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -271,7 +271,7 @@ test.describe('runAdvanceToStoryboard', () => {
       if (result.ok) throw new Error('unreachable')
       expect(result.status).toBe(404)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

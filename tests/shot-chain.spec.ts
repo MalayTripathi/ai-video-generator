@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { admin, createFreshUser, deleteTestUser } from './supabase-test-session'
+import { admin, createFreshUser, releaseTestUser } from './supabase-test-session'
 import { realRecordDynamicSpend } from './helpers/ledger-child'
 import { scriptedGateway, successMessage, textMessage, throwingGateway } from './helpers/claude-fakes'
 import {
@@ -59,14 +59,15 @@ async function generationRow(projectId: string, operation: 'generate_shots' | 'a
 const fourWords = (tag: string) => `${tag} spoken words here`
 
 
-// Each test owns a fresh user: these chains spend heavily, and neither the shared fixed user's
-// monthly spend cap nor its balance may decide their outcome.
+// Each test owns a pool user: a run places a hold on its user's next hold slot and spends
+// against its balance, so neither the shared fixed user's balance nor its other runs may
+// decide the outcome.
 let owner: { id: string }
 test.beforeEach(async () => {
   owner = await createFreshUser()
 })
 test.afterEach(async () => {
-  await deleteTestUser(owner.id)
+  await releaseTestUser(owner.id)
 })
 
 test.describe('shot chain - a long list across several runs', () => {

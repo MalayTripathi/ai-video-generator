@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { createClient } from '@supabase/supabase-js'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { aggregateUsage, type UsageRow, type ProjectMeta } from '../src/app/(app)/usage/aggregate'
 import { getPeriodRange } from '../src/app/(app)/usage/period'
 import { STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
@@ -300,8 +300,8 @@ test.describe('usage RLS', () => {
       const { data: ownRowsForA } = await admin.from('usage').select('id').eq('user_id', userA.id)
       expect(ownRowsForA!.length).toBe(1)
     } finally {
-      await deleteTestUser(userA.id)
-      await deleteTestUser(userB.id)
+      await releaseTestUser(userA.id)
+      await releaseTestUser(userB.id)
     }
   })
 })
@@ -314,7 +314,7 @@ test.describe('usage page', () => {
       await page.goto('/usage')
       await expect(page.getByText('No spend yet')).toBeVisible()
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })
@@ -375,7 +375,7 @@ test.describe('rail usage spending', () => {
       // any link - only the two figures are their own click targets.
       await expect(page.getByTestId('rail-dollar-spend')).toContainText('$0.05')
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -406,7 +406,7 @@ test.describe('rail usage spending', () => {
       await page.getByRole('link', { name: 'Usage' }).click()
       await expect(page).toHaveURL(/\/credits$/)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

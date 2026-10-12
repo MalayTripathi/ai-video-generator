@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
 import { runAdvanceToImagePrompts } from '../src/app/api/projects/[id]/image_prompts/advance/logic'
@@ -108,7 +108,7 @@ test.describe('runAdvanceToImagePrompts', () => {
       expect(project.current_step).toBe('image_prompts')
       expect(project.furthest_step).toBe(stepIndex('image_prompts'))
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -140,7 +140,7 @@ test.describe('runAdvanceToImagePrompts', () => {
       expect(project.current_step).toBe('workbench')
       expect(project.furthest_step).toBe(stepIndex('workbench'))
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -165,7 +165,7 @@ test.describe('runAdvanceToImagePrompts', () => {
       expect(project.current_step).toBe('image_prompts')
       expect(project.furthest_step).toBe(stepIndex('image_prompts'))
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -187,7 +187,7 @@ test.describe('runAdvanceToImagePrompts', () => {
       if (!result.ok) throw new Error('unreachable')
       expect(result.data.requiredCredits).toBe(16) // 8 shots x 2 credits/shot
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -206,7 +206,7 @@ test.describe('runAdvanceToImagePrompts', () => {
       if (result.ok) throw new Error('unreachable')
       expect(result.status).toBe(404)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

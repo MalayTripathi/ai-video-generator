@@ -128,7 +128,7 @@ test.describe('shot deletion', () => {
       shot_id: shotId,
       step: 'image_prompts',
       operation: 'write_image_prompts',
-      estimated_cost: 0.42,
+      estimated_cost: 0.0042,
     })
 
     await page.goto(`/projects/${projectId}/workbench`)

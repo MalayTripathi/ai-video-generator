@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '../src/lib/database.types'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { secondary } from './fixed-users'
 import { readBalance } from '../src/lib/credits/balance'
 import { readLedgerGroups } from '../src/app/(app)/credits/data'
@@ -186,7 +186,7 @@ test.describe('credit figures computed in Postgres equal the old row-by-row figu
     } finally {
       await admin.from('usage').delete().eq('user_id', user.id)
       await admin.from('credit_ledger').delete().eq('user_id', user.id)
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

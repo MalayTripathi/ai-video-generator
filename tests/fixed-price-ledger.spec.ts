@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { SIGNUP_GRANT_CREDITS, CREDIT_PRICE_VERSION, shotGenerationCredits } from '../src/lib/config/credits'
@@ -734,7 +734,7 @@ test.describe('write_image_prompts (image-prompts route) - fixed-price ledger wi
       expect(await readLedgerRows(projectId)).toHaveLength(0)
       expect(await readUsageRows(projectId)).toHaveLength(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })
@@ -844,7 +844,7 @@ test.describe('balance across a mixed sequence (gate 11)', () => {
       const expectedCharge = 1 /* agent turn */ + 4 /* generate_shots: 2*2 */ + 3 + 3 /* two derive_camera */
       expect(finalBalance).toBe(SIGNUP_GRANT_CREDITS - expectedCharge)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

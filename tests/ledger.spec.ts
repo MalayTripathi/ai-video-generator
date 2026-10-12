@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 import { spawn } from 'node:child_process'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { usdToCredits, SIGNUP_GRANT_CREDITS } from '../src/lib/config/credits'
 
 // src/lib/credits/ledger.ts imports src/lib/supabase/service-role.ts, which imports
@@ -109,7 +109,7 @@ test.describe('ensureSignupGrant', () => {
       expect(data![0].delta).toBe(SIGNUP_GRANT_CREDITS)
       expect(data![0].dedupe_key).toBe(`signup_grant:${user.id}`)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -126,7 +126,7 @@ test.describe('ensureSignupGrant', () => {
         .eq('kind', 'signup_grant')
       expect(data).toHaveLength(1)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -147,7 +147,7 @@ test.describe('ensureSignupGrant', () => {
         .eq('kind', 'signup_grant')
       expect(data).toHaveLength(1)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })
@@ -177,7 +177,7 @@ test.describe('recordFixedSpend', () => {
       expect(data!.pricing_mode).toBe('fixed')
       expect(data!.dedupe_key).toBe(`generate_shots:${attemptId}`)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -201,7 +201,7 @@ test.describe('recordFixedSpend', () => {
       const { data } = await admin.from('credit_ledger').select('id').eq('user_id', user.id).eq('kind', 'spend')
       expect(data).toHaveLength(1)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })
@@ -223,7 +223,7 @@ test.describe('recordDynamicSpend', () => {
       const { data } = await admin.from('credit_ledger').select('id').eq('user_id', user.id)
       expect(data).toHaveLength(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -259,7 +259,7 @@ test.describe('recordDynamicSpend', () => {
         .single()
       expect(-data!.delta).toBe(expectedOnceRounded)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })
@@ -299,7 +299,7 @@ test.describe('recordRefund', () => {
       expect(refundRow!.delta).toBe(-before!.delta)
       expect(refundRow!.refunds_ledger_id).toBe(before!.id)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -335,7 +335,7 @@ test.describe('recordRefund', () => {
         .eq('kind', 'refund')
       expect(refunds).toHaveLength(1)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -363,8 +363,8 @@ test.describe('recordRefund', () => {
       expect(result.ok).toBe(false)
       expect(!result.ok && result.errorName).toBe('InvalidRefundTargetError')
     } finally {
-      await deleteTestUser(userA.id)
-      await deleteTestUser(userB.id)
+      await releaseTestUser(userA.id)
+      await releaseTestUser(userB.id)
     }
   })
 })

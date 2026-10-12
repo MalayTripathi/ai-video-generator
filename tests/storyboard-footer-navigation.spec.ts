@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import sharp from 'sharp'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { fixedCredits } from './helpers/prices'
 import { stepIndex } from '../src/lib/config/pipeline'
@@ -288,7 +288,7 @@ test.describe('Storyboard footer button', () => {
       await expect(page.getByRole('dialog')).toHaveCount(0)
       await expect(page).toHaveURL(`/projects/${projectId}/storyboard`)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { framePrice } from './helpers/prices'
 import sharp from 'sharp'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { formatCost } from '../src/lib/format-cost'
 
@@ -129,6 +129,6 @@ test('the rail updates after a shot settles, with no router.refresh()', async ({
   } finally {
     await admin.from('usage').delete().eq('user_id', user.id)
     await admin.from('credit_ledger').delete().eq('user_id', user.id)
-    await deleteTestUser(user.id)
+    await releaseTestUser(user.id)
   }
 })

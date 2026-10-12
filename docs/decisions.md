@@ -1676,6 +1676,13 @@ footer. A run over an existing list ("Generate remaining shots", or "Try again" 
 scene plan replaces the list) keeps the rows in view under the progress line. `/credits` counts
 actions by their hold (`credit_ledger_monthly.actions`): a settle row is never another action.
 
+**Why a scene is retried once and capped at twice its expected batches + 2.** An answer with no
+complete shot is often a one-off truncation, so one retry recovers it; two in a row means the
+scene will not fit, and every further request is a paid call that saves nothing. The cap
+counts requests against twice the batches the quote expects at the measured average shot, so
+answers that save one shot each cannot keep a scene asking. Both leave the scene incomplete
+with its shots, for "Generate remaining shots", which starts both counts again.
+
 **Rejected: per-batch holds and dropping on overrun.** Per-batch holds keep the mid-story
 balance stop and a ledger row per batch. Dropping on overrun throws away paid output; the
 person decides what to cut on the Workbench.

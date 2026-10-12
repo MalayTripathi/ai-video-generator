@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 
 // The generation route is always mocked: these tests drive the client and the layout, never
@@ -124,7 +124,7 @@ test.describe('1. balance is the first gate', () => {
       const { data: usage } = await admin.from('usage').select('id').eq('project_id', projectId)
       expect(usage).toEqual([])
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -151,7 +151,7 @@ test.describe('1. balance is the first gate', () => {
       expect(routeCalls).toBe(0)
       expect(await generationRows(projectId)).toEqual([])
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })
@@ -194,7 +194,7 @@ test.describe('4. the rail refreshes when a generation settles', () => {
       // is too tight. The wait is for that re-render, not for anything the test controls.
       await expect(page.getByTestId('rail-credits-spend')).toContainText('2 credits', { timeout: 20_000 })
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

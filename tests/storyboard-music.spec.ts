@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { creditsFor } from '../src/lib/config/credits'
@@ -143,7 +143,7 @@ test.describe('music - generate', () => {
       expect(after.usage).toHaveLength(0)
       expect(after.ledger).toHaveLength(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 

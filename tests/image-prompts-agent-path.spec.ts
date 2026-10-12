@@ -152,7 +152,7 @@ test.describe('runImagePromptGeneration - agent path', () => {
   test("messageId lands on the usage row, and the measured cost comes back through onSettled", async () => {
     const { projectId, shots } = await seed(['b2c3d'])
     const messageId = await newMessageId(projectId)
-    // 1000 in + 100 out at Haiku dev rates ($1/M in, $5/M out) = $0.0015.
+    // 1000 in + 100 out at Haiku 5.5 dev rates ($0.10/M in, $0.50/M out) = $0.00015.
     const gateway = scriptedGateway([
       successMessage(promptsFor(['b2c3d']), 'write_image_prompts', {
         input_tokens: 1000,
@@ -177,7 +177,7 @@ test.describe('runImagePromptGeneration - agent path', () => {
     expect(usage![0].message_id).toBe(messageId)
     expect(usage![0].operation).toBe('write_image_prompts')
     expect(settled.length).toBe(1)
-    expect(settled[0]).toBeCloseTo(0.0015, 6)
+    expect(settled[0]).toBeCloseTo(0.00015, 8)
     expect(settled[0]).toBeCloseTo(usage![0].estimated_cost!, 6)
   })
 

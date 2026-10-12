@@ -74,7 +74,7 @@ export default async function globalTeardown() {
     // Last, so a pool problem can never skip the fixed users' cleanup above. Unclaimed
     // pool users stay for the next run.
     const pool = await pruneClaimedUsers()
-    console.log(`[global-teardown] fresh-user pool: ${pool.claimed} claimed, ${pool.unused} kept for the next run`)
+    console.log(`[global-teardown] user pool: released ${pool.claimed} left claimed, ${pool.unused} free`)
   } catch (err) {
     console.error('[global-teardown] cleanup failed entirely - suite result is unaffected:', err)
   }

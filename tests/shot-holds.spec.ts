@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { createClient } from '@supabase/supabase-js'
-import { admin, createTestSession, deleteTestUser, createFreshUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser, createFreshUser } from './supabase-test-session'
 import {
   NO_LEDGER,
   REAL_SHOT_LEDGER,
@@ -78,14 +78,15 @@ const onePerScene = () =>
   })
 
 
-// Each test owns a fresh user: these chains spend heavily, and neither the shared fixed user's
-// monthly spend cap nor its balance may decide their outcome.
+// Each test owns a pool user: a run places a hold on its user's next hold slot and spends
+// against its balance, so neither the shared fixed user's balance nor its other runs may
+// decide the outcome.
 let owner: { id: string }
 test.beforeEach(async () => {
   owner = await createFreshUser()
 })
 test.afterEach(async () => {
-  await deleteTestUser(owner.id)
+  await releaseTestUser(owner.id)
 })
 
 test.describe('shot holds - the start', () => {
@@ -101,8 +102,45 @@ test.describe('shot holds - the start', () => {
       expect((await admin.from('generations').select('id').eq('project_id', projectId)).data).toEqual([])
       expect((await admin.from('shot_runs').select('id').eq('project_id', projectId)).data).toEqual([])
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
+  })
+
+  // Two holds racing for the same slot: the loser of the unique index (23505) re-reads the
+  // count and the balance and takes the next slot, failing only if the balance no longer
+  // covers it.
+  const raceHolds = (credits: number) => {
+    const hold = () =>
+      placeHold({
+        userId: owner.id,
+        attemptId: crypto.randomUUID(),
+        step: 'workbench',
+        operation: 'generate_shots',
+        pricingMode: 'fixed',
+        projectId: null,
+        credits,
+      })
+    return Promise.allSettled([hold(), hold()])
+  }
+  const holdKeys = async () =>
+    ((await admin.from('credit_ledger').select('dedupe_key').eq('user_id', owner.id).like('dedupe_key', 'hold:%')).data ?? []).map((r) => r.dedupe_key).sort()
+
+  test('two concurrent holds against a balance that covers both: both pass, on distinct slots', async () => {
+    await setBalance(owner.id, 20)
+    const results = await raceHolds(10)
+    expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled'])
+    expect(await holdKeys()).toEqual(['hold:1', 'hold:2'])
+    expect(await balanceOf(owner.id)).toBe(0)
+  })
+
+  test('two concurrent holds against a balance that covers one: exactly one passes, the other is refused for credits', async () => {
+    await setBalance(owner.id, 15)
+    const results = await raceHolds(10)
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+    const refused = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')!
+    expect(refused.reason).toBeInstanceOf(InsufficientCreditsError)
+    expect(await holdKeys()).toEqual(['hold:1'])
+    expect(await balanceOf(owner.id)).toBe(5)
   })
 
   test('two concurrent starts against a balance that covers one: exactly one passes', { tag: '@smoke' }, async () => {
@@ -152,7 +190,7 @@ test.describe('shot holds - the start', () => {
       }
       expect(await balanceOf(user.id)).toBe(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -254,7 +292,7 @@ test.describe('shot holds - dead runs are released per user', () => {
       expect(ledger.settles[0]).toMatchObject({ kind: 'refund' })
       expect(released.openHoldLiveAt).toBeNull()
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -310,7 +348,7 @@ test.describe('shot holds - /credits counts actions by their hold', () => {
       expect(shots.credits).toBe(8 + 32)
       expect(shots.unitLabel).toBe('2 generations')
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

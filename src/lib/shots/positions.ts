@@ -1,4 +1,4 @@
-import { SHOT_ORDER_BASE, SHOT_ORDER_SCENE_STRIDE, SHOTS_PER_CHUNK } from '@/lib/config/shots'
+import { SHOT_ORDER_BASE, SHOT_ORDER_CHUNK_STRIDE, SHOT_ORDER_SCENE_STRIDE } from '@/lib/config/shots'
 
 // Shot positions while a chain is writing: each chunk's shots take an order_index derived
 // from the scene's position and the shot's place in the scene, so chunks running in
@@ -6,7 +6,7 @@ import { SHOT_ORDER_BASE, SHOT_ORDER_SCENE_STRIDE, SHOTS_PER_CHUNK } from '@/lib
 
 /** A chunk shot's provisional order_index. */
 export function chunkShotOrderIndex(scenePosition: number, chunkIndex: number, indexInChunk: number): number {
-  return SHOT_ORDER_BASE + scenePosition * SHOT_ORDER_SCENE_STRIDE + chunkIndex * SHOTS_PER_CHUNK + indexInChunk
+  return SHOT_ORDER_BASE + scenePosition * SHOT_ORDER_SCENE_STRIDE + chunkIndex * SHOT_ORDER_CHUNK_STRIDE + indexInChunk
 }
 
 export type SequencedShot = { id: string; order_index: number; scenePosition: number | null }

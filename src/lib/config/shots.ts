@@ -20,6 +20,14 @@ export { SHOTS_ROUTE_MAX_DURATION_S, SHOT_HANDOFF_TIMEOUT_MS, shotRunBudgetMs } 
 // first run that saves none (the progress guard, worker.ts). Every run saves at least one
 // shot and a project holds at most its shot ceiling, so a chain is bounded by construction.
 
+// Per scene, within a run: an answer with no new complete shot is retried once, so a scene
+// stops after this many in a row; and a scene gets at most its expected batches times
+// SCENE_BATCH_FACTOR plus SCENE_EXTRA_REQUESTS requests, so answers saving one shot each
+// cannot keep it asking. Either limit leaves the scene incomplete with its saved shots.
+export const SCENE_EMPTY_ANSWER_LIMIT = 2
+export const SCENE_BATCH_FACTOR = 2
+export const SCENE_EXTRA_REQUESTS = 2
+
 // The Workbench's status poll while shots are being written: the next read starts this long
 // after the previous one returned.
 export const SHOT_STATUS_POLL_MS = 3_000
@@ -52,7 +60,10 @@ export function spokenWordsPerSec(language: string | null): number {
 export const SHOT_DURATION_PAD_SEC = 0.25
 
 // Chunk shot positions before the run's final re-sequence: a chunk's shots take
-// order_index = BASE + scene position x SCENE_STRIDE + chunk index x SHOTS_PER_CHUNK + i,
-// unique across parallel chunks and above any contiguous index a project already holds.
+// order_index = BASE + scene position x SCENE_STRIDE + chunk index x CHUNK_STRIDE + i,
+// unique across parallel chunks and above any contiguous index a project already holds. A
+// chunk's range is far wider than the shots it asks for: an answer may return more (the tool
+// can't cap the count), and a later chunk clearing its own range must never reach them.
 export const SHOT_ORDER_BASE = 1_000_000
-export const SHOT_ORDER_SCENE_STRIDE = 10_000
+export const SHOT_ORDER_CHUNK_STRIDE = 100
+export const SHOT_ORDER_SCENE_STRIDE = 100_000

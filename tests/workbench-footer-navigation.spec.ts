@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { creditsFor } from '../src/lib/config/credits'
 import { stepIndex } from '../src/lib/config/pipeline'
@@ -171,7 +171,7 @@ test.describe('Workbench footer button', () => {
       await expect(page.getByRole('dialog')).toHaveCount(0)
       expect(advanceCalls).toBe(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 
@@ -200,7 +200,7 @@ test.describe('Workbench footer button', () => {
       await page.waitForTimeout(500)
       expect(generationCalls).toBe(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { admin, createFreshUser, deleteTestUser } from './supabase-test-session'
+import { admin, createFreshUser, releaseTestUser } from './supabase-test-session'
 import { realRecordDynamicSpend } from './helpers/ledger-child'
 import { scriptedGateway, successMessage, textMessage } from './helpers/claude-fakes'
 import {
@@ -31,6 +31,9 @@ import {
 } from '../src/app/api/projects/[id]/shots/worker'
 import { shotRunView, canGenerateRemaining } from '../src/app/(app)/projects/[id]/workbench/_components/shot-run-view'
 import { derivePhase } from '../src/app/(app)/projects/[id]/workbench/_components/derive-phase'
+import { SCENE_BATCH_FACTOR, SCENE_EMPTY_ANSWER_LIMIT, SCENE_EXTRA_REQUESTS } from '../src/lib/config/shots'
+import { shotCountFor } from '../src/lib/config/credits'
+import { chunkSizes } from '../src/lib/shots/limits'
 
 // Layer: api. The shot chain's guarantees, against the database with fake gateways: every
 // complete shot returned is kept, a scene's share keeps a long scene from starving the next,
@@ -82,14 +85,15 @@ const ageRun = (runId: string) => {
 }
 
 
-// Each test owns a fresh user: these chains spend heavily, and neither the shared fixed user's
-// monthly spend cap nor its balance may decide their outcome.
+// Each test owns a pool user: a run places a hold on its user's next hold slot and spends
+// against its balance, so neither the shared fixed user's balance nor its other runs may
+// decide the outcome.
 let owner: { id: string }
 test.beforeEach(async () => {
   owner = await createFreshUser()
 })
 test.afterEach(async () => {
-  await deleteTestUser(owner.id)
+  await releaseTestUser(owner.id)
 })
 
 test.describe('shot chain - a long scene across many runs', () => {
@@ -97,14 +101,16 @@ test.describe('shot chain - a long scene across many runs', () => {
     test(`a ${sceneCount}-scene 8-10 min project writes each scene to its target across many runs, keeping every shot`, async () => {
       test.setTimeout(600_000)
       // 8-10 min on Wan 3.0: the outline is rescaled to the tier's 540s target. One-word shots
-      // are 2s and every answer returns 8 (16s), never saying a scene is done - each scene ends
-      // on the answer that reaches its target, every returned shot kept: 272 shots, 544s.
+      // are 2s and every answer returns 16 (32s - more than the 8 asked, all kept), never saying
+      // a scene is done - each scene ends on the answer that reaches its target, within its
+      // request cap (twice its expected batches, plus 2): one 540s scene takes 17 answers of 18
+      // (272 shots, 544s); two 270s scenes take 9 of 10 each (288 shots, 576s).
       const projectId = await insertChainProject(owner.id, { duration_target: '8-10min' })
       const outline = fakeOutline(Array.from({ length: sceneCount }, (_, i) => ({ title: `S${i}`, seconds: 600 / sceneCount })))
       const gateway = chainGateway({
         outline,
         chunk: (ask, n) => ({
-          shots: Array.from({ length: 8 }, (_, i) => fakeShot(`s${ask.scenePosition}c${n}i${i}`)),
+          shots: Array.from({ length: 16 }, (_, i) => fakeShot(`s${ask.scenePosition}c${n}i${i}`)),
           scene_complete: false,
         }),
       })
@@ -119,12 +125,13 @@ test.describe('shot chain - a long scene across many runs', () => {
       expect(runs.length).toBeGreaterThan(sceneCount === 1 ? 2 : 1)
       expect(runs.at(-1)!.result).toMatchObject({ outcome: 'finished', status: 'completed' })
 
+      const expected = sceneCount === 1 ? { shots: 272, seconds: 544 } : { shots: 288, seconds: 576 }
       const shots = await readChainShots(projectId)
-      expect(shots.length).toBe(272)
-      expect(shots.map((s) => s.order_index)).toEqual(Array.from({ length: 272 }, (_, i) => i))
-      expect(shots.reduce((sum, s) => sum + (s.duration_sec ?? 0), 0)).toBe(544)
+      expect(shots.length).toBe(expected.shots)
+      expect(shots.map((s) => s.order_index)).toEqual(Array.from({ length: expected.shots }, (_, i) => i))
+      expect(shots.reduce((sum, s) => sum + (s.duration_sec ?? 0), 0)).toBe(expected.seconds)
       // Past the hold (144): settled with one excess spend, netting to every saved shot.
-      await expectSettledOnce(projectId, 544)
+      await expectSettledOnce(projectId, expected.shots * 2)
       expect(await claimState(projectId)).toBe('succeeded')
     })
   }
@@ -201,8 +208,14 @@ test.describe('shot chain - scene targets and shares', () => {
     const runId = (first.request as { runId: string }).runId
     const run = await readRun(runId)
     expect(run).toMatchObject({ status: 'failed', stop_reason: 'incomplete' })
-    const sceneB = (run.shot_run_chunks as { scene_complete: boolean; shots_saved: number; status: string }[]).find((c) => c.shots_saved === 0)!
-    expect(sceneB).toMatchObject({ scene_complete: false, status: 'failed' })
+    // Retried once, then left: the retried answer settles with nothing saved, the second fails.
+    const sceneB = (run.shot_run_chunks as { chunk_index: number; scene_complete: boolean; shots_saved: number; status: string }[])
+      .filter((c) => c.shots_saved === 0)
+      .sort((a, b) => a.chunk_index - b.chunk_index)
+    expect(sceneB.map((c) => [c.status, c.scene_complete])).toEqual([
+      ['succeeded', false],
+      ['failed', false],
+    ])
 
     const view = await viewOf(projectId, runId)
     expect(view.unwrittenScenes).toBe(1)
@@ -257,18 +270,104 @@ test.describe('shot chain - a truncated chunk', () => {
     expect(first).toMatchObject({ status: 'succeeded', shots_saved: 2, shots_returned: 2, scene_complete: false, payload: null })
   })
 
-  test('cut short before any whole shot: the scene is left incomplete, never complete, for Generate remaining shots', async () => {
+  test('a model that always truncates before a whole shot gets 2 calls for the scene, which is left incomplete, and the run settles once', async () => {
     const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
     const gateway = chainGateway({
       outline: fakeOutline([{ title: 'Only', seconds: 45 }]),
       chunk: () => ({ shots: [{ voice_over: 'cut off mid' }], truncated: true }),
     })
-    const { request } = await runChain({ projectId, userId: owner.id, gateway })
+    const { request } = await runChain({ projectId, userId: owner.id, gateway, ledger: REAL_LEDGER })
+    expect(gateway.calls.filter((c) => c.tool === 'write_shots')).toHaveLength(SCENE_EMPTY_ANSWER_LIMIT)
     const run = await readRun((request as { runId: string }).runId)
     expect(run).toMatchObject({ status: 'failed', stop_reason: 'incomplete' })
-    expect(run.shot_run_chunks).toHaveLength(1)
-    expect(run.shot_run_chunks[0]).toMatchObject({ status: 'failed', scene_complete: false, shots_saved: 0 })
+    const chunks = (run.shot_run_chunks as { chunk_index: number; status: string; scene_complete: boolean; shots_saved: number }[]).sort(
+      (a, b) => a.chunk_index - b.chunk_index
+    )
+    expect(chunks.map((c) => [c.status, c.scene_complete, c.shots_saved])).toEqual([
+      ['succeeded', false, 0],
+      ['failed', false, 0],
+    ])
     expect(canGenerateRemaining(await viewOf(projectId, run.id))).toBe(true)
+    // Nothing saved: the hold is refunded whole, in one settle.
+    await expectSettledOnce(projectId, 0)
+    expect((await readRun(run.id)).charged_at).not.toBeNull()
+  })
+
+  test("a model that returns one shot per answer stops at the scene's request cap, keeping those shots, and the scene is left incomplete", async () => {
+    // 30-60s on Wan 3.0: one scene at the 45s target. One-word shots are 2s, so the seconds
+    // and shot limits never stop it - only the cap: its expected batches doubled, plus the extra.
+    const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
+    const gateway = chainGateway({
+      outline: fakeOutline([{ title: 'Only', seconds: 45 }]),
+      chunk: (_ask, n) => ({ shots: [fakeShot(`one${n}`), { voice_over: 'cut off mid' }], truncated: true }),
+    })
+    const cap = chunkSizes(Math.min(Math.floor(45 / 2), shotCountFor(45))).length * SCENE_BATCH_FACTOR + SCENE_EXTRA_REQUESTS
+    const { request } = await runChain({ projectId, userId: owner.id, gateway, ledger: REAL_LEDGER })
+    expect(gateway.calls.filter((c) => c.tool === 'write_shots')).toHaveLength(cap)
+    const shots = await readChainShots(projectId)
+    expect(shots.map((s) => s.voice_over)).toEqual(Array.from({ length: cap }, (_, i) => `one${i}`))
+    const run = await readRun((request as { runId: string }).runId)
+    expect(run).toMatchObject({ status: 'failed', stop_reason: 'incomplete' })
+    expect((run.shot_run_chunks as { scene_complete: boolean }[]).some((c) => c.scene_complete)).toBe(false)
+    expect(canGenerateRemaining(await viewOf(projectId, run.id))).toBe(true)
+    expect(derivePhase({ generation: { state: (await claimState(projectId))! }, shotCount: shots.length })).toBe('partial')
+    await expectSettledOnce(projectId, cap * 2)
+  })
+
+  test('an answer with no whole shot is retried once: a good second answer completes the scene', async () => {
+    const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
+    const gateway = chainGateway({
+      outline: fakeOutline([{ title: 'Only', seconds: 45 }]),
+      chunk: (_ask, n) =>
+        n === 0 ? { shots: [{ voice_over: 'cut off mid' }], truncated: true } : { shots: [fakeShot(words('r1', 21))], scene_complete: true },
+    })
+    const { request } = await runChain({ projectId, userId: owner.id, gateway, ledger: REAL_LEDGER })
+    expect(gateway.calls.filter((c) => c.tool === 'write_shots')).toHaveLength(2)
+    expect(await readRun((request as { runId: string }).runId)).toMatchObject({ status: 'completed', stop_reason: null })
+    expect((await readChainShots(projectId)).map((s) => s.voice_over.split(' ')[0])).toEqual(['r1'])
+    await expectSettledOnce(projectId, 2)
+  })
+
+  test('the two-answer limit holds across a hand-off between the attempts', async () => {
+    // The first answer outlasts the run's budget, so the second comes from a continuation,
+    // which must count the first rather than start the scene's count again.
+    const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
+    const gateway = chainGateway({
+      outline: fakeOutline([{ title: 'Only', seconds: 45 }]),
+      delayFor: (_ask, n) => (n === 0 ? 5_000 : 0),
+      chunk: () => ({ shots: [{ voice_over: 'cut off mid' }], truncated: true }),
+    })
+    const { request, runs } = await runChain({ projectId, userId: owner.id, gateway, ledger: REAL_LEDGER, runBudgetMs: 4_000 })
+    expect(runs.map((r) => r.result.outcome)).toEqual(['continued', 'finished'])
+    expect(gateway.calls.filter((c) => c.tool === 'write_shots')).toHaveLength(SCENE_EMPTY_ANSWER_LIMIT)
+    expect(await readRun((request as { runId: string }).runId)).toMatchObject({ status: 'failed', stop_reason: 'incomplete' })
+    await expectSettledOnce(projectId, 0)
+  })
+})
+
+test.describe('shot chain - a scene closed without a request', () => {
+  test('a scene picked up with its limits already met is marked complete with no request, and the run completes', async () => {
+    // 30-60s on Wan 3.0: one 45s scene, request limit 60s. The first run writes 70s and
+    // completes; with that completion cleared, "Generate remaining shots" finds the scene past
+    // its limit and closes it without asking - the zero-request chunk row must land.
+    const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
+    const outline = fakeOutline([{ title: 'Only', seconds: 45 }])
+    await runChain({
+      projectId,
+      userId: owner.id,
+      gateway: chainGateway({ outline, chunk: () => ({ shots: Array.from({ length: 7 }, (_, i) => fakeShot(words(`c${i}`, 21))), scene_complete: true }) }),
+    })
+    await admin.from('shot_run_chunks').update({ scene_complete: false }).eq('project_id', projectId)
+
+    const gateway = chainGateway({ outline, chunk: () => ({ shots: [fakeShot('never')], scene_complete: true }) })
+    const { request } = await runChain({ projectId, userId: owner.id, gateway, mode: 'remaining' })
+    expect(request.ok).toBe(true)
+    expect(gateway.calls.filter((c) => c.tool === 'write_shots')).toHaveLength(0)
+    const run = await readRun((request as { runId: string }).runId)
+    expect(run).toMatchObject({ status: 'completed', stop_reason: null })
+    expect(run.shot_run_chunks).toHaveLength(1)
+    expect(run.shot_run_chunks[0]).toMatchObject({ status: 'succeeded', scene_complete: true, shots_saved: 0, max_shots: 0 })
+    expect(canGenerateRemaining(await viewOf(projectId, run.id))).toBe(false)
   })
 })
 

@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { NO_LEDGER } from './helpers/shot-chain'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { SIGNUP_GRANT_CREDITS, usdToCredits } from '../src/lib/config/credits'
@@ -392,7 +392,7 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
       const endingBalance = await grantAndReadBalance(user.id)
       expect(endingBalance).toBe(SIGNUP_GRANT_CREDITS - 1)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })

@@ -15,17 +15,16 @@ export const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
 type TestUser = Awaited<ReturnType<typeof createTestUser>>
 
 /**
- * A throwaway, never-used auth user with a real session, minted via an admin-generated
- * magic link (no password needed, no existing account touched). The user comes from the
- * pool global-setup.ts pre-creates for full runs when one is left, and is created here
- * otherwise - a pooled user is exactly as fresh (created this run, never signed in, no
- * rows), only created earlier and off the test's own clock. The session is always minted
- * here, never pooled: pre-minting sessions in a burst trips Supabase's auth rate limit.
- * Returns the Playwright cookie to inject plus the user, so callers can assert ownership
- * and clean up afterward.
+ * A pool user with no rows, given a real session via an admin-generated magic link (no
+ * password needed, no existing account touched). Users come only from the fixed-size pool
+ * global-setup.ts fills; no test ever creates one. A released user is wiped of every row it
+ * owns, so it is as fresh as a new one for anything a test can read. The session is always
+ * minted here, never pooled: pre-minting sessions in a burst trips Supabase's auth rate
+ * limit. Returns the Playwright cookie to inject plus the user, so callers can assert
+ * ownership and release it afterward with releaseTestUser.
  */
 export async function createTestSession() {
-  const user = claimPooledUser() ?? (await createTestUser())
+  const user = await claimPoolUser()
   const email = user.email!
 
   const { data: linkData, error: linkError } = await admin.auth.admin.generateLink({
@@ -61,13 +60,13 @@ export async function createTestSession() {
 }
 
 /**
- * A fresh, never-used auth user with no session - for a spec that only needs its own user id
- * (its own projects, ledger and monthly spend) and never signs in. No magic link is minted,
- * so it does not count against the auth rate limit createTestSession is bound by. Clean up
- * with deleteTestUser.
+ * A pool user with no rows and no session - for a spec that only needs its own user id (its
+ * own projects, ledger and monthly spend) and never signs in. No magic link is minted, so it
+ * does not count against the auth rate limit createTestSession is bound by. Release it with
+ * releaseTestUser.
  */
 export async function createFreshUser() {
-  return claimPooledUser() ?? (await createTestUser())
+  return claimPoolUser()
 }
 
 async function createTestUser() {
@@ -86,9 +85,42 @@ async function createTestUser() {
   return created.user
 }
 
-/** Removes a minted user's files, projects and auth row, then its registry entry - the
- * entry only once the auth row is gone, so a failed delete is retried by the next sweep. */
-export async function deleteTestUser(userId: string) {
+/**
+ * Wipes every row a pool user owns and returns it to the pool. usage and credit_ledger go
+ * first: their project_id is ON DELETE SET NULL, so deleting projects first would orphan
+ * them instead (the global-teardown order). The signup grant is lazy and dedupe-keyed, so the
+ * next claim starts from a fresh grant. A failed wipe keeps the user claimed - global setup
+ * retries it - rather than handing the next test a user with rows.
+ */
+export async function releaseTestUser(userId: string) {
+  if (!(await wipeUserRows(userId))) return
+  try {
+    renameSync(path.join(POOL_DIR, `${userId}.json${CLAIMED_SUFFIX}`), path.join(POOL_DIR, `${userId}.json`))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+}
+
+async function wipeUserRows(userId: string): Promise<boolean> {
+  let ok = true
+  for (const table of ['usage', 'credit_ledger', 'exports', 'projects'] as const) {
+    const { error } = await admin.from(table).delete().eq('user_id', userId)
+    if (error) {
+      console.error(`[test-session] ${table} cleanup for ${userId} failed:`, error.message)
+      ok = false
+    }
+  }
+  await removeStorageUnder(admin, userId).catch((err) => {
+    console.error(`[test-session] storage cleanup for ${userId} failed:`, err)
+    ok = false
+  })
+  return ok
+}
+
+/** Removes a minted user that is not in the pool: files, projects and auth row, then its
+ * registry entry - the entry only once the auth row is gone, so a failed delete is retried by
+ * the next sweep. Only the orphan sweep uses it; tests release their users instead. */
+async function deleteTestUser(userId: string) {
   await removeStorageUnder(admin, userId).catch((err) => console.error(`[test-session] storage cleanup for ${userId} failed:`, err))
   await admin.from('projects').delete().eq('user_id', userId)
   const { error } = await admin.auth.admin.deleteUser(userId)
@@ -96,6 +128,7 @@ export async function deleteTestUser(userId: string) {
 }
 
 // Every minted user, one file each, written at creation and removed by deleteTestUser.
+// Pool users stay registered for as long as they stay in the pool.
 const REGISTRY_DIR = path.resolve(__dirname, '.auth/minted')
 const MINTED_EMAIL = /^pw-test-[0-9a-f-]{36}@reelcraft\.local$/
 
@@ -108,7 +141,7 @@ const MINTED_EMAIL = /^pw-test-[0-9a-f-]{36}@reelcraft\.local$/
  * test of this run has minted anything.
  */
 export async function sweepOrphanedTestUsers(): Promise<number> {
-  const unclaimedPool = new Set(listJson(POOL_DIR))
+  const pool = new Set([...listJson(POOL_DIR), ...listClaimed()])
   const candidates = new Set(listJson(REGISTRY_DIR))
   for (let page = 1; ; page++) {
     const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 1000 })
@@ -118,7 +151,7 @@ export async function sweepOrphanedTestUsers(): Promise<number> {
   }
   let swept = 0
   for (const id of candidates) {
-    if (unclaimedPool.has(id)) continue
+    if (pool.has(id)) continue
     const { data, error } = await admin.auth.admin.getUserById(id)
     if (error && error.status !== 404) continue
     if (data?.user && !MINTED_EMAIL.test(data.user.email ?? '')) continue
@@ -137,12 +170,38 @@ function listJson(dir: string): string[] {
   }
 }
 
-// The fresh-user pool: one file per unclaimed, never-signed-in user. Claiming renames the
-// file, which is atomic across worker processes - a racing loser sees ENOENT and moves on.
+// The user pool: one file per user, '{id}.json' while free and '{id}.json.claimed' while a
+// test holds it. Claiming renames the file, which is atomic across worker processes - a
+// racing loser sees ENOENT and moves on. Its size is fixed at USER_POOL_MAX: tests wait for
+// a released user rather than create one.
 const POOL_DIR = path.resolve(__dirname, '.auth/pool')
 const CLAIMED_SUFFIX = '.claimed'
+export const USER_POOL_MAX = 38
+const POOL_CLAIM_POLL_MS = 250
+const POOL_CLAIM_TIMEOUT_MS = 60_000
 
-function claimPooledUser(): TestUser | null {
+async function claimPoolUser(): Promise<TestUser> {
+  const deadline = Date.now() + POOL_CLAIM_TIMEOUT_MS
+  for (;;) {
+    const user = claimFreeUser()
+    if (user) return user
+    if (Date.now() >= deadline) {
+      throw new Error(`User pool exhausted: no free user in ${POOL_DIR} after ${POOL_CLAIM_TIMEOUT_MS / 1000}s (pool size ${USER_POOL_MAX}; tests never create users)`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, POOL_CLAIM_POLL_MS))
+  }
+}
+
+function listClaimed(): string[] {
+  try {
+    return readdirSync(POOL_DIR).filter((name) => name.endsWith(CLAIMED_SUFFIX)).map((name) => name.slice(0, -`.json${CLAIMED_SUFFIX}`.length))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+}
+
+function claimFreeUser(): TestUser | null {
   let names: string[]
   try {
     names = readdirSync(POOL_DIR).filter((name) => name.endsWith('.json'))
@@ -163,28 +222,20 @@ function claimPooledUser(): TestUser | null {
   return null
 }
 
-/** Clears the claim markers a run left behind (a claimed user belongs to the test that
- * claimed it, which cleans it up). Unclaimed users are kept: they are still never-signed-in
- * and row-free, so the next run takes them as they are. Returns the counts for the log. */
+/** Releases the users a run left claimed - a killed test never reached its own release - so
+ * the pool keeps its size. Returns the counts for the log. */
 export async function pruneClaimedUsers(): Promise<{ claimed: number; unused: number }> {
-  let names: string[]
-  try {
-    names = readdirSync(POOL_DIR)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { claimed: 0, unused: 0 }
-    throw error
-  }
-  const claimed = names.filter((name) => name.endsWith(CLAIMED_SUFFIX))
-  for (const name of claimed) rmSync(path.join(POOL_DIR, name), { force: true })
-  return { claimed: claimed.length, unused: names.filter((name) => name.endsWith('.json')).length }
+  const claimed = listClaimed()
+  for (const id of claimed) await releaseTestUser(id)
+  return { claimed: claimed.length, unused: listJson(POOL_DIR).length }
 }
 
-/** Tops the pool up to `size` unclaimed users, creating only the missing ones (no sessions),
- * a few at a time. Returns how many it created. */
-export async function fillUserPool(size: number, concurrency = 8): Promise<number> {
+/** Tops the pool up to USER_POOL_MAX users, free or claimed, creating only the missing ones
+ * (no sessions), a few at a time - never beyond the maximum. Returns how many it created. */
+export async function fillUserPool(concurrency = 8): Promise<number> {
   mkdirSync(POOL_DIR, { recursive: true })
-  const existing = readdirSync(POOL_DIR).filter((name) => name.endsWith('.json')).length
-  const missing = Math.max(0, size - existing)
+  const existing = listJson(POOL_DIR).length + listClaimed().length
+  const missing = Math.max(0, USER_POOL_MAX - existing)
   let next = 0
   await Promise.all(
     Array.from({ length: Math.min(concurrency, missing) }, async () => {

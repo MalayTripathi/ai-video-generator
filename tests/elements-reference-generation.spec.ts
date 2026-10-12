@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { elementReferencePrice } from './helpers/prices'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
+import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { successImageGateway, throwingImageGateway } from './helpers/openai-fakes'
@@ -244,7 +244,7 @@ test.describe('generate_element_reference - balance gate', () => {
       const ledgerRows = await readLedgerRows(projectId)
       expect(ledgerRows.length).toBe(0)
     } finally {
-      await deleteTestUser(user.id)
+      await releaseTestUser(user.id)
     }
   })
 })
