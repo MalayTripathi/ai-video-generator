@@ -1,5 +1,6 @@
 import { videoModelBounds, type VideoModelConfig } from '@/lib/config/models'
-import { SHOT_DURATION_PAD_SEC, WORD_BUDGET_FILL, spokenWordsPerSec } from '@/lib/config/shots'
+import { SHOT_DURATION_PAD_SEC, spokenWordsPerSec } from '@/lib/config/shots'
+import { MEASURED_AVG_SHOT_SECONDS } from '@/lib/config/credits'
 import { countWords } from '@/lib/word-count'
 
 // A shot's duration is computed here, never chosen by Claude: the words spoken in it at
@@ -30,9 +31,29 @@ export function roundUpToModelDuration(seconds: number, model: VideoModelConfig)
   return Math.min(max, Math.max(min, Math.round(up * 1000) / 1000))
 }
 
-/** The spoken words a scene's remaining seconds hold - each chunk's narration budget. */
-export function chunkWordBudget(secondsLeft: number, language: string | null): number {
-  return Math.max(0, Math.floor(secondsLeft * spokenWordsPerSec(language) * WORD_BUDGET_FILL))
+/**
+ * Seconds each shot is expected to gain over its spoken words: the padding, plus half of
+ * the model's step on average from rounding up to a length it renders.
+ */
+export function perShotRoundingSec(model: VideoModelConfig): number {
+  if (model.kind === 'discrete') {
+    const allowed = [...model.allowedDurations].sort((a, b) => a - b)
+    const gaps = allowed.slice(1).map((d, i) => d - allowed[i])
+    return SHOT_DURATION_PAD_SEC + (gaps.length > 0 ? Math.min(...gaps) / 2 : 0)
+  }
+  return SHOT_DURATION_PAD_SEC + model.durationStep / 2
+}
+
+/**
+ * The spoken words a scene's remaining seconds hold - each chunk's narration budget. The
+ * padding and rounding up of the shots it is expected to take (at the measured average
+ * shot, at most `maxShots`) come out of the seconds first, so rounded shots land on the
+ * scene's target instead of past it.
+ */
+export function chunkWordBudget(secondsLeft: number, language: string | null, model: VideoModelConfig, maxShots: number): number {
+  const expectedShots = Math.max(1, Math.min(maxShots, Math.ceil(secondsLeft / MEASURED_AVG_SHOT_SECONDS - 1e-9)))
+  const spokenSec = Math.max(0, secondsLeft - expectedShots * perShotRoundingSec(model))
+  return Math.floor(spokenSec * spokenWordsPerSec(language))
 }
 
 export type ComputedDuration = { seconds: number; narrationOverflow: boolean }

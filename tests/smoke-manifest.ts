@@ -45,6 +45,12 @@ export const PROTECTED_SMOKE: Record<string, { file: string; title: string }[]> 
       title: 'calling recordFixedSpend twice with the same attemptId produces exactly one row and does not throw',
     },
   ],
+  'no dropped shots': [
+    { file: 'shot-chain.spec.ts', title: 'every complete shot the model returns is saved - past the chunk cap and past the scene target' },
+  ],
+  'atomic hold': [
+    { file: 'shot-holds.spec.ts', title: 'two concurrent starts against a balance that covers one: exactly one passes' },
+  ],
   '402 before claim': [
     {
       file: 'image-prompt-generation.spec.ts',

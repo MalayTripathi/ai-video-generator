@@ -51,11 +51,12 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     .select('delta')
     .eq('project_id', projectId)
     .eq('message_id', messageId)
-    .eq('kind', 'spend')
+    .in('kind', ['spend', 'refund'])
     .eq('operation', 'agent_turn')
-    .limit(1)
 
-  const credits = rows && rows.length > 0 ? -rows[0].delta : null
+  // The turn's net charge: its spend, less any refund of a hold it placed (a turn that
+  // regenerated the shot list holds credits until its chain settles).
+  const credits = rows && rows.length > 0 ? -rows.reduce((sum, r) => sum + r.delta, 0) : null
   // Fresh rail figures too, so a page that doesn't router.refresh() after a turn (the
   // storyboard) still updates the rail.
   return NextResponse.json({ credits, rail: await tryLoadRailFigures(user.id) })

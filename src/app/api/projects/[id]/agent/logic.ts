@@ -34,7 +34,7 @@ import type { AgentStepConfig, ToolLockScope } from './steps'
 import type { recordDynamicSpend } from '@/lib/credits/ledger'
 import type { getBalance } from '@/lib/credits/balance'
 import type { ensureSignupGrant } from '@/lib/credits/signup-grant'
-import { hasLiveShotRun, settleDeadShotRuns, settleShotRunTurn, type ShotRunLedger } from '@/lib/shots/runs'
+import { anyDeadShotRun, isLiveShotRun, readOpenShotRuns, settleDeadShotRuns, settleShotRunTurn, type ShotRunLedger } from '@/lib/shots/runs'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type MessageRow = Tables<'messages'>
@@ -320,10 +320,13 @@ export async function runAgentTurn(params: {
 
   // A shot-generation chain - one this agent started, or the Generate shots button's -
   // holds the agent for as long as it runs. A dead one is settled first, on this touch.
+  // One read of the project's open runs; a dead one is settled only when there is one.
   let shotRunLive: boolean
   try {
-    if (params.shotRuns) await settleDeadShotRuns(supabase, params.shotRuns.ledger, projectId)
-    shotRunLive = await hasLiveShotRun(supabase, projectId)
+    const open = await readOpenShotRuns(supabase, projectId)
+    if (open.error) throw new Error(open.error)
+    if (params.shotRuns && anyDeadShotRun(open.runs)) await settleDeadShotRuns(supabase, params.shotRuns.ledger, projectId, open.runs)
+    shotRunLive = open.runs.some((run) => isLiveShotRun(run))
   } catch (err) {
     console.error('[agent] shot-run check failed', err)
     return failBeforeClaim('Something went wrong starting that - nothing was changed. Please try again.', 500)
@@ -609,7 +612,7 @@ export async function runAgentTurn(params: {
     }
 
     // A turn that started a shot chain leaves its claim held: the chain's final run
-    // releases it (chargeShotRun), so the agent stays locked until the shots are written.
+    // releases it (settleShotRun), so the agent stays locked until the shots are written.
     if (shotRunId === null) {
       const { error: settleError } = await settleGeneration(supabase, generation.id, {
         success: outcome.ok,
@@ -645,11 +648,12 @@ export async function runAgentTurn(params: {
     //
     // Priced dynamically from turnCostUsd (summed in memory above). A turn that started a
     // shot chain (regenerate_all_shots) is priced dynamically too, never at
-    // generate_shots' fixed rate - the chain's final run writes its one agent_turn row
-    // from the turn's cost plus every chain call's, so this branch hands the cost over.
+    // generate_shots' fixed rate - the chain placed an agent_turn hold at its start and its
+    // final run settles that hold at the turn's cost plus every chain call's, so this branch
+    // hands the cost over.
     if (shotRunId !== null && params.shotRuns) {
       // Whatever the turn's own outcome: the chain it started bills the whole action once.
-      await settleShotRunTurn(supabase, { ...params.shotRuns.ledger, recordDynamicSpend: recordTurnSpend }, shotRunId, turnCostUsd)
+      await settleShotRunTurn(supabase, params.shotRuns.ledger, shotRunId, turnCostUsd)
     } else if (outcome.ok) {
       try {
         await recordTurnSpend({

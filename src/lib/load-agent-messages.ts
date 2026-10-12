@@ -29,7 +29,7 @@ export async function loadAgentMessages(
       .from('credit_ledger')
       .select('message_id, delta')
       .eq('project_id', projectId)
-      .eq('kind', 'spend')
+      .in('kind', ['spend', 'refund'])
       .eq('operation', 'agent_turn'),
   ])
 

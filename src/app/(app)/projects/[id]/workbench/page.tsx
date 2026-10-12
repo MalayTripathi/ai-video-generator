@@ -15,10 +15,11 @@ import { getElementGenerateAffordability } from './affordability'
 import { getProjectElementsForUser, type ElementGroup } from '@/lib/elements/read'
 import type { DisplayDialogueLine, DisplayShot } from './_components/types'
 import type { Tables } from '@/lib/database.types'
-import { shotGenerationCredits } from '@/lib/config/credits'
-import { recordDynamicSpend, recordFixedSpend } from '@/lib/credits/ledger'
+import { remainingShotQuoteCredits, shotGenerationCredits } from '@/lib/config/credits'
+import { holdAndSettle } from '@/lib/credits/balance'
+import { placeHold, settleHold } from '@/lib/credits/ledger'
 import { needsDeadRunSettlement, settleDeadShotRuns } from '@/lib/shots/runs'
-import { shotRunView, type ShotRunView } from './_components/shot-run-view'
+import { sceneProgress, shotRunView, type ShotRunView } from './_components/shot-run-view'
 import type { CameraOrigin } from '@/lib/config/enums'
 
 type ElementRow = Pick<Tables<'elements'>, 'id' | 'name' | 'type' | 'status' | 'reference_image_path'>
@@ -151,25 +152,25 @@ export default async function WorkbenchPage({
     // cost line unconditionally regardless of what this map holds for that turn anyway.
     supabase.from('usage').select('message_id, estimated_cost').eq('project_id', projectId).neq('status', 'pending'),
     // The turn's real, settled credit spend - never usage, never recomputed from the
-    // dollar figure (Credits Task 8). Scoped to agent_turn spend rows only; this cost
-    // line has never shown anything but the agent turn's own charge.
+    // dollar figure (Credits Task 8). Scoped to agent_turn rows, spend net of the refund
+    // that settles a hold (a regenerate-all turn holds until its chain ends).
     supabase
       .from('credit_ledger')
-      .select('message_id, delta')
+      .select('message_id, delta, kind, operation, attempt_id, dedupe_key')
       .eq('project_id', projectId)
-      .eq('kind', 'spend')
-      .eq('operation', 'agent_turn'),
+      .in('kind', ['spend', 'refund'])
+      .in('operation', ['agent_turn', 'generate_shots']),
     // The latest shot run: the generating state's progress line, why a run stopped, and
     // whether a dead chain needs settling on this load.
     supabase
       .from('shot_runs')
-      .select('status, stop_reason, total_scenes, heartbeat_at, finished_at, charged_at')
+      .select('id, attempt_id, status, stop_reason, total_scenes, heartbeat_at, finished_at, charged_at')
       .eq('project_id', projectId)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
     // Which scenes are written - progress, and whether "Generate remaining shots" applies.
-    supabase.from('scenes').select('id, shot_run_chunks(scene_complete)').eq('project_id', projectId),
+    supabase.from('scenes').select('id, target_seconds, shot_run_chunks(scene_complete), shots(duration_sec)').eq('project_id', projectId),
   ])
 
   // A failed read is an error (the error boundary), never a 404 - only a missing row is.
@@ -188,7 +189,7 @@ export default async function WorkbenchPage({
   let run = latestRun
   let shotsRows = firstShotsRows
   if (run && needsDeadRunSettlement(run)) {
-    const { changed } = await settleDeadShotRuns(supabase, { recordFixedSpend, recordDynamicSpend }, projectId)
+    const { changed } = await settleDeadShotRuns(supabase, { placeHold, settleHold }, projectId)
     if (changed) {
       // Settling re-sequences the shots (and drops a dead chunk's half-written ones).
       const [{ data: freshGeneration }, { data: freshRun }, { data: freshShots }] = await Promise.all([
@@ -202,7 +203,7 @@ export default async function WorkbenchPage({
           .maybeSingle(),
         supabase
           .from('shot_runs')
-          .select('status, stop_reason, total_scenes, heartbeat_at, finished_at, charged_at')
+          .select('id, attempt_id, status, stop_reason, total_scenes, heartbeat_at, finished_at, charged_at')
           .eq('project_id', projectId)
           .order('created_at', { ascending: false })
           .limit(1)
@@ -214,7 +215,14 @@ export default async function WorkbenchPage({
       shotsRows = freshShots
     }
   }
-  const runView: ShotRunView = shotRunView(run, (sceneRows ?? []) as { shot_run_chunks: { scene_complete: boolean }[] }[])
+  // The ledger rows read above carry the latest run's hold and settle too (by attempt id).
+  const runCharge = holdAndSettle(run ? (creditLedgerRows ?? []).filter((r) => r.attempt_id === run.attempt_id) : [])
+  const scenes = (sceneRows ?? []) as unknown as Parameters<typeof sceneProgress>[0][]
+  const runView: ShotRunView = shotRunView(run, scenes, runCharge)
+  const remainingCredits = remainingShotQuoteCredits(
+    project.duration_target,
+    scenes.map(sceneProgress).filter((scene) => !scene.complete)
+  )
 
 
 
@@ -270,7 +278,7 @@ export default async function WorkbenchPage({
   }
   const creditsByMessageId = new Map<string, number>()
   for (const r of creditLedgerRows ?? []) {
-    if (!r.message_id) continue
+    if (!r.message_id || r.operation !== 'agent_turn') continue
     creditsByMessageId.set(r.message_id, (creditsByMessageId.get(r.message_id) ?? 0) + -r.delta)
   }
   const agentMessages = buildAgentMessages(messageRows ?? [], shotNumberByKey, costByMessageId, creditsByMessageId)
@@ -289,6 +297,7 @@ export default async function WorkbenchPage({
       initialHasPendingPayload={hasPendingPayload}
       initialFurthestStep={project.furthest_step}
       shotListCredits={shotListCredits}
+      remainingCredits={remainingCredits}
     >
       <AssetsProvider
         projectId={projectId}

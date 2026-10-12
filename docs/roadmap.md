@@ -384,24 +384,36 @@ untouched). The Storyboard voiceover already follows it.
 - **Re-measure voiceover synthesis speed, and measure it for Hindi.** The part size
   (`VOICEOVER_CHUNK_MAX_CHARS`, ~3,222) comes from one English read (5,000 chars in ~128s).
   Devanagari text may synthesise at a different rate per character.
-- **A story can be written shorter than its tier's minimum.** Each scene's seconds are
-  reserved and capped, and the word budget steers the model toward them, but a scene the model
-  reports finished early stays finished; the run completes under the minimum. Re-asking a short
-  scene would be a paid call per scene - not done (Task 4b decision).
+- **A story can be written shorter than its tier's minimum.** Each scene aims at its target
+  seconds and the word budget steers the model toward them, but a scene the model reports
+  finished early stays finished; the run completes under the minimum. Re-asking a short scene
+  would be a paid call per scene - not done (Task 4b decision).
 - **A refused agent chain start leaves the generate_shots claim failed.** The old shot list
   stays, but the Workbench then shows the cut-short banner until a regenerate.
 - **Re-measure words per second and padding as voiceovers accumulate.** Both come from one
   English read (2.19 words/s; gaps p50 0.12s, max 0.21s). `node scripts/measure-voiceover-wps.mjs`
   reports them per language and voice; other languages use the English pace until measured.
-- **A dead chain is only settled when the project is next touched.** There is no sweeper (a
-  Hobby cron runs daily at most): a run whose invocation died stays `running` until a
-  Workbench load, a shots request or an agent turn after its stale window settles it.
+- **A dead chain is settled on the next balance read or project touch.** There is no sweeper (a
+  Hobby cron runs daily at most): a run whose invocation died stays `running` until any page
+  load, credit check or shots/agent request after its stale window settles it and releases its
+  hold (Task 4d). A user who never returns keeps the hold until then.
 - **An agent turn that dies after starting a chain is charged without its own cost.** If
   the turn never hands its `turn_cost_usd` to the run, the run is charged from the chain's
   calls alone once it is past the stale window.
 - **Chunks receive the full brief.** Beyond the outline, its scene and the previous shot,
   each chunk is also sent the brief, so a script or screenplay is written from the source
   text rather than a summary. It is a cached system block; drop it if cost says so.
+- **Calibrate the measured average shot (Task 4d).** `MEASURED_AVG_SHOT_SECONDS` (8.45s) comes
+  from one project (31 shots, 3-5 min, Wan 3.0, English). Re-measure across tiers, models and
+  languages in the pricing calibration task; every shot count, quote and hold follows it.
+- **An agent regenerate-all holds credits but settles in dollars.** Its hold is the per-shot
+  quote and its settle is `usdToCredits` of the turn and chain's provider cost, so it ends in a
+  refund or an excess spend more often than a button run.
+- **Measure Sonnet's average shot length.** The quote's average is Haiku's; Sonnet may write
+  longer or shorter shots for the same brief.
+- **A model that truncates every answer keeps a scene asking.** A truncated answer saves its whole
+  shots and the scene continues (D2), so a scene stops only at its share of the tier maximum, the
+  shot ceiling or the progress guard - each request costs a call.
 - **Voice placement when shots are reordered against the read.** The export renders each
   forward run of pieces from its own input of the voice file (`voiceRuns`); a heavily
   shuffled film opens the file many times.

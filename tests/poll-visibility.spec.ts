@@ -192,7 +192,7 @@ test('export status poll pauses while hidden and polls once on return', async ({
   await assertPausesAndResumes(page, count, CHAIN_STEP_MS)
 })
 
-test('workbench generating refresh pauses while hidden and refreshes once on return', async ({ page }) => {
+test('workbench shot-run status checks pause while hidden and check once on return', async ({ page }) => {
   const projectId = await project('workbench', 'Poll visibility - workbench')
   const { error } = await admin.from('generations').insert({
     project_id: projectId,
@@ -204,10 +204,14 @@ test('workbench generating refresh pauses while hidden and refreshes once on ret
     started_at: new Date().toISOString(),
   })
   expect(error).toBeNull()
-  const pathname = `/projects/${projectId}/workbench`
-  const count = countRequests(page, isRefreshOf(pathname))
+  // While generating the Workbench checks a lightweight status read - never a page refresh
+  // (the page re-renders once, when the run ends).
+  const count = countRequests(
+    page,
+    (req) => req.method() === 'GET' && new URL(req.url()).pathname === `/api/projects/${projectId}/shots/status`
+  )
   await page.clock.install()
-  await page.goto(pathname)
+  await page.goto(`/projects/${projectId}/workbench`)
   await assertPausesAndResumes(page, count, 3000)
 })
 

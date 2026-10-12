@@ -11,23 +11,22 @@ export function parseDurationTarget(raw: string | null): DurationTarget {
 
 export type DurationConfig = {
   label: string
-  // The intake estimate's shot count and shot generation's pre-flight credit check
-  // (credits.ts shotGenerationCredits) - never a cap on how many shots generation writes.
-  targetShots: number
-  // The tier's seconds range. Shot generation keeps the outline's total inside it and
-  // stops writing shots at the maximum; the workbench header's over-target warning reads
-  // the maximum too. Not parsed from `label` elsewhere.
+  // The tier's seconds range. Shot generation stops requesting shots at the maximum (it
+  // never deletes a written one), and the shot count and shot-list hold are sized from it
+  // (credits.ts tierShotCount); the workbench header's over-range warning reads it too.
+  // Not parsed from `label` elsewhere.
   targetSecondsMin: number
   targetSecondsMax: number
-  // The length the outline is asked for: the middle of the range (a product choice).
+  // The length the outline is asked for and rescaled to: the middle of the range (a
+  // product choice).
   targetSeconds: number
 }
 
 // The intake duration tiles, shot generation and its pre-flight check all read from
 // this map — the numbers live nowhere else.
 export const durationConfig: Record<DurationTarget, DurationConfig> = {
-  '30-60s': { label: '30–60s', targetShots: 8, targetSecondsMin: 30, targetSecondsMax: 60, targetSeconds: 45 },
-  '1-2min': { label: '1–2 min', targetShots: 15, targetSecondsMin: 60, targetSecondsMax: 120, targetSeconds: 90 },
-  '3-5min': { label: '3–5 min', targetShots: 40, targetSecondsMin: 180, targetSecondsMax: 300, targetSeconds: 240 },
-  '8-10min': { label: '8–10 min', targetShots: 75, targetSecondsMin: 480, targetSecondsMax: 600, targetSeconds: 540 },
+  '30-60s': { label: '30–60s', targetSecondsMin: 30, targetSecondsMax: 60, targetSeconds: 45 },
+  '1-2min': { label: '1–2 min', targetSecondsMin: 60, targetSecondsMax: 120, targetSeconds: 90 },
+  '3-5min': { label: '3–5 min', targetSecondsMin: 180, targetSecondsMax: 300, targetSeconds: 240 },
+  '8-10min': { label: '8–10 min', targetSecondsMin: 480, targetSecondsMax: 600, targetSeconds: 540 },
 }

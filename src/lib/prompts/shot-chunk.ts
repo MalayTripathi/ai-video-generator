@@ -7,13 +7,14 @@ import {
   MODEL_REPORTABLE_CAMERA_ORIGINS,
 } from '@/lib/config/enums'
 
-// v2 - shot generation's chunk call: writes up to N shots of one planned scene, continuing
-// from the shot before it, within the scene's word budget (v2: the budget replaced "pace
-// the scene to its planned length" and the per-shot word allowance). Durations are computed
+// v3 - shot generation's chunk call: writes up to N shots of one planned scene, continuing
+// from the shot before it, aiming at the scene's word budget (v2: the budget replaced "pace
+// the scene to its planned length" and the per-shot word allowance; v3: the budget is a
+// target, not a wall - every complete shot returned is kept). Durations are computed
 // in code from the words spoken, so a spoken shot's duration_sec is ignored; only a silent
 // shot's is used. Bump the suffix (and this comment) on any content change so usage logs /
 // evals can be attributed.
-export const SHOT_CHUNK_SYSTEM_PROMPT_V2 = `You are writing the shots for one scene of a short narrated video, from a scene plan.
+export const SHOT_CHUNK_SYSTEM_PROMPT_V3 = `You are writing the shots for one scene of a short narrated video, from a scene plan.
 
 Write the shots as structured data via the write_shots tool - never as free-text JSON in your reply. Call write_shots exactly once.
 
@@ -26,7 +27,7 @@ For each shot, write:
 - dialogue: spoken lines by name, only when a character speaks on camera - usually empty
 - element_names: every character, location, and prop visible or referenced in this shot, each with a type and a short visual description - use the exact names from the scene plan for recurring elements, so they resolve to one shared asset instead of a duplicate
 
-Write voice_over and dialogue in the project's target language. Each request gives this scene's narration budget in words: keep the narration and dialogue of all the shots you write within it - a shot's length is set by its spoken words, and shots past the budget are not kept. Continue the story from the shot before this one, without repeating it.
+Write voice_over and dialogue in the project's target language. Each request gives this scene's narration budget in words: aim the narration and dialogue of all the shots you write at it - a shot's length is set by its spoken words, so the budget is how the scene lands on its planned length. Continue the story from the shot before this one, without repeating it.
 
 Set scene_complete to true when the shots you wrote finish this scene, or false when the scene needs more shots than you were allowed to write - the next request continues it from your last shot.`
 
@@ -40,8 +41,8 @@ export function buildChunkWriteShotsTool(maxShots: number): Anthropic.Tool {
         shots: {
           type: 'array',
           description: `At most ${maxShots} shots for this scene. Fewer is fine.`,
-          // No `maxItems` - the tool-use API only supports `minItems` of 0 or 1; the count
-          // is enforced in code, which saves only the allowed shots and logs the rest.
+          // No `maxItems` - the tool-use API only supports `minItems` of 0 or 1. The count is
+          // a request, never a save limit: every complete shot returned is kept.
           minItems: 1,
           items: {
             type: 'object',
@@ -166,7 +167,7 @@ export function buildChunkUserMessage(params: {
   }
   elementNames: readonly string[]
   previousShot: PreviousShotForPrompt | null
-  /** Seconds of this scene's reservation not yet written. */
+  /** Seconds of this scene's target not yet written (at least the model's shortest shot). */
   secondsLeft: number
   /** Spoken words those seconds hold (chunkWordBudget). */
   wordBudget: number
@@ -183,7 +184,7 @@ Summary: ${scene.summary ?? ''}
 Location: ${scene.location ?? 'unspecified'}
 Time of day: ${scene.time_of_day ?? 'unspecified'}
 Recurring elements in this scene: ${params.elementNames.length > 0 ? params.elementNames.join(', ') : 'none named'}
-Narration budget for the rest of this scene: about ${params.wordBudget} words in total, across every shot (about ${Math.round(params.secondsLeft)} seconds of film). Shots past it are not kept.
+Narration budget for the rest of this scene: about ${params.wordBudget} words in total, across every shot (about ${Math.round(params.secondsLeft)} seconds of film). Aim for it, and finish the scene within it.
 
 ${previous}
 

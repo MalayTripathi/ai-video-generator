@@ -9,7 +9,7 @@ import { DEFAULT_QUALITY_PRESET } from '@/lib/config/models'
 import { QualityPicker } from '@/components/quality/quality-picker'
 import { estimateCredits, parseQualitySettings, presetSettings, type QualitySettings } from '@/lib/quality/estimate'
 import { VIDEO_TYPES } from '@/lib/video-type-labels'
-import { shotGenerationCredits } from '@/lib/config/credits'
+import { shotGenerationCredits, tierShotCount } from '@/lib/config/credits'
 import { formatCredits } from '@/lib/format-credits'
 import { createProjectFromIntake } from '../actions'
 import type { TemplateProject } from '../types'
@@ -86,14 +86,15 @@ export function IntakeForm({ recentProjects, balance }: { recentProjects: Templa
   const [qualityKey, setQualityKey] = useState(0)
 
   const requestedShotCount = useMemo(() => extractRequestedShotCount(sourceText), [sourceText])
-  const targetShots = durationConfig[durationTarget].targetShots
+  const tierShots = tierShotCount(durationTarget)
   const shotCountWarning =
-    requestedShotCount !== null && requestedShotCount > targetShots
-      ? `You mentioned around ${requestedShotCount} shots, but the shot list for ${durationConfig[durationTarget].label} is capped at ${targetShots}. Pick a longer duration if you need more, or the brief will be trimmed to fit.`
+    requestedShotCount !== null && requestedShotCount > tierShots
+      ? `You mentioned around ${requestedShotCount} shots, but the shot list for ${durationConfig[durationTarget].label} is sized for about ${tierShots}. Pick a longer duration if you need more, or the brief will be trimmed to fit.`
       : null
 
   // The whole video's estimate - shown, never a gate. What gates is the shot list's own
-  // figure (shotGenerationCredits): the Workbench's pre-flight check, checked here first.
+  // figure (shotGenerationCredits): the hold the shot list places when it starts, checked here
+  // first. Unused hold comes back when the run ends.
   const estimate = Math.round(estimateCredits({ durationTarget, aspectRatio, ...quality }) / 10) * 10
   const shotListCredits = shotGenerationCredits(durationTarget)
   const balanceCredits = state?.shortfall.balanceCredits ?? balance
@@ -281,7 +282,7 @@ export function IntakeForm({ recentProjects, balance }: { recentProjects: Templa
                 />
                 <span className="text-body font-medium">{config.label}</span>
                 <span className={selected ? 'text-chip text-accent-quiet' : 'text-chip text-text-tertiary'}>
-                  ~{config.targetShots} shots
+                  ~{tierShotCount(value)} shots
                 </span>
               </label>
             )
@@ -306,6 +307,11 @@ export function IntakeForm({ recentProjects, balance }: { recentProjects: Templa
           <span data-testid="intake-estimate">
             Estimated ≈ <span className="tabular-nums">{estimate.toLocaleString('en-US')}</span> credits
           </span>
+          {' · '}
+          <span data-testid="intake-shot-hold">
+            shot list up to <span className="tabular-nums">{formatCredits(shotListCredits)}</span> credits · charged for shots
+            written
+          </span>
           {!short && balanceCredits !== null && (
             <>
               {' · '}
@@ -320,7 +326,7 @@ export function IntakeForm({ recentProjects, balance }: { recentProjects: Templa
           // Over balance: a limit the person can lift, not an error - the button disables
           // and Add credits is the group's only accent.
           <span role="status" data-testid="intake-shortfall" className="text-meta text-status-active-fg">
-            Writing the shot list needs <span className="tabular-nums">{formatCredits(shotListCredits)}</span> credits ·{' '}
+            Writing the shot list holds up to <span className="tabular-nums">{formatCredits(shotListCredits)}</span> credits ·{' '}
             <span className="tabular-nums">{formatCredits(balanceCredits!)}</span> left ·{' '}
             <Link href="/credits" className="font-medium text-accent hover:underline">
               Add credits

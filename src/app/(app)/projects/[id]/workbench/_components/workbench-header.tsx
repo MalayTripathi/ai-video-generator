@@ -25,3 +25,6 @@ export function WorkbenchHeader({
   const { shots, videoType } = useShots()
   return <ProjectHeader project={{ ...project, video_type: videoType }} shots={shots} />
 }
+
+// Named for tests/shot-status-checks.spec.ts's render probe, which must hold in a minified build.
+WorkbenchHeader.displayName = 'WorkbenchHeader'

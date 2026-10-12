@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { NO_LEDGER } from './helpers/shot-chain'
 import { admin } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { buildShotIndexBlock, AGENT_TOOLS, AGENT_SYSTEM_PROMPT_V12 } from '../src/lib/prompts/agent'
@@ -1005,7 +1006,7 @@ test.describe('handleRegenerateAllShots', () => {
       agentGenerationId,
       getBalance: async () => 1_000_000,
       ensureSignupGrant: async () => {},
-      ledger: { recordFixedSpend: async () => {}, recordDynamicSpend: async () => {} },
+      ledger: NO_LEDGER,
       start: async (run) => {
         scheduled.push(run)
         return true

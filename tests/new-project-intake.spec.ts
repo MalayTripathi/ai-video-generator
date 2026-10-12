@@ -79,7 +79,7 @@ test.describe('New Project intake', () => {
   }) => {
     const user = primary.user
     {
-      // DEFAULT_DURATION_TARGET ('30-60s') is pre-selected, targetShots = 8.
+      // DEFAULT_DURATION_TARGET ('30-60s') is pre-selected, tierShotCount = 8.
       await page.route('**/api/projects/*/shots', (route) => route.abort())
       await page.goto('/projects/new')
 
@@ -117,7 +117,7 @@ test.describe('New Project intake', () => {
 
     const warning = page.getByTestId('shot-count-warning')
 
-    // Below target (30-60s tier, targetShots = 8) - mirrors the already-correct
+    // Below the tier's shot count (30-60s, tierShotCount = 8) - mirrors the already-correct
     // production behavior where fewer shots than target is honored, not padded.
     await page.getByPlaceholder(/describe your idea/i).fill('Create a 4 shot video about a lighthouse')
     await expect(warning).toBeHidden()
@@ -295,7 +295,7 @@ test.describe('New Project intake - the balance check', () => {
       await page.goto('/projects/new')
 
       const shortfall = page.getByTestId('intake-shortfall')
-      await expect(shortfall).toContainText('Writing the shot list needs 16 credits')
+      await expect(shortfall).toContainText('Writing the shot list holds up to 16 credits')
       await expect(shortfall).toContainText('10 left')
       await expect(shortfall.getByRole('link', { name: 'Add credits' })).toHaveAttribute('href', '/credits')
       // The whole video's estimate stays shown, labelled as one - it gates nothing.

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { NO_LEDGER } from './helpers/shot-chain'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
@@ -256,7 +257,7 @@ test.describe('runAgentTurn - credit ledger wiring', () => {
       recordTurnSpend: realRecordDynamicSpend,
       getBalance: async () => 1_000_000,
       ensureSignupGrant: async () => {},
-      shotRuns: { ledger: { recordFixedSpend: async () => {}, recordDynamicSpend: realRecordDynamicSpend }, start: async (run) => {
+      shotRuns: { ledger: NO_LEDGER, start: async (run) => {
         scheduled.push(run)
         return true
       } },

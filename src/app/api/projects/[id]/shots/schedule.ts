@@ -2,7 +2,7 @@ import 'server-only'
 import { after } from 'next/server'
 import { createServiceRoleClient } from '@/lib/supabase/service-role'
 import { createClaudeGateway } from '@/lib/claude'
-import { recordDynamicSpend, recordFixedSpend } from '@/lib/credits/ledger'
+import { placeHold, settleHold } from '@/lib/credits/ledger'
 import { readBalance } from '@/lib/credits/balance'
 import { continuationSecret, deploymentBypassHeaders } from '@/lib/continuation'
 import type { ShotRunLedger } from '@/lib/shots/runs'
@@ -13,7 +13,7 @@ import { createShotsContinueRun, runShotsWorker, type ShotsContinuationPayload }
 // chain's first run in a fresh invocation of that route, for a caller whose own invocation
 // is already spending its 300s (the agent turn's regenerate_all_shots).
 
-export const SHOT_RUN_LEDGER: ShotRunLedger = { recordFixedSpend, recordDynamicSpend }
+export const SHOT_RUN_LEDGER: ShotRunLedger = { placeHold, settleHold }
 
 /**
  * Schedules one run of the chain with the service-role client (the user's session may

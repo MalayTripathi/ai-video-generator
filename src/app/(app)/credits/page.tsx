@@ -5,6 +5,7 @@ import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { TopBar } from '../dashboard/top-bar'
 import { parsePeriod } from '../usage/period'
 import { readBalance } from '@/lib/credits/balance'
+import { readSettledBalance } from '@/lib/credits/release-stale-holds'
 import { getLedgerGroups, readLedgerGroups } from './data'
 import { aggregateCreditsPeriod, type ProjectMeta } from './aggregate'
 import { PeriodSelector } from './period-selector'
@@ -28,7 +29,7 @@ export default async function CreditsPage({ searchParams }: { searchParams: Prom
   // present-moment fact, not a periodic one (see credits-summary.tsx's sublabel). Both
   // figures are summed by Postgres (credit_balances, credit_ledger_monthly) and read in
   // parallel; the period read is request-memoized with the rail's on "This month".
-  let [ledger, periodGroups] = await Promise.all([readBalance(supabase, user.id), getLedgerGroups(user.id, period)])
+  let [ledger, periodGroups] = await Promise.all([readSettledBalance(supabase, user.id), getLedgerGroups(user.id, period)])
 
   // The layout grants a new user their signup credits too, but a layout and its page render
   // in parallel, so the reads above can land before that grant does - and a brand-new

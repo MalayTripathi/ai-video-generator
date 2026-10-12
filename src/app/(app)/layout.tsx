@@ -2,7 +2,8 @@ import type { ReactNode } from 'react'
 import { getCurrentUser } from '@/lib/auth/current-user'
 import { createClient } from '@/lib/supabase/server'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
-import { readBalance, type BalanceRead } from '@/lib/credits/balance'
+import type { BalanceRead } from '@/lib/credits/balance'
+import { readSettledBalance } from '@/lib/credits/release-stale-holds'
 import { Rail } from './dashboard/rail'
 import { RailFiguresProvider } from '@/components/rail-figures-context'
 import { loadRailFigures } from './rail-figures'
@@ -17,7 +18,9 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   if (user) {
     const supabase = await createClient()
     const [ledger, figures] = await Promise.all([
-      readBalance(supabase, user.id).catch((): BalanceRead | null => null),
+      // Releases a dead run's hold first, only when this read says one is open past its
+      // stale window - any page view does it, whichever project the run belonged to.
+      readSettledBalance(supabase, user.id).catch((): BalanceRead | null => null),
       loadRailFigures(user.id),
     ])
     railFigures = figures

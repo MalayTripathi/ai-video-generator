@@ -17,7 +17,8 @@ export function RetryConfirmModal({
   // 'remaining' writes only the scenes a stopped run left unwritten, keeping every shot.
   mode?: 'regenerate' | 'remaining'
   hasPendingPayload: boolean
-  /** credits.ts shotGenerationCredits - what starting needs available; the 402 check's figure. */
+  /** The hold this start places - credits.ts shotGenerationCredits, or remainingShotQuoteCredits
+   * for 'remaining'; the 402 check's figure. */
   shotListCredits: number
   replacesExisting: boolean
   onConfirm: () => void
@@ -55,10 +56,10 @@ export function RetryConfirmModal({
         </span>
         <span className="text-small leading-[1.5] text-text-secondary">
           {mode === 'remaining'
-            ? `This writes the scenes that were not finished. The shots you have stay as they are. Starting needs ${formatCredits(shotListCredits)} credits available; you are charged only for the shots written.`
+            ? `This writes the scenes that were not finished. The shots you have stay as they are. Up to ${formatCredits(shotListCredits)} credits are held at the start · charged for shots written, and the rest comes back.`
             : hasPendingPayload
-              ? `The scene plan from your last attempt is saved and is reused at no cost. Starting needs ${formatCredits(shotListCredits)} credits available; you are charged only for the shots written.`
-              : `This starts a new shot generation. Starting needs ${formatCredits(shotListCredits)} credits available; you are charged only for the shots written.`}
+              ? `The scene plan from your last attempt is saved and is reused at no cost. Up to ${formatCredits(shotListCredits)} credits are held at the start · charged for shots written, and the rest comes back.`
+              : `This starts a new shot generation. Up to ${formatCredits(shotListCredits)} credits are held at the start · charged for shots written, and the rest comes back.`}
         </span>
         {mode === 'regenerate' && replacesExisting && (
           <span className="text-small leading-[1.5] text-status-failed-fg">

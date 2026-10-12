@@ -4,7 +4,7 @@ import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { refusalMessage, scriptedGateway } from './helpers/claude-fakes'
 import { realRecordDynamicSpend, realRecordFixedSpend } from './helpers/ledger-child'
-import { chainGateway, fakeOutline, fakeShot, insertChainProject, parseChunkAsk, readChainShots, readRun, runChain } from './helpers/shot-chain'
+import { REAL_SHOT_LEDGER, chainGateway, fakeOutline, fakeShot, holdLedger, insertChainProject, parseChunkAsk, readChainShots, readRun, runChain } from './helpers/shot-chain'
 import type { ClaudeGateway } from '../src/lib/claude'
 import { REFUSAL_USER_MESSAGE } from '../src/lib/claude'
 import { CAMERA_FIELD_NAMES } from '../src/lib/prompts/camera-derivation'
@@ -20,7 +20,7 @@ import { getAgentStepConfig } from '../src/app/api/projects/[id]/agent/steps'
 // stop_reason 'refusal', and any claim is released. Every assertion is scoped to the
 // project the test just created.
 
-const REAL_LEDGER = { recordFixedSpend: realRecordFixedSpend, recordDynamicSpend: realRecordDynamicSpend }
+const REAL_LEDGER = REAL_SHOT_LEDGER
 
 async function seedProject(overrides: Record<string, unknown> = {}) {
   const { data, error } = await admin
@@ -190,7 +190,8 @@ test.describe('refusals settle like a failed call', () => {
     expect(run.stop_reason).toBe('refused')
     expect(await readChainShots(projectId)).toEqual([])
     const rows = await rowsFor(projectId)
-    expect(rows.ledger).toEqual([])
+    // The hold is refunded in full: nothing charged.
+    expect((await holdLedger(projectId)).net).toBe(0)
     expect(rows.usage).toEqual([{ operation: 'generate_shots', status: 'failed', stop_reason: 'refusal' }])
     expect(rows.generations).toEqual([expect.objectContaining({ operation: 'generate_shots', state: 'failed', payload: null })])
   })
@@ -225,9 +226,9 @@ test.describe('refusals settle like a failed call', () => {
     const rows = await rowsFor(projectId)
     const usage = rows.usage.filter((u) => u.stop_reason === 'refusal')
     expect(usage).toEqual([{ operation: 'generate_shots', status: 'failed', stop_reason: 'refusal' }])
-    // The saved shot is charged once; the refused chunk adds nothing.
-    const { data: ledger } = await admin.from('credit_ledger').select('delta').eq('project_id', projectId)
-    expect(ledger!.length).toBe(1)
-    expect(ledger![0].delta).toBe(-2)
+    // The saved shot is charged once (hold less refund); the refused chunk adds nothing.
+    const ledger = await holdLedger(projectId)
+    expect(ledger.settles).toHaveLength(1)
+    expect(ledger.net).toBe(2)
   })
 })

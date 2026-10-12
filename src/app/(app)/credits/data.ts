@@ -26,6 +26,8 @@ export type LedgerGroup = {
   project_id: string | null
   delta: number
   entries: number
+  /** How many user actions the rows stand for - a held action's settle row is not one. */
+  actions: number
 }
 
 /**
@@ -48,7 +50,7 @@ export async function readLedgerGroups(
 
   let query = supabase
     .from('credit_ledger_monthly')
-    .select('kind, step, operation, project_id, credits, entries')
+    .select('kind, step, operation, project_id, credits, entries, actions')
     .eq('user_id', userId)
   if (start) query = query.eq('month', start)
   // Next memoizes identical GET fetches within one render pass; a fresh signal opts out.
@@ -67,6 +69,7 @@ export async function readLedgerGroups(
     if (existing) {
       existing.delta += row.credits ?? 0
       existing.entries += row.entries ?? 0
+      existing.actions += row.actions ?? 0
     } else {
       groups.set(key, {
         kind: row.kind ?? '',
@@ -75,6 +78,7 @@ export async function readLedgerGroups(
         project_id: row.project_id,
         delta: row.credits ?? 0,
         entries: row.entries ?? 0,
+        actions: row.actions ?? 0,
       })
     }
   }

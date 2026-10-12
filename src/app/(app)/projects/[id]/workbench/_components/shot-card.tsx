@@ -474,3 +474,6 @@ export function ShotCard({ shot }: { shot: DisplayShot }) {
     </>
   )
 }
+
+// Named for tests/shot-status-checks.spec.ts's render probe, which must hold in a minified build.
+ShotCard.displayName = 'ShotCard'

@@ -13,11 +13,14 @@ function ArrowIcon() {
 }
 
 export function ShotsFooter({
+  chargeLine = null,
   elementNamesWithoutReference,
   generateImagePromptsCredits,
   onGenerateImagePromptsClick,
   generateDisabled,
 }: {
+  /** The last shot run's hold and charge, once it is settled. */
+  chargeLine?: string | null
   elementNamesWithoutReference: string[]
   generateImagePromptsCredits: number
   onGenerateImagePromptsClick: () => void
@@ -29,6 +32,12 @@ export function ShotsFooter({
   return (
     <>
       <div className="text-small leading-[1.5] text-text-secondary" data-testid="workbench-footer-warning">
+        {chargeLine && (
+          <span className="tabular-nums" data-testid="shot-run-charge">
+            Shot list: {chargeLine}
+            {elementNamesWithoutReference.length > 0 ? ' · ' : ''}
+          </span>
+        )}
         {elementNamesWithoutReference.length > 0 && (
           <>
             <span className="font-medium text-banner-active-title">

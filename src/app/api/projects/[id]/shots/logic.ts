@@ -4,10 +4,11 @@ import type { Database } from '@/lib/database.types'
 // service-role client (server-only); the route injects the real functions.
 import type { getBalance as getBalanceType } from '@/lib/credits/balance'
 import type { ensureSignupGrant as ensureSignupGrantType } from '@/lib/credits/signup-grant'
-import { creditsFor, shotGenerationCredits } from '@/lib/config/credits'
+import { InsufficientCreditsError, remainingShotQuoteCredits, shotGenerationCredits } from '@/lib/config/credits'
 import { isRegisteredVideoModel } from '@/lib/config/models'
 import { claimGeneration, settleGeneration, type BlockedReason } from '@/lib/generations/claim'
-import { hasLiveShotRun, settleDeadShotRuns, type ShotRunLedger } from '@/lib/shots/runs'
+import { sceneProgress, type SceneProgress } from '@/app/(app)/projects/[id]/workbench/_components/shot-run-view'
+import { anyDeadShotRun, isLiveShotRun, readOpenShotRuns, settleDeadShotRuns, type ShotRunLedger } from '@/lib/shots/runs'
 
 type Client = SupabaseClient<Database>
 
@@ -41,21 +42,15 @@ const BLOCKED_REASON_MESSAGES: Record<BlockedReason, string> = {
   retry_required: 'The last generation failed. Retry to try again.',
 }
 
-/** The credits shot generation holds back before it starts - 2 per shot, at `shots`. */
-export function shotCredits(shots: number): number {
-  return creditsFor({ step: 'workbench', operation: 'generate_shots', quantity: shots })
-}
-
-/** Scenes no run has finished - what "Generate remaining shots" writes. */
-async function unwrittenSceneCount(supabase: Client, projectId: string): Promise<{ total: number; unwritten: number; error: string | null }> {
+/** Scenes no run has finished - what "Generate remaining shots" writes, and their seconds. */
+async function unwrittenScenes(supabase: Client, projectId: string): Promise<{ total: number; unwritten: SceneProgress[]; error: string | null }> {
   const { data, error } = await supabase
     .from('scenes')
-    .select('id, shot_run_chunks(scene_complete)')
+    .select('target_seconds, shot_run_chunks(scene_complete), shots(duration_sec)')
     .eq('project_id', projectId)
-  if (error) return { total: 0, unwritten: 0, error: error.message }
-  const scenes = (data ?? []) as { id: string; shot_run_chunks: { scene_complete: boolean }[] }[]
-  const unwritten = scenes.filter((s) => !s.shot_run_chunks.some((c) => c.scene_complete)).length
-  return { total: scenes.length, unwritten, error: null }
+  if (error) return { total: 0, unwritten: [], error: error.message }
+  const scenes = (data ?? []).map((row) => sceneProgress(row as unknown as Parameters<typeof sceneProgress>[0]))
+  return { total: scenes.length, unwritten: scenes.filter((s) => !s.complete), error: null }
 }
 
 export async function runShotsRequest(params: {
@@ -88,31 +83,32 @@ export async function runShotsRequest(params: {
     return { ok: false, status: 422, error: "This project's video model isn't available, so shot lengths can't be set." }
   }
 
-  // A dead chain is settled on the first touch after its stale window, before this request
-  // is judged against it.
-  await settleDeadShotRuns(supabase, ledger, projectId)
-  try {
-    if (await hasLiveShotRun(supabase, projectId)) {
-      return { ok: false, status: 409, error: BLOCKED_REASON_MESSAGES.already_generating, reason: 'already_generating' }
-    }
-  } catch {
-    return { ok: false, status: 500, error: 'Could not check for a running generation' }
+  // One read of the project's open runs: whether one is live (409), and whether a dead one
+  // needs settling first - only then is anything more done.
+  const open = await readOpenShotRuns(supabase, projectId)
+  if (open.error) return { ok: false, status: 500, error: 'Could not check for a running generation' }
+  if (anyDeadShotRun(open.runs)) await settleDeadShotRuns(supabase, ledger, projectId, open.runs)
+  if (open.runs.some((run) => isLiveShotRun(run))) {
+    return { ok: false, status: 409, error: BLOCKED_REASON_MESSAGES.already_generating, reason: 'already_generating' }
   }
 
   let totalScenes: number | null = null
+  let requiredCredits = shotGenerationCredits(project.duration_target)
   if (mode === 'remaining') {
-    const scenes = await unwrittenSceneCount(supabase, projectId)
+    const scenes = await unwrittenScenes(supabase, projectId)
     if (scenes.error) return { ok: false, status: 500, error: scenes.error }
-    if (scenes.unwritten === 0) {
+    if (scenes.unwritten.length === 0) {
       return { ok: false, status: 409, error: 'Every scene already has its shots.', reason: 'nothing_remaining' }
     }
     totalScenes = scenes.total
+    requiredCredits = remainingShotQuoteCredits(project.duration_target, scenes.unwritten)
   }
 
-  // Pre-flight: before any claim or provider call, so a refusal writes nothing. Charging is
-  // on shots actually saved; this only holds back the tier's target - the same figure for
-  // generate, retry and remaining, and the one the Workbench and intake show.
-  const requiredCredits = shotGenerationCredits(project.duration_target)
+  // The quote is held before any claim or provider call. A cheap check first, so a plain
+  // shortfall writes nothing; then the hold itself, atomic with its own balance check
+  // (placeHold), which also refuses a start that lost a race for the same credits. The
+  // balance read releases any dead run's hold first (getBalance), for any of the user's
+  // projects.
   let balanceCredits: number
   try {
     await ensureSignupGrant(userId)
@@ -124,6 +120,28 @@ export async function runShotsRequest(params: {
   if (balanceCredits < requiredCredits) {
     return { ok: false, status: 402, error: 'Not enough credits to write the shot list.', requiredCredits, balanceCredits }
   }
+  const agent = params.agentGenerationId != null
+  const holdTarget = {
+    userId,
+    attemptId,
+    step: 'workbench' as const,
+    operation: agent ? ('agent_turn' as const) : ('generate_shots' as const),
+    pricingMode: agent ? ('dynamic' as const) : ('fixed' as const),
+    projectId,
+    messageId: params.messageId ?? null,
+  }
+  try {
+    await ledger.placeHold({ ...holdTarget, credits: requiredCredits })
+  } catch (err) {
+    if (err instanceof InsufficientCreditsError) {
+      return { ok: false, status: 402, error: 'Not enough credits to write the shot list.', requiredCredits, balanceCredits: err.balanceCredits }
+    }
+    // Nothing has been spent yet: the run does not start.
+    console.error('[shots] hold write failed', err)
+    return { ok: false, status: 500, error: 'Could not hold the credits for this shot list' }
+  }
+  // Past this point the hold exists: every refusal below releases it in full.
+  const releaseHold = () => ledger.settleHold({ ...holdTarget, actualCredits: 0 })
 
   const claim = await claimGeneration({
     supabase,
@@ -131,8 +149,12 @@ export async function runShotsRequest(params: {
     retry: mode === 'remaining' ? true : params.retry,
     queued: false,
   })
-  if (claim.outcome === 'error') return { ok: false, status: 500, error: claim.message }
+  if (claim.outcome === 'error') {
+    await releaseHold()
+    return { ok: false, status: 500, error: claim.message }
+  }
   if (claim.outcome === 'blocked') {
+    await releaseHold()
     return { ok: false, status: 409, error: BLOCKED_REASON_MESSAGES[claim.reason], reason: claim.reason }
   }
 
@@ -157,6 +179,7 @@ export async function runShotsRequest(params: {
     .single()
   if (runError || !run) {
     await settleGeneration(supabase, claim.generation.id, { success: false, error: 'Could not start the run' })
+    await releaseHold()
     return { ok: false, status: 500, error: runError?.message ?? 'Could not start the run' }
   }
   return { ok: true, status: 202, runId: run.id }

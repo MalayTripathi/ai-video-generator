@@ -1013,12 +1013,14 @@ export type Database = {
         Row: {
           balance: number | null
           entries: number | null
+          open_hold_live_at: string | null
           user_id: string | null
         }
         Relationships: []
       }
       credit_ledger_monthly: {
         Row: {
+          actions: number | null
           credits: number | null
           entries: number | null
           kind: string | null

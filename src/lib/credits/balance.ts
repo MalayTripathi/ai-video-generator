@@ -7,6 +7,9 @@ export type BalanceRead = {
   balance: number
   /** The user's ledger row count - 0 means they have not been granted their signup credits yet. */
   entries: number
+  /** The earliest "last alive" time across the user's open holds, or null when none is open.
+   * readSettledBalance (release-stale-holds.ts) compares it with the stale window. */
+  openHoldLiveAt: string | null
 }
 
 /**
@@ -21,7 +24,7 @@ export async function readBalance(
   userId: string,
   { fresh = false }: { fresh?: boolean } = {}
 ): Promise<BalanceRead> {
-  let query = supabase.from('credit_balances').select('balance, entries').eq('user_id', userId)
+  let query = supabase.from('credit_balances').select('balance, entries, open_hold_live_at').eq('user_id', userId)
   // Next memoizes identical GET fetches within one render pass, so a re-read after a write
   // in the same render would replay the first answer; a fresh signal opts out.
   if (fresh) query = query.abortSignal(new AbortController().signal)
@@ -29,17 +32,31 @@ export async function readBalance(
   if (error) {
     throw new Error(`readBalance query failed: ${error.message}`)
   }
-  return { balance: data?.balance ?? 0, entries: data?.entries ?? 0 }
+  return { balance: data?.balance ?? 0, entries: data?.entries ?? 0, openHoldLiveAt: data?.open_hold_live_at ?? null }
 }
 
 /**
- * The user's balance. Pure read - the ordinary authenticated client is safe here, unlike
- * ledger.ts's write functions, which need service-role to bypass RLS. Does not grant
- * signup credits - see credits/signup-grant.ts's ensureSignupGrant, which every
- * authenticated page and the real spend gate already call before relying on this
- * figure.
+ * Folds an attempt's ledger rows into its hold and net charge (hold less refund, plus excess):
+ * what a held run placed at start and what it was finally charged. Null when it placed none.
+ */
+export function holdAndSettle(rows: readonly { kind: string; delta: number; dedupe_key: string }[]): {
+  held: number | null
+  charged: number | null
+} {
+  const hold = rows.find((r) => r.kind === 'spend' && r.dedupe_key.startsWith('hold:'))
+  if (!hold) return { held: null, charged: null }
+  const settle = rows.find((r) => r.dedupe_key.startsWith('settle:'))
+  return { held: -hold.delta, charged: -hold.delta - (settle?.delta ?? 0) }
+}
+
+/**
+ * The user's balance, for every credit check - with any dead run's hold released first
+ * (readSettledBalance; one query when none is). Does not grant signup credits - see
+ * credits/signup-grant.ts's ensureSignupGrant, which every authenticated page and the real
+ * spend gate already call before relying on this figure.
  */
 export async function getBalance(userId: string): Promise<number> {
   const supabase = await createClient()
-  return (await readBalance(supabase, userId)).balance
+  const { readSettledBalance } = await import('./release-stale-holds')
+  return (await readSettledBalance(supabase, userId)).balance
 }

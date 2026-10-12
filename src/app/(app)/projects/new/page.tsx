@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getCurrentUser } from '@/lib/auth/current-user'
-import { readBalance } from '@/lib/credits/balance'
+import { readSettledBalance } from '@/lib/credits/release-stale-holds'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { TopBar } from '@/app/(app)/dashboard/top-bar'
 import { IntakeForm } from './_components/intake-form'
@@ -29,7 +29,7 @@ export default async function NewProjectPage() {
       .order('created_at', { ascending: false })
       .limit(8),
     ensureSignupGrant(user.id)
-      .then(() => readBalance(supabase, user.id, { fresh: true }))
+      .then(() => readSettledBalance(supabase, user.id, { fresh: true }))
       .catch(() => null),
   ])
 

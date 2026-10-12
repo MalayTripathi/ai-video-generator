@@ -45,7 +45,8 @@ export function WorkbenchFooter({
 // reference can't affect any output, so counting it would be a warning nobody can act on.
 function GenerateImagePromptsFooter({ onAdvancedSince }: { onAdvancedSince: () => void }) {
   const router = useRouter()
-  const { projectId, shots } = useShots()
+  // chargeLine: the last run's end - what it held and what it was charged.
+  const { projectId, shots, chargeLine } = useShots()
 
   // The furthest_step this page was rendered with can be stale: Back restores it from the
   // router cache with no request, and another tab may have advanced the project. While
@@ -124,6 +125,7 @@ function GenerateImagePromptsFooter({ onAdvancedSince }: { onAdvancedSince: () =
   return (
     <>
       <ShotsFooter
+        chargeLine={chargeLine}
         elementNamesWithoutReference={[...namesWithoutReference.values()]}
         generateImagePromptsCredits={requiredCredits}
         onGenerateImagePromptsClick={openModal}
@@ -145,3 +147,6 @@ function GenerateImagePromptsFooter({ onAdvancedSince }: { onAdvancedSince: () =
     </>
   )
 }
+
+// Named for tests/shot-status-checks.spec.ts's render probe, which must hold in a minified build.
+WorkbenchFooter.displayName = 'WorkbenchFooter'

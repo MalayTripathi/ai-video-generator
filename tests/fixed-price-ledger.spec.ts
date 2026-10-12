@@ -4,10 +4,9 @@ import path from 'node:path'
 import { admin, createTestSession, deleteTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { SIGNUP_GRANT_CREDITS, CREDIT_PRICE_VERSION } from '../src/lib/config/credits'
-import { durationConfig } from '../src/lib/config/duration'
+import { SIGNUP_GRANT_CREDITS, CREDIT_PRICE_VERSION, shotGenerationCredits } from '../src/lib/config/credits'
 import { successMessage, throwingGateway, textMessage } from './helpers/claude-fakes'
-import { chainGateway, fakeOutline, fakeShot, runChain } from './helpers/shot-chain'
+import { REAL_SHOT_LEDGER, chainGateway, fakeOutline, fakeShot, holdLedger, runChain } from './helpers/shot-chain'
 import { runCameraDerivation } from '../src/app/api/projects/[id]/shots/[shotId]/camera/logic'
 import { runAgentTurn } from '../src/app/api/projects/[id]/agent/logic'
 import { grantAndReadBalance } from './helpers/ledger-child'
@@ -135,54 +134,58 @@ function shotsGateway(count: number) {
   })
 }
 
-const REAL_SHOT_LEDGER = { recordFixedSpend: realRecordFixedSpend, recordDynamicSpend: realRecordDynamicSpend }
 
-test.describe('generate_shots (button trigger) - fixed-price ledger wiring', () => {
-  test('writes one ledger row priced off the saved count, not the tier target', async () => {
-    // '1-2min' targets 15 shots (duration.ts) - the chain saves only 3, so a price keyed on
-    // the target (2 * 15 = 30) would silently overcharge.
-    expect(durationConfig['1-2min'].targetShots).toBe(15)
+test.describe('generate_shots (button trigger) - hold and settle', () => {
+  test('holds the quote at start and settles at the saved count: hold + refund net to 2 credits a saved shot', async () => {
+    // '1-2min' holds 30 (15 shots) - the chain saves only 3, so the settle refunds 24.
     const projectId = await seedProject(primary.user.id, { duration_target: '1-2min' })
     const { request } = await runChain({ projectId, userId: primary.user.id, gateway: shotsGateway(3), ledger: REAL_SHOT_LEDGER })
     expect(request.ok).toBe(true)
 
-    const rows = await readLedgerRows(projectId)
-    expect(rows.length).toBe(1)
-    expect(rows[0]).toMatchObject({ kind: 'spend', pricing_mode: 'fixed', step: 'workbench', operation: 'generate_shots', message_id: null, shot_key: null })
-    expect(rows[0].delta).toBe(-6) // 2 credits/shot * 3 saved
+    const { holds, settles, net } = await holdLedger(projectId)
+    expect(holds).toHaveLength(1)
+    expect(holds[0]).toMatchObject({ kind: 'spend', pricing_mode: 'fixed', operation: 'generate_shots', message_id: null, delta: -shotGenerationCredits('1-2min') })
+    expect(settles).toHaveLength(1)
+    expect(settles[0]).toMatchObject({ kind: 'refund', operation: 'generate_shots', delta: shotGenerationCredits('1-2min') - 6 })
+    expect(net).toBe(6) // 2 credits/shot * 3 saved
   })
 
-  test('a failed run that saved nothing writes no ledger row', async () => {
+  test('a failed run that saved nothing refunds its whole hold', async () => {
     const projectId = await seedProject(primary.user.id)
     await runChain({ projectId, userId: primary.user.id, gateway: throwingGateway('simulated failure'), ledger: REAL_SHOT_LEDGER })
-    expect(await readLedgerRows(projectId)).toHaveLength(0)
+    const { holds, settles, net } = await holdLedger(projectId)
+    expect(holds).toHaveLength(1)
+    expect(settles).toHaveLength(1)
+    expect(net).toBe(0)
   })
 
-  test('a forced ledger-write failure is swallowed - the run still completes, and no row is written', async () => {
+  test('a settle that could not be written is never thrown - the run completes and stays unsettled for the next touch', async () => {
     const projectId = await seedProject(primary.user.id)
-    const { runs } = await runChain({
+    const { request, runs } = await runChain({
       projectId,
       userId: primary.user.id,
       gateway: shotsGateway(2),
-      ledger: {
-        recordFixedSpend: async () => {
-          throw new Error('simulated ledger write failure')
-        },
-        recordDynamicSpend: realRecordDynamicSpend,
-      },
+      ledger: { placeHold: REAL_SHOT_LEDGER.placeHold, settleHold: async () => 'failed' },
     })
     expect(runs.at(-1)!.result).toMatchObject({ outcome: 'finished', status: 'completed' })
-    expect(await readLedgerRows(projectId)).toHaveLength(0)
+    const { holds, settles } = await holdLedger(projectId)
+    expect(holds).toHaveLength(1)
+    expect(settles).toHaveLength(0)
+    const { data: run } = await admin.from('shot_runs').select('charged_at').eq('id', (request as { runId: string }).runId).single()
+    expect(run!.charged_at).toBeNull()
   })
 
-  test('two runs reusing one attemptId produce exactly one row and do not throw', async () => {
+  test('two requests reusing one attemptId hold once and settle once, and do not throw', async () => {
     const projectId = await seedProject(primary.user.id)
     const attemptId = crypto.randomUUID()
     await runChain({ projectId, userId: primary.user.id, gateway: shotsGateway(2), ledger: REAL_SHOT_LEDGER, attemptId })
     // The run record is keyed by attempt, so a second request with the same id is refused
-    // at its insert - and the ledger never sees a second row either way.
+    // at its insert; its hold is the first one (idempotent per attempt), already settled.
     await runChain({ projectId, userId: primary.user.id, gateway: shotsGateway(2), ledger: REAL_SHOT_LEDGER, attemptId, retry: true })
-    expect(await readLedgerRows(projectId)).toHaveLength(1)
+    const { holds, settles, net } = await holdLedger(projectId)
+    expect(holds).toHaveLength(1)
+    expect(settles).toHaveLength(1)
+    expect(net).toBe(4)
   })
 })
 
@@ -800,7 +803,7 @@ test.describe('balance across a mixed sequence (gate 11)', () => {
       // wholesale-replaces the project's shot list once its outline lands, so the shots
       // used for the camera derivations below are seeded AFTER this run, not before -
       // seeding first would have them deleted out from under the test.
-      const shotsResult = await runChain({ projectId, userId: user.id, gateway: shotsGateway(2), ledger: REAL_SHOT_LEDGER })
+      const shotsResult = await runChain({ projectId, userId: user.id, gateway: shotsGateway(2), ledger: REAL_SHOT_LEDGER, topUp: false })
       expect(shotsResult.request.ok).toBe(true)
 
       // Two camera derivations: 3 credits each -> 6 credits.

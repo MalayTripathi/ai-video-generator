@@ -164,7 +164,7 @@ test.describe('Step 2 workbench - shot generation usage rows', () => {
     }
   })
 
-  test('a chunk cut short at max_tokens keeps its saved shots, writes a failed usage row with stop_reason max_tokens, and the run ends failed with the scene left unwritten', async () => {
+  test('a chunk cut short at max_tokens keeps its whole shots, writes a failed usage row with stop_reason max_tokens, and the scene continues in the next request', async () => {
     const projectId = await insertChainProject(primary.user.id)
     let calls = 0
     const gateway: ClaudeGateway = {
@@ -172,18 +172,27 @@ test.describe('Step 2 workbench - shot generation usage rows', () => {
         calls++
         const tool = (params.tool_choice as { name: string }).name
         if (tool === 'write_outline') return successMessage(fakeOutline([{ title: 'A', seconds: 90 }]), 'write_outline')
-        return truncatedMessage({ shots: [fakeShot('Partial.')], scene_complete: false })
+        // The first answer is cut short; the scene is not done, so it is asked again.
+        if (calls === 2) return truncatedMessage({ shots: [fakeShot('Partial.')], scene_complete: false })
+        return successMessage({ shots: [fakeShot('Finished.')], scene_complete: true }, 'write_shots')
       },
     }
     await runChain({ projectId, userId: primary.user.id, gateway })
-    expect(calls).toBe(2)
-    expect((await readChainShots(projectId)).map((s) => s.voice_over)).toEqual(['Partial.'])
+    expect(calls).toBe(3)
+    expect((await readChainShots(projectId)).map((s) => s.voice_over)).toEqual(['Partial.', 'Finished.'])
     const chunkUsage = (await readUsage(projectId)).filter((u) => u.stop_reason === 'max_tokens')
     expect(chunkUsage).toHaveLength(1)
     expect(chunkUsage[0].status).toBe('failed')
-    const { data: chunks } = await admin.from('shot_run_chunks').select('status, payload, scene_complete').eq('project_id', projectId)
-    expect(chunks).toEqual([{ status: 'failed', payload: null, scene_complete: false }])
-    expect((await readGeneration(projectId)).state).toBe('failed')
+    const { data: chunks } = await admin
+      .from('shot_run_chunks')
+      .select('chunk_index, status, payload, scene_complete')
+      .eq('project_id', projectId)
+      .order('chunk_index', { ascending: true })
+    expect(chunks).toEqual([
+      { chunk_index: 0, status: 'succeeded', payload: null, scene_complete: false },
+      { chunk_index: 1, status: 'succeeded', payload: null, scene_complete: true },
+    ])
+    expect((await readGeneration(projectId)).state).toBe('succeeded')
   })
 })
 

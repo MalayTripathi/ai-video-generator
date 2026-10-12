@@ -4,7 +4,7 @@ import { primary } from './fixed-users'
 import { DEFAULT_DURATION_TARGET, durationConfig, parseDurationTarget, type DurationTarget } from '../src/lib/config/duration'
 import { VIDEO_RESOLUTIONS, type AspectRatio } from '../src/lib/config/enums'
 import { QUALITY_PRESETS, VIDEO_MODEL_IDS } from '../src/lib/config/models'
-import { CREDIT_MARGIN, usdToCredits } from '../src/lib/config/credits'
+import { CREDIT_MARGIN, tierShotCount, usdToCredits } from '../src/lib/config/credits'
 import { videoUsdPerSecond } from '../src/lib/config/pricing'
 import {
   estimateCredits,
@@ -41,7 +41,7 @@ test.describe('quality helper', () => {
     expect(tierBadges('1080p')['seedance-2.0-fast']).toBeUndefined()
   })
 
-  test('the estimate is target shots x frame credits plus max seconds x the clip rate, for every preset and tier', () => {
+  test('the estimate is the tier shot count x frame credits plus max seconds x the clip rate, for every preset and tier', () => {
     const aspect: AspectRatio = '9:16'
     for (const tier of TIERS) {
       const config = durationConfig[tier]
@@ -49,7 +49,7 @@ test.describe('quality helper', () => {
         const preset = presetSettings(id)
         const usd = videoUsdPerSecond({ model: preset.videoModel, resolution: preset.videoResolution, audio: false })
         const expected =
-          config.targetShots * frameCredits(preset.imageModel, preset.imageQuality, aspect) +
+          tierShotCount(tier) * frameCredits(preset.imageModel, preset.imageQuality, aspect) +
           usdToCredits(usd * config.targetSecondsMax * CREDIT_MARGIN)
         const actual = estimateCredits({ durationTarget: tier, aspectRatio: aspect, ...preset })
         expect(actual).toBe(expected)

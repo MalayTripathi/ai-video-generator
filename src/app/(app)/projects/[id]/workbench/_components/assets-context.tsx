@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import type { ElementGroup, ProjectElement } from '@/lib/elements/read'
 import type { ElementType } from '@/lib/config/enums'
 import { getProjectElements, resignElementReferenceImage } from '../actions'
@@ -48,6 +48,14 @@ export function AssetsProvider({
 }) {
   const [groups, setGroups] = useState(initialGroups)
   const [expiresAt, setExpiresAt] = useState(initialExpiresAt)
+
+  // Resync whenever the page's data reloads (router.refresh() - a finished shot run, an
+  // agent turn), as ShotsProvider does: a run's new elements show without a browser refresh.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setGroups(initialGroups)
+    setExpiresAt(initialExpiresAt)
+  }, [initialGroups, initialExpiresAt])
 
   function addElementLocal(element: ProjectElement) {
     setGroups((prev) =>

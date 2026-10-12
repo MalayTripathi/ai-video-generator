@@ -86,7 +86,8 @@ of finished work. Each is stated in full further down; these are the pointers.
 18. `credit_ledger` is independent of `usage`: never join them, in either direction,
     and never read `usage` to produce a credit figure — dynamic prices come from
     provider costs accumulated in memory during the action, never from a read-back.
-    Granularity is one row per user action, not per provider call. Rows are
+    Granularity is one row per user action, never per provider call; a held action
+    (shot generation) is one hold row plus at most one settle row. Rows are
     immutable — a refund or correction is always a new row, never an UPDATE or
     DELETE; balance is `SUM(delta)`, computed fresh, never a stored running total.
     All writes go through `src/lib/credits/ledger.ts`'s service-role functions —
@@ -97,6 +98,8 @@ of finished work. Each is stated in full further down; these are the pointers.
     `tests/env-drift.spec.ts` and `tests/env-source-guard.spec.ts` enforce it.
 20. Never add a code default for a class A or B env var beyond `env.ts`'s local
     fallback, and never advise deleting env lines so that defaults apply.
+21. Code never drops a complete shot the model wrote. Limits (scene share, shot
+    ceiling, tier maximum) only stop further requests.
 
 Read `src/lib/database.types.ts` for columns — never rely on this file for them.
 
@@ -330,19 +333,21 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   `ALLOW_REAL_CLAUDE` anywhere in the repo — that decision belongs to the
   developer, not the agent.
 - Duration → shot-count/credit mapping lives in `src/lib/config/duration.ts`
-  (`durationConfig`, keyed by `DurationTarget`) — the single source for
-  `targetShots` and the tier's seconds range; every shot-list credit figure is
-  `credits.ts`'s `shotGenerationCredits` over it. Don't duplicate these numbers elsewhere. The same file exports
+  (`durationConfig`, keyed by `DurationTarget`) — the single source for the tier's
+  seconds range; every shot count and shot-list credit figure is `credits.ts`'s
+  measured-average quote over it (`tierShotCount`, `shotGenerationCredits`,
+  `remainingShotQuoteCredits`). Don't duplicate these numbers elsewhere. The same file exports
   `DEFAULT_DURATION_TARGET` (currently `'30-60s'`, the permanent product
   default, not a placeholder) — `intake-form.tsx`'s pre-selected tile reads
   from it rather than carrying its own literal, so intake tests assert
   against the constant instead of a hardcoded string. Every billed generation
   outside the initial `pending` trigger (i.e. every retry) is confirmed
   through `RetryConfirmModal` before the request fires.
-- **Shot limits are enforced in code, never by prompt.** `targetShots` sizes only
-  the intake estimate and the pre-flight credit check. Generation keeps the
-  outline inside the tier's seconds range, saves each scene's shots within its
-  reserved seconds (`acceptChunkShots`) and each chunk's cap, recording extras per chunk.
+- **Shot limits are enforced in code, never by prompt.** The outline is rescaled to
+  the tier target; scene requests stop at the scene's share of the tier maximum
+  (`sceneRequestLimitSec`), the shot ceiling or the tier maximum (hard rule 21).
+  A run holds its quote at start (`placeHold`, atomic through the `hold:{n}` slot)
+  and settles it once at its end (`settleHold`).
   Durations are computed from the words spoken (`src/lib/shots/durations.ts`),
   never chosen by Claude. The intake hint warns and must never block (its
   regex has no semantics and false-positives readily).
@@ -414,7 +419,7 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
 | Module | Owns |
 |---|---|
 | `src/lib/config/pricing.ts` | Provider rates, `computeCost`, `RATE_VERSION`, `TOOL_USE_SYSTEM_OVERHEAD_TOKENS` |
-| `src/lib/config/duration.ts` | Duration tier → `targetShots` / `targetSecondsMax`, `DEFAULT_DURATION_TARGET` |
+| `src/lib/config/duration.ts` | Duration tier → seconds range and target, `DEFAULT_DURATION_TARGET` |
 | `src/lib/config/enums.ts` | Shot-attribute and project-setting enums, and their model-reportable subsets |
 | `src/lib/config/pipeline.ts` | Step / operation / provider vocabulary, `STEP_OPERATIONS`, `stepOperationLabel`, `stepIndex` |
 | `src/lib/config/models.ts` | Image and video registries, `VIDEO_MODELS` duration registry, `resolveVideoModel`, `isDurationAllowed`; per-call Claude/ElevenLabs config is `models.server.ts` |

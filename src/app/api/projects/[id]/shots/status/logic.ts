@@ -20,7 +20,7 @@ export type ShotsStatus = {
 type StatusRow = {
   id: string
   generations: { state: string }[]
-  shot_runs: { status: string; stop_reason: string | null; total_scenes: number | null; heartbeat_at: string; finished_at: string | null; charged_at: string | null }[]
+  shot_runs: { id: string; status: string; stop_reason: string | null; total_scenes: number | null; heartbeat_at: string; finished_at: string | null; charged_at: string | null }[]
   scenes: { shot_run_chunks: { scene_complete: boolean }[] }[]
   shots: { count: number }[]
 }
@@ -29,7 +29,7 @@ async function readStatusRow(supabase: Client, projectId: string, userId: string
   return supabase
     .from('projects')
     .select(
-      'id, generations(state), shot_runs(status, stop_reason, total_scenes, heartbeat_at, finished_at, charged_at), scenes(shot_run_chunks(scene_complete)), shots(count)'
+      'id, generations(state), shot_runs(id, status, stop_reason, total_scenes, heartbeat_at, finished_at, charged_at), scenes(shot_run_chunks(scene_complete)), shots(count)'
     )
     .eq('id', projectId)
     .eq('user_id', userId)

@@ -7,7 +7,7 @@ import { assertRegisteredVideoModel } from '@/lib/config/models'
 import { parseQualitySettings } from '@/lib/quality/estimate'
 import { VIDEO_TYPES, ASPECT_RATIOS } from '@/lib/config/enums'
 import { shotGenerationCredits } from '@/lib/config/credits'
-import { readBalance } from '@/lib/credits/balance'
+import { readSettledBalance } from '@/lib/credits/release-stale-holds'
 import type { IntakeState } from './types'
 
 /**
@@ -57,7 +57,7 @@ export async function createProjectFromIntake(_previous: IntakeState, formData: 
 
   if (formData.get('write_shots') !== 'no') {
     const requiredCredits = shotGenerationCredits(durationTarget)
-    const { balance } = await readBalance(supabase, user.id, { fresh: true })
+    const { balance } = await readSettledBalance(supabase, user.id, { fresh: true })
     if (balance < requiredCredits) return { shortfall: { requiredCredits, balanceCredits: balance } }
   }
 

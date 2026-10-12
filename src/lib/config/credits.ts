@@ -196,16 +196,46 @@ export function creditsFor({
   }
 }
 
+// The average generated shot's seconds, from the shots the current chunk sizing wrote. The
+// one shot-length source: the intake tier cards' shot counts, the whole-video estimate and
+// the shot-list hold all derive from it.
+export const MEASURED_AVG_SHOT_SECONDS = 8.45 // measured: n=1 project (31 shots, b9a78e48, Oct 11; 3-5 min, wan-3.0, en) - provisional until pricing calibration
+
+/** Shots that `seconds` of shot list comes to at the measured average shot, rounded up. */
+export function shotCountFor(seconds: number): number {
+  return Math.max(1, Math.ceil(Math.max(0, seconds) / MEASURED_AVG_SHOT_SECONDS - 1e-9))
+}
+
+/** A duration tier's shot count: its maximum seconds at the measured average shot. */
+export function tierShotCount(durationTarget: string | null): number {
+  return shotCountFor(durationConfig[parseDurationTarget(durationTarget)].targetSecondsMax)
+}
+
 /**
- * The credits writing a project's shot list needs available before it starts: 2 per shot
- * at the duration tier's target shot count. The one figure behind every shot-generation
- * number - the 402 pre-flight (generate, retry and remaining), its banner, the confirm
- * modal and the intake balance check. Charging is on shots actually saved.
+ * The one shot-generation quote: `seconds` of shot list at the measured average shot, at
+ * generate_shots' per-shot price. It is the hold a run places at start and every figure
+ * shown before one - intake, the Workbench, the confirm modal and the 402. The run settles
+ * at the shots actually saved; unused hold is refunded.
  */
+export function shotQuoteCredits(seconds: number): number {
+  return creditsFor({ step: 'workbench', operation: 'generate_shots', quantity: shotCountFor(seconds) })
+}
+
+/** The hold for a whole shot list: the duration tier's maximum seconds. */
 export function shotGenerationCredits(durationTarget: string | null): number {
-  return creditsFor({
-    step: 'workbench',
-    operation: 'generate_shots',
-    quantity: durationConfig[parseDurationTarget(durationTarget)].targetShots,
-  })
+  return shotQuoteCredits(durationConfig[parseDurationTarget(durationTarget)].targetSecondsMax)
+}
+
+/**
+ * The hold for "Generate remaining shots": the seconds the unwritten scenes may still be
+ * asked for - each one's request limit (its share of the tier maximum) less what it has
+ * already written, never below zero.
+ */
+export function remainingShotQuoteCredits(
+  durationTarget: string | null,
+  scenes: readonly { targetSeconds: number; writtenSeconds: number }[]
+): number {
+  const tier = durationConfig[parseDurationTarget(durationTarget)]
+  const share = tier.targetSecondsMax / tier.targetSeconds
+  return shotQuoteCredits(scenes.reduce((sum, s) => sum + Math.max(0, s.targetSeconds * share - s.writtenSeconds), 0))
 }

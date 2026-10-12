@@ -46,11 +46,6 @@ export function spokenWordsPerSec(language: string | null): number {
   return (language && SPOKEN_WORDS_PER_SEC[language]) || DEFAULT_SPOKEN_WORDS_PER_SEC
 }
 
-// The share of a scene's remaining seconds its word budget fills: each shot adds its padding
-// and is rounded up to a length the video model renders, so a budget of the full seconds
-// would overrun them. Code enforces the seconds whatever the model writes.
-export const WORD_BUDGET_FILL = 0.9
-
 // Added to a shot's spoken length before it is rounded up to a length the video model
 // allows - at generation (from the word count) and at Fit to voiceover (from the measured
 // span). Gaps between spoken spans measured p50 0.12s, max 0.21s.

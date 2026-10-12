@@ -1,7 +1,7 @@
 import { createServiceRoleClient } from '@/lib/supabase/service-role'
 import { isUniqueViolation } from '@/lib/shot-key'
 import type { Step, Operation } from '@/lib/config/pipeline'
-import { creditsFor, usdToCredits, CREDIT_PRICE_VERSION, type ImagePriceKey } from '@/lib/config/credits'
+import { creditsFor, usdToCredits, CREDIT_PRICE_VERSION, InsufficientCreditsError, type ImagePriceKey } from '@/lib/config/credits'
 
 // Write-only: spends and refunds. Every write in this module goes through the
 // service-role client (bypasses RLS - credit_ledger has no authenticated write
@@ -183,5 +183,170 @@ export async function recordRefund(params: { userId: string; ledgerId: string })
       throw new DuplicateRefundError(params.ledgerId)
     }
     throw new Error(`recordRefund insert failed: ${insertError.message}`)
+  }
+}
+
+// ---- Holds -------------------------------------------------------------------------------
+// A held action (a shot-generation run today) places one hold at start - a 'spend' row for
+// its whole quote - and settles it once at its end: a 'refund' of the unused part, or one
+// extra 'spend' for an excess. Balance stays SUM(delta), so a hold lowers it from the moment
+// it is placed and the settle brings it to the actual charge.
+//
+// Concurrency: a hold's dedupe_key is 'hold:{n}', n counted across ALL the user's holds,
+// whatever operation placed them. A placer reads the count, THEN the balance, then inserts
+// slot n+1: two placers racing read the same count and the (user_id, dedupe_key) unique
+// index lets exactly one insert land; the other re-reads and sees the winner's hold in the
+// balance. A hold placed after the count was read takes the same slot, so no balance read
+// can miss a hold it raced with. No RPC, no lock table. Every future held operation must
+// place its holds through placeHold so it serializes against these.
+
+export const HOLD_KEY_PREFIX = 'hold:'
+export const SETTLE_KEY_PREFIX = 'settle:'
+const HOLD_SLOT_ATTEMPTS = 4
+
+export type HoldRow = { id: string; credits: number }
+
+type HoldTarget = {
+  userId: string
+  attemptId: string
+  step: Step
+  operation: Operation
+  pricingMode: 'fixed' | 'dynamic'
+  projectId: string | null
+  messageId?: string | null
+}
+
+async function findHold(supabase: ReturnType<typeof createServiceRoleClient>, userId: string, attemptId: string) {
+  return supabase
+    .from('credit_ledger')
+    .select('id, delta, step, operation, project_id, message_id, pricing_mode')
+    .eq('user_id', userId)
+    .eq('attempt_id', attemptId)
+    .eq('kind', 'spend')
+    .like('dedupe_key', `${HOLD_KEY_PREFIX}%`)
+    .maybeSingle()
+}
+
+/**
+ * Places the hold for a held action, atomically with its balance check. Throws
+ * InsufficientCreditsError when the balance doesn't cover `credits`, and a plain Error when
+ * the hold can't be written - the one ledger write that must fail its request, since nothing
+ * has been spent yet. Idempotent per attempt: a hold already placed for it is returned.
+ */
+export async function placeHold(params: HoldTarget & { credits: number }): Promise<HoldRow> {
+  const supabase = createServiceRoleClient()
+  const existing = await findHold(supabase, params.userId, params.attemptId)
+  if (existing.error) throw new Error(`placeHold lookup failed: ${existing.error.message}`)
+  if (existing.data) return { id: existing.data.id, credits: -existing.data.delta }
+
+  for (let attempt = 0; attempt < HOLD_SLOT_ATTEMPTS; attempt++) {
+    // Count first, balance second - the order the race argument above depends on.
+    const { count, error: countError } = await supabase
+      .from('credit_ledger')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', params.userId)
+      .like('dedupe_key', `${HOLD_KEY_PREFIX}%`)
+    if (countError || count === null) throw new Error(`placeHold count failed: ${countError?.message ?? 'no count'}`)
+    const { data: balanceRow, error: balanceError } = await supabase
+      .from('credit_balances')
+      .select('balance')
+      .eq('user_id', params.userId)
+      .abortSignal(new AbortController().signal)
+      .maybeSingle()
+    if (balanceError) throw new Error(`placeHold balance read failed: ${balanceError.message}`)
+    const balance = balanceRow?.balance ?? 0
+    if (balance < params.credits) throw new InsufficientCreditsError(params.credits, balance)
+
+    const { data, error } = await supabase
+      .from('credit_ledger')
+      .insert({
+        user_id: params.userId,
+        kind: 'spend',
+        delta: -params.credits,
+        step: params.step,
+        operation: params.operation,
+        project_id: params.projectId,
+        message_id: params.messageId ?? null,
+        shot_key: null,
+        attempt_id: params.attemptId,
+        dedupe_key: `${HOLD_KEY_PREFIX}${count + 1}`,
+        price_version: CREDIT_PRICE_VERSION,
+        pricing_mode: params.pricingMode,
+        refunds_ledger_id: null,
+      })
+      .select('id')
+      .single()
+    if (!error && data) return { id: data.id, credits: params.credits }
+    if (error && !isUniqueViolation(error)) throw new Error(`placeHold insert failed: ${error.message}`)
+    // Another hold took slot n+1 between this count and insert: re-read and try the next.
+  }
+  throw new Error('placeHold could not take a hold slot: too many concurrent holds')
+}
+
+export type SettleOutcome = 'settled' | 'already_settled' | 'nothing_to_write' | 'failed'
+
+/**
+ * Settles an action's hold at its actual charge: a 'refund' of hold - actual (pointing at the
+ * hold through refunds_ledger_id), or one extra 'spend' of actual - hold. Both carry
+ * dedupe_key 'settle:{hold id}', so a hold is settled exactly once. Never throws - by now the
+ * money is spent; a failure logs and returns 'failed', so the caller leaves its run uncharged
+ * for the next settle to retry. An action with no hold (one started before holds existed)
+ * is charged its actual as a single spend, as it would have been then.
+ */
+export async function settleHold(params: HoldTarget & { actualCredits: number }): Promise<SettleOutcome> {
+  try {
+    const supabase = createServiceRoleClient()
+    const { data: hold, error } = await findHold(supabase, params.userId, params.attemptId)
+    if (error) throw new Error(`settleHold lookup failed: ${error.message}`)
+    const actual = Math.max(0, Math.round(params.actualCredits))
+
+    if (!hold) {
+      if (actual === 0) return 'nothing_to_write'
+      const { error: spendError } = await supabase.from('credit_ledger').insert({
+        user_id: params.userId,
+        kind: 'spend',
+        delta: -actual,
+        step: params.step,
+        operation: params.operation,
+        project_id: params.projectId,
+        message_id: params.messageId ?? null,
+        shot_key: null,
+        attempt_id: params.attemptId,
+        dedupe_key: `${params.operation}:${params.attemptId}`,
+        price_version: CREDIT_PRICE_VERSION,
+        pricing_mode: params.pricingMode,
+        refunds_ledger_id: null,
+      })
+      if (spendError && !isUniqueViolation(spendError)) throw new Error(`settleHold spend failed: ${spendError.message}`)
+      return spendError ? 'already_settled' : 'settled'
+    }
+
+    const held = -hold.delta
+    if (actual === held) return 'nothing_to_write'
+    const base = {
+      user_id: params.userId,
+      step: hold.step,
+      operation: hold.operation,
+      project_id: hold.project_id,
+      message_id: hold.message_id,
+      shot_key: null,
+      attempt_id: params.attemptId,
+      dedupe_key: `${SETTLE_KEY_PREFIX}${hold.id}`,
+      price_version: CREDIT_PRICE_VERSION,
+    }
+    // A refund of the unused hold, or one extra spend for the excess - one row either way.
+    const refund = actual < held
+    const { error: insertError } = await supabase.from('credit_ledger').insert({
+      ...base,
+      kind: refund ? 'refund' : 'spend',
+      delta: held - actual,
+      pricing_mode: refund ? null : hold.pricing_mode,
+      refunds_ledger_id: refund ? hold.id : null,
+    })
+    if (insertError && !isUniqueViolation(insertError)) throw new Error(`settleHold insert failed: ${insertError.message}`)
+    return insertError ? 'already_settled' : 'settled'
+  } catch (err) {
+    console.error(`[credits] settleHold failed for attempt ${params.attemptId}`, err)
+    return 'failed'
   }
 }

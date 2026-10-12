@@ -2,12 +2,13 @@ import { test, expect } from '@playwright/test'
 import { VIDEO_MODELS } from '../src/lib/config/models'
 import { durationConfig } from '../src/lib/config/duration'
 import { SHOT_DURATION_PAD_SEC, SHOT_ORDER_BASE, spokenWordsPerSec } from '../src/lib/config/shots'
-import { chunkWordBudget, computeShotDuration, roundUpToModelDuration, spokenWordCount } from '../src/lib/shots/durations'
-import { acceptWithinLimits, chunkSizes, fitOutlineSeconds, sceneMaxShots, shotCeiling } from '../src/lib/shots/limits'
+import { chunkWordBudget, computeShotDuration, perShotRoundingSec, roundUpToModelDuration, spokenWordCount } from '../src/lib/shots/durations'
+import { chunkSizes, fitOutlineSeconds, sceneMaxShots, sceneRequestLimitSec, shotCeiling } from '../src/lib/shots/limits'
 import { chunkShotOrderIndex, resequence } from '../src/lib/shots/positions'
 
-// Shot generation's code-enforced rules, with no I/O: durations from words, the tier and
-// ceiling limits, the outline rescale, and the provisional-position re-sequence.
+// Shot generation's code-enforced rules, with no I/O: durations from words, the request
+// limits (which only ever stop a request, never drop a shot), the outline rescale, and the
+// provisional-position re-sequence.
 
 const wan3 = VIDEO_MODELS['wan-3.0'] // 2-30s, whole seconds
 const wan25 = VIDEO_MODELS['wan-2.5'] // exactly 5s or 10s
@@ -69,10 +70,25 @@ test.describe('shot durations - computed from words, never chosen by Claude', ()
     }
   })
 
-  test("a chunk's word budget is its scene's remaining seconds at the spoken pace, less room for padding and rounding", () => {
-    expect(chunkWordBudget(40, 'en')).toBe(Math.floor(40 * 2.17 * 0.9))
-    expect(chunkWordBudget(0, 'en')).toBe(0)
+  test("a chunk's word budget is its scene's remaining seconds less each expected shot's padding and rounding, at the spoken pace", () => {
+    // Wan 3.0's 1s step: 0.25s padding + 0.5s average rounding per shot.
+    expect(perShotRoundingSec(wan3)).toBe(0.75)
+    // 40s: 5 shots expected at the measured 8.45s; capped by the request's own cap.
+    expect(chunkWordBudget(40, 'en', wan3, 8)).toBe(Math.floor((40 - 5 * 0.75) * 2.17))
+    expect(chunkWordBudget(40, 'en', wan3, 2)).toBe(Math.floor((40 - 2 * 0.75) * 2.17))
+    // Wan 2.5 renders 5s or 10s: half its 5s gap.
+    expect(perShotRoundingSec(wan25)).toBe(2.75)
+    expect(chunkWordBudget(0, 'en', wan3, 8)).toBe(0)
     expect(SHOT_DURATION_PAD_SEC).toBe(0.25)
+  })
+
+  test('rounded shots written to the budget land on the scene target, not past it', () => {
+    // A scene of 36s on Wan 3.0, written as 5 shots sharing its word budget evenly.
+    const budget = chunkWordBudget(36, 'en', wan3, 8)
+    const perShot = Math.floor(budget / 5)
+    const total = Array.from({ length: 5 }, () => computeShotDuration({ narration: words(perShot), dialogue: [], silentEstimateSec: null, language: 'en', model: wan3 }).seconds).reduce((a, b) => a + b, 0)
+    expect(total).toBeLessThanOrEqual(36)
+    expect(total).toBeGreaterThanOrEqual(36 - 5)
   })
 })
 
@@ -87,9 +103,12 @@ test.describe('limits - enforced in code, whatever the description asks for', ()
     for (const t of Object.values(durationConfig)) expect(t.targetSeconds).toBe((t.targetSecondsMin + t.targetSecondsMax) / 2)
   })
 
-  test('an outline inside the range is kept as planned, in whole seconds', () => {
+  test('an outline is always rescaled to the tier target - inside the range too - so the space to the maximum is headroom', () => {
     const fitted = fitOutlineSeconds([20.4, 30, 25], { minSec: 60, maxSec: 120, targetSec: 90 }, 2)
-    expect(fitted).toEqual({ seconds: [20, 30, 25], kept: 3, rescaled: false })
+    expect(fitted.seconds.reduce((a, b) => a + b, 0)).toBe(90)
+    expect(fitted.rescaled).toBe(true)
+    // Already on the target, in whole seconds: unchanged.
+    expect(fitOutlineSeconds([30, 30, 30], { minSec: 60, maxSec: 120, targetSec: 90 }, 2)).toEqual({ seconds: [30, 30, 30], kept: 3, rescaled: false })
   })
 
   test('an outline outside the range is rescaled into it, in proportion, before any shot is written', () => {
@@ -113,10 +132,11 @@ test.describe('limits - enforced in code, whatever the description asks for', ()
     expect(chunkSizes(19, 8)).toEqual([8, 8, 3])
   })
 
-  test('the running total stops at the ceiling and before the tier maximum seconds', () => {
-    expect(acceptWithinLimits([3, 3, 3], { shots: 28, seconds: 10 }, { ceiling: 30, maxSec: 600 })).toEqual({ accepted: 2, limitReached: true })
-    expect(acceptWithinLimits([5, 5, 5], { shots: 0, seconds: 52 }, { ceiling: 30, maxSec: 60 })).toEqual({ accepted: 1, limitReached: true })
-    expect(acceptWithinLimits([2, 2], { shots: 0, seconds: 0 }, { ceiling: 30, maxSec: 60 })).toEqual({ accepted: 2, limitReached: false })
+  test("a scene's requests stop at its share of the tier maximum, and the shares sum to it", () => {
+    const tier = { maxSec: 300, targetSec: 240 }
+    expect(sceneRequestLimitSec(60, tier)).toBe(75)
+    const targets = [60, 100, 80]
+    expect(targets.reduce((sum, t) => sum + sceneRequestLimitSec(t, tier), 0)).toBe(300)
   })
 })
 

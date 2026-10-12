@@ -14,6 +14,9 @@ export type LedgerAggregateRow = {
   project_id: string | null
   delta: number
   entries?: number
+  /** Of those rows, how many are user actions: a held action's settle (a refund, or an extra
+   * spend for an excess) is not one. Defaults to `entries` for a spend, 0 for a refund. */
+  actions?: number
 }
 
 export type ProjectMeta = {
@@ -65,7 +68,8 @@ function buildOperationBreakdown(rows: LedgerAggregateRow[], denominatorTotal: n
     if (row.step === null || row.operation === null) continue
     const key = `${row.step}:${row.operation}`
     const credits = -row.delta
-    const count = row.entries ?? 1
+    // Actions are counted by their hold: a settle row nets credits but is never another action.
+    const count = row.actions ?? (row.kind === 'spend' ? (row.entries ?? 1) : 0)
     const existing = groups.get(key)
     if (existing) {
       existing.credits += credits
@@ -110,12 +114,13 @@ function buildStepBreakdown(rows: LedgerAggregateRow[], denominatorTotal: number
 /**
  * Shapes a period's ledger totals for /credits. Postgres does the row-level GROUP BY (the
  * credit_ledger_monthly view); this only rolls those few groups up by step and project.
- * Every output here is filtered to `kind === 'spend'` first - grants and refunds move
- * the balance but are never spend, so they must never appear in spentThisPeriod, byStep,
- * or byProject.
+ * Every output here is net spend: `spend` rows less the `refund` rows that settle a hold
+ * (they carry the hold's step and operation), so a held action counts once, at its actual
+ * charge - never at its hold. Grants and adjustments move the balance but are never
+ * spend, so they never appear in spentThisPeriod, byStep, or byProject.
  */
 export function aggregateCreditsPeriod(rows: LedgerAggregateRow[], projects: ProjectMeta[]): CreditsPeriodAggregation {
-  const spendRows = rows.filter((row) => row.kind === 'spend')
+  const spendRows = rows.filter((row) => row.kind === 'spend' || (row.kind === 'refund' && row.step !== null && row.operation !== null))
 
   const spentThisPeriod = spendRows.reduce((sum, row) => sum + -row.delta, 0)
 

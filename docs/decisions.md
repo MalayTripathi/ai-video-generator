@@ -1615,3 +1615,67 @@ attempt id) by the next status read or voiceover request - never as a failure.
 without Vercel's automation bypass header with its login page, so every hand-off was refused.
 `VERCEL_AUTOMATION_BYPASS_SECRET` (class G: required on preview, optional on production, unused
 locally) is sent on the shots, images and agent-start hand-offs.
+
+## Shot chain: no drops, hold-and-settle credits, status checks (Task 4d)
+
+Decided by Malay on Oct 11 from the Oct 11 preview run (`b9a78e48`). This supersedes Task 4b's
+reserved-seconds acceptance, `completed/ceiling` and its "one function prices the shot list"
+figure, and Task 4's single ledger row per run.
+
+**D1 - why the outline targets the tier target, not the max.** `fitOutlineSeconds` always
+rescales the scenes to the middle of the range, even when the model planned something inside
+it. The space up to the maximum is headroom for rounding and for answers that run long, never
+plan.
+
+**D2 - why code never drops a model-written shot.** Every shot the run discarded had been paid
+for, and dropping "the first misfit and every later shot" broke scenes mid-story. Scene seconds
+are now a target the model aims at. The word budget subtracts each expected shot's padding and
+half a rounding step, so rounded shots land on it. Limits (a scene's share of the tier maximum,
+the shot ceiling, the tier maximum) only stop further requests. A truncated answer keeps its
+complete shots and the scene continues; a project that ends past the maximum keeps everything,
+and the header says it is over range. Per-scene shares (`sceneRequestLimitSec`) stay so
+parallel scenes cannot starve later ones, which was the Oct 10 failure.
+
+**D3/D5 - why a hold at start and one settle at the end.** The per-batch balance check let a
+run start and then stop for credits mid-story, and it read the balance once per chunk. Now the
+run places one `spend` hold for its quote, atomic with its balance check, and settles once:
+a `refund` of the unused part (`refunds_ledger_id` = the hold), or one extra `spend` for an
+excess. Both use `dedupe_key = settle:{hold id}`, so a hold settles exactly once. The balance is
+read again only if output passes the hold. The hold write is the one ledger write that fails
+its request, because nothing has been spent yet. Settles keep the never-fail rule.
+
+**Why atomicity is a dedupe slot, not an RPC or a lock table.** A hold's `dedupe_key` is
+`hold:{n+1}`, where n counts all of the user's holds. The count is read before the balance, so
+two racing starts take the same slot and the existing `(user_id, dedupe_key)` unique index lets
+exactly one in. Any hold the loser could have missed would have taken that slot too. Future held
+operations go through the same counter. Rejected: a per-user lock table (a new table and a
+stale-lock problem), and insert-then-verify (both racers can be refused, and a refused start
+leaves spend/refund noise).
+
+**Why dead holds are released per user, from the balance read.** `credit_balances` carries
+`open_hold_live_at`: the earliest liveness (run heartbeat or finish) across the user's open
+holds. Any balance read (sidebar, /credits, intake, every credit check) releases holds past the
+stale window, whichever project they belong to, and costs nothing extra otherwise. The window
+lives only in the app (`SHOT_RUN_STALE_AFTER_MS`). Rejected: a daily cron (Hobby), which would
+leave a dead run's credits locked up to a day.
+
+**D4 - why one quote from a measured average.** Hold = tier maximum ÷ measured average shot
+(8.45s, n=1 project), rounded up, × 2 credits: 16 / 30 / 72 / 144. "Generate remaining" quotes
+the unwritten scenes' shares less what they wrote. The tier cards' shot counts and the
+whole-video estimate use the same average (`tierShotCount`), so `targetShots` is gone.
+
+**Why the agent's regenerate-all follows the pattern too.** Its hold is the same credit quote,
+written as a dynamic `agent_turn` spend, and settles at `usdToCredits` of the turn and chain's
+summed provider cost.
+
+**Why status checks match the run they started.** The first check of a retried run read the
+previous run's `failed`, and the page stopped checking. The start now returns its run id, and
+checking stops only on that run's end with its claim settled. Run status lives in its own
+context, so a check re-renders the progress line and never a shot row, the header or the
+footer. A run over an existing list ("Generate remaining shots", or "Try again" until its new
+scene plan replaces the list) keeps the rows in view under the progress line. `/credits` counts
+actions by their hold (`credit_ledger_monthly.actions`): a settle row is never another action.
+
+**Rejected: per-batch holds and dropping on overrun.** Per-batch holds keep the mid-story
+balance stop and a ledger row per batch. Dropping on overrun throws away paid output; the
+person decides what to cut on the Workbench.

@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "id": "2026-10-11T18:55:56.172Z",
+    "module": "workbench",
+    "startedAt": "2026-10-11T18:55:56.172Z",
+    "finishedAt": "2026-10-11T19:08:50.342Z",
+    "tests": 1337,
+    "durationMs": 772407,
+    "passed": 1253,
+    "failed": 84,
+    "flaky": 0,
+    "skipped": 0,
+    "status": "failed",
+    "override": false
+  }
+]

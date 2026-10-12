@@ -7,7 +7,7 @@ import { derivePhase, type Phase } from './derive-phase'
 import { stepIndex } from '@/lib/config/pipeline'
 import { usePageVisible } from '@/lib/hooks/use-page-visible'
 import { SHOT_STATUS_POLL_MS } from '@/lib/config/shots'
-import type { ShotRunView } from './shot-run-view'
+import { sameShotRunView, shotRunChargeLine, type ShotRunView } from './shot-run-view'
 
 type ShotsContextValue = {
   projectId: string
@@ -16,9 +16,13 @@ type ShotsContextValue = {
   videoType: string | null
   videoModel: string | null
   hasPendingPayload: boolean
+  /** The hold a whole shot list places (credits.ts shotGenerationCredits). */
   shotListCredits: number
-  // The latest shot run: progress while writing, why it stopped, what is left.
-  run: ShotRunView
+  /** The hold "Generate remaining shots" places (credits.ts remainingShotQuoteCredits). */
+  remainingCredits: number
+  /** The last settled run's "80 held · 62 charged", from the page's data - it changes only
+   * when the page re-renders, so reading it never ties a component to the status checks. */
+  chargeLine: string | null
   // Set when the server refused a start for credits (402) - the prior state is untouched.
   startError: { requiredCredits: number; balanceCredits: number } | null
   confirmOpen: boolean
@@ -76,6 +80,7 @@ export function ShotsProvider({
   initialFurthestStep,
   initialRun,
   shotListCredits,
+  remainingCredits,
   children,
 }: {
   projectId: string
@@ -87,6 +92,7 @@ export function ShotsProvider({
   initialFurthestStep: number
   initialRun: ShotRunView
   shotListCredits: number
+  remainingCredits: number
   children: ReactNode
 }) {
   const router = useRouter()
@@ -96,7 +102,9 @@ export function ShotsProvider({
   const [hasPendingPayload, setHasPendingPayload] = useState(initialHasPendingPayload)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [confirmMode, setConfirmMode] = useState<'regenerate' | 'remaining'>('regenerate')
-  const [run, setRun] = useState(initialRun)
+  // The run a start from this tab created: 'pending' from the moment the request is sent
+  // until it answers, so no status check reads a previous run's end as this one's.
+  const [expectedRunId, setExpectedRunId] = useState<string | 'pending' | null>(null)
   const [startError, setStartError] = useState<{ requiredCredits: number; balanceCredits: number } | null>(null)
   const [lockedShotKeys, setLockedShotKeys] = useState<Set<string>>(new Set())
   const [touchedShotKeys, setTouchedShotKeys] = useState<Set<string>>(new Set())
@@ -169,6 +177,7 @@ export function ShotsProvider({
   // generating state's poll follows it. Closing the tab does not stop it.
   async function fetchShots(kind: 'trigger' | 'retry' | 'remaining') {
     const previousState = generationState
+    setExpectedRunId('pending')
     try {
       const response = await fetch(`/api/projects/${projectId}/shots`, {
         method: 'POST',
@@ -184,15 +193,25 @@ export function ShotsProvider({
         const body = (await response.json()) as { requiredCredits: number; balanceCredits: number }
         setStartError({ requiredCredits: body.requiredCredits, balanceCredits: body.balanceCredits })
         setGenerationState(previousState)
+        setExpectedRunId(null)
         return
       }
       setStartError(null)
-      // Whatever the outcome (202, 409, 422, 500), the DB row is the source of truth -
-      // resync from the server rather than hand-deriving the new status here.
+      if (response.status === 202) {
+        // Started: the generating state is already showing, and the status checks follow
+        // this run to its end - the page re-renders once, then.
+        const body = (await response.json()) as { runId?: string }
+        setExpectedRunId(body.runId ?? null)
+        return
+      }
+      // Refused (409, 422, 500): the DB row is the source of truth - resync from the server
+      // rather than hand-deriving the new status here.
+      setExpectedRunId(null)
       router.refresh()
     } catch {
       // A genuine network failure (e.g. offline) never reached the server, so there is
       // nothing to resync - fall back to a local failed status.
+      setExpectedRunId(null)
       setGenerationState('failed')
     }
   }
@@ -238,53 +257,11 @@ export function ShotsProvider({
     setVideoType(initialVideoType)
     setGenerationState(initialGenerationState)
     setHasPendingPayload(initialHasPendingPayload)
-    setRun(initialRun)
     // A real refresh cycle has now landed - safe for any field waiting on
     // touchedShotKeys to apply the (now current) value it's holding. See
     // refreshPending's own comment above.
     setRefreshPending(false)
-  }, [initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun])
-
-  // Poll while generating - a tab that never fired its own POST (loaded mid-generation, or
-  // on another device) follows the run too. Each poll is a lightweight status read (never
-  // router.refresh(), which re-renders the layout and page); the next starts only after the
-  // previous returns. When the claim has settled the page refreshes once for the finished
-  // list. Paused while the tab is hidden; polls at once on return. The first poll otherwise
-  // waits an interval, so it never reads a retried claim's old 'failed' before the POST
-  // has reclaimed it.
-  const resumedRef = useRef(false)
-  const visible = usePageVisible(() => {
-    resumedRef.current = true
-  })
-  useEffect(() => {
-    if (phase !== 'generating' || !visible) return
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const poll = async () => {
-      try {
-        const response = await fetch(`/api/projects/${projectId}/shots/status`, { cache: 'no-store' })
-        if (cancelled) return
-        if (response.ok) {
-          const status = (await response.json()) as { generationState: string | null; run: ShotRunView }
-          if (cancelled) return
-          setRun(status.run)
-          if (status.generationState === 'succeeded' || status.generationState === 'failed') {
-            router.refresh()
-            return
-          }
-        }
-      } catch {
-        // A dropped poll is retried on the next tick.
-      }
-      if (!cancelled) timer = setTimeout(poll, SHOT_STATUS_POLL_MS)
-    }
-    timer = setTimeout(poll, resumedRef.current ? 0 : SHOT_STATUS_POLL_MS)
-    resumedRef.current = false
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [phase, visible, projectId, router])
+  }, [initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload])
 
   return (
     <ShotsContext.Provider
@@ -296,7 +273,8 @@ export function ShotsProvider({
         videoModel,
         hasPendingPayload,
         shotListCredits,
-        run,
+        remainingCredits,
+        chargeLine: shotRunChargeLine(initialRun),
         startError,
         confirmOpen,
         confirmMode,
@@ -319,9 +297,102 @@ export function ShotsProvider({
         collapseShot,
       }}
     >
-      {children}
+      <ShotRunProvider projectId={projectId} generating={phase === 'generating'} initialRun={initialRun} expectedRunId={expectedRunId}>
+        {children}
+      </ShotRunProvider>
     </ShotsContext.Provider>
   )
+}
+
+// ---- The shot run's status -------------------------------------------------------------
+// Kept out of ShotsContext on purpose: a status check every few seconds updates only this
+// provider's state, so only its consumers (the progress line, the run's banners) re-render -
+// never the shot list, the header or anything else reading ShotsContext. Its `children`
+// were created by ShotsProvider's parent, so this provider's own updates skip them.
+
+const ShotRunContext = createContext<ShotRunView | null>(null)
+
+function ShotRunProvider({
+  projectId,
+  generating,
+  initialRun,
+  expectedRunId,
+  children,
+}: {
+  projectId: string
+  generating: boolean
+  initialRun: ShotRunView
+  /** The run this tab started ('pending' while its start is in flight), or null for a tab
+   * that started nothing - it follows whatever run is latest. */
+  expectedRunId: string | 'pending' | null
+  children: ReactNode
+}) {
+  const router = useRouter()
+  const [run, setRun] = useState(initialRun)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRun(initialRun)
+  }, [initialRun])
+
+  // Checks while generating - a tab that never fired its own start (loaded mid-generation,
+  // or on another device) follows the run too. Each check is a lightweight status read
+  // (never router.refresh()); the next starts only after the previous returns. Checking
+  // stops only when the read belongs to the run this tab started (or, for a tab that
+  // started none, the latest run) and that run has ended with its claim settled - a
+  // previous run's end never stops it. Then the page re-renders once for the finished list.
+  // Paused while the tab is hidden; checks at once on return. The resumed flag is set only
+  // while generating and cleared with the loop, so a return before a run never makes that
+  // run's first check skip its wait.
+  const generatingRef = useRef(generating)
+  useEffect(() => {
+    generatingRef.current = generating
+  })
+  const resumedRef = useRef(false)
+  const visible = usePageVisible(() => {
+    if (generatingRef.current) resumedRef.current = true
+  })
+  useEffect(() => {
+    if (!generating || !visible) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/projects/${projectId}/shots/status`, { cache: 'no-store' })
+        if (cancelled) return
+        if (response.ok) {
+          const status = (await response.json()) as { generationState: string | null; run: ShotRunView }
+          if (cancelled) return
+          const ours = expectedRunId === null || (expectedRunId !== 'pending' && status.run.id === expectedRunId)
+          if (ours) setRun((prev) => (sameShotRunView(prev, status.run) ? prev : status.run))
+          const ended = status.run.status !== null && status.run.status !== 'running'
+          const settled = status.generationState === 'succeeded' || status.generationState === 'failed'
+          if (ours && ended && settled) {
+            router.refresh()
+            return
+          }
+        }
+      } catch {
+        // A dropped check is retried on the next tick.
+      }
+      if (!cancelled) timer = setTimeout(poll, SHOT_STATUS_POLL_MS)
+    }
+    timer = setTimeout(poll, resumedRef.current ? 0 : SHOT_STATUS_POLL_MS)
+    resumedRef.current = false
+    return () => {
+      cancelled = true
+      resumedRef.current = false
+      clearTimeout(timer)
+    }
+  }, [generating, visible, projectId, expectedRunId, router])
+
+  return <ShotRunContext.Provider value={run}>{children}</ShotRunContext.Provider>
+}
+
+/** The latest shot run: progress while writing, why it stopped, what is left, its charge. */
+export function useShotRun(): ShotRunView {
+  const ctx = useContext(ShotRunContext)
+  if (!ctx) throw new Error('useShotRun must be used within a ShotsProvider')
+  return ctx
 }
 
 export function useShots() {

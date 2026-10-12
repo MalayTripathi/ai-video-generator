@@ -89,12 +89,12 @@ test.describe('wiring-identity - source-level guard against a type-compatible wr
     expect(block).toMatch(/\bledger:\s*SHOT_RUN_LEDGER\b/)
   })
 
-  test('shots/schedule.ts builds the shot-run ledger from the real recordFixedSpend/recordDynamicSpend and hands it to the worker', () => {
+  test('shots/schedule.ts builds the shot-run ledger from the real placeHold/settleHold and hands it to the worker', () => {
     const source = read('src/app/api/projects/[id]/shots/schedule.ts')
     const imported = importLine(source, '@/lib/credits/ledger')
-    expect(imported).toMatch(/\brecordFixedSpend\b/)
-    expect(imported).toMatch(/\brecordDynamicSpend\b/)
-    expect(stripComments(source)).toMatch(/SHOT_RUN_LEDGER:\s*ShotRunLedger\s*=\s*\{\s*recordFixedSpend,\s*recordDynamicSpend\s*\}/)
+    expect(imported).toMatch(/\bplaceHold\b/)
+    expect(imported).toMatch(/\bsettleHold\b/)
+    expect(stripComments(source)).toMatch(/SHOT_RUN_LEDGER:\s*ShotRunLedger\s*=\s*\{\s*placeHold,\s*settleHold\s*\}/)
     expect(stripComments(extractCallBlock(source, 'runShotsWorker'))).toMatch(/\bledger:\s*SHOT_RUN_LEDGER\b/)
   })
 
@@ -123,7 +123,7 @@ test.describe('wiring-identity - source-level guard against a type-compatible wr
 
   // The agent's regenerate_all_shots starts the shot chain on the turn's behalf: the
   // turn's own attempt id, and never a fixed-price writer - the chain bills the turn once,
-  // dynamically (shot-runs' chargeShotRun).
+  // dynamically (shot-runs' settleShotRun settles the agent_turn hold it placed).
   test('agent/tools.ts starts the chain with the turn attempt id and wires no fixed-price writer', () => {
     const source = read('src/app/api/projects/[id]/agent/tools.ts')
     const block = stripComments(extractCallBlock(source, 'runShotsRequest'))

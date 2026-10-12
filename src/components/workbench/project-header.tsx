@@ -90,8 +90,11 @@ export function ProjectHeader({
           <span className="text-text-tertiary">Current</span>
           <span className="font-medium">{shots.length} shots</span>
           <span className="text-text-tertiary">·</span>
-          <span className={`font-medium ${isOverTarget ? 'text-status-active-fg' : ''}`}>
+          <span className={`font-medium ${isOverTarget ? 'text-status-active-fg' : ''}`} data-testid="header-current-duration">
             {formatDuration(totalSeconds)}
+            {/* Shot generation never drops a written shot, so a list can end past the tier's
+                maximum: said here, and the person deletes or retimes shots. */}
+            {isOverTarget && ' · over range'}
           </span>
           {lockedCount > 0 && (
             <>

@@ -20,7 +20,7 @@ import {
   type VideoModelId,
   type VideoModelTier,
 } from '@/lib/config/models'
-import { CREDIT_MARGIN, imageCredits, usdToCredits } from '@/lib/config/credits'
+import { CREDIT_MARGIN, imageCredits, tierShotCount, usdToCredits } from '@/lib/config/credits'
 import { videoUsdPerSecond } from '@/lib/config/pricing'
 import { STORYBOARD_IMAGE_SIZES } from '@/lib/config/storyboard'
 
@@ -102,7 +102,7 @@ export function tierBadges(res: VideoResolution): Partial<Record<VideoModelId, V
 }
 
 /**
- * The upper-bound credit estimate for a project: the tier's target shots x one frame at
+ * The upper-bound credit estimate for a project: the tier's shot count (tierShotCount) x one frame at
  * the chosen image quality, plus the tier's maximum seconds x the clip rate at the chosen
  * model and resolution (audio off). The clip part rounds up once, as a clip's price does.
  */
@@ -118,7 +118,7 @@ export function estimateCredits(params: {
   const usd = usdPerSecond(params.videoModel, params.videoResolution)
   if (usd === null) throw new Error(`${params.videoModel} does not render at ${params.videoResolution}.`)
   return (
-    tier.targetShots * frameCredits(params.imageModel, params.imageQuality, params.aspectRatio) +
+    tierShotCount(params.durationTarget) * frameCredits(params.imageModel, params.imageQuality, params.aspectRatio) +
     usdToCredits(usd * tier.targetSecondsMax * CREDIT_MARGIN)
   )
 }

@@ -4,22 +4,31 @@ import { Spinner } from '@/components/spinner'
 import { LockIcon } from './lock-icon'
 import { RetryConfirmModal } from './retry-confirm-modal'
 import { ShotCard } from './shot-card'
-import { useShots } from './shots-context'
+import { useShotRun, useShots } from './shots-context'
 import type { DisplayShot } from './types'
-import { canGenerateRemaining, shotRunProgressLine, type ShotRunView } from './shot-run-view'
+import { canGenerateRemaining, shotRunProgressLine } from './shot-run-view'
 import { formatCredits } from '@/lib/format-credits'
 
 function SkeletonBar({ width, height }: { width: string; height: string }) {
   return <span className="rounded-[3px] bg-skeleton-base" style={{ width, height }} />
 }
 
-function GeneratingSkeleton({ run }: { run: ShotRunView }) {
+// The run's progress line - the one piece of the tab a status check re-renders. It reads the
+// run itself, so nothing above it (and no shot row) subscribes to the status checks.
+function RunProgress() {
+  const run = useShotRun()
+  return (
+    <div className="flex items-center gap-rc-xs text-small text-text-secondary">
+      <Spinner />
+      {shotRunProgressLine(run)}
+    </div>
+  )
+}
+
+function GeneratingSkeleton() {
   return (
     <div className="flex flex-col gap-rc-sm">
-      <div className="flex items-center gap-rc-xs text-small text-text-secondary">
-        <Spinner />
-        {shotRunProgressLine(run)}
-      </div>
+      <RunProgress />
       <div className="flex flex-col gap-rc-xs rounded-control border border-border-subtle bg-bg-surface p-[12px_14px]">
         <SkeletonBar width="88px" height="11px" />
         <SkeletonBar width="82%" height="13px" />
@@ -177,7 +186,7 @@ export function ShotsTab() {
     phase,
     hasPendingPayload,
     shotListCredits,
-    run,
+    remainingCredits,
     startError,
     confirmOpen,
     confirmMode,
@@ -188,20 +197,12 @@ export function ShotsTab() {
     readOnly,
   } = useShots()
 
-  const stoppedForCredits = run.stopReason === 'balance'
-  const refused = run.stopReason === 'refused'
-  const failedBody = stoppedForCredits
-    ? "There weren't enough credits to write the shots. Nothing was charged."
-    : refused
-      ? "The AI's safety checks declined this brief. Your brief is saved — nothing was charged. Try rewording it."
-      : 'The model returned nothing usable. Your brief is saved — nothing was charged.'
-
   const modal = (
     <RetryConfirmModal
       open={confirmOpen}
       mode={confirmMode}
       hasPendingPayload={hasPendingPayload}
-      shotListCredits={shotListCredits}
+      shotListCredits={confirmMode === 'remaining' ? remainingCredits : shotListCredits}
       replacesExisting={phase === 'partial'}
       onConfirm={confirmRetry}
       onCancel={closeRetryConfirm}
@@ -219,12 +220,22 @@ export function ShotsTab() {
         />
       </>
     )
-  if (phase === 'generating' || phase === 'trigger') return <GeneratingSkeleton run={run} />
+  if (phase === 'generating' || phase === 'trigger') {
+    // A run over an existing list ("Generate remaining shots", or "Try again" until its new
+    // scene plan replaces the list) keeps the shots in view under the progress line.
+    if (shots.length === 0) return <GeneratingSkeleton />
+    return (
+      <div className="flex flex-col gap-rc-sm">
+        <RunProgress />
+        <ShotList shots={shots} />
+      </div>
+    )
+  }
   if (phase === 'failed')
     return (
       <>
         {modal}
-        <GenerationFailedBanner onRetry={openRetryConfirm} body={failedBody} />
+        <RunFailedBanner onRetry={openRetryConfirm} />
       </>
     )
   if (phase === 'partial') {
@@ -237,12 +248,7 @@ export function ShotsTab() {
             {formatCredits(startError.balanceCredits)}. Nothing was charged.
           </div>
         )}
-        <GenerationPartialBanner
-          onRetry={openRetryConfirm}
-          onRemaining={canGenerateRemaining(run) ? openRemainingConfirm : null}
-          stoppedForCredits={stoppedForCredits}
-          refused={refused}
-        />
+        <RunPartialBanner onRetry={openRetryConfirm} onRemaining={openRemainingConfirm} always />
         <ShotList shots={shots} />
       </div>
     )
@@ -254,22 +260,45 @@ export function ShotsTab() {
         <NoShotsEmptyState onRebuild={openRetryConfirm} />
       </>
     )
-  // A list whose scene plan still has scenes unwritten (a run from before a run could only
-  // end 'completed' with every scene written) keeps "Generate remaining shots" in reach.
-  const remaining = !readOnly && canGenerateRemaining(run)
   return (
     <div className="flex flex-col gap-rc-sm">
-      {remaining && modal}
+      {!readOnly && modal}
       {readOnly && <ReadOnlyBanner />}
-      {remaining && (
-        <GenerationPartialBanner
-          onRetry={openRetryConfirm}
-          onRemaining={openRemainingConfirm}
-          stoppedForCredits={stoppedForCredits}
-          refused={refused}
-        />
-      )}
+      {/* A list whose scene plan still has scenes unwritten keeps "Generate remaining shots" in reach. */}
+      {!readOnly && <RunPartialBanner onRetry={openRetryConfirm} onRemaining={openRemainingConfirm} always={false} />}
       <ShotList shots={shots} />
     </div>
   )
 }
+
+// The banners that depend on the last run read it themselves, so ShotsTab - and with it every
+// shot row - never re-renders for a status check.
+function RunFailedBanner({ onRetry }: { onRetry: () => void }) {
+  const run = useShotRun()
+  const body =
+    run.stopReason === 'balance'
+      ? "There weren't enough credits to write the shots. Nothing was charged."
+      : run.stopReason === 'refused'
+        ? "The AI's safety checks declined this brief. Your brief is saved — nothing was charged. Try rewording it."
+        : 'The model returned nothing usable. Your brief is saved — nothing was charged.'
+  return <GenerationFailedBanner onRetry={onRetry} body={body} />
+}
+
+/** The cut-short banner: always on a partial list; on a full one only while scenes are left. */
+function RunPartialBanner({ onRetry, onRemaining, always }: { onRetry: () => void; onRemaining: () => void; always: boolean }) {
+  const run = useShotRun()
+  const remaining = canGenerateRemaining(run)
+  if (!always && !remaining) return null
+  return (
+    <GenerationPartialBanner
+      onRetry={onRetry}
+      onRemaining={remaining ? onRemaining : null}
+      stoppedForCredits={run.stopReason === 'balance'}
+      refused={run.stopReason === 'refused'}
+    />
+  )
+}
+
+// Named for tests/shot-status-checks.spec.ts's render probe, which must hold in a minified build.
+GeneratingSkeleton.displayName = 'GeneratingSkeleton'
+RunProgress.displayName = 'RunProgress'

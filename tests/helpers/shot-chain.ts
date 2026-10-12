@@ -4,6 +4,7 @@ import { admin } from '../supabase-test-session'
 import { runShotsRequest, type ShotsRequestMode, type ShotsRequestResult } from '../../src/app/api/projects/[id]/shots/logic'
 import { runShotsWorker, type ShotsContinuationPayload, type ShotsWorkerResult } from '../../src/app/api/projects/[id]/shots/worker'
 import type { ShotRunLedger } from '../../src/lib/shots/runs'
+import { placeHold, settleHold } from '../../src/lib/credits/ledger'
 import { successMessage, truncatedMessage } from './claude-fakes'
 
 // The shot-generation chain run in-process against fakes: the request phase, then every
@@ -113,10 +114,14 @@ export function chainGateway(params: {
   }
 }
 
+/** A ledger that writes nothing: holds always pass, settles write nothing. */
 export const NO_LEDGER: ShotRunLedger = {
-  recordFixedSpend: async () => {},
-  recordDynamicSpend: async () => {},
+  placeHold: async (params) => ({ id: 'no-ledger', credits: params.credits }),
+  settleHold: async () => 'nothing_to_write',
 }
+
+/** The real hold and settle writers (service role; `server-only` is stubbed in the runner). */
+export const REAL_SHOT_LEDGER: ShotRunLedger = { placeHold, settleHold }
 
 export type ChainRun = { startedAt: number; result: ShotsWorkerResult }
 
@@ -141,8 +146,12 @@ export async function runChain(params: {
   handOff?: (payload: ShotsContinuationPayload) => boolean | 'drop'
   /** The chain's client - a faultyClient to kill or slow a write. The request phase always uses admin. */
   workerClient?: typeof admin
+  /** With the real ledger, the user is topped up first so the hold always lands - unless
+   * the test is about the balance itself (a fresh user it controls), when this is false. */
+  topUp?: boolean
 }): Promise<{ request: ShotsRequestResult; runs: ChainRun[] }> {
   const ledger = params.ledger ?? NO_LEDGER
+  if (ledger === REAL_SHOT_LEDGER && params.topUp !== false) await ensureTestCredits(params.userId)
   const balance = () => (typeof params.balance === 'function' ? params.balance() : (params.balance ?? 1_000_000))
   const request = await runShotsRequest({
     supabase: admin,
@@ -285,4 +294,45 @@ export function faultyClient(fault: {
       }
     },
   }) as typeof admin
+}
+
+/**
+ * Tops a (shared, fixed) test user's real balance up past `min` with an 'adjustment' row, so a
+ * real hold never fails for want of credits another test spent. Global teardown removes the
+ * fixed users' ledger rows.
+ */
+export async function ensureTestCredits(userId: string, min = 20_000): Promise<void> {
+  const { data } = await admin.from('credit_balances').select('balance').eq('user_id', userId).maybeSingle()
+  if ((data?.balance ?? 0) >= min) return
+  const { error } = await admin.from('credit_ledger').insert({
+    user_id: userId,
+    kind: 'adjustment',
+    delta: 100_000,
+    step: null,
+    operation: null,
+    project_id: null,
+    message_id: null,
+    shot_key: null,
+    attempt_id: null,
+    dedupe_key: `test_topup:${crypto.randomUUID()}`,
+    price_version: 'test',
+    pricing_mode: null,
+    refunds_ledger_id: null,
+  })
+  if (error) throw new Error(error.message)
+}
+
+export type LedgerRowLite = { kind: string; delta: number; dedupe_key: string; operation: string | null; pricing_mode: string | null; refunds_ledger_id: string | null; message_id?: string | null }
+
+/** A project's hold and settle rows, and the net they come to (positive credits charged). */
+export async function holdLedger(projectId: string) {
+  const { data, error } = await admin
+    .from('credit_ledger')
+    .select('id, kind, delta, dedupe_key, operation, pricing_mode, refunds_ledger_id, message_id, attempt_id')
+    .eq('project_id', projectId)
+  if (error) throw new Error(error.message)
+  const rows = data ?? []
+  const holds = rows.filter((r) => r.kind === 'spend' && r.dedupe_key.startsWith('hold:'))
+  const settles = rows.filter((r) => r.dedupe_key.startsWith('settle:'))
+  return { rows, holds, settles, net: 0 - rows.reduce((sum, r) => sum + r.delta, 0) || 0 }
 }
