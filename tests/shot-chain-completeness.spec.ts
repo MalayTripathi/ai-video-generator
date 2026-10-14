@@ -36,7 +36,7 @@ import { shotCountFor } from '../src/lib/config/credits'
 import { chunkSizes } from '../src/lib/shots/limits'
 
 // Layer: api. The shot chain's guarantees, against the database with fake gateways: every
-// complete shot returned is kept, a scene's share keeps a long scene from starving the next,
+// complete shot returned is kept, a scene's slots keep a long scene from starving the next,
 // a run is 'completed' only when every scene is, the progress guard ends a chain that saves
 // nothing, a truncated chunk keeps its whole shots, and a run's end is safe to kill and its
 // hold is never settled by a request landing while it is still writing.
@@ -100,15 +100,20 @@ test.describe('shot chain - a long scene across many runs', () => {
   for (const sceneCount of [1, 2]) {
     test(`a ${sceneCount}-scene 8-10 min project writes each scene to its target across many runs, keeping every shot`, async () => {
       test.setTimeout(600_000)
-      // 8-10 min on Wan 3.0: the outline is rescaled to the tier's 540s target. One-word shots
-      // are 2s and every answer returns 16 (32s - more than the 8 asked, all kept), never saying
-      // a scene is done - each scene ends on the answer that reaches its target, within its
-      // request cap (twice its expected batches, plus 2): one 540s scene takes 17 answers of 18
-      // (272 shots, 544s); two 270s scenes take 9 of 10 each (288 shots, 576s).
+      // 8-10 min on Wan 3.0: the outline is rescaled to the tier's 540s target, planned as 100
+      // slots in all (5s and 6s each). Every answer returns 16 one-word shots - more than the 8
+      // asked, all kept, each taking the scene's next slot - never saying a scene is done. Each
+      // scene ends on the answer that fills its last slot; the extras past it keep their own 2s:
+      // one scene of 100 slots takes 7 answers (112 shots, 540s + 12 x 2s); two of 50 take 4
+      // each (128 shots, 540s + 28 x 2s).
       const projectId = await insertChainProject(owner.id, { duration_target: '8-10min' })
-      const outline = fakeOutline(Array.from({ length: sceneCount }, (_, i) => ({ title: `S${i}`, seconds: 600 / sceneCount })))
+      const outline = fakeOutline(
+        Array.from({ length: sceneCount }, (_, i) => ({ title: `S${i}`, seconds: 600 / sceneCount, shot_count: 100 / sceneCount }))
+      )
       const gateway = chainGateway({
         outline,
+        // Slow enough that a scene's answers outlast one run's budget: the chain hands off.
+        delayMs: 800,
         chunk: (ask, n) => ({
           shots: Array.from({ length: 16 }, (_, i) => fakeShot(`s${ask.scenePosition}c${n}i${i}`)),
           scene_complete: false,
@@ -122,16 +127,16 @@ test.describe('shot chain - a long scene across many runs', () => {
         runBudgetMs: 3_000,
       })
       expect(request.ok).toBe(true)
-      expect(runs.length).toBeGreaterThan(sceneCount === 1 ? 2 : 1)
+      expect(runs.length).toBeGreaterThan(1)
       expect(runs.at(-1)!.result).toMatchObject({ outcome: 'finished', status: 'completed' })
 
-      const expected = sceneCount === 1 ? { shots: 272, seconds: 544 } : { shots: 288, seconds: 576 }
+      const expected = sceneCount === 1 ? { shots: 112, seconds: 564 } : { shots: 128, seconds: 596 }
       const shots = await readChainShots(projectId)
       expect(shots.length).toBe(expected.shots)
       expect(shots.map((s) => s.order_index)).toEqual(Array.from({ length: expected.shots }, (_, i) => i))
       expect(shots.reduce((sum, s) => sum + (s.duration_sec ?? 0), 0)).toBe(expected.seconds)
-      // Past the hold (144): settled with one excess spend, netting to every saved shot.
-      await expectSettledOnce(projectId, expected.shots * 2)
+      // Past the hold (144): a button run is charged at most its hold.
+      await expectSettledOnce(projectId, 144)
       expect(await claimState(projectId)).toBe('succeeded')
     })
   }
@@ -139,8 +144,8 @@ test.describe('shot chain - a long scene across many runs', () => {
 
 test.describe('shot chain - scene targets and shares', () => {
   test('a scene overrunning its target in parallel keeps every shot and never starves the next scene; the project ends over range', async () => {
-    // 30-60s on Wan 3.0: two scenes rescaled to ~22s each. Ten-word shots are 5s, and each
-    // chunk returns 8 of them (40s) - past its scene's target. Scene B finishes first.
+    // 30-60s on Wan 3.0: two scenes rescaled to 23s and 22s, 3 slots each. Each chunk returns 8
+    // ten-word shots - 3 on the scene's slots and 5 extras of 5s past them. Scene B finishes first.
     const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
     const gateway = chainGateway({
       outline: fakeOutline([{ title: 'A', seconds: 30 }, { title: 'B', seconds: 30 }]),
@@ -154,8 +159,9 @@ test.describe('shot chain - scene targets and shares', () => {
     const byScene = (title: string) => shots.filter((s) => s.scenes!.title === title)
     expect(byScene('A').length).toBe(8)
     expect(byScene('B').length).toBe(8)
-    // 80s against the tier's 60s maximum: kept, for the person to cut on the Workbench.
-    expect(shots.reduce((sum, s) => sum + (s.duration_sec ?? 0), 0)).toBe(80)
+    // 45s of slots plus 50s of extras against the tier's 60s maximum: kept, for the person to
+    // cut on the Workbench.
+    expect(shots.reduce((sum, s) => sum + (s.duration_sec ?? 0), 0)).toBe(95)
     const chunkCalls = gateway.calls.filter((c) => c.tool === 'write_shots')
     expect(chunkCalls.map((c) => c.ask!.scenePosition).sort()).toEqual([0, 1])
 
@@ -164,35 +170,35 @@ test.describe('shot chain - scene targets and shares', () => {
     for (const chunk of run.shot_run_chunks as { shots_returned: number; shots_saved: number; scene_complete: boolean }[]) {
       expect(chunk).toMatchObject({ shots_returned: 8, shots_saved: 8, scene_complete: true })
     }
-    await expectSettledOnce(projectId, 32)
+    // 16 shots (32 credits) against a 16-credit hold: charged the hold.
+    await expectSettledOnce(projectId, 16)
   })
 
-  test("each chunk is told its scene's word budget: the remaining seconds less each expected shot's padding and rounding, at the spoken pace", async () => {
+  test("each chunk is told its scene's remaining slots, each with its length and word cap", async () => {
+    // One 45s scene planned at the measured average: 6 slots, 8, 8, 8, 7, 7, 7 (16 or 14 words).
     const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
     const gateway = chainGateway({
       outline: fakeOutline([{ title: 'Only', seconds: 45 }]),
-      chunk: (_ask, n) => ({ shots: [fakeShot(words(`c${n}`, 21))], scene_complete: n > 0 }), // one 10s shot each
+      // The first answer: one shot of 21 words. The second fills the other five slots.
+      chunk: (ask, n) =>
+        n === 0
+          ? { shots: [fakeShot(words('c0', 21))], scene_complete: false }
+          : { shots: ask.slots.map((_, i) => fakeShot(words(`c1i${i}`, 4))), scene_complete: true },
     })
-    const budgets: number[] = []
-    const recording = {
-      async createMessage(p: Parameters<typeof gateway.createMessage>[0]) {
-        const text = String((p.messages[0] as { content: unknown }).content)
-        const m = /about (\d+) words in total/.exec(text)
-        if (m) budgets.push(Number(m[1]))
-        return gateway.createMessage(p)
-      },
-    }
-    await runChain({ projectId, userId: owner.id, gateway: recording })
-    // 45s (6 shots expected at the measured 8.45s), then 35s left after the first 10s shot
-    // (5 expected): each expected shot gives up 0.25s padding + 0.5s average rounding (Wan
-    // 3.0's 1s step), and the rest is spoken at 2.17 words/s.
-    expect(budgets).toEqual([Math.floor((45 - 6 * 0.75) * 2.17), Math.floor((35 - 5 * 0.75) * 2.17)])
+    await runChain({ projectId, userId: owner.id, gateway })
+    const asks = gateway.calls.filter((c) => c.tool === 'write_shots').map((c) => c.ask!)
+    expect(asks[0].slots).toEqual([16, 16, 16, 14, 14, 14].map((wordCap, i) => ({ seconds: i < 3 ? 8 : 7, wordCap })))
+    expect(asks[1].firstSlot).toBe(2)
+    expect(asks[1].slots).toEqual(asks[0].slots.slice(1))
+    // The 21-word shot is over its 8s slot's 16: one rewrite, to its cap, so it keeps 8s.
+    expect(gateway.calls.filter((c) => c.tool === 'rewrite_shot').map((c) => c.rewrite!.wordCap)).toEqual([16])
+    expect((await readChainShots(projectId)).map((s) => s.duration_sec)).toEqual([8, 8, 8, 7, 7, 7])
   })
 
   test('a scene left incomplete ends the run failed/incomplete, and "Generate remaining shots" holds and writes only that scene', async () => {
     // Scene B's answer is cut short before any whole shot.
     const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
-    const outline = fakeOutline([{ title: 'A', seconds: 35 }, { title: 'B', seconds: 10 }])
+    const outline = fakeOutline([{ title: 'A', seconds: 35, shot_count: 4 }, { title: 'B', seconds: 10, shot_count: 1 }])
     const first = await runChain({
       projectId,
       userId: owner.id,
@@ -201,7 +207,7 @@ test.describe('shot chain - scene targets and shares', () => {
         outline,
         chunk: (ask) =>
           ask.scenePosition === 0
-            ? { shots: Array.from({ length: 4 }, (_, i) => fakeShot(words(`a${i}`, 21))), scene_complete: true }
+            ? { shots: Array.from({ length: 4 }, (_, i) => fakeShot(words(`a${i}`, 10))), scene_complete: true }
             : { shots: [{ voice_over: 'cut off mid' }], truncated: true },
       }),
     })
@@ -225,7 +231,7 @@ test.describe('shot chain - scene targets and shares', () => {
 
     const remainingGateway = chainGateway({
       outline,
-      chunk: () => ({ shots: [fakeShot(words('b-fits', 15))], scene_complete: true }), // 7.16 -> 8s
+      chunk: () => ({ shots: [fakeShot(words('b-fits', 15))], scene_complete: true }), // inside its 10s slot's 21 words
     })
     const remaining = await runChain({ projectId, userId: owner.id, gateway: remainingGateway, mode: 'remaining', ledger: REAL_LEDGER })
     expect(remaining.request.ok).toBe(true)
@@ -245,7 +251,7 @@ test.describe('shot chain - a truncated chunk', () => {
   test('keeps its whole shots, drops the half-written one, and the scene continues from the last whole shot', async () => {
     const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
     const gateway = chainGateway({
-      outline: fakeOutline([{ title: 'Only', seconds: 45 }]),
+      outline: fakeOutline([{ title: 'Only', seconds: 45, shot_count: 3 }]),
       chunk: (_ask, n) =>
         n === 0
           ? {
@@ -317,15 +323,17 @@ test.describe('shot chain - a truncated chunk', () => {
   test('an answer with no whole shot is retried once: a good second answer completes the scene', async () => {
     const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
     const gateway = chainGateway({
-      outline: fakeOutline([{ title: 'Only', seconds: 45 }]),
+      outline: fakeOutline([{ title: 'Only', seconds: 45, shot_count: 2 }]),
       chunk: (_ask, n) =>
-        n === 0 ? { shots: [{ voice_over: 'cut off mid' }], truncated: true } : { shots: [fakeShot(words('r1', 21))], scene_complete: true },
+        n === 0
+          ? { shots: [{ voice_over: 'cut off mid' }], truncated: true }
+          : { shots: [fakeShot(words('r1', 21)), fakeShot(words('r2', 21))], scene_complete: true },
     })
     const { request } = await runChain({ projectId, userId: owner.id, gateway, ledger: REAL_LEDGER })
     expect(gateway.calls.filter((c) => c.tool === 'write_shots')).toHaveLength(2)
     expect(await readRun((request as { runId: string }).runId)).toMatchObject({ status: 'completed', stop_reason: null })
-    expect((await readChainShots(projectId)).map((s) => s.voice_over.split(' ')[0])).toEqual(['r1'])
-    await expectSettledOnce(projectId, 2)
+    expect((await readChainShots(projectId)).map((s) => s.voice_over.split(' ')[0])).toEqual(['r1', 'r2'])
+    await expectSettledOnce(projectId, 4)
   })
 
   test('the two-answer limit holds across a hand-off between the attempts', async () => {
@@ -389,7 +397,7 @@ test.describe('shot chain - the progress guard', () => {
 test.describe("shot chain - a run's end is safe to kill and never charged early", () => {
   const twoScenes = () =>
     chainGateway({
-      outline: fakeOutline([{ title: 'A', seconds: 20 }, { title: 'B', seconds: 25 }]),
+      outline: fakeOutline([{ title: 'A', seconds: 20, shot_count: 2 }, { title: 'B', seconds: 25, shot_count: 2 }]),
       chunk: (ask) => ({ shots: [1, 2].map((i) => fakeShot(words(`k${ask.scenePosition}i${i}`, 4))), scene_complete: true }),
     })
 

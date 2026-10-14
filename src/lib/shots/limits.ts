@@ -1,7 +1,8 @@
 import { SHOTS_PER_CHUNK } from '@/lib/config/shots'
 
-// Shot generation's limits, enforced in code rather than by prompt. They decide only whether
-// a further request starts - code never drops a shot the model wrote. Pure - no I/O.
+// Shot generation's project-level limits, enforced in code rather than by prompt (a scene's
+// own limits are its slots, slots.ts). They decide only whether a further request starts -
+// code never drops a shot the model wrote. Pure - no I/O.
 
 export type TierRange = { minSec: number; maxSec: number; targetSec: number }
 
@@ -12,11 +13,6 @@ export type TierRange = { minSec: number; maxSec: number; targetSec: number }
  */
 export function shotCeiling(tierMaxSec: number, modelMinSec: number): number {
   return Math.max(1, Math.floor(tierMaxSec / modelMinSec))
-}
-
-/** The most shots one request for a scene asks for: its seconds over the model's shortest shot. */
-export function sceneMaxShots(sceneSec: number, modelMinSec: number): number {
-  return Math.max(1, Math.floor(sceneSec / modelMinSec))
 }
 
 export type FittedOutline = {
@@ -57,13 +53,4 @@ export function chunkSizes(sceneShots: number, perChunk: number = SHOTS_PER_CHUN
   const sizes: number[] = []
   for (let left = sceneShots; left > 0; left -= perChunk) sizes.push(Math.min(perChunk, left))
   return sizes
-}
-
-/**
- * The seconds past which a scene gets no further request: its share of the tier's maximum
- * (its target x maximum / target). A scene running long in parallel can therefore never use
- * up the headroom a later scene needs. It stops requests only - shots already written stay.
- */
-export function sceneRequestLimitSec(sceneTargetSec: number, tier: Pick<TierRange, 'maxSec' | 'targetSec'>): number {
-  return (sceneTargetSec * tier.maxSec) / Math.max(1, tier.targetSec)
 }

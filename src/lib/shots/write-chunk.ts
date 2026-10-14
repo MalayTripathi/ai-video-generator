@@ -9,10 +9,12 @@ import {
   MODEL_REPORTABLE_CAMERA_ORIGINS,
 } from '@/lib/config/enums'
 import { generateUniqueShotKeys, isUniqueViolation, MAX_SHOT_KEY_INSERT_ATTEMPTS } from '@/lib/shot-key'
-import { computeShotDuration } from './durations'
+import { computeShotDuration, spokenWordCount } from './durations'
 import { chunkShotOrderIndex } from './positions'
+import { fitShotToSlot } from './slots'
 
-// One chunk's write: its raw write_shots tool input parsed, durations computed in code,
+// One chunk's write: its raw write_shots tool input parsed, each shot placed in its slot with
+// its length set in code,
 // elements resolved (deduped by name across the whole run), and the shots, their element
 // bindings and dialogue inserted - every batch built with one uniform map.
 
@@ -102,7 +104,6 @@ const REQUIRED_SHOT_KEYS = [
   'shot_size_origin',
   'camera_angle_origin',
   'camera_movement_origin',
-  'duration_sec',
   'dialogue',
   'element_names',
 ] as const
@@ -124,26 +125,44 @@ export function completeShotsOfTruncated(rawInput: unknown): unknown[] {
 }
 
 /**
- * Parsed shots with their code-computed durations, in order. A truncated answer keeps only
- * its complete shots and never reports its scene complete - the next chunk continues it.
+ * An answer's parsed shots, in order. A truncated answer keeps only its complete shots and
+ * never reports its scene complete.
  */
-export function prepareChunkShots(
-  rawInput: unknown,
-  ctx: { language: string | null; model: VideoModelConfig; truncated?: boolean }
-): { shots: PreparedShot[]; sceneComplete: boolean } {
+export function prepareChunkShots(rawInput: unknown, ctx: { truncated?: boolean }): { shots: RawShot[]; sceneComplete: boolean } {
   const input = (rawInput ?? {}) as { shots?: unknown; scene_complete?: unknown }
   const rawShots = ctx.truncated ? completeShotsOfTruncated(rawInput) : input.shots
-  const shots = parseRawShots(rawShots).map((shot) => {
-    const { seconds, narrationOverflow } = computeShotDuration({
-      narration: shot.voice_over,
-      dialogue: shot.dialogue.map((d) => d.line),
-      silentEstimateSec: shot.duration_sec,
-      language: ctx.language,
-      model: ctx.model,
-    })
+  return { shots: parseRawShots(rawShots), sceneComplete: !ctx.truncated && input.scene_complete === true }
+}
+
+/** The words spoken in a shot: its narration and every dialogue line, together. */
+export function shotSpokenWords(shot: Pick<RawShot, 'voice_over' | 'dialogue'>): number {
+  return spokenWordCount(shot.voice_over) + shot.dialogue.reduce((n, d) => n + spokenWordCount(d.line), 0)
+}
+
+/**
+ * Shots with their lengths, in order: the i-th takes `slots[i]` (its slot's length, or longer
+ * when its words still run past the slot's cap - fitShotToSlot). A shot past the last slot
+ * has no slot and takes the length its words need, as before slots.
+ */
+export function placeChunkShots(
+  shots: readonly RawShot[],
+  slots: readonly number[],
+  ctx: { language: string | null; model: VideoModelConfig }
+): PreparedShot[] {
+  return shots.map((shot, i) => {
+    const slot = slots[i]
+    const { seconds, narrationOverflow } =
+      slot === undefined
+        ? computeShotDuration({
+            narration: shot.voice_over,
+            dialogue: shot.dialogue.map((d) => d.line),
+            silentEstimateSec: shot.duration_sec,
+            language: ctx.language,
+            model: ctx.model,
+          })
+        : fitShotToSlot(shotSpokenWords(shot), slot, ctx.language, ctx.model)
     return { ...shot, seconds, narrationOverflow }
   })
-  return { shots, sceneComplete: !ctx.truncated && input.scene_complete === true }
 }
 
 /**

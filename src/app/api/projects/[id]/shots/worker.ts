@@ -3,7 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Database, Json, Tables } from '@/lib/database.types'
 import { ClaudeRefusalError, throwIfRefused, type ClaudeGateway } from '@/lib/claude'
 import type { UsageBreakdown } from '@/lib/config/pricing'
-import { claudeReasoningParams, videoModelBounds, type VideoModelConfig } from '@/lib/config/models'
+import { claudeReasoningParams, isDurationAllowed, videoModelBounds, type VideoModelConfig } from '@/lib/config/models'
 import { effectiveVideoModel } from '@/lib/shots/effective-model'
 import { modelsConfig } from '@/lib/config/models.server'
 import { durationConfig, parseDurationTarget, type DurationConfig } from '@/lib/config/duration'
@@ -21,20 +21,30 @@ import { persistGenerationPayload } from '@/lib/generations/claim'
 import { assertWithinAllowance, estimateInputTokens, quoteClaudeCall, reserveUsage, settleUsage, settledStatus } from '@/lib/usage'
 import { isUniqueViolation } from '@/lib/shot-key'
 import {
-  SHOT_OUTLINE_SYSTEM_PROMPT_V1,
+  SHOT_OUTLINE_SYSTEM_PROMPT_V2,
   WRITE_OUTLINE_TOOL,
   buildOutlineDynamicBlock,
 } from '@/lib/prompts/shot-outline'
 import {
-  SHOT_CHUNK_SYSTEM_PROMPT_V3,
+  SHOT_CHUNK_SYSTEM_PROMPT_V4,
   buildChunkProjectBlock,
   buildChunkUserMessage,
   buildChunkWriteShotsTool,
   type PreviousShotForPrompt,
 } from '@/lib/prompts/shot-chunk'
-import { chunkSizes, fitOutlineSeconds, sceneMaxShots, sceneRequestLimitSec, shotCeiling } from '@/lib/shots/limits'
-import { chunkWordBudget } from '@/lib/shots/durations'
-import { ElementResolver, insertChunkShots, prepareChunkShots, sanitizeEnum } from '@/lib/shots/write-chunk'
+import { REWRITE_SHOT_TOOL, SHOT_REWRITE_SYSTEM_PROMPT_V1, buildShotRewriteUserMessage } from '@/lib/prompts/shot-rewrite'
+import { chunkSizes, fitOutlineSeconds, shotCeiling } from '@/lib/shots/limits'
+import { assignSlotSeconds, clampSlotCount, planProjectSlots, slotWordCap } from '@/lib/shots/slots'
+import {
+  ElementResolver,
+  insertChunkShots,
+  parseRawShots,
+  placeChunkShots,
+  prepareChunkShots,
+  sanitizeEnum,
+  shotSpokenWords,
+  type RawShot,
+} from '@/lib/shots/write-chunk'
 import {
   deleteChunkProvisionalShots,
   finishShotRun,
@@ -43,7 +53,7 @@ import {
   type ShotRunStatus,
   type ShotRunStopReason,
 } from '@/lib/shots/runs'
-import { creditsFor, shotCountFor, usdToCredits } from '@/lib/config/credits'
+import { creditsFor, usdToCredits } from '@/lib/config/credits'
 
 // The shot-generation chain: one background run of it. Service-role client, so every read
 // and write below is scoped explicitly by project (and the project by user, at load).
@@ -53,22 +63,27 @@ import { creditsFor, shotCountFor, usdToCredits } from '@/lib/config/credits'
 // Claude request per chunk, up to SHOTS_PER_CHUNK shots of one scene, scenes in parallel
 // and each scene's chunks in order, so a chunk continues from the shot before it. A chunk's
 // payload is stored on its chunk row before its shots are written. Every complete shot a
-// chunk returns is saved - code never drops one. A scene's target seconds (the outline's,
-// fixed before any chunk runs) are what its requests aim at; requests for it stop at its
-// share of the tier maximum (sceneRequestLimitSec), so a scene running long can never take
-// the headroom a later scene needs. The project's ceiling and tier maximum likewise stop
-// further requests, never a saved shot. At the time budget (derived per
-// model, shot-timing.ts) a run stops starting chunks, lets its in-flight ones drain, and
-// hands the rest to a fresh run - as long as it saved something (the progress guard). Runs
-// never overlap, so its running totals are exact. The run spends against the hold placed at
-// its start: the balance is read only when its output is about to pass that hold. The final
-// run ends the run record (finishShotRun): re-sequence, mark terminal, settle the claim and
-// the hold. A run ends 'completed' only when every outline scene is written.
+// chunk returns is saved - code never drops one. Code owns the shot slots: the outline's
+// shot count per scene is clamped to what the video model can render and turned into one
+// model-valid length per slot (slots.ts), stored on the scene. Each chunk asks for its
+// scene's next slots, with each slot's length and word cap, and each returned shot takes the
+// next slot in order (an extra past the scene's last slot keeps the length its words need).
+// A shot over its slot's cap gets one rewrite call for that shot alone; its answer joins the
+// chunk's stored payload before any shot is written, so a replay never pays for it twice.
+// Still over, it is lengthened (fitShotToSlot), never cut. A scene is asked again only while
+// it has unfilled slots; the project's shot ceiling stops further requests, never a saved
+// shot. At the time budget (derived per model, shot-timing.ts) a run stops starting chunks,
+// lets its in-flight ones drain, and hands the rest to a fresh run - as long as it saved
+// something (the progress guard). Runs never overlap, so its running totals are exact. A
+// button run's charge is capped at its hold, so it never reads the balance; an agent run
+// (priced at its full cost) reads it only when its output is about to pass that hold. The
+// final run ends the run record (finishShotRun): re-sequence, mark terminal, settle the claim
+// and the hold. A run ends 'completed' only when every outline scene is written.
 
 type Client = SupabaseClient<Database>
 type SceneRow = Pick<
   Tables<'scenes'>,
-  'id' | 'position' | 'title' | 'summary' | 'location' | 'time_of_day' | 'target_seconds'
+  'id' | 'position' | 'title' | 'summary' | 'location' | 'time_of_day' | 'target_seconds' | 'slot_seconds'
 >
 type ChunkRow = Pick<
   Tables<'shot_run_chunks'>,
@@ -180,11 +195,10 @@ type SceneState = {
   shots: number
   seconds: number
   nextChunkIndex: number
-  maxShots: number
-  /** The scene's target seconds - fixed by the outline; what its requests aim at. */
+  /** The scene's slot lengths, in order - the i-th shot written takes the i-th. */
+  slots: number[]
+  /** The scene's target seconds - fixed by the outline. */
   targetSec: number
-  /** Past these seconds the scene gets no further request (its share of the tier maximum). */
-  limitSec: number
   lastShot: PreviousShotForPrompt | null
   /** A replayable payload a dead chunk of this scene left behind (paid for, never applied). */
   orphan: { chunkId: string; payload: Json } | null
@@ -199,7 +213,12 @@ type SceneState = {
 export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContinuationPayload | (Omit<ShotsContinuationPayload, 'chainDepth'> & { chainDepth: 0 })): Promise<ShotsWorkerResult> {
   const { supabase, gateway, ledger } = deps
   const { userId, projectId, runId, chainDepth } = payload
-  const budget = deps.runBudgetMs ?? shotRunBudgetMs(modelsConfig.shots.model, modelsConfig.shots.maxTokens)
+  const budget =
+    deps.runBudgetMs ??
+    shotRunBudgetMs(modelsConfig.shots.model, modelsConfig.shots.maxTokens, {
+      model: modelsConfig.shotRewrite.model,
+      maxTokens: modelsConfig.shotRewrite.maxTokens,
+    })
   const concurrency = deps.concurrency ?? SHOT_CHUNK_CONCURRENCY
   const runStart = Date.now()
   let chunksRun = 0
@@ -266,7 +285,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   const [scenesResult, chunksResult, shotsResult, elements, holdResult] = await Promise.all([
     supabase
       .from('scenes')
-      .select('id, position, title, summary, location, time_of_day, target_seconds')
+      .select('id, position, title, summary, location, time_of_day, target_seconds, slot_seconds')
       .eq('project_id', projectId)
       .order('position', { ascending: true }),
     supabase
@@ -308,19 +327,17 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   const shots = (shotsResult.data ?? []) as unknown as ShotRead[]
   if (outlineElementNames === null) outlineElementNames = await storedOutlineElementNames(supabase, run.generation_id)
 
-  // Running totals - the whole project's shots against the ceiling and the tier's maximum
-  // seconds (both stop further requests only), and this run's spend so far against its hold.
-  const totals = { shots: shots.length, seconds: shots.reduce((sum, s) => sum + (s.duration_sec ?? 0), 0) }
+  // Running totals - the whole project's shots against the ceiling (it stops further
+  // requests only), and this run's spend so far against its hold.
+  const totals = { shots: shots.length }
   const agentRun = run.agent_generation_id !== null
   const runChunks = chunks.filter((c) => c.run_id === runId)
-  // What this run has spent so far, in the unit its settle uses: saved shots (fixed price), or
-  // an agent run's provider USD (the turn's own cost is added at settle).
+  // What an agent run has spent so far, in provider USD (the turn's own cost is added at
+  // settle) - all its past-the-hold balance check needs.
   const spent = {
-    shots: runChunks.reduce((sum, c) => sum + c.shots_saved, 0),
     usd: Number(run.outline_cost_usd ?? 0) + outlineCostUsd + runChunks.reduce((sum, c) => sum + Number(c.cost_usd ?? 0), 0),
   }
   const shotPrice = (n: number) => (n > 0 ? creditsFor({ step: 'workbench', operation: 'generate_shots', quantity: n }) : 0)
-  const spentCredits = () => (agentRun ? usdToCredits(spent.usd) : shotPrice(spent.shots))
   // Shots asked for by chunks still in flight - each may come back full.
   let inFlightShots = 0
 
@@ -328,8 +345,14 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   // Scenes already written: a chunk marked them complete. Only these let a run end
   // 'completed' - a scene with no shots never is.
   const completed = new Set(scenes.filter((sc) => chunks.some((c) => c.scene_id === sc.id && c.scene_complete)).map((sc) => sc.id))
-  const tierRange = { maxSec: tier.targetSecondsMax, targetSec: tier.targetSeconds }
-  const targetOf = (scene: SceneRow) => scene.target_seconds ?? tier.targetSeconds / Math.max(1, scenes.length)
+  const targetOf = (scene: SceneRow) => Number(scene.target_seconds ?? tier.targetSeconds / Math.max(1, scenes.length))
+  // The stored slots, while every one is a length the project's model renders; a scene from
+  // before slots, or one planned for another model, gets its slots worked out afresh here.
+  const slotsOf = (scene: SceneRow, targetSec: number): number[] => {
+    const stored = (scene.slot_seconds ?? []).map(Number)
+    if (stored.length > 0 && stored.every((sec) => isDurationAllowed(model, sec))) return stored
+    return assignSlotSeconds(targetSec, clampSlotCount(stored.length || null, targetSec, model), model)
+  }
   const writtenOf = (sceneId: string) =>
     shots.filter((s) => s.scene_id === sceneId).reduce((sum, s) => sum + (s.duration_sec ?? 0), 0)
   const queue: SceneState[] = []
@@ -350,7 +373,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       if (c.status !== 'succeeded' || c.shots_saved > 0 || c.scene_complete) break
       emptyAnswers += 1
     }
-    const maxShots = sceneMaxShots(targetSec, bounds.min)
+    const slots = slotsOf(scene, targetSec)
     queue.push({
       scene,
       elementNames:
@@ -359,13 +382,12 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       shots: sceneShots.length,
       seconds: writtenOf(scene.id),
       nextChunkIndex: sceneChunks.reduce((max, c) => Math.max(max, c.chunk_index + 1), 0),
-      maxShots,
+      slots,
       targetSec,
-      limitSec: sceneRequestLimitSec(targetSec, tierRange),
       lastShot: last ? { voice_over: last.voice_over, visual_description: last.visual_description } : null,
       orphan: orphan ? { chunkId: orphan.id, payload: orphan.payload! } : null,
       requests: sceneRunChunks.length,
-      maxRequests: chunkSizes(Math.min(maxShots, shotCountFor(targetSec))).length * SCENE_BATCH_FACTOR + SCENE_EXTRA_REQUESTS,
+      maxRequests: chunkSizes(slots.length).length * SCENE_BATCH_FACTOR + SCENE_EXTRA_REQUESTS,
       emptyAnswers,
     })
   }
@@ -381,16 +403,11 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   let refusals = 0
 
   /**
-   * Whether a scene may be asked for more shots. Below its target it always may - its target
-   * is its own plan. Past it, only within its share of the tier maximum (limitSec) and while
-   * the project is under its maximum seconds. The shot ceiling and the scene's shot count
-   * bound every request. Never a reason to drop a shot already written.
+   * Whether a scene may be asked for more shots: while it has unfilled slots and the project
+   * is under its shot ceiling. Never a reason to drop a shot already written.
    */
   const mayRequest = (state: SceneState): boolean =>
-    state.seconds < state.limitSec - 1e-9 &&
-    state.shots < state.maxShots &&
-    totals.shots + inFlightShots < ceiling &&
-    (state.seconds < state.targetSec - 1e-9 || totals.seconds < tier.targetSecondsMax - 1e-9)
+    state.shots < state.slots.length && totals.shots + inFlightShots < ceiling
 
   /** Marks a scene written without a request: its limits allow no more, and it has shots. */
   const closeScene = async (state: SceneState): Promise<'done' | 'left'> => {
@@ -437,12 +454,15 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       if (totals.shots + inFlightShots >= ceiling) console.warn(`[shots] run ${runId}: the project's shot ceiling is reached`)
       return closeScene(state)
     }
-    const cap = Math.max(1, Math.min(SHOTS_PER_CHUNK, state.maxShots - state.shots, ceiling - totals.shots - inFlightShots))
+    const cap = Math.max(1, Math.min(SHOTS_PER_CHUNK, state.slots.length - state.shots, ceiling - totals.shots - inFlightShots))
+    const firstSlot = state.shots
+    const chunkSlots = state.slots.slice(firstSlot, firstSlot + cap)
 
-    // The run spends against its hold. Only when this chunk could take it past the hold is
-    // the balance read: it already reflects the hold, so it must cover the excess.
-    const projected = (agentRun ? usdToCredits(spent.usd) + shotPrice(inFlightShots + cap) : shotPrice(spent.shots + inFlightShots + cap))
-    if (projected > heldCredits) {
+    // An agent run (priced at its full cost) spends against its hold: only when this chunk
+    // could take it past the hold is the balance read - it already reflects the hold, so it
+    // must cover the excess. A button run's charge is capped at its hold: no read.
+    const projected = usdToCredits(spent.usd) + shotPrice(inFlightShots + cap)
+    if (agentRun && projected > heldCredits) {
       let balance: number
       try {
         balance = await deps.readBalance(userId)
@@ -511,20 +531,17 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
         state.orphan = null
       } else {
         const tool = buildChunkWriteShotsTool(cap)
-        // Past its target (a truncated answer continuing), the scene is asked to close in
-        // at least one shortest shot.
-        const secondsLeft = Math.max(bounds.min, state.targetSec - state.seconds)
         const userMessage = buildChunkUserMessage({
           scene: state.scene,
           elementNames: state.elementNames,
           previousShot: state.lastShot,
-          secondsLeft,
-          wordBudget: chunkWordBudget(secondsLeft, project.language, model, cap),
-          maxShots: cap,
+          slots: chunkSlots.map((seconds) => ({ seconds, wordCap: slotWordCap(seconds, project.language) })),
+          firstSlot: firstSlot + 1,
+          sceneSlots: state.slots.length,
         })
         const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
           model: modelsConfig.shots.model,
-          estimatedInputTokens: estimateInputTokens({ texts: [SHOT_CHUNK_SYSTEM_PROMPT_V3, projectBlock, userMessage], tools: [tool] }),
+          estimatedInputTokens: estimateInputTokens({ texts: [SHOT_CHUNK_SYSTEM_PROMPT_V4, projectBlock, userMessage], tools: [tool] }),
           maxTokens: modelsConfig.shots.maxTokens,
         })
         await assertWithinAllowance({ supabase, userId, quotedCost: estimatedCost })
@@ -533,7 +550,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
           model: modelsConfig.shots.model,
           max_tokens: modelsConfig.shots.maxTokens,
           system: [
-            { type: 'text', text: SHOT_CHUNK_SYSTEM_PROMPT_V3, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: SHOT_CHUNK_SYSTEM_PROMPT_V4, cache_control: { type: 'ephemeral' } },
             { type: 'text', text: projectBlock, cache_control: { type: 'ephemeral' } },
           ],
           tools: [tool],
@@ -584,17 +601,37 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       return 'error'
     }
 
-    // Every complete shot returned is saved, with its duration computed in code - whatever
-    // the scene's target, the cap asked for or the project's limits (those only stop further
-    // requests). An answer cut short at max_tokens keeps its complete shots and drops only
-    // the half-written one, which was never a shot. Totals move before any await, so chunks
-    // finishing together see each other's shots.
+    // Every complete shot returned is saved, each taking the scene's next unfilled slot in
+    // order - an extra past the chunk's slots takes the scene's later ones, and only one past
+    // the scene's last slot keeps the length its words need. An answer cut short at
+    // max_tokens keeps its complete shots and drops only the half-written one, which was
+    // never a shot. A shot over its slot's word cap is rewritten once (its answer stored with
+    // the chunk's payload first), then lengthened if still over. Totals move before any
+    // write, so chunks finishing together see each other's shots.
     const truncated = stopReason === 'max_tokens'
-    const prepared = prepareChunkShots(input, { language: project.language, model, truncated })
-    const saved = prepared.shots
+    const parsed = prepareChunkShots(input, { truncated })
+    const sceneSlotsLeft = state.slots.slice(firstSlot)
+    const rewrite = await rewriteOverCapShots({
+      supabase,
+      gateway,
+      usageBase,
+      chunkId: chunkRow.id,
+      input,
+      shots: parsed.shots,
+      slots: sceneSlotsLeft,
+      language: project.language,
+      sceneSummary: state.scene.summary,
+      previousNarration: state.lastShot?.voice_over ?? null,
+    })
+    costUsd += rewrite.costUsd
+    spent.usd += rewrite.costUsd
+    const saved = placeChunkShots(rewrite.shots, sceneSlotsLeft, { language: project.language, model })
     const savedSeconds = saved.reduce((sum, s) => sum + s.seconds, 0)
+    const pastLastSlot = saved.length - sceneSlotsLeft.length
+    if (pastLastSlot > 0) {
+      console.warn(`[shots] shots_past_last_slot project=${projectId} scene=${state.scene.position} count=${pastLastSlot}`)
+    }
     totals.shots += saved.length
-    totals.seconds += savedSeconds
     inFlightShots -= cap
 
     try {
@@ -609,13 +646,11 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       )
     } catch (err) {
       totals.shots -= saved.length
-      totals.seconds -= savedSeconds
       console.error(`[shots] run ${runId}: writing scene ${state.scene.position}'s shots failed`, err)
       await settleChunk({ status: 'failed', shots_returned: saved.length, error: err instanceof Error ? err.message : 'Write failed' })
       return 'error'
     }
 
-    spent.shots += saved.length
     savedThisRun += saved.length
     state.shots += saved.length
     state.seconds += savedSeconds
@@ -627,12 +662,11 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       )
     }
 
-    // A scene is written only once it has shots: when the model says it is finished (never
-    // on a truncated answer), when an untruncated answer reached its target, or when its
-    // limits allow no further request. A truncated answer otherwise continues the scene from
-    // its last complete shot.
-    const sceneComplete =
-      state.shots > 0 && (prepared.sceneComplete || (!truncated && state.seconds >= state.targetSec - 1e-9) || !mayRequest(state))
+    // A scene is written only once it has shots and either every slot is filled or its
+    // limits allow no further request. Fewer shots than slots (a short or truncated answer)
+    // continue the scene from its last shot, into its unfilled slots - whatever the model
+    // said about the scene being finished.
+    const sceneComplete = state.shots > 0 && !mayRequest(state)
     // An answer with no new complete shot is retried once (SCENE_EMPTY_ANSWER_LIMIT). The
     // retried one settles 'succeeded' with nothing saved - the shape a hand-off counts - and
     // only the one that reaches the limit fails, leaving the scene incomplete.
@@ -700,6 +734,132 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   return { outcome: 'continued', chunks: chunksRun }
 }
 
+// ---- Per-shot rewrite (S2) -----------------------------------------------------------------
+
+type ShotRewrite = { voice_over: string; dialogue: { speaker_name: string; line: string }[] }
+
+/** A stored or returned rewrite, if it is one: narration plus dialogue lines. */
+function parseShotRewrite(raw: unknown): ShotRewrite | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const v = raw as Record<string, unknown>
+  if (typeof v.voice_over !== 'string') return null
+  const [shot] = parseRawShots([{ voice_over: v.voice_over, visual_description: 'x', dialogue: v.dialogue }])
+  return { voice_over: v.voice_over, dialogue: shot ? shot.dialogue : [] }
+}
+
+/**
+ * The chunk's shots after their one rewrite each: every shot whose words run past its slot's
+ * cap gets a single rewrite call for that shot alone, all in parallel, each with its own
+ * usage row. A rewrite already in the chunk's stored payload (a replay) is reused, never
+ * re-called; new ones join that payload before any shot is written. A rewrite is applied
+ * only when it says less but still says something - otherwise the shot keeps its words and
+ * is lengthened instead. A failed rewrite never fails the chunk.
+ */
+async function rewriteOverCapShots(params: {
+  supabase: Client
+  gateway: ClaudeGateway
+  usageBase: Omit<Parameters<typeof reserveUsage>[0], 'model' | 'quotedCost' | 'quotedBreakdown'>
+  chunkId: string
+  input: unknown
+  shots: RawShot[]
+  slots: readonly number[]
+  language: string | null
+  sceneSummary: string | null
+  previousNarration: string | null
+}): Promise<{ shots: RawShot[]; costUsd: number }> {
+  const { supabase, gateway, usageBase, shots, slots, language } = params
+  const stored = ((params.input as { rewrites?: unknown } | null)?.rewrites ?? {}) as Record<string, unknown>
+  const overCap = shots
+    .map((shot, i) => ({ i, words: shotSpokenWords(shot), cap: slots[i] === undefined ? null : slotWordCap(slots[i], language) }))
+    .filter((s): s is { i: number; words: number; cap: number } => s.cap !== null && s.words > s.cap)
+  if (overCap.length === 0) return { shots, costUsd: 0 }
+
+  let costUsd = 0
+  const fresh: Record<string, ShotRewrite> = {}
+  await Promise.all(
+    overCap
+      .filter(({ i }) => parseShotRewrite(stored[String(i)]) === null)
+      .map(async ({ i, words, cap }) => {
+        const shot = shots[i]
+        const userMessage = buildShotRewriteUserMessage({
+          language,
+          sceneSummary: params.sceneSummary,
+          previousNarration: i > 0 ? shots[i - 1].voice_over : params.previousNarration,
+          nextNarration: shots[i + 1]?.voice_over ?? null,
+          voiceOver: shot.voice_over,
+          dialogue: shot.dialogue,
+          wordCap: cap,
+          words,
+        })
+        let usageId: string | null = null
+        let breakdown: UsageBreakdown | null = null
+        let stopReason: string | null = null
+        let caught: unknown = null
+        try {
+          const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
+            model: modelsConfig.shotRewrite.model,
+            estimatedInputTokens: estimateInputTokens({ texts: [SHOT_REWRITE_SYSTEM_PROMPT_V1, userMessage], tools: [REWRITE_SHOT_TOOL] }),
+            maxTokens: modelsConfig.shotRewrite.maxTokens,
+          })
+          await assertWithinAllowance({ supabase, userId: usageBase.userId, quotedCost: estimatedCost })
+          usageId = (await reserveUsage({ ...usageBase, model: modelsConfig.shotRewrite.model, quotedCost: estimatedCost, quotedBreakdown })).usageId
+          const { message, stopReason: sr, requestId } = await gateway.createMessage({
+            model: modelsConfig.shotRewrite.model,
+            max_tokens: modelsConfig.shotRewrite.maxTokens,
+            system: [{ type: 'text', text: SHOT_REWRITE_SYSTEM_PROMPT_V1, cache_control: { type: 'ephemeral' } }],
+            tools: [REWRITE_SHOT_TOOL],
+            tool_choice: { type: 'tool', name: 'rewrite_shot' },
+            messages: [{ role: 'user', content: userMessage }],
+            ...claudeReasoningParams(modelsConfig.shotRewrite),
+          })
+          breakdown = message.usage
+          stopReason = sr
+          console.warn(`[shots] rewrite stopReason=${sr} requestId=${requestId} outputTokens=${message.usage?.output_tokens}`)
+          throwIfRefused({ message, stopReason: sr })
+          const block = message.content.find(
+            (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'rewrite_shot'
+          )
+          const rewrite = sr === 'max_tokens' ? null : parseShotRewrite(block?.input)
+          if (rewrite) fresh[String(i)] = rewrite
+        } catch (err) {
+          caught = err
+          console.error(`[shots] rewrite of an over-cap shot failed - it is lengthened instead`, err)
+        } finally {
+          if (usageId) {
+            costUsd += await settleUsage({
+              supabase,
+              usageId,
+              provider: 'anthropic',
+              model: modelsConfig.shotRewrite.model,
+              status: settledStatus(breakdown, stopReason),
+              breakdown,
+              stopReason,
+              error: caught,
+            })
+          }
+        }
+      })
+  )
+
+  // PERSIST the paid rewrites with the chunk's answer before any shot is written.
+  if (Object.keys(fresh).length > 0) {
+    const payload = { ...((params.input ?? {}) as Record<string, unknown>), rewrites: { ...stored, ...fresh } }
+    const { error } = await supabase
+      .from('shot_run_chunks')
+      .update({ payload: payload as unknown as Json, updated_at: new Date().toISOString() })
+      .eq('id', params.chunkId)
+    if (error) console.error(`[shots] chunk ${params.chunkId}: the rewrites could not be stored`, error.message)
+  }
+
+  const out = shots.map((shot, i) => {
+    const rewrite = fresh[String(i)] ?? parseShotRewrite(stored[String(i)])
+    if (!rewrite || slots[i] === undefined) return shot
+    const words = shotSpokenWords(rewrite)
+    return words > 0 && words < shotSpokenWords(shot) ? { ...shot, voice_over: rewrite.voice_over, dialogue: rewrite.dialogue } : shot
+  })
+  return { shots: out, costUsd }
+}
+
 function lastShotBefore(
   shots: readonly { scene_id: string | null; voice_over: string; visual_description: string | null }[],
   scenes: readonly SceneRow[],
@@ -718,6 +878,8 @@ type OutlineScene = {
   time_of_day: string
   element_names: string[]
   seconds: number
+  /** The outline's proposal - code clamps it to the model's bounds (clampSlotCount). */
+  shot_count: number | null
 }
 
 function parseOutlineScenes(raw: unknown): OutlineScene[] {
@@ -733,6 +895,7 @@ function parseOutlineScenes(raw: unknown): OutlineScene[] {
         ? v.element_names.filter((n): n is string => typeof n === 'string' && n.trim() !== '').map((n) => n.trim())
         : [],
       seconds: typeof v.seconds === 'number' ? v.seconds : NaN,
+      shot_count: typeof v.shot_count === 'number' ? v.shot_count : null,
     }))
     .filter((s) => s.title !== '' || s.summary !== '')
 }
@@ -772,11 +935,11 @@ async function writeOutline(params: {
     let caught: unknown = null
     let costUsd = 0
     try {
-      const dynamicBlock = buildOutlineDynamicBlock(project, tier.targetSeconds)
+      const dynamicBlock = buildOutlineDynamicBlock(project, tier.targetSeconds, videoModelBounds(model))
       const userMessage = 'Plan the scenes now.'
       const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
         model: modelsConfig.shotOutline.model,
-        estimatedInputTokens: estimateInputTokens({ texts: [SHOT_OUTLINE_SYSTEM_PROMPT_V1, dynamicBlock, userMessage], tools: [WRITE_OUTLINE_TOOL] }),
+        estimatedInputTokens: estimateInputTokens({ texts: [SHOT_OUTLINE_SYSTEM_PROMPT_V2, dynamicBlock, userMessage], tools: [WRITE_OUTLINE_TOOL] }),
         maxTokens: modelsConfig.shotOutline.maxTokens,
       })
       await assertWithinAllowance({ supabase, userId: usageBase.userId, quotedCost: estimatedCost })
@@ -785,7 +948,7 @@ async function writeOutline(params: {
         model: modelsConfig.shotOutline.model,
         max_tokens: modelsConfig.shotOutline.maxTokens,
         system: [
-          { type: 'text', text: SHOT_OUTLINE_SYSTEM_PROMPT_V1, cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: SHOT_OUTLINE_SYSTEM_PROMPT_V2, cache_control: { type: 'ephemeral' } },
           { type: 'text', text: dynamicBlock },
         ],
         tools: [WRITE_OUTLINE_TOOL],
@@ -849,6 +1012,13 @@ async function writeOutline(params: {
     )
   }
   const kept = parsed.slice(0, fitted.kept)
+  // The shot slots, set here once and stored with each scene: every run of the chain - and
+  // every later "Generate remaining shots" - fills these.
+  const slots = planProjectSlots(
+    kept.map((s, i) => ({ seconds: fitted.seconds[i], shotCount: s.shot_count })),
+    model,
+    tier.targetSecondsMax
+  )
 
   // Replace semantics, as before: the payload is durable, so the old shot list and scenes
   // go now. Elements are project-level and kept - re-matched by name, reference images and
@@ -871,6 +1041,7 @@ async function writeOutline(params: {
       location: s.location || null,
       time_of_day: s.time_of_day || null,
       target_seconds: fitted.seconds[position],
+      slot_seconds: slots[position],
       created_at: now,
       updated_at: now,
     }))

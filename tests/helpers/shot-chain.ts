@@ -42,7 +42,7 @@ export function fakeShot(voiceOver: string, extra: Partial<FakeShot> = {}): Fake
   }
 }
 
-export type FakeOutlineScene = { title: string; seconds: number; element_names?: string[] }
+export type FakeOutlineScene = { title: string; seconds: number; element_names?: string[]; shot_count?: number }
 
 export function fakeOutline(scenes: FakeOutlineScene[], extra: Record<string, unknown> = {}) {
   return {
@@ -57,23 +57,50 @@ export function fakeOutline(scenes: FakeOutlineScene[], extra: Record<string, un
       time_of_day: 'day',
       element_names: s.element_names ?? [],
       seconds: s.seconds,
+      ...(s.shot_count === undefined ? {} : { shot_count: s.shot_count }),
     })),
     ...extra,
   }
 }
 
-/** What a chunk request asked for, parsed from its user message. */
-export type ChunkAsk = { scenePosition: number; maxShots: number; previous: string | null }
+/** What a chunk request asked for, parsed from its user message: its slots, in order. */
+export type ChunkAsk = {
+  scenePosition: number
+  maxShots: number
+  previous: string | null
+  slots: { seconds: number; wordCap: number }[]
+  firstSlot: number
+}
 
 export function parseChunkAsk(params: Anthropic.MessageCreateParams): ChunkAsk {
   const text = String((params.messages[0] as { content: string }).content)
   const scene = Number(/^Scene (\d+):/m.exec(text)?.[1] ?? '0') - 1
-  const maxShots = Number(/Write at most (\d+) shots/.exec(text)?.[1] ?? '0')
+  const maxShots = Number(/Write exactly (\d+) shots/.exec(text)?.[1] ?? '0')
   const previous = /Narration: (.*)$/m.exec(text)?.[1] ?? null
-  return { scenePosition: scene, maxShots, previous }
+  const slots = [...text.matchAll(/^\d+\. (\d+(?:\.\d+)?)s - at most (\d+) words/gm)].map((m) => ({ seconds: Number(m[1]), wordCap: Number(m[2]) }))
+  const firstSlot = Number(/^(\d+)\. \d/m.exec(text)?.[1] ?? '1')
+  return { scenePosition: scene, maxShots, previous, slots, firstSlot }
 }
 
-export type ChainCall = { tool: string; at: number; ask: ChunkAsk | null }
+/** What a rewrite request asked for: the shot's narration and its cap. */
+export type RewriteAsk = { voiceOver: string; wordCap: number; words: number }
+
+export function parseRewriteAsk(params: Anthropic.MessageCreateParams): RewriteAsk {
+  const text = String((params.messages[0] as { content: string }).content)
+  const narration = /^The shot - [\s\S]*?^Narration: (.*)$/m.exec(text)?.[1] ?? ''
+  return {
+    voiceOver: narration === '(none)' ? '' : narration,
+    wordCap: Number(/its cap is (\d+)/.exec(text)?.[1] ?? '0'),
+    words: Number(/^The shot - (\d+) words/m.exec(text)?.[1] ?? '0'),
+  }
+}
+
+/** A well-behaved rewrite: the narration's first `wordCap` words. */
+export function trimmingRewrite(ask: RewriteAsk): { voice_over: string; dialogue: { speaker_name: string; line: string }[] } {
+  return { voice_over: ask.voiceOver.split(/\s+/).filter(Boolean).slice(0, ask.wordCap).join(' '), dialogue: [] }
+}
+
+export type ChainCall = { tool: string; at: number; ask: ChunkAsk | null; rewrite?: RewriteAsk }
 
 /** A chunk's answer. `truncated` returns it as cut short at max_tokens; `scene_complete`
  * left out is a truncated answer that stopped inside the shots array. */
@@ -90,6 +117,8 @@ export function chainGateway(params: {
   delayMs?: number
   delayFor?: (ask: ChunkAsk, chunkOfScene: number) => number
   usage?: { input_tokens: number; output_tokens: number }
+  /** The answer to a rewrite call - trimmingRewrite unless given. */
+  rewrite?: (ask: RewriteAsk) => { voice_over: string; dialogue: { speaker_name: string; line: string }[] }
 }): ClaudeGateway & { calls: ChainCall[] } {
   const calls: ChainCall[] = []
   const perScene = new Map<number, number>()
@@ -101,6 +130,11 @@ export function chainGateway(params: {
       if (tool === 'write_outline') {
         calls.push({ tool, at, ask: null })
         return successMessage(params.outline, 'write_outline', params.usage)
+      }
+      if (tool === 'rewrite_shot') {
+        const rewrite = parseRewriteAsk(p)
+        calls.push({ tool, at, ask: null, rewrite })
+        return successMessage((params.rewrite ?? trimmingRewrite)(rewrite), 'rewrite_shot', params.usage)
       }
       const ask = parseChunkAsk(p)
       calls.push({ tool, at, ask })

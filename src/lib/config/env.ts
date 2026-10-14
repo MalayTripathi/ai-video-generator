@@ -35,6 +35,8 @@ const LOCAL_FALLBACK = {
   CLAUDE_SHOTS_MODEL: CLAUDE_DEV_MODEL,
   CLAUDE_SHOT_OUTLINE_MAX_TOKENS: '8000',
   CLAUDE_SHOTS_MAX_TOKENS: '8000',
+  CLAUDE_SHOT_REWRITE_MODEL: CLAUDE_DEV_MODEL,
+  CLAUDE_SHOT_REWRITE_MAX_TOKENS: '1000',
   CLAUDE_CAMERA_MODEL: CLAUDE_DEV_MODEL,
   CLAUDE_CAMERA_MAX_TOKENS: '500',
   CLAUDE_AGENT_MODEL: CLAUDE_DEV_MODEL,
@@ -116,6 +118,8 @@ export type ClaudeEnv = {
   shotsModel: string
   shotOutlineMaxTokens: number
   shotsMaxTokens: number
+  shotRewriteModel: string
+  shotRewriteMaxTokens: number
   cameraModel: string
   cameraMaxTokens: number
   agentModel: string
@@ -270,6 +274,8 @@ function parseModels(source: EnvSource, appEnv: AppEnv, warnings: string[]) {
     shotsModel: model('CLAUDE_SHOTS_MODEL'),
     shotOutlineMaxTokens: cap('CLAUDE_SHOT_OUTLINE_MAX_TOKENS'),
     shotsMaxTokens: cap('CLAUDE_SHOTS_MAX_TOKENS'),
+    shotRewriteModel: model('CLAUDE_SHOT_REWRITE_MODEL'),
+    shotRewriteMaxTokens: cap('CLAUDE_SHOT_REWRITE_MAX_TOKENS'),
     cameraModel: model('CLAUDE_CAMERA_MODEL'),
     cameraMaxTokens: cap('CLAUDE_CAMERA_MAX_TOKENS'),
     agentModel: model('CLAUDE_AGENT_MODEL'),
@@ -281,8 +287,8 @@ function parseModels(source: EnvSource, appEnv: AppEnv, warnings: string[]) {
   }
   // The shot chain's run budget is derived from the model's speed and these caps; a model
   // the chain cannot fit inside 300s fails boot instead of being cut off mid-chunk.
-  const timingProblem = shotChainTimingProblem(claude.shotsModel, claude.shotsMaxTokens, claude.shotOutlineMaxTokens)
-  if (timingProblem) throw new EnvError('CLAUDE_SHOTS_MODEL', timingProblem)
+  const timingProblem = shotChainTimingProblem(claude.shotsModel, claude.shotsMaxTokens, claude.shotOutlineMaxTokens, { model: claude.shotRewriteModel, maxTokens: claude.shotRewriteMaxTokens })
+  if (timingProblem) throw new EnvError(timingProblem.varName, timingProblem.reason)
   const elevenlabs = {
     voiceoverProvider: oneOf('VOICEOVER_PROVIDER', b('VOICEOVER_PROVIDER'), SUPPORTED_ELEVENLABS.provider),
     voiceoverModel: oneOf('ELEVENLABS_VOICEOVER_MODEL', b('ELEVENLABS_VOICEOVER_MODEL'), SUPPORTED_ELEVENLABS.voiceoverModel),
@@ -337,7 +343,7 @@ export function describeEnv(env: NextEnv | WorkerEnv): [label: string, value: st
   if ('claude' in env) {
     const c = env.claude
     rows.push(
-      ['Shot generation', `${c.shotsModel}  (outline max ${tokens(c.shotOutlineMaxTokens)}, chunk max ${tokens(c.shotsMaxTokens)}, run budget ${Math.round(shotRunBudgetMs(c.shotsModel, c.shotsMaxTokens) / 1000)}s)`],
+      ['Shot generation', `${c.shotsModel}  (outline max ${tokens(c.shotOutlineMaxTokens)}, chunk max ${tokens(c.shotsMaxTokens)}, rewrite ${c.shotRewriteModel} max ${tokens(c.shotRewriteMaxTokens)}, run budget ${Math.round(shotRunBudgetMs(c.shotsModel, c.shotsMaxTokens, { model: c.shotRewriteModel, maxTokens: c.shotRewriteMaxTokens }) / 1000)}s)`],
       ['Camera', `${c.cameraModel}  (max ${tokens(c.cameraMaxTokens)})`],
       ['Agent', `${c.agentModel}  (max ${tokens(c.agentMaxTokens)})`],
       ['Image prompts', `${c.imagePromptsModel}  (max ${tokens(c.imagePromptsMaxTokens)})`],

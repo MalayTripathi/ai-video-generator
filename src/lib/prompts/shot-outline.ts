@@ -1,10 +1,12 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { CLASSIFIABLE_VIDEO_TYPES } from '@/lib/config/enums'
 
-// v1 - the first call of shot generation: plans the film as ordered scenes with their
-// lengths, before any shot is written. Bump the suffix (and this comment) on any content
-// change so usage logs / evals can be attributed to a specific wording.
-export const SHOT_OUTLINE_SYSTEM_PROMPT_V1 = `You are planning a short narrated video from a brief, as an ordered list of scenes. Another step writes each scene's shots afterwards, from your plan.
+// v2 - the first call of shot generation: plans the film as ordered scenes with their
+// lengths and shot counts, before any shot is written (v2: shot_count per scene, which code
+// clamps to what the video model can render and turns into the scene's shot slots). Bump the
+// suffix (and this comment) on any content change so usage logs / evals can be attributed to
+// a specific wording.
+export const SHOT_OUTLINE_SYSTEM_PROMPT_V2 = `You are planning a short narrated video from a brief, as an ordered list of scenes. Another step writes each scene's shots afterwards, from your plan.
 
 Write the plan as structured data via the write_outline tool - never as free-text JSON in your reply. Call write_outline exactly once.
 
@@ -15,6 +17,7 @@ For each scene, in film order, write:
 - time_of_day: when it takes place (e.g. "dusk"), or "unspecified"
 - element_names: the names of every recurring character, location, and prop that appears in the scene - use the exact same name for the same element in every scene
 - seconds: how long the scene runs, in whole seconds
+- shot_count: how many shots the scene needs - each shot is one image with one line of narration, and runs within the shot length range given below
 
 The scenes' seconds must add up to the target length given below. Use as many scenes as the story needs - a scene is a continuous stretch in one place and time, or one beat of an explainer.
 
@@ -60,8 +63,9 @@ export const WRITE_OUTLINE_TOOL: Anthropic.Tool = {
               items: { type: 'string' },
             },
             seconds: { type: 'number', description: 'Scene length in whole seconds.' },
+            shot_count: { type: 'integer', description: 'How many shots the scene needs, each within the shot length range.' },
           },
-          required: ['title', 'summary', 'location', 'time_of_day', 'element_names', 'seconds'],
+          required: ['title', 'summary', 'location', 'time_of_day', 'element_names', 'seconds', 'shot_count'],
           additionalProperties: false,
         },
       },
@@ -90,11 +94,13 @@ export const WRITE_OUTLINE_TOOL: Anthropic.Tool = {
 
 export function buildOutlineDynamicBlock(
   project: { source_text: string | null; video_type: string | null; language: string | null },
-  targetSeconds: number
+  targetSeconds: number,
+  shotSeconds: { min: number; max: number }
 ): string {
   return `Video type: ${project.video_type ?? 'auto'}
 Target language: ${project.language ?? 'en'}
 Target length: ${targetSeconds} seconds - the scenes' seconds add up to this
+Shot length range: ${shotSeconds.min} to ${shotSeconds.max} seconds
 
 Brief:
 ${project.source_text ?? ''}

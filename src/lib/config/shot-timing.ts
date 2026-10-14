@@ -4,8 +4,9 @@
 //
 // A run stops starting chunks at its budget, lets the in-flight ones drain, then finishes or
 // hands off. The latest a chunk can start is the budget, so the budget is whatever is left of
-// the route's 300s after the slowest possible chunk, the hand-off (or the finish, whichever
-// is longer) and a margin. max_tokens is never lowered to make this fit.
+// the route's 300s after the slowest possible chunk (its call, then its over-cap shots'
+// rewrite calls, run in parallel), the hand-off (or the finish, whichever is longer) and a
+// margin. max_tokens is never lowered to make this fit.
 
 // Vercel Hobby's ceiling, and the shots route's `maxDuration` literal.
 export const SHOTS_ROUTE_MAX_DURATION_S = 300
@@ -58,9 +59,19 @@ export const SHOT_CHAIN_TIMING: Readonly<Record<string, ShotChainTiming>> = {
   },
 }
 
-/** The slowest a chunk can be on this model: setup, a full max_tokens answer, the writes. */
-export function worstChunkS(timing: ShotChainTiming, chunkMaxTokens: number): number {
-  return timing.chunkSetupS + chunkMaxTokens / timing.chunkTokensPerSec + timing.chunkWritesS
+/** The rewrite call a chunk's over-cap shots make, in parallel: its model and max_tokens. */
+export type ShotRewriteCall = { model: string; maxTokens: number }
+
+/** The slowest one rewrite call can be: its reservation, a full max_tokens answer, its payload write. */
+export function worstRewriteS(rewrite: ShotRewriteCall): number {
+  const timing = SHOT_CHAIN_TIMING[rewrite.model]
+  if (!timing) throw new Error(`No shot chain timing for ${rewrite.model}`)
+  return timing.chunkSetupS + rewrite.maxTokens / timing.chunkTokensPerSec
+}
+
+/** The slowest a chunk can be on this model: setup, a full max_tokens answer, its rewrites, the writes. */
+export function worstChunkS(timing: ShotChainTiming, chunkMaxTokens: number, rewrite: ShotRewriteCall): number {
+  return timing.chunkSetupS + chunkMaxTokens / timing.chunkTokensPerSec + worstRewriteS(rewrite) + timing.chunkWritesS
 }
 
 /** The slowest the outline (run 0) can be: a full max_tokens answer, then its writes. */
@@ -74,21 +85,34 @@ const runTailS = () => Math.max(SHOT_HANDOFF_TIMEOUT_MS / 1000, SHOT_FINISH_S) +
  * How long one run may keep starting chunks, in ms, so that a chunk started at the budget
  * still drains, and the run hands off or finishes, inside the route's 300s.
  */
-export function shotRunBudgetMs(model: string, chunkMaxTokens: number): number {
+export function shotRunBudgetMs(model: string, chunkMaxTokens: number, rewrite: ShotRewriteCall): number {
   const timing = SHOT_CHAIN_TIMING[model]
   if (!timing) throw new Error(`No shot chain timing for ${model}`)
-  return Math.floor((SHOTS_ROUTE_MAX_DURATION_S - worstChunkS(timing, chunkMaxTokens) - runTailS()) * 1000)
+  return Math.floor((SHOTS_ROUTE_MAX_DURATION_S - worstChunkS(timing, chunkMaxTokens, rewrite) - runTailS()) * 1000)
 }
 
-/** Why this shots model and its max_tokens cannot run the chain inside 300s, or null. */
-export function shotChainTimingProblem(model: string, chunkMaxTokens: number, outlineMaxTokens: number): string | null {
+/** Why these shots and rewrite models and their max_tokens cannot run the chain inside 300s, or null. */
+export function shotChainTimingProblem(
+  model: string,
+  chunkMaxTokens: number,
+  outlineMaxTokens: number,
+  rewrite: ShotRewriteCall
+): { varName: string; reason: string } | null {
   const timing = SHOT_CHAIN_TIMING[model]
-  if (!timing) return `"${model}" has no shot chain timing in shot-timing.ts`
-  if (shotRunBudgetMs(model, chunkMaxTokens) <= 0) {
-    return `a ${chunkMaxTokens}-token chunk on "${model}" (~${Math.round(worstChunkS(timing, chunkMaxTokens))}s) leaves no run budget inside ${SHOTS_ROUTE_MAX_DURATION_S}s`
+  if (!timing) return { varName: 'CLAUDE_SHOTS_MODEL', reason: `"${model}" has no shot chain timing in shot-timing.ts` }
+  if (!SHOT_CHAIN_TIMING[rewrite.model]) {
+    return { varName: 'CLAUDE_SHOT_REWRITE_MODEL', reason: `"${rewrite.model}" has no shot chain timing in shot-timing.ts` }
+  }
+  if (shotRunBudgetMs(model, chunkMaxTokens, rewrite) <= 0) {
+    // Blamed on the rewrite cap when the chunk alone would still fit.
+    const chunkFits = shotRunBudgetMs(model, chunkMaxTokens, { ...rewrite, maxTokens: 0 }) > 0
+    return {
+      varName: chunkFits ? 'CLAUDE_SHOT_REWRITE_MAX_TOKENS' : 'CLAUDE_SHOTS_MODEL',
+      reason: `a ${chunkMaxTokens}-token chunk on "${model}" with a ${rewrite.maxTokens}-token rewrite (~${Math.round(worstChunkS(timing, chunkMaxTokens, rewrite))}s) leaves no run budget inside ${SHOTS_ROUTE_MAX_DURATION_S}s`,
+    }
   }
   if (worstOutlineS(timing, outlineMaxTokens) + runTailS() > SHOTS_ROUTE_MAX_DURATION_S) {
-    return `a ${outlineMaxTokens}-token outline on "${model}" cannot finish and hand off inside ${SHOTS_ROUTE_MAX_DURATION_S}s`
+    return { varName: 'CLAUDE_SHOTS_MODEL', reason: `a ${outlineMaxTokens}-token outline on "${model}" cannot finish and hand off inside ${SHOTS_ROUTE_MAX_DURATION_S}s` }
   }
   return null
 }

@@ -71,15 +71,16 @@ test.afterEach(async () => {
 })
 
 test.describe('shot chain - a long list across several runs', () => {
-  test('150 shots across several hand-offs: contiguous positions in scene order, no run starts a chunk past its budget, a hold plus one excess spend, one usage row per call', async () => {
+  test('150 shots across several hand-offs: contiguous positions in scene order, no run starts a chunk past its budget, a hold never exceeded, one usage row per call', async () => {
     test.setTimeout(300_000)
-    // 8-10 min on Wan 3.0: 15 scenes of 36s (540s, the tier target); each writes 8 shots,
-    // then 2 more, then reports the scene complete - 150 shots of 3s (450s).
+    // 8-10 min on Wan 3.0: 15 scenes of 36s (540s, the tier target), each planned as 10 shots -
+    // slots of 3, 3, 3, 3, 4, 4, 4, 4, 4, 4. Each scene's first request asks for 8, its second
+    // for the last 2 - 150 shots on their slots (540s).
     const projectId = await insertChainProject(owner.id, { duration_target: '8-10min' })
-    const scenes = Array.from({ length: 15 }, (_, i) => ({ title: `Scene ${i + 1}`, seconds: 36 }))
+    const scenes = Array.from({ length: 15 }, (_, i) => ({ title: `Scene ${i + 1}`, seconds: 36, shot_count: 10 }))
     const gateway = chainGateway({
       outline: fakeOutline(scenes),
-      delayMs: 25,
+      delayMs: 100,
       chunk: (ask, n) => {
         const count = n === 0 ? 8 : 2
         return {
@@ -88,7 +89,7 @@ test.describe('shot chain - a long list across several runs', () => {
         }
       },
     })
-    const budget = 1_500
+    const budget = 3_000
     const { request, runs } = await runChain({
       projectId,
       userId: owner.id,
@@ -119,15 +120,17 @@ test.describe('shot chain - a long list across several runs', () => {
       ...Array.from({ length: 2 }, (_, i) => `s${sc}c1i${i}`),
     ])
     expect(shots.map((s) => s.voice_over.split(' ')[0])).toEqual(expected)
-    expect(shots.every((s) => s.duration_sec === 3)).toBe(true)
+    expect(shots.map((s) => s.duration_sec)).toEqual(scenes.flatMap(() => [3, 3, 3, 3, 4, 4, 4, 4, 4, 4]))
+    // Every scene asked for 8 slots, then its last 2.
+    const asked = gateway.calls.filter((c) => c.tool === 'write_shots').map((c) => c.ask!.maxShots)
+    expect(asked.sort((a, b) => a - b)).toEqual([...Array(15).fill(2), ...Array(15).fill(8)])
 
-    // The hold (the tier's quote) ran short of 150 shots: one extra spend settles the excess,
-    // and the two net to the actual charge.
+    // The hold (the tier's quote) ran short of 150 shots (300 credits): a button run is
+    // charged at most its hold, so the hold stands alone - no excess spend.
     const ledger = await holdLedger(projectId)
-    expect(ledger.rows).toHaveLength(2)
+    expect(ledger.rows).toHaveLength(1)
     expect(ledger.holds[0]).toMatchObject({ operation: 'generate_shots', pricing_mode: 'fixed', delta: -shotGenerationCredits('8-10min') })
-    expect(ledger.settles[0]).toMatchObject({ kind: 'spend', operation: 'generate_shots', delta: -(300 - shotGenerationCredits('8-10min')) })
-    expect(ledger.net).toBe(300)
+    expect(ledger.net).toBe(shotGenerationCredits('8-10min'))
     // One usage row per provider call: the outline and 30 chunks.
     const usage = await usageRows(projectId)
     expect(usage.length).toBe(gateway.calls.length)
@@ -192,7 +195,7 @@ test.describe('shot chain - limits enforced in code', () => {
   test('"4 shots" yields 4', async () => {
     const projectId = await insertChainProject(owner.id, { duration_target: '30-60s', source_text: 'Exactly 4 shots.' })
     const gateway = chainGateway({
-      outline: fakeOutline([{ title: 'Four', seconds: 45 }]),
+      outline: fakeOutline([{ title: 'Four', seconds: 45, shot_count: 4 }]),
       chunk: () => ({ shots: [1, 2, 3, 4].map((i) => fakeShot(fourWords(`f${i}`))), scene_complete: true }),
     })
     await runChain({ projectId, userId: owner.id, gateway, ledger: REAL_LEDGER })
@@ -200,21 +203,30 @@ test.describe('shot chain - limits enforced in code', () => {
     expect((await holdLedger(projectId)).net).toBe(8)
   })
 
-  test('durations are computed by code: narrated, dialogue and silent shots, clamped and overflow-flagged, in whole seconds', async () => {
-    // Kling v3: 3-15s.
+  test('durations are code-owned: each shot takes its slot - narrated, dialogue and silent alike - and only a shot still over its cap is lengthened, clamped and overflow-flagged', async () => {
+    // Kling v3: 3-15s. The outline rescales to 31s and 59s; scene One is planned as 4 slots -
+    // 7, 8, 8, 8 - and scene Two as 14, 15, 15, 15.
     const projectId = await insertChainProject(owner.id, { duration_target: '1-2min', video_model: 'kling-v3-standard' })
     const many = Array.from({ length: 80 }, (_, i) => `w${i}`).join(' ')
     const shots: FakeShot[] = [
-      fakeShot(Array.from({ length: 13 }, (_, i) => `n${i}`).join(' '), { duration_sec: 2 }), // 6.24 -> 7
-      fakeShot('Two words', { dialogue: [{ speaker_name: 'Mara', line: 'one two three four five six seven eight' }] }), // 4.86 -> 5
-      fakeShot('', { duration_sec: 6 }), // silent: Claude's estimate
-      fakeShot(many), // 37s -> clamped to 15, flagged
+      fakeShot(Array.from({ length: 13 }, (_, i) => `n${i}`).join(' '), { duration_sec: 2 }), // 13 words: inside 7s's 14
+      fakeShot('Two words', { dialogue: [{ speaker_name: 'Mara', line: 'one two three four five six seven eight' }] }), // 10 with the dialogue
+      fakeShot('', { duration_sec: 3 }), // silent: its slot's 8s, never Claude's estimate
+      fakeShot(many), // 80 words, still 80 after its rewrite: 37s -> clamped to 15, flagged
     ]
-    const gateway = chainGateway({ outline: fakeOutline([{ title: 'One', seconds: 90 }]), chunk: () => ({ shots, scene_complete: true }) })
+    const gateway = chainGateway({
+      outline: fakeOutline([
+        { title: 'One', seconds: 30, shot_count: 4 },
+        { title: 'Two', seconds: 60, shot_count: 4 },
+      ]),
+      chunk: (ask) => ({ shots: ask.scenePosition === 0 ? shots : [1, 2, 3, 4].map((i) => fakeShot(fourWords(`t${i}`))), scene_complete: true }),
+      rewrite: (ask) => ({ voice_over: ask.voiceOver, dialogue: [] }),
+    })
     await runChain({ projectId, userId: owner.id, gateway })
     const saved = await readChainShots(projectId)
-    expect(saved.map((s) => s.duration_sec)).toEqual([7, 5, 6, 15])
-    expect(saved.map((s) => s.narration_overflow)).toEqual([false, false, false, true])
+    expect(saved.map((s) => s.duration_sec)).toEqual([7, 8, 8, 15, 14, 15, 15, 15])
+    expect(saved.map((s) => s.narration_overflow)).toEqual([false, false, false, true, false, false, false, false])
+    expect(gateway.calls.filter((c) => c.tool === 'rewrite_shot')).toHaveLength(1)
   })
 })
 
@@ -308,25 +320,36 @@ test.describe('shot chain - balance', () => {
     expect(await ledgerRows(projectId)).toHaveLength(0)
   })
 
-  test('past its hold the run reads the balance: out of credits it stops, charges only what was saved, and "Generate remaining shots" is its own held action', async () => {
-    const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' }) // hold 16 (8 shots)
-    const outline = fakeOutline([{ title: 'A', seconds: 15 }, { title: 'B', seconds: 15 }, { title: 'C', seconds: 15 }])
+  test('past its hold an agent run reads the balance: out of credits it stops, keeping what was saved, and "Generate remaining shots" is its own held action, charged at most its hold', async () => {
+    const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' }) // hold 16
+    const outline = fakeOutline([
+      { title: 'A', seconds: 15, shot_count: 4 },
+      { title: 'B', seconds: 15, shot_count: 4 },
+      { title: 'C', seconds: 15, shot_count: 4 },
+    ])
     const chunk = (ask: { scenePosition: number }) => ({
       shots: [1, 2, 3, 4].map((i) => fakeShot(fourWords(`b${ask.scenePosition}i${i}`))),
       scene_complete: true,
     })
-    // Scenes of 15s (a chunk cap of 7, 14 credits). Chunk 1 fits the hold (0 + 14 <= 16) with
-    // no balance read. Chunk 2 would project 8 + 14 = 22 > 16: the balance (2, past the hold)
-    // can't cover the 6 excess, so the run stops with 4 shots saved.
+    // An agent run pays its measured cost: each call here is 10,000 output tokens on Haiku 5.5
+    // ($0.005, 5 credits). Chunk 1 projects 5 (the outline) + 8 (its 4 shots in flight) = 13,
+    // inside the hold - no read. Chunk 2 projects 10 + 8 = 18 > 16: the balance (1, past the
+    // hold) can't cover the 2 excess, so the run stops with scene A's 4 shots saved.
+    const { data: agentClaim } = await admin
+      .from('generations')
+      .insert({ project_id: projectId, step: 'workbench', operation: 'agent_turn', shot_id: null, element_id: null, state: 'generating' })
+      .select('id')
+      .single()
     let reads = 0
     const first = await runChain({
       projectId,
       userId: owner.id,
-      gateway: chainGateway({ outline, chunk }),
+      gateway: chainGateway({ outline, chunk, usage: { input_tokens: 0, output_tokens: 10_000 } }),
       ledger: REAL_LEDGER,
+      agentGenerationId: agentClaim!.id,
       balance: () => {
         reads += 1
-        return reads === 1 ? 1_000 : 2 // the pre-flight, then the in-run read
+        return reads === 1 ? 1_000 : 1 // the pre-flight, then the in-run read
       },
       concurrency: 1,
     })
@@ -338,9 +361,9 @@ test.describe('shot chain - balance', () => {
     const { data: scenes } = await admin.from('scenes').select('id, shot_run_chunks(scene_complete)').eq('project_id', projectId)
     const view = shotRunView(firstRun, (scenes ?? []) as { shot_run_chunks: { scene_complete: boolean }[] }[])
     expect(canGenerateRemaining(view)).toBe(true)
-    const firstLedger = await holdLedger(projectId)
-    expect(firstLedger.net).toBe(8) // 4 saved shots, the rest of the hold refunded
 
+    // "Generate remaining shots" (the button) holds the two unwritten scenes' quote - 40s of
+    // them, 5 shots, 10 credits - writes their 8 shots, and is charged its hold, never more.
     const remaining = await runChain({
       projectId,
       userId: owner.id,
@@ -354,8 +377,9 @@ test.describe('shot chain - balance', () => {
     expect(shots.map((s) => s.order_index)).toEqual(Array.from({ length: 12 }, (_, i) => i))
     expect(shots.map((s) => s.scenes!.title)).toEqual([...Array(4).fill('A'), ...Array(4).fill('B'), ...Array(4).fill('C')])
     const ledger = await holdLedger(projectId)
-    expect(ledger.holds).toHaveLength(2)
-    expect(ledger.net).toBe(24)
+    expect(ledger.holds.map((h) => h.operation).sort()).toEqual(['agent_turn', 'generate_shots'])
+    const button = ledger.rows.filter((r) => r.operation === 'generate_shots')
+    expect(button.map((r) => r.delta)).toEqual([-10])
   })
 })
 

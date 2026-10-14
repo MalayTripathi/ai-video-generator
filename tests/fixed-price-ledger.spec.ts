@@ -129,7 +129,7 @@ async function readUsageRows(projectId: string) {
 // A chain whose one scene is written as `count` shots in a single chunk.
 function shotsGateway(count: number) {
   return chainGateway({
-    outline: fakeOutline([{ title: 'Only', seconds: 45 }]),
+    outline: fakeOutline([{ title: 'Only', seconds: 45, shot_count: count }]),
     chunk: () => ({ shots: Array.from({ length: count }, (_, i) => fakeShot(`Narration for shot ${i + 1}.`)), scene_complete: true }),
   })
 }

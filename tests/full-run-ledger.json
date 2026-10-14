@@ -12,5 +12,19 @@
     "skipped": 0,
     "status": "failed",
     "override": false
+  },
+  {
+    "id": "2026-10-14T05:38:42.039Z",
+    "module": "workbench",
+    "startedAt": "2026-10-14T05:38:42.039Z",
+    "finishedAt": "2026-10-14T05:52:13.134Z",
+    "tests": 1383,
+    "durationMs": 809341,
+    "passed": 1370,
+    "failed": 13,
+    "flaky": 0,
+    "skipped": 0,
+    "status": "failed",
+    "override": false
   }
 ]

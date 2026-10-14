@@ -269,7 +269,8 @@ export function shotRunActualCredits(run: Pick<SettleRunRow, 'agent_generation_i
 }
 
 /**
- * Settles the run's hold at its actual charge, once the run is terminal - and, for an agent
+ * Settles the run's hold at its actual charge - for a button run, never more than the hold
+ * (an overrun is the platform's); an agent run pays its full measured cost - once the run is terminal - and, for an agent
  * run, once the turn has handed over its own cost too (whichever happens second settles).
  * The sums come from the run record, never from `usage`. The settle's dedupe key (the
  * hold's id) makes a repeat a no-op; charged_at marks the run settled. A settle that could
@@ -290,6 +291,7 @@ export async function settleShotRun(supabase: Client, ledger: ShotRunLedger, run
     projectId: run.project_id,
     messageId: run.message_id,
     actualCredits: shotRunActualCredits(run),
+    capAtHold: !agent,
   })
   if (outcome === 'failed') return { charged: false }
 

@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test'
 import { VIDEO_MODELS } from '../src/lib/config/models'
 import { durationConfig } from '../src/lib/config/duration'
-import { SHOT_DURATION_PAD_SEC, SHOT_ORDER_BASE, spokenWordsPerSec } from '../src/lib/config/shots'
-import { chunkWordBudget, computeShotDuration, perShotRoundingSec, roundUpToModelDuration, spokenWordCount } from '../src/lib/shots/durations'
-import { chunkSizes, fitOutlineSeconds, sceneMaxShots, sceneRequestLimitSec, shotCeiling } from '../src/lib/shots/limits'
+import { SHOT_ORDER_BASE, spokenWordsPerSec } from '../src/lib/config/shots'
+import { computeShotDuration, roundUpToModelDuration, spokenWordCount } from '../src/lib/shots/durations'
+import { chunkSizes, fitOutlineSeconds, shotCeiling } from '../src/lib/shots/limits'
 import { chunkShotOrderIndex, resequence } from '../src/lib/shots/positions'
 
 // Shot generation's code-enforced rules, with no I/O: durations from words, the request
@@ -69,27 +69,6 @@ test.describe('shot durations - computed from words, never chosen by Claude', ()
       expect(seconds).toBeLessThanOrEqual(30)
     }
   })
-
-  test("a chunk's word budget is its scene's remaining seconds less each expected shot's padding and rounding, at the spoken pace", () => {
-    // Wan 3.0's 1s step: 0.25s padding + 0.5s average rounding per shot.
-    expect(perShotRoundingSec(wan3)).toBe(0.75)
-    // 40s: 5 shots expected at the measured 8.45s; capped by the request's own cap.
-    expect(chunkWordBudget(40, 'en', wan3, 8)).toBe(Math.floor((40 - 5 * 0.75) * 2.17))
-    expect(chunkWordBudget(40, 'en', wan3, 2)).toBe(Math.floor((40 - 2 * 0.75) * 2.17))
-    // Wan 2.5 renders 5s or 10s: half its 5s gap.
-    expect(perShotRoundingSec(wan25)).toBe(2.75)
-    expect(chunkWordBudget(0, 'en', wan3, 8)).toBe(0)
-    expect(SHOT_DURATION_PAD_SEC).toBe(0.25)
-  })
-
-  test('rounded shots written to the budget land on the scene target, not past it', () => {
-    // A scene of 36s on Wan 3.0, written as 5 shots sharing its word budget evenly.
-    const budget = chunkWordBudget(36, 'en', wan3, 8)
-    const perShot = Math.floor(budget / 5)
-    const total = Array.from({ length: 5 }, () => computeShotDuration({ narration: words(perShot), dialogue: [], silentEstimateSec: null, language: 'en', model: wan3 }).seconds).reduce((a, b) => a + b, 0)
-    expect(total).toBeLessThanOrEqual(36)
-    expect(total).toBeGreaterThanOrEqual(36 - 5)
-  })
 })
 
 test.describe('limits - enforced in code, whatever the description asks for', () => {
@@ -127,16 +106,8 @@ test.describe('limits - enforced in code, whatever the description asks for', ()
     expect(fitted.seconds.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(60)
   })
 
-  test('a scene asks for at most its seconds over the model minimum; chunks are at most N', () => {
-    expect(sceneMaxShots(36, 2)).toBe(18)
+  test('chunks are at most N shots', () => {
     expect(chunkSizes(19, 8)).toEqual([8, 8, 3])
-  })
-
-  test("a scene's requests stop at its share of the tier maximum, and the shares sum to it", () => {
-    const tier = { maxSec: 300, targetSec: 240 }
-    expect(sceneRequestLimitSec(60, tier)).toBe(75)
-    const targets = [60, 100, 80]
-    expect(targets.reduce((sum, t) => sum + sceneRequestLimitSec(t, tier), 0)).toBe(300)
   })
 })
 

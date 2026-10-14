@@ -20,29 +20,9 @@ import { holdAndSettle } from '@/lib/credits/balance'
 import { placeHold, settleHold } from '@/lib/credits/ledger'
 import { needsDeadRunSettlement, settleDeadShotRuns } from '@/lib/shots/runs'
 import { sceneProgress, shotRunView, type ShotRunView } from './_components/shot-run-view'
-import type { CameraOrigin } from '@/lib/config/enums'
+import { WORKBENCH_SHOT_COLUMNS, toDisplayShot, type DisplayElementRow, type WorkbenchShotRow } from './_components/display-shots'
 
-type ElementRow = Pick<Tables<'elements'>, 'id' | 'name' | 'type' | 'status' | 'reference_image_path'>
-// Only the columns the shot cards render - the full row also carries image, film and
-// video fields this step never reads.
-const WORKBENCH_SHOT_COLUMNS =
-  'id, order_index, shot_key, voice_over, visual_description, duration_sec, duration_locked, shot_size, shot_size_origin, camera_angle, camera_angle_origin, camera_movement, camera_movement_origin, scenes(title)'
-type ShotRow = Pick<
-  Tables<'shots'>,
-  | 'id'
-  | 'order_index'
-  | 'shot_key'
-  | 'voice_over'
-  | 'visual_description'
-  | 'duration_sec'
-  | 'duration_locked'
-  | 'shot_size'
-  | 'shot_size_origin'
-  | 'camera_angle'
-  | 'camera_angle_origin'
-  | 'camera_movement'
-  | 'camera_movement_origin'
-> & { scenes: { title: string } | null; shot_elements: { elements: ElementRow | null }[] }
+type ElementRow = DisplayElementRow
 type ShotDialogueRow = Pick<
   Tables<'shot_dialogue'>,
   'id' | 'shot_id' | 'element_id' | 'line' | 'order_index'
@@ -104,7 +84,7 @@ export default async function WorkbenchPage({
   const readShots = () =>
     supabase
       .from('shots')
-      .select(`${WORKBENCH_SHOT_COLUMNS}, shot_elements(elements(id, name, type, status, reference_image_path))`)
+      .select(WORKBENCH_SHOT_COLUMNS)
       .eq('project_id', projectId)
       .order('order_index', { ascending: true })
   const [
@@ -240,35 +220,8 @@ export default async function WorkbenchPage({
       ])
   )
   const dialogueByShot = groupDialogueByShot(dialogueRows ?? [], elementsById)
-  const typedShotsRows = (shotsRows ?? []) as unknown as ShotRow[]
-
-  const shots: DisplayShot[] = typedShotsRows.map((row) => ({
-    id: row.id,
-    order_index: row.order_index,
-    shot_key: row.shot_key,
-    scene_title: row.scenes?.title ?? null,
-    voice_over: row.voice_over,
-    visual_description: row.visual_description,
-    duration_sec: row.duration_sec,
-    duration_locked: row.duration_locked,
-    shot_size: row.shot_size,
-    shot_size_origin: row.shot_size_origin as CameraOrigin,
-    camera_angle: row.camera_angle,
-    camera_angle_origin: row.camera_angle_origin as CameraOrigin,
-    camera_movement: row.camera_movement,
-    camera_movement_origin: row.camera_movement_origin as CameraOrigin,
-    elements: (row.shot_elements ?? [])
-      .map((se) => se.elements)
-      .filter((el): el is ElementRow => el !== null)
-      .map((el) => ({
-        id: el.id,
-        name: el.name,
-        type: el.type,
-        status: el.status,
-        reference_image_path: el.reference_image_path,
-      })),
-    dialogue: dialogueByShot.get(row.id) ?? [],
-  }))
+  const typedShotsRows = (shotsRows ?? []) as unknown as WorkbenchShotRow[]
+  const shots: DisplayShot[] = typedShotsRows.map((row) => toDisplayShot(row, dialogueByShot.get(row.id) ?? []))
 
   const shotNumberByKey = new Map(shots.map((s) => [s.shot_key, s.order_index + 1]))
   const costByMessageId = new Map<string, number>()

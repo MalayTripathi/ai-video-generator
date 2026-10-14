@@ -28,7 +28,7 @@ const RICH_SHOTS = [
 
 function richGateway(style: unknown[] = []) {
   return chainGateway({
-    outline: fakeOutline([{ title: 'The Keeper', seconds: 90, element_names: ['Mara'] }], { title: 'The Lighthouse Keeper', video_type: 'narrated_story', style }),
+    outline: fakeOutline([{ title: 'The Keeper', seconds: 90, element_names: ['Mara'], shot_count: 3 }], { title: 'The Lighthouse Keeper', video_type: 'narrated_story', style }),
     chunk: () => ({ shots: RICH_SHOTS, scene_complete: true }),
   })
 }
@@ -87,15 +87,15 @@ test.describe('Step 2 workbench - shot generation', () => {
   test('persists reported camera origins, and sanitizes an unrecognized origin (including a hypothetical override) to auto', async () => {
     const projectId = await insertChainProject(primary.user.id)
     const gateway = chainGateway({
-      outline: fakeOutline([{ title: 'A', seconds: 90 }]),
+      outline: fakeOutline([{ title: 'A', seconds: 90, shot_count: 3 }]),
       chunk: () => ({
-        shots: [fakeShot('Narration.', { shot_size_origin: 'derived', camera_movement_origin: 'override' })],
+        shots: [1, 2, 3].map(() => fakeShot('Narration.', { shot_size_origin: 'derived', camera_movement_origin: 'override' })),
         scene_complete: true,
       }),
     })
     await runChain({ projectId, userId: primary.user.id, gateway })
     const { data } = await admin.from('shots').select('shot_size_origin, camera_angle_origin, camera_movement_origin').eq('project_id', projectId)
-    expect(data).toEqual([{ shot_size_origin: 'derived', camera_angle_origin: 'auto', camera_movement_origin: 'auto' }])
+    expect(data).toEqual(Array(3).fill({ shot_size_origin: 'derived', camera_angle_origin: 'auto', camera_movement_origin: 'auto' }))
   })
 
   test('a claim that succeeded is refused without retry - 409 retry_required, nothing called', async () => {
@@ -112,17 +112,17 @@ test.describe('Step 2 workbench - shot generation', () => {
     // A failed attempt that had already paid for its outline.
     await admin
       .from('generations')
-      .update({ state: 'failed', payload: fakeOutline([{ title: 'Recovered', seconds: 90 }]) as never })
+      .update({ state: 'failed', payload: fakeOutline([{ title: 'Recovered', seconds: 90, shot_count: 3 }]) as never })
       .eq('project_id', projectId)
       .eq('operation', 'generate_shots')
     const gateway = chainGateway({
       outline: fakeOutline([{ title: 'Must not be asked', seconds: 90 }]),
-      chunk: () => ({ shots: [fakeShot('After recovery.')], scene_complete: true }),
+      chunk: () => ({ shots: [1, 2, 3].map(() => fakeShot('After recovery.')), scene_complete: true }),
     })
     await runChain({ projectId, userId: primary.user.id, gateway, retry: true })
     expect(gateway.calls.filter((c) => c.tool === 'write_outline')).toHaveLength(0)
     const after = await readChainShots(projectId)
-    expect(after.map((s) => s.voice_over)).toEqual(['After recovery.'])
+    expect(after.map((s) => s.voice_over)).toEqual(Array(3).fill('After recovery.'))
     expect(after.every((s) => !before.some((b) => b.id === s.id))).toBe(true)
     expect(after[0].scenes!.title).toBe('Recovered')
   })
@@ -171,15 +171,16 @@ test.describe('Step 2 workbench - shot generation usage rows', () => {
       async createMessage(params) {
         calls++
         const tool = (params.tool_choice as { name: string }).name
-        if (tool === 'write_outline') return successMessage(fakeOutline([{ title: 'A', seconds: 90 }]), 'write_outline')
-        // The first answer is cut short; the scene is not done, so it is asked again.
+        if (tool === 'write_outline') return successMessage(fakeOutline([{ title: 'A', seconds: 90, shot_count: 3 }]), 'write_outline')
+        // The first answer is cut short after one of its 3 slots; the scene is asked again for
+        // the other two.
         if (calls === 2) return truncatedMessage({ shots: [fakeShot('Partial.')], scene_complete: false })
-        return successMessage({ shots: [fakeShot('Finished.')], scene_complete: true }, 'write_shots')
+        return successMessage({ shots: [fakeShot('Finished.'), fakeShot('Finished.')], scene_complete: true }, 'write_shots')
       },
     }
     await runChain({ projectId, userId: primary.user.id, gateway })
     expect(calls).toBe(3)
-    expect((await readChainShots(projectId)).map((s) => s.voice_over)).toEqual(['Partial.', 'Finished.'])
+    expect((await readChainShots(projectId)).map((s) => s.voice_over)).toEqual(['Partial.', 'Finished.', 'Finished.'])
     const chunkUsage = (await readUsage(projectId)).filter((u) => u.stop_reason === 'max_tokens')
     expect(chunkUsage).toHaveLength(1)
     expect(chunkUsage[0].status).toBe('failed')

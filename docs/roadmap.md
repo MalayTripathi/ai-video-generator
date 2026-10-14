@@ -433,10 +433,12 @@ per Vercel environment. `VERCEL_ENV` is set by Vercel and must equal `APP_ENV`.
 | `SPEND_CAP_ENABLED` / `SPEND_CAP_MONTHLY_USD` | `1` / a low cap, e.g. `5` (never `0`) | Malay to set |
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | provided by Vercel once "Protection Bypass for Automation" is on - required | provided by Vercel if protection is on, else unset |
 | `CLAUDE_SHOTS_MODEL` | `claude-haiku-5-5` | `claude-sonnet-5` - **Malay to confirm** |
+| `CLAUDE_SHOT_REWRITE_MODEL` | `claude-haiku-5-5` | **Malay to confirm** |
 | `CLAUDE_AGENT_MODEL` | `claude-haiku-5-5` | `claude-sonnet-5` - **Malay to confirm** |
 | `CLAUDE_IMAGE_PROMPTS_MODEL` | `claude-haiku-5-5` | `claude-sonnet-5` - **Malay to confirm** |
 | `CLAUDE_CAMERA_MODEL`, `CLAUDE_MUSIC_PROMPT_MODEL` | `claude-haiku-5-5` | `claude-haiku-5-5` (locked) |
 | `CLAUDE_SHOT_OUTLINE_MAX_TOKENS`, `CLAUDE_SHOTS_MAX_TOKENS` | `8000` | `8000` - **Malay to confirm** |
+| `CLAUDE_SHOT_REWRITE_MAX_TOKENS` | `1000` | `1000` - **Malay to confirm** |
 | `CLAUDE_AGENT_MAX_TOKENS`, `CLAUDE_IMAGE_PROMPTS_MAX_TOKENS` | `8192` | `8192` - **Malay to confirm** |
 | `CLAUDE_CAMERA_MAX_TOKENS`, `CLAUDE_MUSIC_PROMPT_MAX_TOKENS` | `500` | `500` |
 | `VOICEOVER_PROVIDER` / `ELEVENLABS_VOICEOVER_MODEL` | `elevenlabs` / `eleven_v3` | `elevenlabs` / `eleven_v3` |

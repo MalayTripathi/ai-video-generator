@@ -287,13 +287,14 @@ export type SettleOutcome = 'settled' | 'already_settled' | 'nothing_to_write' |
 
 /**
  * Settles an action's hold at its actual charge: a 'refund' of hold - actual (pointing at the
- * hold through refunds_ledger_id), or one extra 'spend' of actual - hold. Both carry
+ * hold through refunds_ledger_id), or one extra 'spend' of actual - hold. With `capAtHold`
+ * (a shot-list button run) the charge never exceeds the hold: an overrun is the platform's. Both carry
  * dedupe_key 'settle:{hold id}', so a hold is settled exactly once. Never throws - by now the
  * money is spent; a failure logs and returns 'failed', so the caller leaves its run uncharged
  * for the next settle to retry. An action with no hold (one started before holds existed)
  * is charged its actual as a single spend, as it would have been then.
  */
-export async function settleHold(params: HoldTarget & { actualCredits: number }): Promise<SettleOutcome> {
+export async function settleHold(params: HoldTarget & { actualCredits: number; capAtHold?: boolean }): Promise<SettleOutcome> {
   try {
     const supabase = createServiceRoleClient()
     const { data: hold, error } = await findHold(supabase, params.userId, params.attemptId)
@@ -322,7 +323,8 @@ export async function settleHold(params: HoldTarget & { actualCredits: number })
     }
 
     const held = -hold.delta
-    if (actual === held) return 'nothing_to_write'
+    const charge = params.capAtHold ? Math.min(actual, held) : actual
+    if (charge === held) return 'nothing_to_write'
     const base = {
       user_id: params.userId,
       step: hold.step,
@@ -335,11 +337,11 @@ export async function settleHold(params: HoldTarget & { actualCredits: number })
       price_version: CREDIT_PRICE_VERSION,
     }
     // A refund of the unused hold, or one extra spend for the excess - one row either way.
-    const refund = actual < held
+    const refund = charge < held
     const { error: insertError } = await supabase.from('credit_ledger').insert({
       ...base,
       kind: refund ? 'refund' : 'spend',
-      delta: held - actual,
+      delta: held - charge,
       pricing_mode: refund ? null : hold.pricing_mode,
       refunds_ledger_id: refund ? hold.id : null,
     })

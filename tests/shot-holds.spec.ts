@@ -24,7 +24,8 @@ import { aggregateCreditsPeriod } from '../src/app/(app)/credits/aggregate'
 import { readLedgerGroups } from '../src/app/(app)/credits/data'
 
 // Layer: api. Shot generation's credits: one hold at the start, atomic with its balance
-// check, and exactly one settle at the end - a refund of the unused hold or one extra spend -
+// check, and at most one settle at the end - a refund of the unused hold, or for an agent run
+// one extra spend (a button run is charged at most its hold) -
 // on every way a run ends, including a chain that died and whose project is never opened
 // again. Users whose balance a test reads or drains exactly are fresh (createTestSession),
 // never the shared fixed users.
@@ -73,7 +74,7 @@ function countingClient() {
 
 const onePerScene = () =>
   chainGateway({
-    outline: fakeOutline([{ title: 'A', seconds: 20 }, { title: 'B', seconds: 25 }]),
+    outline: fakeOutline([{ title: 'A', seconds: 20, shot_count: 2 }, { title: 'B', seconds: 25, shot_count: 2 }]),
     chunk: (ask) => ({ shots: [1, 2].map((i) => fakeShot(`h${ask.scenePosition}i${i} spoken words here`)), scene_complete: true }),
   })
 
@@ -324,28 +325,28 @@ test.describe('shot holds - every figure shows the net charge', () => {
 })
 
 test.describe('shot holds - /credits counts actions by their hold', () => {
-  test('a run settled with a refund and one settled with an excess spend are two generations, not four', async () => {
+  test('a run settled with a refund and one charged its whole hold are two generations, not three', async () => {
     const { user } = await createTestSession()
     try {
       await setBalance(user.id, 10_000)
       // Run 1 saves 4 shots against a 16-credit hold (refund 8). Run 2 saves 16 shots against
-      // a 16-credit hold (excess spend 16).
+      // a 16-credit hold - 32 at the per-shot price, charged the hold: no settle row.
       const under = await insertChainProject(user.id, { duration_target: '30-60s' })
       await runChain({ projectId: under, userId: user.id, gateway: onePerScene(), ledger: REAL_SHOT_LEDGER, topUp: false })
       const over = await insertChainProject(user.id, { duration_target: '30-60s' })
       const long = chainGateway({
-        outline: fakeOutline([{ title: 'A', seconds: 20 }, { title: 'B', seconds: 25 }]),
+        outline: fakeOutline([{ title: 'A', seconds: 20, shot_count: 8 }, { title: 'B', seconds: 25, shot_count: 8 }]),
         chunk: (ask) => ({ shots: Array.from({ length: 8 }, (_, i) => fakeShot(`x${ask.scenePosition}i${i}`)), scene_complete: true }),
       })
       await runChain({ projectId: over, userId: user.id, gateway: long, ledger: REAL_SHOT_LEDGER, topUp: false })
       expect((await holdLedger(under)).settles[0]).toMatchObject({ kind: 'refund' })
-      expect((await holdLedger(over)).settles[0]).toMatchObject({ kind: 'spend' })
+      expect((await holdLedger(over)).settles).toHaveLength(0)
 
       // Through the real grouped read /credits makes (the user's own view rows).
       const groups = await readLedgerGroups(admin, user.id, 'this_month', { fresh: true })
       const result = aggregateCreditsPeriod(groups, [])
       const shots = result.byStep.flatMap((s) => s.operations).find((o) => o.operation === 'generate_shots')!
-      expect(shots.credits).toBe(8 + 32)
+      expect(shots.credits).toBe(8 + 16)
       expect(shots.unitLabel).toBe('2 generations')
     } finally {
       await releaseTestUser(user.id)

@@ -24,6 +24,14 @@ export type ModelsConfig = {
     maxTokens: number
     reasoning: ClaudeReasoning
   }
+  // Shot generation's per-shot rewrite: one shot whose words run past its slot's cap,
+  // rewritten to fit. Its own model and cap, separate from the chunks'.
+  shotRewrite: {
+    provider: 'anthropic'
+    model: string
+    maxTokens: number
+    reasoning: ClaudeReasoning
+  }
   camera: {
     provider: 'anthropic'
     model: string
@@ -91,6 +99,14 @@ function build(): ModelsConfig {
       maxTokens: claude.shotsMaxTokens,
       reasoning: { thinking: 'disabled', effort: 'medium' },
     },
+    shotRewrite: {
+      provider: 'anthropic',
+      model: claude.shotRewriteModel,
+      // Small ceiling: one shot's narration and dialogue, and reserveUsage reserves all of
+      // it. The run budget counts one rewrite call per chunk (shot-timing.ts).
+      maxTokens: claude.shotRewriteMaxTokens,
+      reasoning: { thinking: 'disabled', effort: 'medium' },
+    },
     camera: {
       provider: 'anthropic',
       // Haiku in every environment, production included - a locked cost decision. Deriving
@@ -148,6 +164,7 @@ const sections = (): ModelsConfig => (built ??= build())
 export const modelsConfig: ModelsConfig = {
   get shotOutline() { return sections().shotOutline },
   get shots() { return sections().shots },
+  get shotRewrite() { return sections().shotRewrite },
   get camera() { return sections().camera },
   get agent() { return sections().agent },
   get elements() { return sections().elements },

@@ -200,8 +200,8 @@ test.describe('refusals settle like a failed call', () => {
     const projectId = await insertChainProject(primary.user.id, { duration_target: '30-60s' })
     const inner = chainGateway({
       outline: fakeOutline([
-        { title: 'Scene 1', seconds: 20 },
-        { title: 'Scene 2', seconds: 20 },
+        { title: 'Scene 1', seconds: 20, shot_count: 1 },
+        { title: 'Scene 2', seconds: 20, shot_count: 1 },
       ]),
       chunk: (ask) => ({ shots: [fakeShot(`s${ask.scenePosition} spoken words here`)], scene_complete: true }),
     })

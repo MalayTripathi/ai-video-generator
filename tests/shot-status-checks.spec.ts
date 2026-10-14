@@ -10,7 +10,8 @@ import type { ShotRunView } from '../src/app/(app)/projects/[id]/workbench/_comp
 // never stops checking; a tab return before a run never makes its first check skip the wait;
 // and a check during a run - "Generate remaining shots" at 150 shots, or "Try again" over a
 // partial list, with the rows in view - re-renders only the progress line: never a shot row,
-// the header or the footer, and with no page reload or prefetch until the run ends.
+// the header or the footer, and with no page reload or prefetch; a run's end reads only the
+// shot list.
 
 test.setTimeout(120_000)
 
@@ -111,8 +112,10 @@ test('a check that reads the previous run’s failed end keeps checking until th
     route.request().method() === 'POST' ? route.fulfill({ status: 202, json: { ok: true, runId: 'new-run' } }) : route.continue()
   )
   const refreshes: string[] = []
+  let listReads = 0
   page.on('request', (req) => {
     if (isPageRsc(pathname)(req)) refreshes.push(req.url())
+    if (new URL(req.url()).pathname === `/api/projects/${projectId}/shots/list`) listReads += 1
   })
 
   await page.clock.install()
@@ -142,13 +145,14 @@ test('a check that reads the previous run’s failed end keeps checking until th
   expect(refreshes).toHaveLength(0)
   await expect(page.getByText('Writing scene 4 of 5')).toBeVisible()
 
-  // The new run's end: exactly one reload.
+  // The new run's end: exactly one shot-list read, and no page reload.
   await page.clock.runFor(SHOT_STATUS_POLL_MS)
-  await expect.poll(() => refreshes.length).toBe(1)
+  await expect.poll(() => listReads).toBe(1)
   await page.clock.runFor(SHOT_STATUS_POLL_MS * 3)
   await page.waitForTimeout(500)
   expect(served()).toBe(4)
-  expect(refreshes).toHaveLength(1)
+  expect(listReads).toBe(1)
+  expect(refreshes).toHaveLength(0)
 })
 
 /**

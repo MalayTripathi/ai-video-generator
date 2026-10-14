@@ -29,6 +29,8 @@ function valid(appEnv: 'local' | 'preview' | 'production'): EnvSource {
     CLAUDE_SHOTS_MODEL: 'claude-sonnet-5',
     CLAUDE_SHOT_OUTLINE_MAX_TOKENS: '8000',
     CLAUDE_SHOTS_MAX_TOKENS: '8000',
+    CLAUDE_SHOT_REWRITE_MODEL: 'claude-haiku-5-5',
+    CLAUDE_SHOT_REWRITE_MAX_TOKENS: '1000',
     CLAUDE_CAMERA_MODEL: 'claude-haiku-5-5',
     CLAUDE_CAMERA_MAX_TOKENS: '500',
     CLAUDE_AGENT_MODEL: 'claude-sonnet-5',
@@ -178,22 +180,31 @@ test.describe('env validation', () => {
   })
 })
 
+const HAIKU_REWRITE = { model: 'claude-haiku-5-5', maxTokens: 1000 }
+
 test.describe('shot chain run budget - derived per model, never hand-set', () => {
-  test('Haiku 5.5 from the Oct 10 measurements, Sonnet from a labelled estimate, both at the 8,000-token max_tokens', () => {
+  test('Haiku 5.5 from the Oct 10 measurements, Sonnet from a labelled estimate, both at the 8,000-token max_tokens with a 1,000-token rewrite', () => {
     expect(SHOT_CHAIN_TIMING['claude-haiku-5-5'].basis).toBe('measured')
     expect(SHOT_CHAIN_TIMING['claude-sonnet-5'].basis).toBe('estimate')
-    // 300 - (3 + 8000/54 + 22) - 15 hand-off - 10 margin = 101.85s.
-    expect(shotRunBudgetMs('claude-haiku-5-5', 8000)).toBe(101_851)
-    // 300 - (3 + 8000/40 + 22) - 25 = 50s.
-    expect(shotRunBudgetMs('claude-sonnet-5', 8000)).toBe(50_000)
+    // 300 - (3 + 8000/54 + (3 + 1000/54) + 22) - 15 hand-off - 10 margin = 80.33s.
+    expect(shotRunBudgetMs('claude-haiku-5-5', 8000, HAIKU_REWRITE)).toBe(80_333)
+    // 300 - (3 + 8000/40 + (3 + 1000/54) + 22) - 25 = 28.48s.
+    expect(shotRunBudgetMs('claude-sonnet-5', 8000, HAIKU_REWRITE)).toBe(28_481)
+  })
+
+  test('a rewrite model with no chain timing, or a rewrite cap that leaves no budget, fails boot on its own var', () => {
+    expectRejects({ ...valid('production'), CLAUDE_SHOT_REWRITE_MODEL: 'claude-haiku-4-5-20251001' }, 'CLAUDE_SHOT_REWRITE_MODEL')
+    expectRejects({ ...valid('production'), CLAUDE_SHOT_REWRITE_MAX_TOKENS: '64000' }, 'CLAUDE_SHOT_REWRITE_MAX_TOKENS')
   })
 
   test('no chunk started inside the budget can run past 300s, and the outline run fits too', () => {
     for (const [model, timing] of Object.entries(SHOT_CHAIN_TIMING)) {
-      const budgetS = shotRunBudgetMs(model, 8000) / 1000
+      const rewrite = { model, maxTokens: 1000 }
+      const budgetS = shotRunBudgetMs(model, 8000, rewrite) / 1000
       expect(budgetS).toBeGreaterThan(0)
-      // The latest a chunk can start is the budget; it drains, then the run hands off.
-      expect(budgetS + worstChunkS(timing, 8000) + 15).toBeLessThanOrEqual(SHOTS_ROUTE_MAX_DURATION_S)
+      // The latest a chunk can start is the budget; it drains (its rewrites included), then
+      // the run hands off.
+      expect(budgetS + worstChunkS(timing, 8000, rewrite) + 15).toBeLessThanOrEqual(SHOTS_ROUTE_MAX_DURATION_S)
       expect(worstOutlineS(timing, 8000) + 15).toBeLessThanOrEqual(SHOTS_ROUTE_MAX_DURATION_S)
     }
   })

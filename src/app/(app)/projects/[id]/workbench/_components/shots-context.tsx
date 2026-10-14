@@ -100,6 +100,10 @@ export function ShotsProvider({
   const [videoType, setVideoType] = useState(initialVideoType)
   const [generationState, setGenerationState] = useState(initialGenerationState)
   const [hasPendingPayload, setHasPendingPayload] = useState(initialHasPendingPayload)
+  // The run's end state, from the page or - once a run this tab follows ends - from the
+  // shot-list read that replaces a page render.
+  const [endedRun, setEndedRun] = useState(initialRun)
+  const [remaining, setRemaining] = useState(remainingCredits)
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [confirmMode, setConfirmMode] = useState<'regenerate' | 'remaining'>('regenerate')
   // The run a start from this tab created: 'pending' from the moment the request is sent
@@ -117,6 +121,9 @@ export function ShotsProvider({
   const [refreshPending, setRefreshPending] = useState(false)
   const [expandedShotId, setExpandedShotId] = useState<string | null>(null)
   const triggeredRef = useRef(false)
+  // True while this tab's own start request is in flight: the server cannot know of that
+  // run yet, so a server state read meanwhile never takes back the 'generating' it set.
+  const startingRef = useRef(false)
   const readOnly = initialFurthestStep >= stepIndex('storyboard')
 
   // video_model isn't edited anywhere in this task - passed through statically rather
@@ -178,6 +185,7 @@ export function ShotsProvider({
   async function fetchShots(kind: 'trigger' | 'retry' | 'remaining') {
     const previousState = generationState
     setExpectedRunId('pending')
+    startingRef.current = true
     try {
       const response = await fetch(`/api/projects/${projectId}/shots`, {
         method: 'POST',
@@ -188,6 +196,7 @@ export function ShotsProvider({
               body: JSON.stringify(kind === 'remaining' ? { remaining: true } : { retry: true }),
             }),
       })
+      startingRef.current = false
       if (response.status === 402) {
         // Refused before anything began - the prior state stands.
         const body = (await response.json()) as { requiredCredits: number; balanceCredits: number }
@@ -211,6 +220,7 @@ export function ShotsProvider({
     } catch {
       // A genuine network failure (e.g. offline) never reached the server, so there is
       // nothing to resync - fall back to a local failed status.
+      startingRef.current = false
       setExpectedRunId(null)
       setGenerationState('failed')
     }
@@ -249,19 +259,65 @@ export function ShotsProvider({
   }, [])
 
   // Sync from the server whenever the parent server component re-renders (after a
-  // router.refresh(), whether triggered by this tab's own request or a poll below) - this
-  // is how a passive tab that never fired its own POST picks up another tab/device's result.
+  // router.refresh(), e.g. a refused start or an agent turn) - this is how a passive tab
+  // that never fired its own POST picks up another tab/device's result. Only a real change
+  // syncs: on mount the values are the ones state started from, and applying them again
+  // would take back the 'generating' the first-load trigger just set (the project has no
+  // claim yet), leaving the page on "Planning" with no status checks.
+  const syncedRef = useRef({ initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun, remainingCredits })
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    const prev = syncedRef.current
+    if (
+      prev.initialShots === initialShots &&
+      prev.initialVideoType === initialVideoType &&
+      prev.initialGenerationState === initialGenerationState &&
+      prev.initialHasPendingPayload === initialHasPendingPayload &&
+      prev.initialRun === initialRun &&
+      prev.remainingCredits === remainingCredits
+    ) {
+      return
+    }
+    syncedRef.current = { initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun, remainingCredits }
     setShots(initialShots)
     setVideoType(initialVideoType)
-    setGenerationState(initialGenerationState)
+    setGenerationState((current) =>
+      startingRef.current && current === 'generating' && initialGenerationState !== 'generating' ? current : initialGenerationState
+    )
     setHasPendingPayload(initialHasPendingPayload)
+    setEndedRun(initialRun)
+    setRemaining(remainingCredits)
     // A real refresh cycle has now landed - safe for any field waiting on
     // touchedShotKeys to apply the (now current) value it's holding. See
     // refreshPending's own comment above.
     setRefreshPending(false)
-  }, [initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload])
+  }, [initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun, remainingCredits])
+
+  // A run this tab follows has ended: the shot list and the run's end state are read fresh -
+  // only the shots refresh, never the page. A failed read falls back to a page render.
+  async function refreshShotList(): Promise<ShotRunView | null> {
+    try {
+      const response = await fetch(`/api/projects/${projectId}/shots/list`, { cache: 'no-store' })
+      if (!response.ok) throw new Error(`status ${response.status}`)
+      const list = (await response.json()) as {
+        shots: DisplayShot[]
+        videoType: string | null
+        generationState: string | null
+        hasPendingPayload: boolean
+        run: ShotRunView
+        remainingCredits: number
+      }
+      setShots(list.shots)
+      setVideoType(list.videoType)
+      setGenerationState(list.generationState)
+      setHasPendingPayload(list.hasPendingPayload)
+      setEndedRun(list.run)
+      setRemaining(list.remainingCredits)
+      return list.run
+    } catch {
+      router.refresh()
+      return null
+    }
+  }
 
   return (
     <ShotsContext.Provider
@@ -273,8 +329,8 @@ export function ShotsProvider({
         videoModel,
         hasPendingPayload,
         shotListCredits,
-        remainingCredits,
-        chargeLine: shotRunChargeLine(initialRun),
+        remainingCredits: remaining,
+        chargeLine: shotRunChargeLine(endedRun),
         startError,
         confirmOpen,
         confirmMode,
@@ -297,7 +353,13 @@ export function ShotsProvider({
         collapseShot,
       }}
     >
-      <ShotRunProvider projectId={projectId} generating={phase === 'generating'} initialRun={initialRun} expectedRunId={expectedRunId}>
+      <ShotRunProvider
+        projectId={projectId}
+        generating={phase === 'generating'}
+        initialRun={initialRun}
+        expectedRunId={expectedRunId}
+        onRunEnded={refreshShotList}
+      >
         {children}
       </ShotRunProvider>
     </ShotsContext.Provider>
@@ -317,17 +379,19 @@ function ShotRunProvider({
   generating,
   initialRun,
   expectedRunId,
+  onRunEnded,
   children,
 }: {
   projectId: string
   generating: boolean
   initialRun: ShotRunView
+  /** Reads the finished shot list and the run's end state (null when the read failed). */
+  onRunEnded: () => Promise<ShotRunView | null>
   /** The run this tab started ('pending' while its start is in flight), or null for a tab
    * that started nothing - it follows whatever run is latest. */
   expectedRunId: string | 'pending' | null
   children: ReactNode
 }) {
-  const router = useRouter()
   const [run, setRun] = useState(initialRun)
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -339,13 +403,17 @@ function ShotRunProvider({
   // (never router.refresh()); the next starts only after the previous returns. Checking
   // stops only when the read belongs to the run this tab started (or, for a tab that
   // started none, the latest run) and that run has ended with its claim settled - a
-  // previous run's end never stops it. Then the page re-renders once for the finished list.
+  // previous run's end never stops it. Then the finished shot list is read once (never a
+  // page render, so no other panel re-renders).
   // Paused while the tab is hidden; checks at once on return. The resumed flag is set only
   // while generating and cleared with the loop, so a return before a run never makes that
   // run's first check skip its wait.
   const generatingRef = useRef(generating)
+  // Recreated each render; the loop calls the latest.
+  const onRunEndedRef = useRef(onRunEnded)
   useEffect(() => {
     generatingRef.current = generating
+    onRunEndedRef.current = onRunEnded
   })
   const resumedRef = useRef(false)
   const visible = usePageVisible(() => {
@@ -367,7 +435,10 @@ function ShotRunProvider({
           const ended = status.run.status !== null && status.run.status !== 'running'
           const settled = status.generationState === 'succeeded' || status.generationState === 'failed'
           if (ours && ended && settled) {
-            router.refresh()
+            // The read ends the generating state, so this loop is torn down before it
+            // returns - the run's end state is applied regardless.
+            const finished = await onRunEndedRef.current()
+            if (finished) setRun((prev) => (sameShotRunView(prev, finished) ? prev : finished))
             return
           }
         }
@@ -383,7 +454,7 @@ function ShotRunProvider({
       resumedRef.current = false
       clearTimeout(timer)
     }
-  }, [generating, visible, projectId, expectedRunId, router])
+  }, [generating, visible, projectId, expectedRunId])
 
   return <ShotRunContext.Provider value={run}>{children}</ShotRunContext.Provider>
 }
