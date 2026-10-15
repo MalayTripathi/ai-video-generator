@@ -22,8 +22,8 @@ export function WorkbenchHeader({
     furthest_step: number
   }
 }) {
-  const { shots, videoType } = useShots()
-  return <ProjectHeader project={{ ...project, video_type: videoType }} shots={shots} />
+  const { shots, videoType, title } = useShots()
+  return <ProjectHeader project={{ ...project, video_type: videoType, title }} shots={shots} />
 }
 
 // Named for tests/shot-status-checks.spec.ts's render probe, which must hold in a minified build.

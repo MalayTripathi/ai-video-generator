@@ -348,8 +348,8 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
 - **Shot limits are enforced in code, never by prompt.** The outline is rescaled to
   the tier target and its shot counts clamped into slots (`src/lib/shots/slots.ts`);
   a scene is asked only for unfilled slots, under the shot ceiling (hard rule 21).
-  A run holds its quote at start (`placeHold`, atomic through the `hold:{n}` slot) and
-  settles it once at its end (`settleHold`); a button run is never charged past it.
+  A run holds its quote at start (`placeHold`: one per attempt, atomic through `hold_slot`)
+  and settles it once at its end (`settleHold`); a button run is never charged past it.
   Durations are a slot's length, lengthened only for words still over its cap after
   one rewrite - never chosen by Claude. The intake hint warns and must never block (its
   regex has no semantics and false-positives readily).

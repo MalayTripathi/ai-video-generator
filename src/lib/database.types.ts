@@ -20,6 +20,7 @@ export type Database = {
           created_at: string
           dedupe_key: string
           delta: number
+          hold_slot: number | null
           id: string
           kind: string
           message_id: string | null
@@ -37,6 +38,7 @@ export type Database = {
           created_at?: string
           dedupe_key: string
           delta: number
+          hold_slot?: number | null
           id?: string
           kind: string
           message_id?: string | null
@@ -54,6 +56,7 @@ export type Database = {
           created_at?: string
           dedupe_key?: string
           delta?: number
+          hold_slot?: number | null
           id?: string
           kind?: string
           message_id?: string | null
@@ -696,13 +699,16 @@ export type Database = {
       }
       shot_runs: {
         Row: {
+          absorbed_credits: number | null
           agent_generation_id: string | null
           attempt_id: string
           charged_at: string | null
+          charged_credits: number | null
           created_at: string
           finished_at: string | null
           generation_id: string | null
           heartbeat_at: string
+          held_credits: number | null
           id: string
           kind: string
           message_id: string | null
@@ -716,13 +722,16 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          absorbed_credits?: number | null
           agent_generation_id?: string | null
           attempt_id: string
           charged_at?: string | null
+          charged_credits?: number | null
           created_at?: string
           finished_at?: string | null
           generation_id?: string | null
           heartbeat_at?: string
+          held_credits?: number | null
           id?: string
           kind: string
           message_id?: string | null
@@ -736,13 +745,16 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          absorbed_credits?: number | null
           agent_generation_id?: string | null
           attempt_id?: string
           charged_at?: string | null
+          charged_credits?: number | null
           created_at?: string
           finished_at?: string | null
           generation_id?: string | null
           heartbeat_at?: string
+          held_credits?: number | null
           id?: string
           kind?: string
           message_id?: string | null

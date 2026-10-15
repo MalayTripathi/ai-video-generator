@@ -9,29 +9,46 @@ import {
   type WorkbenchShotRow,
 } from '@/app/(app)/projects/[id]/workbench/_components/display-shots'
 import { sceneProgress, shotRunView, type ShotRunView } from '@/app/(app)/projects/[id]/workbench/_components/shot-run-view'
+import { getElementGenerateAffordability } from '@/app/(app)/projects/[id]/workbench/affordability'
+import { getProjectElementsForUser, type ElementGroup } from '@/lib/elements/read'
+import { AGENT_MESSAGE_COLUMNS, buildAgentMessages } from '@/lib/build-agent-messages'
+import type { AgentMessage } from '@/components/workbench/agent-message'
 
 type Client = SupabaseClient<Database>
 
-// What the Workbench refreshes when a shot run ends - the shot list and the run's end state,
-// never a page render, so no other panel re-renders. Three reads in one wave: the shots
-// (elements and dialogue embedded), the project (its claim, latest run and scenes embedded)
-// and the run's hold and settle rows.
+// What the Workbench refreshes when a shot run ends - everything a run changes on the page,
+// never a page render: the shot list, the run's end state, the title, the Assets elements and
+// their generate gate, and the chat messages the run wrote (the outline's). One wave: the
+// shots (dialogue embedded), the project (its claim, latest run, scenes and run-authored
+// messages embedded), the run's hold and settle rows, the elements and the balance; then the
+// elements' image signing. The rail's figures ride on the route.
+
+/** The Assets tab's state after a run, or null when the elements could not be read. */
+export type RunElements = { groups: ElementGroup[]; expiresAt: string; generateCredits: number; hasInsufficientBalance: boolean }
 
 export type ShotList = {
+  title: string | null
   shots: DisplayShot[]
   videoType: string | null
   generationState: string | null
   hasPendingPayload: boolean
   run: ShotRunView
   remainingCredits: number
+  elements: RunElements | null
+  /** Messages the run itself wrote (no client id, created since it started), oldest first. */
+  runMessages: AgentMessage[]
 }
 
 type ProjectRow = {
+  title: string | null
   video_type: string | null
+  image_model: string
+  image_quality: string
   duration_target: string | null
   generations: { state: string; payload: unknown }[]
-  shot_runs: { id: string; attempt_id: string; status: string; stop_reason: string | null; total_scenes: number | null; charged_at: string | null }[]
+  shot_runs: { id: string; attempt_id: string; status: string; stop_reason: string | null; total_scenes: number | null; charged_at: string | null; created_at: string }[]
   scenes: Parameters<typeof sceneProgress>[0][]
+  messages: Parameters<typeof buildAgentMessages>[0]
 }
 
 type DialogueEmbed = { id: string; element_id: string; line: string; order_index: number; elements: { name: string } | null }
@@ -42,11 +59,12 @@ export async function loadShotList(params: {
   userId: string
 }): Promise<{ ok: true; data: ShotList } | { ok: false; status: 404 | 500; error: string }> {
   const { supabase, projectId, userId } = params
-  const [projectResult, shotsResult, ledgerResult] = await Promise.all([
+  // A real Promise, so the generate gate can price from it while its balance read runs.
+  const projectPromise = Promise.resolve(
     supabase
       .from('projects')
       .select(
-        'video_type, duration_target, generations(state, payload), shot_runs(id, attempt_id, status, stop_reason, total_scenes, charged_at), scenes(target_seconds, shot_run_chunks(scene_complete), shots(duration_sec))'
+        `title, video_type, duration_target, image_model, image_quality, generations(state, payload), shot_runs(id, attempt_id, status, stop_reason, total_scenes, charged_at, created_at), scenes(target_seconds, shot_run_chunks(scene_complete), shots(duration_sec)), messages(${AGENT_MESSAGE_COLUMNS})`
       )
       .eq('id', projectId)
       .eq('user_id', userId)
@@ -55,7 +73,12 @@ export async function loadShotList(params: {
       .is('generations.shot_id', null)
       .order('created_at', { referencedTable: 'shot_runs', ascending: false })
       .limit(1, { referencedTable: 'shot_runs' })
-      .maybeSingle(),
+      .is('messages.client_id', null)
+      .order('created_at', { referencedTable: 'messages', ascending: true })
+      .maybeSingle()
+  )
+  const [projectResult, shotsResult, ledgerResult, elementsResult, affordability] = await Promise.all([
+    projectPromise,
     supabase
       .from('shots')
       .select(`${WORKBENCH_SHOT_COLUMNS}, shot_dialogue(id, element_id, line, order_index, elements(name))`)
@@ -67,6 +90,11 @@ export async function loadShotList(params: {
       .eq('project_id', projectId)
       .in('kind', ['spend', 'refund'])
       .in('operation', ['agent_turn', 'generate_shots']),
+    getProjectElementsForUser(supabase, projectId, userId),
+    getElementGenerateAffordability(
+      projectPromise.then(({ data }) => (data as unknown as ProjectRow | null) ?? null),
+      userId
+    ),
   ])
   if (projectResult.error || shotsResult.error || ledgerResult.error) {
     return { ok: false, status: 500, error: 'Could not read the shot list' }
@@ -86,9 +114,15 @@ export async function loadShotList(params: {
     )
   )
   const generation = project.generations[0] ?? null
+  // The run's own messages: an agent turn's rows carry its client id and are already in the
+  // panel, so only the run-authored ones (no client id) since the run began are new.
+  const runRows = run ? project.messages.filter((m) => Date.parse(m.created_at) >= Date.parse(run.created_at)) : []
+  const shotNumberByKey = new Map(shots.map((s) => [s.shot_key, s.order_index + 1]))
+  if (!elementsResult.success) console.error(`[shots] list: elements unreadable for project ${projectId}:`, elementsResult.error)
   return {
     ok: true,
     data: {
+      title: project.title,
       shots,
       videoType: project.video_type,
       generationState: generation?.state ?? null,
@@ -98,6 +132,10 @@ export async function loadShotList(params: {
         project.duration_target,
         project.scenes.map(sceneProgress).filter((scene) => !scene.complete)
       ),
+      elements: elementsResult.success
+        ? { groups: elementsResult.groups, expiresAt: elementsResult.expires_at, ...affordability }
+        : null,
+      runMessages: buildAgentMessages(runRows, shotNumberByKey, new Map(), new Map()),
     },
   }
 }

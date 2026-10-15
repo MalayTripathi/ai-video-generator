@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceRoleClient } from '@/lib/supabase/service-role'
 import { mintAttemptId } from '@/lib/credits/ledger'
+import { tryLoadRailFigures } from '@/app/(app)/rail-figures'
 import { getBalance } from '@/lib/credits/balance'
 import { ensureSignupGrant } from '@/lib/credits/signup-grant'
 import { continuationSecretMatches } from '@/lib/continuation'
@@ -74,5 +75,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   scheduleShotsWorker(origin, { userId: user.id, projectId, runId: result.runId, chainDepth: 0 })
-  return NextResponse.json({ ok: true, runId: result.runId }, { status: 202 })
+  // The rail's figures with the hold in them, so the rail moves the moment the run starts.
+  return NextResponse.json({ ok: true, runId: result.runId, rail: await tryLoadRailFigures(user.id) }, { status: 202 })
 }

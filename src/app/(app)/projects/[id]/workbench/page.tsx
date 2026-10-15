@@ -242,6 +242,7 @@ export default async function WorkbenchPage({
   return (
     <ShotsProvider
       projectId={projectId}
+      initialTitle={project.title}
       initialShots={shots}
       initialVideoType={project.video_type}
       initialVideoModel={project.video_model}

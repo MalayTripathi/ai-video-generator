@@ -5,6 +5,7 @@ import type { ElementGroup, ProjectElement } from '@/lib/elements/read'
 import type { ElementType } from '@/lib/config/enums'
 import { getProjectElements, resignElementReferenceImage } from '../actions'
 import { useSignedUrlRefresh } from './use-signed-url-refresh'
+import { ShotsContext } from './shots-context'
 
 type AssetsContextValue = {
   projectId: string
@@ -48,6 +49,7 @@ export function AssetsProvider({
 }) {
   const [groups, setGroups] = useState(initialGroups)
   const [expiresAt, setExpiresAt] = useState(initialExpiresAt)
+  const [gate, setGate] = useState({ generateCredits, hasInsufficientBalance })
 
   // Resync whenever the page's data reloads (router.refresh() - a finished shot run, an
   // agent turn), as ShotsProvider does: a run's new elements show without a browser refresh.
@@ -56,6 +58,22 @@ export function AssetsProvider({
     setGroups(initialGroups)
     setExpiresAt(initialExpiresAt)
   }, [initialGroups, initialExpiresAt])
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setGate({ generateCredits, hasInsufficientBalance })
+  }, [generateCredits, hasInsufficientBalance])
+
+  // A shot run this tab followed has ended: its end-of-run read carries the elements it
+  // wrote and the generate gate at the settled balance - no page render. Optional, since
+  // a step without a ShotsProvider (image prompts) has no runs.
+  const runElements = useContext(ShotsContext)?.runElements ?? null
+  useEffect(() => {
+    if (!runElements) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setGroups(runElements.groups)
+    setExpiresAt(runElements.expiresAt)
+    setGate({ generateCredits: runElements.generateCredits, hasInsufficientBalance: runElements.hasInsufficientBalance })
+  }, [runElements])
 
   function addElementLocal(element: ProjectElement) {
     setGroups((prev) =>
@@ -119,8 +137,8 @@ export function AssetsProvider({
         projectId,
         groups,
         elementCount,
-        generateCredits,
-        hasInsufficientBalance,
+        generateCredits: gate.generateCredits,
+        hasInsufficientBalance: gate.hasInsufficientBalance,
         addElementLocal,
         updateElementLocal,
         removeElementLocal,

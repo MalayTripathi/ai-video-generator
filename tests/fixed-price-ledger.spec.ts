@@ -165,7 +165,7 @@ test.describe('generate_shots (button trigger) - hold and settle', () => {
       projectId,
       userId: primary.user.id,
       gateway: shotsGateway(2),
-      ledger: { placeHold: REAL_SHOT_LEDGER.placeHold, settleHold: async () => 'failed' },
+      ledger: { placeHold: REAL_SHOT_LEDGER.placeHold, settleHold: async () => ({ outcome: 'failed', heldCredits: null, chargedCredits: null, absorbedCredits: null }) },
     })
     expect(runs.at(-1)!.result).toMatchObject({ outcome: 'finished', status: 'completed' })
     const { holds, settles } = await holdLedger(projectId)

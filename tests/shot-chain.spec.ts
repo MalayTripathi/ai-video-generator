@@ -17,7 +17,7 @@ import {
   type FakeShot,
 } from './helpers/shot-chain'
 import { shotGenerationCredits, usdToCredits } from '../src/lib/config/credits'
-import { hasLiveShotRun, settleDeadShotRuns } from '../src/lib/shots/runs'
+import { hasLiveShotRun, settleDeadShotRuns, settleShotRunTurn, shotRunActualCredits } from '../src/lib/shots/runs'
 import { shotRunView, canGenerateRemaining } from '../src/app/(app)/projects/[id]/workbench/_components/shot-run-view'
 import { derivePhase } from '../src/app/(app)/projects/[id]/workbench/_components/derive-phase'
 import { runAgentTurn } from '../src/app/api/projects/[id]/agent/logic'
@@ -384,6 +384,58 @@ test.describe('shot chain - balance', () => {
 })
 
 test.describe('shot chain - the agent path', () => {
+  // One agent turn carries one attempt id. A second regenerate in the same turn - after the
+  // first run has finished (its charge waits for the turn), and again after it is charged -
+  // finds that attempt's hold already placed: it is refused before any claim, and never
+  // releases the first run's hold, which is charged its full cost when the turn ends.
+  test('a second regenerate-all in the same turn leaves the first run\u2019s hold, claim and charge intact', async () => {
+    const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
+    const { data: agentClaim } = await admin
+      .from('generations')
+      .insert({ project_id: projectId, step: 'workbench', operation: 'agent_turn', shot_id: null, element_id: null, state: 'generating' })
+      .select('id')
+      .single()
+    const attemptId = crypto.randomUUID()
+    const gateway = chainGateway({
+      outline: fakeOutline([{ title: 'A', seconds: 20, shot_count: 2 }, { title: 'B', seconds: 25, shot_count: 2 }]),
+      chunk: (ask) => ({ shots: [1, 2].map((i) => fakeShot(fourWords(`t${ask.scenePosition}i${i}`))), scene_complete: true }),
+      usage: { input_tokens: 0, output_tokens: 2_000 },
+    })
+    const turn = { projectId, userId: owner.id, gateway, ledger: REAL_LEDGER, agentGenerationId: agentClaim!.id, attemptId, retry: true }
+    const first = await runChain(turn)
+    const runId = (first.request as { runId: string }).runId
+    expect(await readRun(runId)).toMatchObject({ status: 'completed', charged_at: null })
+    const ledgerBefore = (await holdLedger(projectId)).rows
+    expect(ledgerBefore).toHaveLength(1) // the hold, unsettled until the turn ends
+    const claimBefore = await generationRow(projectId)
+
+    const again = async () => {
+      const second = await runChain(turn)
+      expect(second.request).toMatchObject({ ok: false, status: 409, reason: 'already_generating' })
+      expect(second.runs).toHaveLength(0)
+      expect((await admin.from('shot_runs').select('id').eq('project_id', projectId)).data).toHaveLength(1)
+    }
+
+    await again()
+    expect((await holdLedger(projectId)).rows).toEqual(ledgerBefore) // no refund of the first hold
+    expect((await generationRow(projectId))!.state).toBe(claimBefore!.state)
+
+    // The turn ends: the first run is charged its whole measured cost.
+    const turnCostUsd = 0.004
+    await settleShotRunTurn(admin, REAL_LEDGER, runId, turnCostUsd)
+    const settled = await readRun(runId)
+    const actual = shotRunActualCredits(settled)
+    expect(actual).toBeGreaterThan(0)
+    expect(settled).toMatchObject({ charged_credits: actual, absorbed_credits: 0 })
+    const charged = await holdLedger(projectId)
+    expect(charged.net).toBe(actual)
+
+    // And a regenerate after the charge changes nothing either.
+    await again()
+    const ids = (rows: { id: string }[]) => rows.map((r) => r.id).sort()
+    expect(ids((await holdLedger(projectId)).rows)).toEqual(ids(charged.rows))
+  })
+
   test('regenerate_all_shots starts the chain: the lock is held until it ends, and its dynamic agent_turn hold settles at the sum of every usage row of the turn - no fixed-price row', async () => {
     test.setTimeout(120_000)
     const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })

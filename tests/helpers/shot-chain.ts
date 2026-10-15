@@ -150,8 +150,8 @@ export function chainGateway(params: {
 
 /** A ledger that writes nothing: holds always pass, settles write nothing. */
 export const NO_LEDGER: ShotRunLedger = {
-  placeHold: async (params) => ({ id: 'no-ledger', credits: params.credits }),
-  settleHold: async () => 'nothing_to_write',
+  placeHold: async (params) => ({ id: 'no-ledger', credits: params.credits, placed: true }),
+  settleHold: async () => ({ outcome: 'nothing_to_write', heldCredits: null, chargedCredits: 0, absorbedCredits: 0 }),
 }
 
 /** The real hold and settle writers (service role; `server-only` is stubbed in the runner). */

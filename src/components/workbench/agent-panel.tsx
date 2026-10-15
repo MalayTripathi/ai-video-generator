@@ -101,6 +101,19 @@ export function AgentPanel({
     if (el) el.scrollTop = el.scrollHeight
   }, [messages])
 
+  // A shot run this tab followed has ended: the messages it wrote (the outline's note) join
+  // the list - each persisted id once, so a second read of the same run adds nothing.
+  const runMessages = shotsCtx?.runMessages
+  useEffect(() => {
+    if (!runMessages || runMessages.length === 0) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMessages((prev) => {
+      const seen = new Set(prev.map((m) => m.id))
+      const fresh = runMessages.filter((m) => !seen.has(m.id))
+      return fresh.length === 0 ? prev : [...prev, ...fresh]
+    })
+  }, [runMessages])
+
   function appendMessages(next: AgentMessage[]) {
     setMessages((prev) => [...prev, ...next])
   }

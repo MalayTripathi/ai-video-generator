@@ -130,8 +130,9 @@ export async function runShotsRequest(params: {
     projectId,
     messageId: params.messageId ?? null,
   }
+  let placed = false
   try {
-    await ledger.placeHold({ ...holdTarget, credits: requiredCredits })
+    placed = (await ledger.placeHold({ ...holdTarget, credits: requiredCredits })).placed
   } catch (err) {
     if (err instanceof InsufficientCreditsError) {
       return { ok: false, status: 402, error: 'Not enough credits to write the shot list.', requiredCredits, balanceCredits: err.balanceCredits }
@@ -140,7 +141,12 @@ export async function runShotsRequest(params: {
     console.error('[shots] hold write failed', err)
     return { ok: false, status: 500, error: 'Could not hold the credits for this shot list' }
   }
-  // Past this point the hold exists: every refusal below releases it in full.
+  // The attempt already had its hold: it has started a run (an agent turn's second
+  // regenerate). That hold is the earlier run's - refuse before any claim, release nothing.
+  if (!placed) {
+    return { ok: false, status: 409, error: BLOCKED_REASON_MESSAGES.already_generating, reason: 'already_generating' }
+  }
+  // Past this point this request placed the hold: every refusal below releases it in full.
   const releaseHold = () => ledger.settleHold({ ...holdTarget, actualCredits: 0 })
 
   const claim = await claimGeneration({

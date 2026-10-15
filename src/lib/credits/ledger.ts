@@ -192,19 +192,24 @@ export async function recordRefund(params: { userId: string; ledgerId: string })
 // extra 'spend' for an excess. Balance stays SUM(delta), so a hold lowers it from the moment
 // it is placed and the settle brings it to the actual charge.
 //
-// Concurrency: a hold's dedupe_key is 'hold:{n}', n counted across ALL the user's holds,
-// whatever operation placed them. A placer reads the count, THEN the balance, then inserts
-// slot n+1: two placers racing read the same count and the (user_id, dedupe_key) unique
-// index lets exactly one insert land; the other re-reads and sees the winner's hold in the
-// balance. A hold placed after the count was read takes the same slot, so no balance read
-// can miss a hold it raced with. No RPC, no lock table. Every future held operation must
-// place its holds through placeHold so it serializes against these.
+// Keys: a hold's dedupe_key is 'hold:{attempt id}', so one attempt holds at most once, and its
+// settle's is 'settle:{hold id}'. (Holds placed before hold_slot existed carry 'hold:{n}'.)
+//
+// Concurrency: a hold's hold_slot is n+1, n counted across ALL the user's holds, whatever
+// operation placed them. A placer reads the count, THEN the balance, then inserts slot n+1:
+// two placers racing read the same count and the (user_id, hold_slot) unique index lets
+// exactly one insert land; the other re-reads and sees the winner's hold in the balance. A
+// hold placed after the count was read takes the same slot, so no balance read can miss a
+// hold it raced with. No RPC, no lock table. Every future held operation must place its
+// holds through placeHold so it serializes against these.
 
 export const HOLD_KEY_PREFIX = 'hold:'
 export const SETTLE_KEY_PREFIX = 'settle:'
 const HOLD_SLOT_ATTEMPTS = 4
 
-export type HoldRow = { id: string; credits: number }
+/** `placed` is false when the attempt already had its hold - this call placed nothing, so it
+ * must never release it. */
+export type HoldRow = { id: string; credits: number; placed: boolean }
 
 type HoldTarget = {
   userId: string
@@ -231,13 +236,13 @@ async function findHold(supabase: ReturnType<typeof createServiceRoleClient>, us
  * Places the hold for a held action, atomically with its balance check. Throws
  * InsufficientCreditsError when the balance doesn't cover `credits`, and a plain Error when
  * the hold can't be written - the one ledger write that must fail its request, since nothing
- * has been spent yet. Idempotent per attempt: a hold already placed for it is returned.
+ * has been spent yet. Idempotent per attempt: a hold already placed for it is returned with `placed: false`.
  */
 export async function placeHold(params: HoldTarget & { credits: number }): Promise<HoldRow> {
   const supabase = createServiceRoleClient()
   const existing = await findHold(supabase, params.userId, params.attemptId)
   if (existing.error) throw new Error(`placeHold lookup failed: ${existing.error.message}`)
-  if (existing.data) return { id: existing.data.id, credits: -existing.data.delta }
+  if (existing.data) return { id: existing.data.id, credits: -existing.data.delta, placed: false }
 
   for (let attempt = 0; attempt < HOLD_SLOT_ATTEMPTS; attempt++) {
     // Count first, balance second - the order the race argument above depends on.
@@ -269,21 +274,36 @@ export async function placeHold(params: HoldTarget & { credits: number }): Promi
         message_id: params.messageId ?? null,
         shot_key: null,
         attempt_id: params.attemptId,
-        dedupe_key: `${HOLD_KEY_PREFIX}${count + 1}`,
+        dedupe_key: `${HOLD_KEY_PREFIX}${params.attemptId}`,
+        hold_slot: count + 1,
         price_version: CREDIT_PRICE_VERSION,
         pricing_mode: params.pricingMode,
         refunds_ledger_id: null,
       })
       .select('id')
       .single()
-    if (!error && data) return { id: data.id, credits: params.credits }
+    if (!error && data) return { id: data.id, credits: params.credits, placed: true }
     if (error && !isUniqueViolation(error)) throw new Error(`placeHold insert failed: ${error.message}`)
-    // Another hold took slot n+1 between this count and insert: re-read and try the next.
+    // A 23505 is either key: the same attempt's hold landed first (return it), or another
+    // hold took slot n+1 between this count and insert (re-read and try the next).
+    const raced = await findHold(supabase, params.userId, params.attemptId)
+    if (raced.error) throw new Error(`placeHold lookup failed: ${raced.error.message}`)
+    if (raced.data) return { id: raced.data.id, credits: -raced.data.delta, placed: false }
   }
   throw new Error('placeHold could not take a hold slot: too many concurrent holds')
 }
 
 export type SettleOutcome = 'settled' | 'already_settled' | 'nothing_to_write' | 'failed'
+
+/** What a settle came to, for the run's own record: the hold (null when there was none), the
+ * charge, and what the platform absorbed (the actual past a capped hold). Null figures on a
+ * failed settle - nothing is known to be charged. */
+export type SettleResult = {
+  outcome: SettleOutcome
+  heldCredits: number | null
+  chargedCredits: number | null
+  absorbedCredits: number | null
+}
 
 /**
  * Settles an action's hold at its actual charge: a 'refund' of hold - actual (pointing at the
@@ -292,9 +312,10 @@ export type SettleOutcome = 'settled' | 'already_settled' | 'nothing_to_write' |
  * dedupe_key 'settle:{hold id}', so a hold is settled exactly once. Never throws - by now the
  * money is spent; a failure logs and returns 'failed', so the caller leaves its run uncharged
  * for the next settle to retry. An action with no hold (one started before holds existed)
- * is charged its actual as a single spend, as it would have been then.
+ * is charged its actual as a single spend, as it would have been then. The figures are the
+ * same on every outcome but 'failed', so a repeated settle reports what the first one wrote.
  */
-export async function settleHold(params: HoldTarget & { actualCredits: number; capAtHold?: boolean }): Promise<SettleOutcome> {
+export async function settleHold(params: HoldTarget & { actualCredits: number; capAtHold?: boolean }): Promise<SettleResult> {
   try {
     const supabase = createServiceRoleClient()
     const { data: hold, error } = await findHold(supabase, params.userId, params.attemptId)
@@ -302,7 +323,8 @@ export async function settleHold(params: HoldTarget & { actualCredits: number; c
     const actual = Math.max(0, Math.round(params.actualCredits))
 
     if (!hold) {
-      if (actual === 0) return 'nothing_to_write'
+      const figures = { heldCredits: null, chargedCredits: actual, absorbedCredits: 0 }
+      if (actual === 0) return { outcome: 'nothing_to_write', ...figures }
       const { error: spendError } = await supabase.from('credit_ledger').insert({
         user_id: params.userId,
         kind: 'spend',
@@ -319,12 +341,13 @@ export async function settleHold(params: HoldTarget & { actualCredits: number; c
         refunds_ledger_id: null,
       })
       if (spendError && !isUniqueViolation(spendError)) throw new Error(`settleHold spend failed: ${spendError.message}`)
-      return spendError ? 'already_settled' : 'settled'
+      return { outcome: spendError ? 'already_settled' : 'settled', ...figures }
     }
 
     const held = -hold.delta
     const charge = params.capAtHold ? Math.min(actual, held) : actual
-    if (charge === held) return 'nothing_to_write'
+    const figures = { heldCredits: held, chargedCredits: charge, absorbedCredits: actual - charge }
+    if (charge === held) return { outcome: 'nothing_to_write', ...figures }
     const base = {
       user_id: params.userId,
       step: hold.step,
@@ -346,9 +369,9 @@ export async function settleHold(params: HoldTarget & { actualCredits: number; c
       refunds_ledger_id: refund ? hold.id : null,
     })
     if (insertError && !isUniqueViolation(insertError)) throw new Error(`settleHold insert failed: ${insertError.message}`)
-    return insertError ? 'already_settled' : 'settled'
+    return { outcome: insertError ? 'already_settled' : 'settled', ...figures }
   } catch (err) {
     console.error(`[credits] settleHold failed for attempt ${params.attemptId}`, err)
-    return 'failed'
+    return { outcome: 'failed', heldCredits: null, chargedCredits: null, absorbedCredits: null }
   }
 }

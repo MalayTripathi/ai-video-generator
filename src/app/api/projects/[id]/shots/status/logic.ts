@@ -6,12 +6,14 @@ import { shotRunView, type ShotRunView } from '@/app/(app)/projects/[id]/workben
 type Client = SupabaseClient<Database>
 
 // The Workbench's poll while shots are being written: the claim's state, the latest run's
-// progress and how many shots exist - one PostgREST read (project, its generate_shots claim,
-// latest run, scenes' completion and a shot count, embedded). Never a page render. A dead
+// progress, how many shots exist and the title the outline may have set - one PostgREST read
+// (project, its generate_shots claim, latest run, scenes' completion and a shot count,
+// embedded). Never a page render. A dead
 // chain is settled here only once it is past its stale window (needsDeadRunSettlement),
 // never while its worker may still be writing.
 
 export type ShotsStatus = {
+  title: string | null
   generationState: string | null
   shotCount: number
   run: ShotRunView
@@ -19,6 +21,7 @@ export type ShotsStatus = {
 
 type StatusRow = {
   id: string
+  title: string | null
   generations: { state: string }[]
   shot_runs: { id: string; status: string; stop_reason: string | null; total_scenes: number | null; heartbeat_at: string; finished_at: string | null; charged_at: string | null }[]
   scenes: { shot_run_chunks: { scene_complete: boolean }[] }[]
@@ -29,7 +32,7 @@ async function readStatusRow(supabase: Client, projectId: string, userId: string
   return supabase
     .from('projects')
     .select(
-      'id, generations(state), shot_runs(id, status, stop_reason, total_scenes, heartbeat_at, finished_at, charged_at), scenes(shot_run_chunks(scene_complete)), shots(count)'
+      'id, title, generations(state), shot_runs(id, status, stop_reason, total_scenes, heartbeat_at, finished_at, charged_at), scenes(shot_run_chunks(scene_complete)), shots(count)'
     )
     .eq('id', projectId)
     .eq('user_id', userId)
@@ -67,6 +70,7 @@ export async function loadShotsStatus(params: {
   return {
     ok: true,
     data: {
+      title: row.title,
       generationState: row.generations[0]?.state ?? null,
       shotCount: row.shots[0]?.count ?? 0,
       run: shotRunView(row.shot_runs[0] ?? null, row.scenes),

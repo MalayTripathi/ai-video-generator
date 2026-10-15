@@ -8,9 +8,14 @@ import { stepIndex } from '@/lib/config/pipeline'
 import { usePageVisible } from '@/lib/hooks/use-page-visible'
 import { SHOT_STATUS_POLL_MS } from '@/lib/config/shots'
 import { sameShotRunView, shotRunChargeLine, type ShotRunView } from './shot-run-view'
+import { parseRailFigures, useRailFigures } from '@/components/rail-figures-context'
+import type { AgentMessage } from '@/components/workbench/agent-message'
+import type { RunElements } from '@/app/api/projects/[id]/shots/list/logic'
 
 type ShotsContextValue = {
   projectId: string
+  /** The project's title: the page's, then the one a run's outline sets (status checks). */
+  title: string | null
   shots: DisplayShot[]
   phase: Phase
   videoType: string | null
@@ -63,6 +68,11 @@ type ShotsContextValue = {
   expandedShotId: string | null
   expandShot: (shotId: string) => void
   collapseShot: () => void
+  // What the last run this tab followed changed beyond the shot list, from its end-of-run
+  // read: the Assets tab's elements and generate gate (applied by AssetsProvider), and the
+  // messages the run wrote (appended by AgentPanel). Null / empty until a run ends here.
+  runElements: RunElements | null
+  runMessages: AgentMessage[]
 }
 
 // Exported (not just the throwing useShots() hook below) so a shared shell
@@ -72,6 +82,7 @@ export const ShotsContext = createContext<ShotsContextValue | null>(null)
 
 export function ShotsProvider({
   projectId,
+  initialTitle,
   initialShots,
   initialVideoType,
   initialVideoModel,
@@ -84,6 +95,7 @@ export function ShotsProvider({
   children,
 }: {
   projectId: string
+  initialTitle: string | null
   initialShots: DisplayShot[]
   initialVideoType: string | null
   initialVideoModel: string | null
@@ -96,6 +108,10 @@ export function ShotsProvider({
   children: ReactNode
 }) {
   const router = useRouter()
+  const { setFigures } = useRailFigures()
+  const [title, setTitle] = useState(initialTitle)
+  const [runElements, setRunElements] = useState<RunElements | null>(null)
+  const [runMessages, setRunMessages] = useState<AgentMessage[]>([])
   const [shots, setShots] = useState(initialShots)
   const [videoType, setVideoType] = useState(initialVideoType)
   const [generationState, setGenerationState] = useState(initialGenerationState)
@@ -209,8 +225,11 @@ export function ShotsProvider({
       if (response.status === 202) {
         // Started: the generating state is already showing, and the status checks follow
         // this run to its end - the page re-renders once, then.
-        const body = (await response.json()) as { runId?: string }
+        const body = (await response.json()) as { runId?: string; rail?: unknown }
         setExpectedRunId(body.runId ?? null)
+        // The rail's figures with the hold in them.
+        const rail = parseRailFigures(body.rail)
+        if (rail) setFigures(rail)
         return
       }
       // Refused (409, 422, 500): the DB row is the source of truth - resync from the server
@@ -264,10 +283,11 @@ export function ShotsProvider({
   // syncs: on mount the values are the ones state started from, and applying them again
   // would take back the 'generating' the first-load trigger just set (the project has no
   // claim yet), leaving the page on "Planning" with no status checks.
-  const syncedRef = useRef({ initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun, remainingCredits })
+  const syncedRef = useRef({ initialTitle, initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun, remainingCredits })
   useEffect(() => {
     const prev = syncedRef.current
     if (
+      prev.initialTitle === initialTitle &&
       prev.initialShots === initialShots &&
       prev.initialVideoType === initialVideoType &&
       prev.initialGenerationState === initialGenerationState &&
@@ -277,7 +297,8 @@ export function ShotsProvider({
     ) {
       return
     }
-    syncedRef.current = { initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun, remainingCredits }
+    syncedRef.current = { initialTitle, initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun, remainingCredits }
+    setTitle(initialTitle)
     setShots(initialShots)
     setVideoType(initialVideoType)
     setGenerationState((current) =>
@@ -290,28 +311,39 @@ export function ShotsProvider({
     // touchedShotKeys to apply the (now current) value it's holding. See
     // refreshPending's own comment above.
     setRefreshPending(false)
-  }, [initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun, remainingCredits])
+  }, [initialTitle, initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun, remainingCredits])
 
-  // A run this tab follows has ended: the shot list and the run's end state are read fresh -
-  // only the shots refresh, never the page. A failed read falls back to a page render.
+  // A run this tab follows has ended: everything it changed is read fresh in one request -
+  // the shot list, its end state, the title, the Assets elements, the run's chat messages and
+  // the rail's figures - never a page render. A failed read falls back to a page render.
   async function refreshShotList(): Promise<ShotRunView | null> {
     try {
       const response = await fetch(`/api/projects/${projectId}/shots/list`, { cache: 'no-store' })
       if (!response.ok) throw new Error(`status ${response.status}`)
       const list = (await response.json()) as {
+        title: string | null
         shots: DisplayShot[]
         videoType: string | null
         generationState: string | null
         hasPendingPayload: boolean
         run: ShotRunView
         remainingCredits: number
+        elements: RunElements | null
+        runMessages: AgentMessage[]
+        rail: unknown
       }
+      // A run only ever sets a title, never clears one.
+      setTitle((current) => list.title ?? current)
       setShots(list.shots)
       setVideoType(list.videoType)
       setGenerationState(list.generationState)
       setHasPendingPayload(list.hasPendingPayload)
       setEndedRun(list.run)
       setRemaining(list.remainingCredits)
+      if (list.elements) setRunElements(list.elements)
+      if (list.runMessages?.length) setRunMessages(list.runMessages)
+      const rail = parseRailFigures(list.rail)
+      if (rail) setFigures(rail)
       return list.run
     } catch {
       router.refresh()
@@ -323,6 +355,7 @@ export function ShotsProvider({
     <ShotsContext.Provider
       value={{
         projectId,
+        title,
         shots,
         phase,
         videoType,
@@ -351,6 +384,8 @@ export function ShotsProvider({
         expandedShotId,
         expandShot,
         collapseShot,
+        runElements,
+        runMessages,
       }}
     >
       <ShotRunProvider
@@ -359,6 +394,7 @@ export function ShotsProvider({
         initialRun={initialRun}
         expectedRunId={expectedRunId}
         onRunEnded={refreshShotList}
+        onTitle={setTitle}
       >
         {children}
       </ShotRunProvider>
@@ -380,6 +416,7 @@ function ShotRunProvider({
   initialRun,
   expectedRunId,
   onRunEnded,
+  onTitle,
   children,
 }: {
   projectId: string
@@ -387,6 +424,9 @@ function ShotRunProvider({
   initialRun: ShotRunView
   /** Reads the finished shot list and the run's end state (null when the read failed). */
   onRunEnded: () => Promise<ShotRunView | null>
+  /** The title a check read - the outline sets it early in a run. A same title re-renders
+   * nothing (a state setter that bails out on an equal value). */
+  onTitle: (title: string) => void
   /** The run this tab started ('pending' while its start is in flight), or null for a tab
    * that started nothing - it follows whatever run is latest. */
   expectedRunId: string | 'pending' | null
@@ -411,9 +451,11 @@ function ShotRunProvider({
   const generatingRef = useRef(generating)
   // Recreated each render; the loop calls the latest.
   const onRunEndedRef = useRef(onRunEnded)
+  const onTitleRef = useRef(onTitle)
   useEffect(() => {
     generatingRef.current = generating
     onRunEndedRef.current = onRunEnded
+    onTitleRef.current = onTitle
   })
   const resumedRef = useRef(false)
   const visible = usePageVisible(() => {
@@ -428,8 +470,9 @@ function ShotRunProvider({
         const response = await fetch(`/api/projects/${projectId}/shots/status`, { cache: 'no-store' })
         if (cancelled) return
         if (response.ok) {
-          const status = (await response.json()) as { generationState: string | null; run: ShotRunView }
+          const status = (await response.json()) as { title?: string | null; generationState: string | null; run: ShotRunView }
           if (cancelled) return
+          if (typeof status.title === 'string' && status.title !== '') onTitleRef.current(status.title)
           const ours = expectedRunId === null || (expectedRunId !== 'pending' && status.run.id === expectedRunId)
           if (ours) setRun((prev) => (sameShotRunView(prev, status.run) ? prev : status.run))
           const ended = status.run.status !== null && status.run.status !== 'running'

@@ -14,17 +14,18 @@ import { DEFAULT_IMAGE_MODEL } from '@/lib/config/models'
 //
 // The price follows the project's image model and quality, taken from the page's own
 // project read (passed as a promise, so the balance read still runs alongside it - no
-// extra query).
+// extra query). A route that already holds its user passes the id, saving the auth read.
 export async function getElementGenerateAffordability(
-  project: PromiseLike<{ image_model: string; image_quality: string } | null>
+  project: PromiseLike<{ image_model: string; image_quality: string } | null>,
+  userId?: string
 ): Promise<{
   generateCredits: number
   hasInsufficientBalance: boolean
 }> {
   // getCurrentUser is getUser() - request-memoized when a page render calls this, so the
   // page's own auth check is reused instead of paying a second auth-server round trip.
-  const user = await getCurrentUser()
-  const [settings, balance] = await Promise.all([project, user ? getBalance(user.id) : null])
+  const id = userId ?? (await getCurrentUser())?.id ?? null
+  const [settings, balance] = await Promise.all([project, id ? getBalance(id) : null])
   // A missing project 404s the page before this is shown; price it as the default meanwhile.
   const generateCredits = creditsFor({
     step: 'workbench',

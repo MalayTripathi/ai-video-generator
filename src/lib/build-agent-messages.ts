@@ -158,6 +158,9 @@ export function buildAgentMessages(
   while (i < rows.length) {
     const row = rows[i]
     if (row.role !== 'user') {
+      // Outside any turn: a shot run's own note (the outline's message), written by the
+      // chain - before the first turn, or after a turn's reply. A plain bubble in position.
+      pushActivity(row)
       i++
       continue
     }

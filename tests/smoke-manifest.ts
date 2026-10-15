@@ -51,6 +51,12 @@ export const PROTECTED_SMOKE: Record<string, { file: string; title: string }[]> 
   'atomic hold': [
     { file: 'shot-holds.spec.ts', title: 'two concurrent starts against a balance that covers one: exactly one passes' },
   ],
+  'run-end refresh': [
+    {
+      file: 'shot-run-end-refresh.spec.ts',
+      title: 'after a shot run, the Assets count, the rail’s month figures, the title and the outline’s message show without a reload',
+    },
+  ],
   '402 before claim': [
     {
       file: 'image-prompt-generation.spec.ts',

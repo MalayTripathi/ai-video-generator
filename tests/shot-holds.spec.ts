@@ -123,14 +123,18 @@ test.describe('shot holds - the start', () => {
       })
     return Promise.allSettled([hold(), hold()])
   }
-  const holdKeys = async () =>
-    ((await admin.from('credit_ledger').select('dedupe_key').eq('user_id', owner.id).like('dedupe_key', 'hold:%')).data ?? []).map((r) => r.dedupe_key).sort()
+  /** The user's hold slots, in order - after checking every hold is keyed by its attempt. */
+  const holdSlots = async () => {
+    const rows = (await admin.from('credit_ledger').select('dedupe_key, attempt_id, hold_slot').eq('user_id', owner.id).like('dedupe_key', 'hold:%')).data ?? []
+    for (const r of rows) expect(r.dedupe_key).toBe(`hold:${r.attempt_id}`)
+    return rows.map((r) => r.hold_slot).sort()
+  }
 
   test('two concurrent holds against a balance that covers both: both pass, on distinct slots', async () => {
     await setBalance(owner.id, 20)
     const results = await raceHolds(10)
     expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled'])
-    expect(await holdKeys()).toEqual(['hold:1', 'hold:2'])
+    expect(await holdSlots()).toEqual([1, 2])
     expect(await balanceOf(owner.id)).toBe(0)
   })
 
@@ -140,8 +144,24 @@ test.describe('shot holds - the start', () => {
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
     const refused = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')!
     expect(refused.reason).toBeInstanceOf(InsufficientCreditsError)
-    expect(await holdKeys()).toEqual(['hold:1'])
+    expect(await holdSlots()).toEqual([1])
     expect(await balanceOf(owner.id)).toBe(5)
+  })
+
+  // One attempt holds once: two placers racing on the same attempt land one row, and only
+  // the one that wrote it reports having placed it - the other must never release it.
+  test('two concurrent holds on the same attempt: one row, the same hold, exactly one placed', async () => {
+    await setBalance(owner.id, 100)
+    const attemptId = crypto.randomUUID()
+    const hold = () =>
+      placeHold({ userId: owner.id, attemptId, step: 'workbench', operation: 'generate_shots', pricingMode: 'fixed', projectId: null, credits: 10 })
+    const [a, b] = await Promise.all([hold(), hold()])
+    expect(a.id).toBe(b.id)
+    expect([a.placed, b.placed].filter(Boolean)).toHaveLength(1)
+    expect(await holdSlots()).toEqual([1])
+    expect(await balanceOf(owner.id)).toBe(90)
+    // A later retry on the attempt returns the same hold, placed by no one.
+    expect(await hold()).toEqual({ id: a.id, credits: 10, placed: false })
   })
 
   test('two concurrent starts against a balance that covers one: exactly one passes', { tag: '@smoke' }, async () => {
@@ -227,13 +247,15 @@ test.describe('shot holds - the settle', () => {
       pricingMode: 'fixed' as const,
       projectId,
     }
-    expect(await settleHold({ ...target, actualCredits: 8 })).toBe('already_settled')
-    expect(await settleHold({ ...target, actualCredits: 999 })).toBe('already_settled')
+    expect((await settleHold({ ...target, actualCredits: 8 })).outcome).toBe('already_settled')
+    expect((await settleHold({ ...target, actualCredits: 999 })).outcome).toBe('already_settled')
     const ledger = await holdLedger(projectId)
     expect(ledger.settles).toHaveLength(1)
     expect(ledger.net).toBe(8)
     // The run end shows the hold and the actual charge.
     expect(holdAndSettle(ledger.rows)).toEqual({ held: shotGenerationCredits('1-2min'), charged: 8 })
+    // The run's own settle record: nothing absorbed under the hold.
+    expect(run).toMatchObject({ held_credits: shotGenerationCredits('1-2min'), charged_credits: 8, absorbed_credits: 0 })
   })
 
   test('a cancelled run releases its hold at what it saved', async () => {
@@ -332,15 +354,18 @@ test.describe('shot holds - /credits counts actions by their hold', () => {
       // Run 1 saves 4 shots against a 16-credit hold (refund 8). Run 2 saves 16 shots against
       // a 16-credit hold - 32 at the per-shot price, charged the hold: no settle row.
       const under = await insertChainProject(user.id, { duration_target: '30-60s' })
-      await runChain({ projectId: under, userId: user.id, gateway: onePerScene(), ledger: REAL_SHOT_LEDGER, topUp: false })
+      const underRun = (await runChain({ projectId: under, userId: user.id, gateway: onePerScene(), ledger: REAL_SHOT_LEDGER, topUp: false })).request as { runId: string }
       const over = await insertChainProject(user.id, { duration_target: '30-60s' })
       const long = chainGateway({
         outline: fakeOutline([{ title: 'A', seconds: 20, shot_count: 8 }, { title: 'B', seconds: 25, shot_count: 8 }]),
         chunk: (ask) => ({ shots: Array.from({ length: 8 }, (_, i) => fakeShot(`x${ask.scenePosition}i${i}`)), scene_complete: true }),
       })
-      await runChain({ projectId: over, userId: user.id, gateway: long, ledger: REAL_SHOT_LEDGER, topUp: false })
+      const overRun = (await runChain({ projectId: over, userId: user.id, gateway: long, ledger: REAL_SHOT_LEDGER, topUp: false })).request as { runId: string }
       expect((await holdLedger(under)).settles[0]).toMatchObject({ kind: 'refund' })
       expect((await holdLedger(over)).settles).toHaveLength(0)
+      // With no settle row, the capped run's record is its run row: 32 actual, 16 absorbed.
+      expect(await readRun(underRun.runId)).toMatchObject({ held_credits: 16, charged_credits: 8, absorbed_credits: 0 })
+      expect(await readRun(overRun.runId)).toMatchObject({ held_credits: 16, charged_credits: 16, absorbed_credits: 16 })
 
       // Through the real grouped read /credits makes (the user's own view rows).
       const groups = await readLedgerGroups(admin, user.id, 'this_month', { fresh: true })

@@ -273,7 +273,8 @@ export function shotRunActualCredits(run: Pick<SettleRunRow, 'agent_generation_i
  * (an overrun is the platform's); an agent run pays its full measured cost - once the run is terminal - and, for an agent
  * run, once the turn has handed over its own cost too (whichever happens second settles).
  * The sums come from the run record, never from `usage`. The settle's dedupe key (the
- * hold's id) makes a repeat a no-op; charged_at marks the run settled. A settle that could
+ * hold's id) makes a repeat a no-op; charged_at marks the run settled, written with what was
+ * held, charged and absorbed. A settle that could
  * not be written leaves charged_at null for the next touch to retry. An agent run also
  * releases the turn's lock here.
  */
@@ -282,7 +283,7 @@ export async function settleShotRun(supabase: Client, ledger: ShotRunLedger, run
   const agent = isAgentShotRun(run)
   if (agent && run.turn_settled_at === null) return { charged: false }
 
-  const outcome = await ledger.settleHold({
+  const settle = await ledger.settleHold({
     userId: run.projects.user_id,
     attemptId: run.attempt_id,
     step: 'workbench',
@@ -293,12 +294,19 @@ export async function settleShotRun(supabase: Client, ledger: ShotRunLedger, run
     actualCredits: shotRunActualCredits(run),
     capAtHold: !agent,
   })
-  if (outcome === 'failed') return { charged: false }
+  if (settle.outcome === 'failed') return { charged: false }
 
+  // The settle record lands with the mark - audit only, never shown.
   const now = new Date().toISOString()
   const { data: marked } = await supabase
     .from('shot_runs')
-    .update({ charged_at: now, updated_at: now })
+    .update({
+      charged_at: now,
+      held_credits: settle.heldCredits,
+      charged_credits: settle.chargedCredits,
+      absorbed_credits: settle.absorbedCredits,
+      updated_at: now,
+    })
     .eq('id', run.id)
     .is('charged_at', null)
     .select('id')

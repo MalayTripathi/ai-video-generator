@@ -1642,15 +1642,20 @@ run places one `spend` hold for its quote, atomic with its balance check, and se
 a `refund` of the unused part (`refunds_ledger_id` = the hold), or one extra `spend` for an
 excess. Both use `dedupe_key = settle:{hold id}`, so a hold settles exactly once. The balance is
 read again only if output passes the hold. The hold write is the one ledger write that fails
-its request, because nothing has been spent yet. Settles keep the never-fail rule.
+its request, because nothing has been spent yet. Settles keep the never-fail rule. A capped
+settle often writes no row (zero delta), so the run row records what was held, charged and
+absorbed, in the same write that sets `charged_at` - audit only, from the run's own record.
 
-**Why atomicity is a dedupe slot, not an RPC or a lock table.** A hold's `dedupe_key` is
-`hold:{n+1}`, where n counts all of the user's holds. The count is read before the balance, so
-two racing starts take the same slot and the existing `(user_id, dedupe_key)` unique index lets
-exactly one in. Any hold the loser could have missed would have taken that slot too. Future held
-operations go through the same counter. Rejected: a per-user lock table (a new table and a
-stale-lock problem), and insert-then-verify (both racers can be refused, and a refused start
-leaves spend/refund noise).
+**Why atomicity is a slot column, not an RPC or a lock table.** A hold's `hold_slot` is n+1,
+where n counts all of the user's holds. The count is read before the balance, so two racing
+starts take the same slot and the `(user_id, hold_slot)` unique index lets exactly one in. Any
+hold the loser could have missed would have taken that slot too. Future held operations go
+through the same counter. The `dedupe_key` is `hold:{attempt id}`, so one attempt holds once: an
+agent turn's second regenerate finds its attempt's hold already placed and is refused, never
+releasing the earlier run's hold (a request releases only a hold it placed). Holds placed before
+the slot column carry `hold:{n}` and still count. Rejected: a per-user lock table (a new table
+and a stale-lock problem), and insert-then-verify (both racers can be refused, and a refused
+start leaves spend/refund noise).
 
 **Why dead holds are released per user, from the balance read.** `credit_balances` carries
 `open_hold_live_at`: the earliest liveness (run heartbeat or finish) across the user's open

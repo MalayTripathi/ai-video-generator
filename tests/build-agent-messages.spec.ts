@@ -144,6 +144,22 @@ test.describe('buildAgentMessages', () => {
     expect(out[3].content).toBe('All set.')
   })
 
+  test('a shot run\'s own note outside any turn - before the first turn, or after a turn\'s reply - renders as a plain bubble in position, never dropped', () => {
+    const before = row({ role: 'assistant', content: 'Two scenes: the climb, then the storm.' })
+    const userRow = row({ role: 'user', content: 'tighten it', client_id: 'c9' })
+    const replyRow = row({ role: 'assistant', kind: 'text', content: 'Done.', client_id: 'c9' })
+    const after = row({ role: 'assistant', content: 'One scene at the quay.' })
+
+    const out = buildAgentMessages([before, userRow, replyRow, after], new Map(), new Map(), new Map())
+
+    expect(out.map((m) => [m.kind, m.content])).toEqual([
+      ['agent', 'Two scenes: the climb, then the storm.'],
+      ['user', 'tighten it'],
+      ['agent', 'Done.'],
+      ['agent', 'One scene at the quay.'],
+    ])
+  })
+
   test('a user row with no client_id (legacy, pre-client_id-column) falls back to "first text row wins"', () => {
     const userRow = row({ role: 'user', content: 'legacy turn', client_id: null })
     const replyRow = row({ role: 'assistant', kind: 'text', content: 'Legacy reply.', client_id: null })
