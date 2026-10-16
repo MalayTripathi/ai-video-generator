@@ -9,6 +9,7 @@ import {
   CAMERA_MOVEMENTS,
   CAMERA_ORIGINS,
   ELEMENT_TYPES,
+  ELEMENT_ORIGINS,
   MOTIONS,
   TRANSITIONS,
   VOICEOVER_SOURCES,
@@ -535,6 +536,14 @@ test.describe('enum drift - elements columns', () => {
       type: 'not_a_real_type',
     })
     expect(badError).not.toBeNull()
+  })
+
+  test('accepts every ELEMENT_ORIGINS member and rejects a bogus value', async () => {
+    const projectId = await insertProject()
+    let seq = 0
+    const insert = (origin: string) =>
+      admin.from('elements').insert({ project_id: projectId, name: `Enum drift origin ${++seq}`, type: 'prop', origin })
+    await assertEnumDrift(ELEMENT_ORIGINS, insert, () => insert('not_a_real_origin'))
   })
 })
 

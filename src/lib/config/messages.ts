@@ -1,7 +1,8 @@
 // The messages.kind vocabulary - a third axis distinct from enums.ts (shot attributes/
 // project settings) and pipeline.ts (steps/operations/providers). Mirrors
 // messages_kind_check (supabase/migrations/20260908110402_add_messages_kind_shot_key_tool_name.sql).
-export const MESSAGE_KINDS = ['text', 'tool_done', 'refusal'] as const
+// 'run_note' is the shot chain's plan note (the outline's message).
+export const MESSAGE_KINDS = ['text', 'tool_done', 'refusal', 'run_note'] as const
 export type MessageKind = (typeof MESSAGE_KINDS)[number]
 
 // Mirrors messages_tool_name_check. Deliberately hand-written, not derived from

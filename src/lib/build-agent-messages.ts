@@ -3,6 +3,7 @@ import type { Tables } from '@/lib/database.types'
 import { describeToolActivity } from '@/lib/agent-activity-display'
 import { formatCost } from '@/lib/format-cost'
 import { formatCredits } from '@/lib/format-credits'
+import { turnCostLineId } from '@/lib/agent-run-end'
 
 // The columns the panel's history is rebuilt from - every `messages` column but project_id,
 // which every reader already filters on. Readers select exactly this.
@@ -43,9 +44,23 @@ export function buildAgentMessages(
   rows: MessageRow[], // already ordered by created_at ascending
   shotNumberByKey: Map<string, number>,
   costByMessageId: Map<string, number>,
-  creditsByMessageId: Map<string, number>
+  creditsByMessageId: Map<string, number>,
+  // A plan note's id -> the user message id of the agent turn whose run wrote it
+  // (linkRunNotes). Such a note renders directly after that turn's cost line, whenever it
+  // was written; any other note renders in time order.
+  runNoteTurns: Map<string, string> = new Map()
 ): AgentMessage[] {
   const out: AgentMessage[] = []
+
+  const userIds = new Set(rows.filter((r) => r.role === 'user').map((r) => r.id))
+  const notesByTurn = new Map<string, MessageRow[]>()
+  const placedNotes = new Set<string>()
+  for (const r of rows) {
+    const turnId = r.kind === 'run_note' ? runNoteTurns.get(r.id) : undefined
+    if (!turnId || !userIds.has(turnId)) continue
+    notesByTurn.set(turnId, [...(notesByTurn.get(turnId) ?? []), r])
+    placedNotes.add(r.id)
+  }
 
   const replyIndexByClientId = new Map<string, number>()
   rows.forEach((r, idx) => {
@@ -83,6 +98,10 @@ export function buildAgentMessages(
     if (replyIdx !== undefined) {
       while (j < rows.length && j !== replyIdx) {
         const r = rows[j]
+        if (placedNotes.has(r.id)) {
+          j++
+          continue
+        }
         if (r.role === 'user') {
           j = consumeTurn(j)
           continue
@@ -97,6 +116,10 @@ export function buildAgentMessages(
     } else {
       while (j < rows.length && rows[j].role === 'assistant') {
         const r = rows[j]
+        if (placedNotes.has(r.id)) {
+          j++
+          continue
+        }
         // A turn's closing reply is always `kind: 'text'` - it carries no turn-level
         // judgement about what happened (see insertAssistantReply's docblock). A mid-turn
         // refusal (a tool declining, or the model's own `decline` call, both via
@@ -129,7 +152,7 @@ export function buildAgentMessages(
       if (cost > 0) {
         const credits = creditsByMessageId.get(row.id)
         out.push({
-          id: `${row.id}-cost`,
+          id: turnCostLineId(row.id),
           kind: 'cost',
           content: '',
           amount: formatCost(cost),
@@ -150,6 +173,7 @@ export function buildAgentMessages(
         retryClientId: row.client_id ?? undefined,
       })
     }
+    for (const note of notesByTurn.get(row.id) ?? []) pushActivity(note)
 
     return j
   }
@@ -157,6 +181,10 @@ export function buildAgentMessages(
   let i = 0
   while (i < rows.length) {
     const row = rows[i]
+    if (placedNotes.has(row.id)) {
+      i++
+      continue
+    }
     if (row.role !== 'user') {
       // Outside any turn: a shot run's own note (the outline's message), written by the
       // chain - before the first turn, or after a turn's reply. A plain bubble in position.
@@ -168,4 +196,24 @@ export function buildAgentMessages(
   }
 
   return out
+}
+
+/**
+ * Which agent turn wrote each plan note: a note belongs to the latest shot run created
+ * before it, and that run's turn (its message_id) when it is an agent run. A button run's
+ * note, or one older than every run, is left out - it renders in time order.
+ */
+export function linkRunNotes(
+  rows: readonly Pick<MessageRow, 'id' | 'kind' | 'created_at'>[],
+  runs: readonly { message_id: string | null; agent_generation_id: string | null; created_at: string }[]
+): Map<string, string> {
+  const ordered = [...runs].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+  const links = new Map<string, string>()
+  for (const r of rows) {
+    if (r.kind !== 'run_note') continue
+    const at = Date.parse(r.created_at)
+    const run = ordered.filter((x) => Date.parse(x.created_at) <= at).at(-1)
+    if (run?.agent_generation_id && run.message_id) links.set(r.id, run.message_id)
+  }
+  return links
 }

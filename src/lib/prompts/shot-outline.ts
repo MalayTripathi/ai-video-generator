@@ -95,13 +95,23 @@ export const WRITE_OUTLINE_TOOL: Anthropic.Tool = {
 export function buildOutlineDynamicBlock(
   project: { source_text: string | null; video_type: string | null; language: string | null },
   targetSeconds: number,
-  shotSeconds: { min: number; max: number }
+  shotSeconds: { min: number; max: number },
+  // The project's elements from an earlier plan (never its style): a recurring one is named
+  // exactly as before, so it keeps its row and reference image instead of gaining a variant.
+  existingElements: readonly { name: string; type: string }[] = []
 ): string {
+  const existing =
+    existingElements.length === 0
+      ? ''
+      : `
+Existing elements - when the story has one of these, use its exact name in element_names (never a variant such as a title added or dropped):
+${existingElements.map((e) => `- ${e.name} (${e.type})`).join('\n')}
+`
   return `Video type: ${project.video_type ?? 'auto'}
 Target language: ${project.language ?? 'en'}
 Target length: ${targetSeconds} seconds - the scenes' seconds add up to this
 Shot length range: ${shotSeconds.min} to ${shotSeconds.max} seconds
-
+${existing}
 Brief:
 ${project.source_text ?? ''}
 

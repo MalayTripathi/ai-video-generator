@@ -273,6 +273,8 @@ export async function runAgentTurn(params: {
       // unanswered). This must never narrow back to .eq('kind', 'text').
       .neq('kind', 'tool_done')
       .or('kind.neq.text,client_id.not.is.null')
+      // 3. A shot run's plan note - excluded as it was while it was written as kind 'text'.
+      .neq('kind', 'run_note')
       .neq('id', userMessage.id)
       .order('created_at', { ascending: false })
       .limit(HISTORY_LIMIT)

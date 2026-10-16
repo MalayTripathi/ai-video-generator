@@ -167,7 +167,7 @@ export async function createElementForUser(
 
   const { data, error } = await supabase
     .from('elements')
-    .insert({ project_id: projectId, name: trimmedName, description: trimmedDescription, type })
+    .insert({ project_id: projectId, name: trimmedName, description: trimmedDescription, type, origin: 'user', user_edited_at: null })
     .select('id, name, description, type, status, reference_image_path')
     .single()
 
@@ -214,7 +214,10 @@ export async function updateElementNameForUser(
   if (!trimmed) return { success: false, error: 'Name is required' }
   if (trimmed === element.name) return { success: true, unchanged: true }
 
-  const { error } = await supabase.from('elements').update({ name: trimmed }).eq('id', elementId)
+  const { error } = await supabase
+    .from('elements')
+    .update({ name: trimmed, user_edited_at: new Date().toISOString() })
+    .eq('id', elementId)
 
   if (error) {
     if (isUniqueViolation(error)) {
@@ -244,7 +247,10 @@ export async function updateElementDescriptionForUser(
   const trimmed = description?.trim() || null
   if (trimmed === element.description) return { success: true, unchanged: true }
 
-  const { error } = await supabase.from('elements').update({ description: trimmed }).eq('id', elementId)
+  const { error } = await supabase
+    .from('elements')
+    .update({ description: trimmed, user_edited_at: new Date().toISOString() })
+    .eq('id', elementId)
   if (error) return { success: false, error: error.message }
 
   return { success: true }

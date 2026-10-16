@@ -10,6 +10,7 @@ import { describeToolActivity } from '@/lib/agent-activity-display'
 import { formatCost } from '@/lib/format-cost'
 import { formatCredits } from '@/lib/format-credits'
 import { parseRailFigures, useRailFigures } from '@/components/rail-figures-context'
+import { applyRunEnd, turnCostLineId } from '@/lib/agent-run-end'
 import type { AgentStep } from '@/lib/config/pipeline'
 
 // Empty-state suggestions, per step: each must be something THAT step's agent can do (Step
@@ -101,18 +102,16 @@ export function AgentPanel({
     if (el) el.scrollTop = el.scrollHeight
   }, [messages])
 
-  // A shot run this tab followed has ended: the messages it wrote (the outline's note) join
-  // the list - each persisted id once, so a second read of the same run adds nothing.
+  // A shot run this tab followed has ended: an agent run's turn line takes its settled
+  // figures and the run's plan note joins the list below it (applyRunEnd) - each persisted
+  // id once, so a second read of the same run adds nothing.
   const runMessages = shotsCtx?.runMessages
+  const runEndTurn = shotsCtx?.runTurn ?? null
   useEffect(() => {
-    if (!runMessages || runMessages.length === 0) return
+    if (!runEndTurn && (!runMessages || runMessages.length === 0)) return
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMessages((prev) => {
-      const seen = new Set(prev.map((m) => m.id))
-      const fresh = runMessages.filter((m) => !seen.has(m.id))
-      return fresh.length === 0 ? prev : [...prev, ...fresh]
-    })
-  }, [runMessages])
+    setMessages((prev) => applyRunEnd(prev, runMessages ?? [], runEndTurn))
+  }, [runMessages, runEndTurn])
 
   function appendMessages(next: AgentMessage[]) {
     setMessages((prev) => [...prev, ...next])
@@ -136,6 +135,8 @@ export function AgentPanel({
 
     let streamingId: string | null = null
     const touchedKeys: string[] = []
+    // The turn started a shot run: the page follows it instead of re-rendering now.
+    let startedRun = false
 
     function clearPlaceholder() {
       if (placeholderCleared) return
@@ -164,6 +165,7 @@ export function AgentPanel({
       },
       onToolCompleted: (label, toolName, shotKey) => {
         clearPlaceholder()
+        if (toolName === 'regenerate_all_shots') startedRun = true
         if (shotKey) {
           lockShot(shotKey)
           touchedKeys.push(shotKey)
@@ -252,11 +254,22 @@ export function AgentPanel({
               // cost line just renders dollar-only, same as a turn with no ledger row.
             }
           }
-          appendMessages([
-            { id: crypto.randomUUID(), kind: 'cost', content: '', amount: formatCost(cost), creditAmount, createdAt: nowIso() },
-          ])
+          // The turn's own id, as on page load - a run's end replaces this line in place. A
+          // replayed resend of a turn already shown keeps the one line.
+          const lineId = messageId ? turnCostLineId(messageId) : crypto.randomUUID()
+          setMessages((prev) =>
+            prev.some((m) => m.id === lineId)
+              ? prev
+              : [...prev, { id: lineId, kind: 'cost', content: '', amount: formatCost(cost), creditAmount, createdAt: nowIso() }]
+          )
         }
         unlockAllShots()
+        // A turn that started a shot run: every shot is being replaced, and the run's own
+        // end-of-run read brings the new list - no page render now, mid-run.
+        if (startedRun && shotsCtx) {
+          shotsCtx.followRun()
+          return
+        }
         if (touchedKeys.length > 0) markShotsTouched(touchedKeys)
         // The storyboard never re-renders from the server (its agent has no tools, and the
         // rail figures arrived with the turn-credits lookup above). Other steps still rely

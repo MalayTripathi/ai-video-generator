@@ -1,6 +1,6 @@
 import type { createClient } from '@/lib/supabase/server'
 import type { AgentMessage } from '@/components/workbench/agent-message'
-import { AGENT_MESSAGE_COLUMNS, buildAgentMessages } from '@/lib/build-agent-messages'
+import { AGENT_MESSAGE_COLUMNS, buildAgentMessages, linkRunNotes } from '@/lib/build-agent-messages'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type ShotNumbering = { shot_key: string; order_index: number }[]
@@ -8,7 +8,8 @@ type ShotNumbering = { shot_key: string; order_index: number }[]
 /**
  * The agent panel's persisted history for a project, ready to seed `AgentPanel`: the
  * project's `messages` rows plus each turn's cost (from `usage`) and credits (from
- * `credit_ledger`), turned into display messages by `buildAgentMessages`. The chat is one
+ * `credit_ledger`), and its shot runs (to place each plan note), turned into display
+ * messages by `buildAgentMessages`. The chat is one
  * per project, not per step, so every step page loads the same history.
  */
 export async function loadAgentMessages(
@@ -18,7 +19,7 @@ export async function loadAgentMessages(
   // waits on the shots.
   shots: ShotNumbering | Promise<ShotNumbering>
 ): Promise<AgentMessage[]> {
-  const [{ data: messageRows }, { data: usageRows }, { data: creditLedgerRows }] = await Promise.all([
+  const [{ data: messageRows }, { data: usageRows }, { data: creditLedgerRows }, { data: runRows }] = await Promise.all([
     supabase
       .from('messages')
       .select(AGENT_MESSAGE_COLUMNS)
@@ -31,6 +32,8 @@ export async function loadAgentMessages(
       .eq('project_id', projectId)
       .in('kind', ['spend', 'refund'])
       .eq('operation', 'agent_turn'),
+    // Which turn started each shot run - its plan note renders after that turn.
+    supabase.from('shot_runs').select('message_id, agent_generation_id, created_at').eq('project_id', projectId),
   ])
 
   const shotNumberByKey = new Map((await shots).map((s) => [s.shot_key, s.order_index + 1]))
@@ -44,5 +47,6 @@ export async function loadAgentMessages(
     if (!r.message_id) continue
     creditsByMessageId.set(r.message_id, (creditsByMessageId.get(r.message_id) ?? 0) + -r.delta)
   }
-  return buildAgentMessages(messageRows ?? [], shotNumberByKey, costByMessageId, creditsByMessageId)
+  const rows = messageRows ?? []
+  return buildAgentMessages(rows, shotNumberByKey, costByMessageId, creditsByMessageId, linkRunNotes(rows, runRows ?? []))
 }

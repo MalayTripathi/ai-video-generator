@@ -87,6 +87,12 @@ export const SHOT_ELEMENT_TYPES = ELEMENT_TYPES.filter(
   (v): v is Exclude<ElementType, 'style'> => v !== 'style'
 )
 
+// Who made an element: 'model' (the shot pipeline) or 'user' (the Assets tab). Mirrors
+// elements_origin_check. Read by the end-of-run cleanup (src/lib/elements/cleanup.ts).
+export const ELEMENT_ORIGINS = ['model', 'user'] as const
+
+export type ElementOrigin = (typeof ELEMENT_ORIGINS)[number]
+
 // auto: the visual description said nothing about this camera choice, so the AI chose it
 // freely. derived: the visual description explicitly named this choice, so the AI was
 // forced to it. override: a person picked the value manually - no AI was involved.

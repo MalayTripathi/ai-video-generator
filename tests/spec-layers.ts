@@ -49,6 +49,7 @@ export const API_SPECS = [
   'agent-turn-estimate.spec.ts',
   'agent-turn-ledger.spec.ts',
   'agent-turn.spec.ts',
+  'agent-regenerate-fixes.spec.ts',
   'build-agent-messages.spec.ts',
   'claude-guard.spec.ts',
   'claude-refusal.spec.ts',

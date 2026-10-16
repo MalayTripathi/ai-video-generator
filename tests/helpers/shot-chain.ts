@@ -119,6 +119,10 @@ export function chainGateway(params: {
   usage?: { input_tokens: number; output_tokens: number }
   /** The answer to a rewrite call - trimmingRewrite unless given. */
   rewrite?: (ask: RewriteAsk) => { voice_over: string; dialogue: { speaker_name: string; line: string }[] }
+  /** How long a rewrite call takes - parallel rewrites then settle in a mixed order. */
+  rewriteDelayMs?: () => number
+  /** Every request's params, in call order - for a test reading what a call was sent. */
+  onRequest?: (params: Anthropic.MessageCreateParams) => void
 }): ClaudeGateway & { calls: ChainCall[] } {
   const calls: ChainCall[] = []
   const perScene = new Map<number, number>()
@@ -127,6 +131,7 @@ export function chainGateway(params: {
     async createMessage(p) {
       const tool = (p.tool_choice as { name?: string } | undefined)?.name ?? ''
       const at = Date.now()
+      params.onRequest?.(p)
       if (tool === 'write_outline') {
         calls.push({ tool, at, ask: null })
         return successMessage(params.outline, 'write_outline', params.usage)
@@ -134,6 +139,8 @@ export function chainGateway(params: {
       if (tool === 'rewrite_shot') {
         const rewrite = parseRewriteAsk(p)
         calls.push({ tool, at, ask: null, rewrite })
+        const rewriteDelay = params.rewriteDelayMs?.()
+        if (rewriteDelay) await new Promise((r) => setTimeout(r, rewriteDelay))
         return successMessage((params.rewrite ?? trimmingRewrite)(rewrite), 'rewrite_shot', params.usage)
       }
       const ask = parseChunkAsk(p)

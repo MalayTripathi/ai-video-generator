@@ -47,6 +47,9 @@ export type AgentToolContext = {
     /** Hands the chain's first run to its own invocation of the shots route. True when accepted. */
     start: (run: { userId: string; projectId: string; runId: string; chainDepth: 0 }) => Promise<boolean>
   }
+  // Set by regenerate_all_shots once its run has started: for the rest of the turn every
+  // shot-changing tool refuses (rewritingRefusal). The context lives for one turn.
+  shotListRewriting?: boolean
 }
 
 export type AgentToolOutcome =
@@ -77,6 +80,15 @@ const READ_ONLY_LOCK_MESSAGE =
 
 function isReadOnlyLocked(ctx: AgentToolContext): boolean {
   return ctx.furthestStepIndex >= stepIndex('storyboard')
+}
+
+export const SHOT_LIST_REWRITING_MESSAGE = 'The shot list is being rewritten. Ask again once it finishes.'
+
+// After regenerate_all_shots started a run this turn, the old shots are about to be replaced:
+// an edit, an insert or a second regenerate would land on a list that is going away.
+function rewritingRefusal(ctx: AgentToolContext, label: string): AgentToolOutcome | null {
+  if (!ctx.shotListRewriting) return null
+  return { kind: 'refused', label, forModel: { error: SHOT_LIST_REWRITING_MESSAGE } }
 }
 
 async function loadShotByNumber(
@@ -270,6 +282,8 @@ async function loadDurationContext(ctx: AgentToolContext) {
 
 export async function handleUpdateShot(input: unknown, ctx: AgentToolContext): Promise<AgentToolOutcome> {
   const raw = (input ?? {}) as Record<string, unknown>
+  const rewriting = rewritingRefusal(ctx, `Couldn't update Shot ${String(raw.shot_number)} - the shot list is being rewritten`)
+  if (rewriting) return rewriting
   const shot = await loadShotByNumber(ctx.supabase, ctx.projectId, raw.shot_number)
   if (!shot) {
     return {
@@ -458,6 +472,8 @@ export async function handleUpdateShot(input: unknown, ctx: AgentToolContext): P
 
 export async function handleInsertShot(input: unknown, ctx: AgentToolContext): Promise<AgentToolOutcome> {
   const raw = (input ?? {}) as Record<string, unknown>
+  const rewriting = rewritingRefusal(ctx, "Couldn't insert a shot - the shot list is being rewritten")
+  if (rewriting) return rewriting
 
   if (isReadOnlyLocked(ctx)) {
     return {
@@ -490,7 +506,7 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
 
   const { data: existingShots } = await ctx.supabase
     .from('shots')
-    .select('id, order_index, scene_id')
+    .select('id, order_index, scene_id, shot_key')
     .eq('project_id', ctx.projectId)
     .order('order_index', { ascending: false })
   const shots = existingShots ?? []
@@ -516,12 +532,23 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
     newOrderIndex = rawAfter
   }
 
-  // Shift every shot at or after the insertion point up by one, highest order_index
-  // first - shots_project_id_order_index_key is a UNIQUE constraint, so shifting in
-  // ascending order would transiently collide with a row not yet moved.
-  const toShift = shots.filter((s) => s.order_index >= newOrderIndex).sort((a, b) => b.order_index - a.order_index)
-  for (const s of toShift) {
-    const { error } = await ctx.supabase.from('shots').update({ order_index: s.order_index + 1 }).eq('id', s.id)
+  // Shift every shot at or after the insertion point up by one, as one write: a single
+  // upsert keyed on id (the order index's unique constraint is checked at the end of the
+  // statement, as resequenceProjectShots relies on), carrying only identity columns and
+  // order_index - never a field a person may be editing.
+  const toShift = shots.filter((s) => s.order_index >= newOrderIndex)
+  if (toShift.length > 0) {
+    const updatedAt = new Date().toISOString()
+    const { error } = await ctx.supabase.from('shots').upsert(
+      toShift.map((s) => ({
+        id: s.id,
+        project_id: ctx.projectId,
+        shot_key: s.shot_key,
+        order_index: s.order_index + 1,
+        updated_at: updatedAt,
+      })),
+      { onConflict: 'id', defaultToNull: false }
+    )
     if (error) {
       return { kind: 'errored', message: error.message, forModel: { error: error.message } }
     }
@@ -630,6 +657,8 @@ export async function handleInsertShot(input: unknown, ctx: AgentToolContext): P
 // ---------------------------------------------------------------------------
 
 export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolContext): Promise<AgentToolOutcome> {
+  const rewriting = rewritingRefusal(ctx, "Couldn't regenerate shots - the shot list is already being rewritten")
+  if (rewriting) return rewriting
   if (isReadOnlyLocked(ctx)) {
     return {
       kind: 'refused',
@@ -691,6 +720,7 @@ export async function handleRegenerateAllShots(_input: unknown, ctx: AgentToolCo
     const message = "The new shot list couldn't be started. Nothing was changed."
     return { kind: 'errored', message, forModel: { error: message }, shotRunId: result.runId }
   }
+  ctx.shotListRewriting = true
   return {
     kind: 'applied',
     label: 'Started rewriting all shots',

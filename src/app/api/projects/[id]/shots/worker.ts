@@ -54,6 +54,7 @@ import {
   type ShotRunStopReason,
 } from '@/lib/shots/runs'
 import { creditsFor, usdToCredits } from '@/lib/config/credits'
+import { removeUnusedElements } from '@/lib/elements/cleanup'
 
 // The shot-generation chain: one background run of it. Service-role client, so every read
 // and write below is scoped explicitly by project (and the project by user, at load).
@@ -239,7 +240,12 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   ])
   if (!run || run.status !== 'running') return { outcome: 'skipped' }
 
+  // A run that planned from scratch, once its outline exists: what the cleanup at its end
+  // keeps - the outline's names for every scene not yet written.
+  let cleanup: (() => string[]) | null = null
   const finish = async (status: Exclude<ShotRunStatus, 'running'>, stopReason: ShotRunStopReason | null): Promise<ShotsWorkerResult> => {
+    // Before the run reads as ended, so the end-of-run refresh sees Assets without them.
+    if (cleanup) await removeUnusedElements(supabase, projectId, cleanup())
     await finishShotRun(supabase, ledger, runId, { status, stopReason })
     return { outcome: 'finished', status, stopReason, chunks: chunksRun }
   }
@@ -271,8 +277,16 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   let outlineElementNames: Map<number, string[]> | null = null
   // The outline's cost when this run wrote it (the run row read above predates it).
   let outlineCostUsd = 0
+  // The project's elements, loaded once: the outline reuses their names and the style, and
+  // every chunk resolves against them.
+  let elements: ElementResolver | Error | null = null
   if (run.total_scenes === null) {
-    const outline = await writeOutline({ supabase, gateway, run, project, tier, model, usageBase })
+    elements = await ElementResolver.load(supabase, projectId).catch((err: unknown) => err as Error)
+    if (elements instanceof Error) {
+      console.error(`[shots] run ${runId}: could not load the project's elements`, elements.message)
+      return finish('failed', 'error')
+    }
+    const outline = await writeOutline({ supabase, gateway, run, project, tier, model, usageBase, elements })
     if (!outline.ok) return finish('failed', outline.refused ? 'refused' : 'error')
     outlineElementNames = outline.elementNames
     outlineCostUsd = outline.costUsd
@@ -282,7 +296,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   let savedThisRun = 0
 
   // ---- State -------------------------------------------------------------------------------
-  const [scenesResult, chunksResult, shotsResult, elements, holdResult] = await Promise.all([
+  const [scenesResult, chunksResult, shotsResult, elementsResult, holdResult] = await Promise.all([
     supabase
       .from('scenes')
       .select('id, position, title, summary, location, time_of_day, target_seconds, slot_seconds')
@@ -297,7 +311,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       .select('id, scene_id, order_index, voice_over, visual_description, duration_sec, shot_elements(elements(name))')
       .eq('project_id', projectId)
       .order('order_index', { ascending: true }),
-    ElementResolver.load(supabase, projectId).catch((err: unknown) => err as Error),
+    elements ?? ElementResolver.load(supabase, projectId).catch((err: unknown) => err as Error),
     // The hold this run placed at its start - what it spends against before any balance read.
     supabase
       .from('credit_ledger')
@@ -308,10 +322,11 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       .like('dedupe_key', 'hold:%')
       .maybeSingle(),
   ])
-  if (scenesResult.error || chunksResult.error || shotsResult.error || elements instanceof Error) {
+  if (scenesResult.error || chunksResult.error || shotsResult.error || elementsResult instanceof Error) {
     console.error(`[shots] run ${runId}: could not load its state`)
     return finish('failed', 'error')
   }
+  const resolver = elementsResult
   const scenes = scenesResult.data ?? []
   const chunks = (chunksResult.data ?? []) as ChunkRow[]
   // No hold (a run from before holds, or one whose hold can't be read): every chunk then
@@ -345,6 +360,11 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   // Scenes already written: a chunk marked them complete. Only these let a run end
   // 'completed' - a scene with no shots never is.
   const completed = new Set(scenes.filter((sc) => chunks.some((c) => c.scene_id === sc.id && c.scene_complete)).map((sc) => sc.id))
+  // Only with the outline's names in hand: without them an unwritten scene's cast can't be told apart.
+  if (run.kind === 'generate' && outlineElementNames.size > 0) {
+    const names = outlineElementNames
+    cleanup = () => scenes.filter((sc) => !completed.has(sc.id)).flatMap((sc) => names.get(sc.position) ?? [])
+  }
   const targetOf = (scene: SceneRow) => Number(scene.target_seconds ?? tier.targetSeconds / Math.max(1, scenes.length))
   // The stored slots, while every one is a length the project's model renders; a scene from
   // before slots, or one planned for another model, gets its slots worked out afresh here.
@@ -640,7 +660,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       await insertChunkShots(
         supabase,
         projectId,
-        elements,
+        resolver,
         { sceneId: state.scene.id, scenePosition: state.scene.position, chunkIndex },
         saved
       )
@@ -774,9 +794,10 @@ async function rewriteOverCapShots(params: {
     .filter((s): s is { i: number; words: number; cap: number } => s.cap !== null && s.words > s.cap)
   if (overCap.length === 0) return { shots, costUsd: 0 }
 
-  let costUsd = 0
   const fresh: Record<string, ShotRewrite> = {}
-  await Promise.all(
+  // Each rewrite returns its own settled cost; they are summed once all have finished, so
+  // no parallel settle can overwrite another's.
+  const costs = await Promise.all(
     overCap
       .filter(({ i }) => parseShotRewrite(stored[String(i)]) === null)
       .map(async ({ i, words, cap }) => {
@@ -795,6 +816,7 @@ async function rewriteOverCapShots(params: {
         let breakdown: UsageBreakdown | null = null
         let stopReason: string | null = null
         let caught: unknown = null
+        let costUsd = 0
         try {
           const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
             model: modelsConfig.shotRewrite.model,
@@ -826,7 +848,7 @@ async function rewriteOverCapShots(params: {
           console.error(`[shots] rewrite of an over-cap shot failed - it is lengthened instead`, err)
         } finally {
           if (usageId) {
-            costUsd += await settleUsage({
+            costUsd = await settleUsage({
               supabase,
               usageId,
               provider: 'anthropic',
@@ -838,8 +860,10 @@ async function rewriteOverCapShots(params: {
             })
           }
         }
+        return costUsd
       })
   )
+  const costUsd = costs.reduce((sum, c) => sum + c, 0)
 
   // PERSIST the paid rewrites with the chunk's answer before any shot is written.
   if (Object.keys(fresh).length > 0) {
@@ -917,8 +941,10 @@ async function writeOutline(params: {
   tier: DurationConfig
   model: VideoModelConfig
   usageBase: Omit<Parameters<typeof reserveUsage>[0], 'model' | 'quotedCost' | 'quotedBreakdown'>
+  /** The project's elements: their names go to the outline, and its style is kept. */
+  elements: ElementResolver
 }): Promise<{ ok: true; elementNames: Map<number, string[]>; costUsd: number } | { ok: false; refused?: boolean }> {
-  const { supabase, gateway, run, project, tier, model, usageBase } = params
+  const { supabase, gateway, run, project, tier, model, usageBase, elements } = params
   const projectId = usageBase.projectId
   if (!run.generation_id) return { ok: false }
 
@@ -935,7 +961,11 @@ async function writeOutline(params: {
     let caught: unknown = null
     let costUsd = 0
     try {
-      const dynamicBlock = buildOutlineDynamicBlock(project, tier.targetSeconds, videoModelBounds(model))
+      const existing = elements
+        .all()
+        .filter((el) => el.type !== 'style')
+        .map((el) => ({ name: el.name, type: el.type }))
+      const dynamicBlock = buildOutlineDynamicBlock(project, tier.targetSeconds, videoModelBounds(model), existing)
       const userMessage = 'Plan the scenes now.'
       const { estimatedCost, quotedBreakdown } = quoteClaudeCall({
         model: modelsConfig.shotOutline.model,
@@ -1052,15 +1082,15 @@ async function writeOutline(params: {
   }
   await supabase.from('shot_runs').update({ total_scenes: kept.length, updated_at: now }).eq('id', run.id)
 
-  // At most one style: the tool-use API can't express maxItems.
+  // At most one style: the tool-use API can't express maxItems. A project that already has
+  // one keeps it (elements_one_live_style_idx allows one live style per project).
   const style = (Array.isArray(outline.style) ? outline.style : []).find(
     (v): v is { name: string; description: string } =>
       typeof v === 'object' && v !== null && typeof v.name === 'string' && v.name.trim() !== '' && typeof v.description === 'string'
   )
-  if (style) {
+  if (style && !elements.style()) {
     try {
-      const resolver = await ElementResolver.load(supabase, projectId)
-      await resolver.resolve(style.name, 'style', style.description)
+      await elements.resolve(style.name, 'style', style.description)
     } catch (err) {
       console.error(`[shots] run ${run.id}: could not save the style`, err)
     }
@@ -1076,7 +1106,7 @@ async function writeOutline(params: {
     await supabase.from('projects').update({ video_type: videoType, updated_at: now }).eq('id', projectId).eq('video_type', 'auto')
   }
   const message = typeof outline.message === 'string' ? outline.message.trim() : ''
-  if (message) await supabase.from('messages').insert({ project_id: projectId, role: 'assistant', content: message })
+  if (message) await supabase.from('messages').insert({ project_id: projectId, role: 'assistant', kind: 'run_note', content: message })
 
   return { ok: true, elementNames: new Map(kept.map((s, i) => [i, s.element_names])), costUsd: outlineCostUsd }
 }

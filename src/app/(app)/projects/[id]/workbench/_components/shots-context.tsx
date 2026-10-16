@@ -10,7 +10,7 @@ import { SHOT_STATUS_POLL_MS } from '@/lib/config/shots'
 import { sameShotRunView, shotRunChargeLine, type ShotRunView } from './shot-run-view'
 import { parseRailFigures, useRailFigures } from '@/components/rail-figures-context'
 import type { AgentMessage } from '@/components/workbench/agent-message'
-import type { RunElements } from '@/app/api/projects/[id]/shots/list/logic'
+import type { RunElements, ShotList } from '@/app/api/projects/[id]/shots/list/logic'
 
 type ShotsContextValue = {
   projectId: string
@@ -73,6 +73,11 @@ type ShotsContextValue = {
   // messages the run wrote (appended by AgentPanel). Null / empty until a run ends here.
   runElements: RunElements | null
   runMessages: AgentMessage[]
+  /** An agent run's turn and its settled cost line, from the same read - the panel replaces
+   * the turn's line with it. Null until such a run ends here. */
+  runTurn: ShotList['turn']
+  /** An agent turn started a shot run: the page follows it from here, with no page render. */
+  followRun: () => void
 }
 
 // Exported (not just the throwing useShots() hook below) so a shared shell
@@ -112,6 +117,7 @@ export function ShotsProvider({
   const [title, setTitle] = useState(initialTitle)
   const [runElements, setRunElements] = useState<RunElements | null>(null)
   const [runMessages, setRunMessages] = useState<AgentMessage[]>([])
+  const [runTurn, setRunTurn] = useState<ShotList['turn']>(null)
   const [shots, setShots] = useState(initialShots)
   const [videoType, setVideoType] = useState(initialVideoType)
   const [generationState, setGenerationState] = useState(initialGenerationState)
@@ -314,41 +320,47 @@ export function ShotsProvider({
   }, [initialTitle, initialShots, initialVideoType, initialGenerationState, initialHasPendingPayload, initialRun, remainingCredits])
 
   // A run this tab follows has ended: everything it changed is read fresh in one request -
-  // the shot list, its end state, the title, the Assets elements, the run's chat messages and
-  // the rail's figures - never a page render. A failed read falls back to a page render.
-  async function refreshShotList(): Promise<ShotRunView | null> {
+  // the shot list, its end state, the title, the Assets elements, the run's plan note, an
+  // agent run's settled turn line and the rail's figures - never a page render. A failed read
+  // falls back to a page render. The claim settles a moment before the run's charge: a read
+  // that lands between the two is followed by up to RUN_CHARGE_REREADS more, a poll apart,
+  // which apply only the run's end state, its turn line and the rail.
+  async function refreshShotList(reread = 0): Promise<ShotRunView | null> {
     try {
       const response = await fetch(`/api/projects/${projectId}/shots/list`, { cache: 'no-store' })
       if (!response.ok) throw new Error(`status ${response.status}`)
-      const list = (await response.json()) as {
-        title: string | null
-        shots: DisplayShot[]
-        videoType: string | null
-        generationState: string | null
-        hasPendingPayload: boolean
-        run: ShotRunView
-        remainingCredits: number
-        elements: RunElements | null
-        runMessages: AgentMessage[]
-        rail: unknown
+      const list = (await response.json()) as ShotList & { rail: unknown }
+      if (reread === 0) {
+        // A run only ever sets a title, never clears one.
+        setTitle((current) => list.title ?? current)
+        setShots(list.shots)
+        setVideoType(list.videoType)
+        setGenerationState(list.generationState)
+        setHasPendingPayload(list.hasPendingPayload)
+        setRemaining(list.remainingCredits)
+        if (list.elements) setRunElements(list.elements)
+        if (list.runMessages?.length) setRunMessages(list.runMessages)
       }
-      // A run only ever sets a title, never clears one.
-      setTitle((current) => list.title ?? current)
-      setShots(list.shots)
-      setVideoType(list.videoType)
-      setGenerationState(list.generationState)
-      setHasPendingPayload(list.hasPendingPayload)
       setEndedRun(list.run)
-      setRemaining(list.remainingCredits)
-      if (list.elements) setRunElements(list.elements)
-      if (list.runMessages?.length) setRunMessages(list.runMessages)
+      if (list.turn) setRunTurn(list.turn)
       const rail = parseRailFigures(list.rail)
       if (rail) setFigures(rail)
+      const unsettled = list.run.status !== null && list.run.status !== 'running' && list.run.charged === null
+      if (unsettled && reread < RUN_CHARGE_REREADS) {
+        setTimeout(() => void refreshShotList(reread + 1), SHOT_STATUS_POLL_MS)
+      }
       return list.run
     } catch {
-      router.refresh()
+      if (reread === 0) router.refresh()
       return null
     }
+  }
+
+  // An agent turn started a run (regenerate_all_shots): follow it as this tab's own start
+  // would - generating at once, status checks on the latest run - with no page render.
+  function followRun() {
+    setGenerationState('generating')
+    setExpectedRunId(null)
   }
 
   return (
@@ -386,6 +398,8 @@ export function ShotsProvider({
         collapseShot,
         runElements,
         runMessages,
+        runTurn,
+        followRun,
       }}
     >
       <ShotRunProvider
@@ -393,7 +407,7 @@ export function ShotsProvider({
         generating={phase === 'generating'}
         initialRun={initialRun}
         expectedRunId={expectedRunId}
-        onRunEnded={refreshShotList}
+        onRunEnded={() => refreshShotList()}
         onTitle={setTitle}
       >
         {children}
@@ -409,6 +423,9 @@ export function ShotsProvider({
 // were created by ShotsProvider's parent, so this provider's own updates skip them.
 
 const ShotRunContext = createContext<ShotRunView | null>(null)
+
+/** How many more end-of-run reads wait for a run's charge after its claim has settled. */
+const RUN_CHARGE_REREADS = 3
 
 function ShotRunProvider({
   projectId,

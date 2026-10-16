@@ -8,7 +8,8 @@ export const maxDuration = 300
 
 // Read by the Workbench once a shot run ends - everything the run changed on the page, and
 // the rail's figures with its settle in them - never router.refresh(). Three round trips: the
-// user, then one wave (the list's reads and the rail's two), then the elements' signing.
+// user, then one wave (the list's reads and the rail's two), then the elements' signing - and
+// for a settled agent run a fourth, its turn's dollar cost.
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id: projectId } = await params
 

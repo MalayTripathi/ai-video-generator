@@ -187,6 +187,16 @@ export class ElementResolver {
     return new ElementResolver(supabase, projectId, data ?? [])
   }
 
+  /** Every live element known to this resolver - loaded or created since. */
+  all(): ElementRow[] {
+    return [...this.byLowerName.values()]
+  }
+
+  /** The project's one live style element, if it has one. */
+  style(): ElementRow | null {
+    return this.all().find((el) => el.type === 'style') ?? null
+  }
+
   async resolve(name: string, type: string, description: string | null): Promise<ElementRow> {
     const key = name.trim().toLowerCase()
     const existing = this.byLowerName.get(key)

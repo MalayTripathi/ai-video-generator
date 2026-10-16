@@ -914,9 +914,9 @@ A generate run replaces the shot list wholesale once its outline payload is dura
 persisted: it deletes the project's `shots` (cascading `shot_elements`) and `scenes`, then
 writes the new scenes - a crash between the two leaves the payload for the next retry.
 Each chunk's payload is stored on its `shot_run_chunks` row before its shots are written.
-`elements` are never deleted: they're project-level and deduped by name, so
-`ElementResolver` re-matches existing rows (including any reference image already
-generated) on replay instead of creating duplicates. This is what makes the
+`elements` survive the delete, deduped by name, so `ElementResolver` re-matches them on
+replay; only the run's end hard-deletes unused ones, never protected ones
+(`src/lib/elements/cleanup.ts`). This is what makes the
 confirmation modal's "existing shots will be replaced" copy true rather than aspirational.
 
 `/image-prompts` (`runImagePromptGeneration`, `step: 'image_prompts'`, `operation:

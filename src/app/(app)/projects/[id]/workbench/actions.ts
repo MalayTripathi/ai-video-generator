@@ -598,6 +598,14 @@ export async function bindElementToShotForUser(
     }
   }
 
+  // A person attaching it marks it theirs to keep - before the binding, so the end-of-run
+  // cleanup (elements/cleanup.ts) can never remove it between the two writes.
+  const { error: editedError } = await supabase
+    .from('elements')
+    .update({ user_edited_at: new Date().toISOString() })
+    .eq('id', elementId)
+  if (editedError) return { success: false, error: editedError.message }
+
   const { error } = await supabase.from('shot_elements').insert({ shot_id: shotId, element_id: elementId })
   if (error) {
     // (shot_id, element_id) is the table's PRIMARY KEY - already-bound is a unique

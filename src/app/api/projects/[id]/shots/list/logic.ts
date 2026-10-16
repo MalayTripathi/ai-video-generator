@@ -13,15 +13,17 @@ import { getElementGenerateAffordability } from '@/app/(app)/projects/[id]/workb
 import { getProjectElementsForUser, type ElementGroup } from '@/lib/elements/read'
 import { AGENT_MESSAGE_COLUMNS, buildAgentMessages } from '@/lib/build-agent-messages'
 import type { AgentMessage } from '@/components/workbench/agent-message'
+import { sumTurnCost } from '@/lib/usage/turn-cost'
 
 type Client = SupabaseClient<Database>
 
 // What the Workbench refreshes when a shot run ends - everything a run changes on the page,
 // never a page render: the shot list, the run's end state, the title, the Assets elements and
-// their generate gate, and the chat messages the run wrote (the outline's). One wave: the
-// shots (dialogue embedded), the project (its claim, latest run, scenes and run-authored
-// messages embedded), the run's hold and settle rows, the elements and the balance; then the
-// elements' image signing. The rail's figures ride on the route.
+// their generate gate, the run's plan note, and for an agent run its turn's settled cost line.
+// One wave: the shots (dialogue embedded), the project (its claim, latest run, scenes and plan
+// notes embedded), the run's hold and settle rows, the elements and the balance; then the
+// elements' image signing, and for a settled agent run its turn's dollar cost. The rail's
+// figures ride on the route.
 
 /** The Assets tab's state after a run, or null when the elements could not be read. */
 export type RunElements = { groups: ElementGroup[]; expiresAt: string; generateCredits: number; hasInsufficientBalance: boolean }
@@ -35,8 +37,11 @@ export type ShotList = {
   run: ShotRunView
   remainingCredits: number
   elements: RunElements | null
-  /** Messages the run itself wrote (no client id, created since it started), oldest first. */
+  /** The run's plan note (kind run_note, written since it started), oldest first. */
   runMessages: AgentMessage[]
+  /** An agent run's turn, once the run is settled: its user message id and its final cost
+   * line - credits net of the hold's refund, and dollars - which replaces the turn's own. */
+  turn: { messageId: string; credits: number; usd: number } | null
 }
 
 type ProjectRow = {
@@ -46,7 +51,17 @@ type ProjectRow = {
   image_quality: string
   duration_target: string | null
   generations: { state: string; payload: unknown }[]
-  shot_runs: { id: string; attempt_id: string; status: string; stop_reason: string | null; total_scenes: number | null; charged_at: string | null; created_at: string }[]
+  shot_runs: {
+    id: string
+    attempt_id: string
+    status: string
+    stop_reason: string | null
+    total_scenes: number | null
+    charged_at: string | null
+    created_at: string
+    message_id: string | null
+    agent_generation_id: string | null
+  }[]
   scenes: Parameters<typeof sceneProgress>[0][]
   messages: Parameters<typeof buildAgentMessages>[0]
 }
@@ -64,7 +79,7 @@ export async function loadShotList(params: {
     supabase
       .from('projects')
       .select(
-        `title, video_type, duration_target, image_model, image_quality, generations(state, payload), shot_runs(id, attempt_id, status, stop_reason, total_scenes, charged_at, created_at), scenes(target_seconds, shot_run_chunks(scene_complete), shots(duration_sec)), messages(${AGENT_MESSAGE_COLUMNS})`
+        `title, video_type, duration_target, image_model, image_quality, generations(state, payload), shot_runs(id, attempt_id, status, stop_reason, total_scenes, charged_at, created_at, message_id, agent_generation_id), scenes(target_seconds, shot_run_chunks(scene_complete), shots(duration_sec)), messages(${AGENT_MESSAGE_COLUMNS})`
       )
       .eq('id', projectId)
       .eq('user_id', userId)
@@ -73,7 +88,7 @@ export async function loadShotList(params: {
       .is('generations.shot_id', null)
       .order('created_at', { referencedTable: 'shot_runs', ascending: false })
       .limit(1, { referencedTable: 'shot_runs' })
-      .is('messages.client_id', null)
+      .eq('messages.kind', 'run_note')
       .order('created_at', { referencedTable: 'messages', ascending: true })
       .maybeSingle()
   )
@@ -103,7 +118,18 @@ export async function loadShotList(params: {
 
   const project = projectResult.data as unknown as ProjectRow
   const run = project.shot_runs[0] ?? null
-  const charge = holdAndSettle(run ? (ledgerResult.data ?? []).filter((r) => r.attempt_id === run.attempt_id) : [])
+  const runLedger = run ? (ledgerResult.data ?? []).filter((r) => r.attempt_id === run.attempt_id) : []
+  const charge = holdAndSettle(runLedger)
+  // A settled agent run: its turn's net credits from the rows already read; its dollars are
+  // the one extra read, summed over every call the turn and its chain made.
+  const turnMessageId = run?.agent_generation_id && run.message_id && run.charged_at ? run.message_id : null
+  const turn = turnMessageId
+    ? {
+        messageId: turnMessageId,
+        credits: -runLedger.reduce((sum, r) => sum + r.delta, 0),
+        usd: await sumTurnCost(supabase, turnMessageId),
+      }
+    : null
   const rows = (shotsResult.data ?? []) as unknown as (WorkbenchShotRow & { shot_dialogue: DialogueEmbed[] })[]
   const shots = rows.map((row) =>
     toDisplayShot(
@@ -114,8 +140,7 @@ export async function loadShotList(params: {
     )
   )
   const generation = project.generations[0] ?? null
-  // The run's own messages: an agent turn's rows carry its client id and are already in the
-  // panel, so only the run-authored ones (no client id) since the run began are new.
+  // The run's plan note: only notes are read, and only those since the run began are its own.
   const runRows = run ? project.messages.filter((m) => Date.parse(m.created_at) >= Date.parse(run.created_at)) : []
   const shotNumberByKey = new Map(shots.map((s) => [s.shot_key, s.order_index + 1]))
   if (!elementsResult.success) console.error(`[shots] list: elements unreadable for project ${projectId}:`, elementsResult.error)
@@ -136,6 +161,7 @@ export async function loadShotList(params: {
         ? { groups: elementsResult.groups, expiresAt: elementsResult.expires_at, ...affordability }
         : null,
       runMessages: buildAgentMessages(runRows, shotNumberByKey, new Map(), new Map()),
+      turn,
     },
   }
 }
