@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
+import { grantAndReadBalance } from './helpers/ledger-child'
 
 // The generation route is always mocked: these tests drive the client and the layout, never
 // a model call. The balance preflight and saves go through the real server actions.
@@ -68,8 +69,9 @@ async function generationRows(projectId: string) {
 }
 
 async function sellOffBalance(userId: string, leave: number) {
-  // Balance is the SUM of the ledger; the layout grants the signup credits on first load,
-  // so this spend leaves exactly `leave` once that grant lands.
+  // Balance is the SUM of the ledger. The layout grants the signup credits only to a user
+  // with no ledger rows, so the grant is materialized before the spend that drains it.
+  await grantAndReadBalance(userId)
   const { error } = await admin.from('credit_ledger').insert({
     user_id: userId,
     kind: 'spend',

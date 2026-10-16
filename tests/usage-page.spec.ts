@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { aggregateUsage, type UsageRow, type ProjectMeta } from '../src/app/(app)/usage/aggregate'
 import { getPeriodRange } from '../src/app/(app)/usage/period'
-import { STALE_AFTER_MS } from '../src/lib/generations/operation-policy'
+import { STALE_AFTER_MS, getOperationPolicy } from '../src/lib/generations/operation-policy'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -80,20 +80,46 @@ test.describe('aggregateUsage', () => {
   })
 
   test('the stale-pending anomaly boundary derives from STALE_AFTER_MS, not a literal', () => {
+    // write_video_prompts still runs on the default window.
     const now = new Date('2026-08-31T12:00:00.000Z')
+    const staleRow = row({
+      step: 'video_prompts',
+      operation: 'write_video_prompts',
+      status: 'pending',
+      estimated_cost: 0.5,
+      created_at: new Date(now.getTime() - STALE_AFTER_MS - 1_000).toISOString(),
+    })
+    const freshRow = row({
+      step: 'video_prompts',
+      operation: 'write_video_prompts',
+      status: 'pending',
+      estimated_cost: 0.5,
+      created_at: new Date(now.getTime() - STALE_AFTER_MS + 1_000).toISOString(),
+    })
+
+    const aggregation = aggregateUsage([staleRow, freshRow], [], now)
+
+    expect(aggregation.anomalies.stalePending.count).toBe(1)
+    expect(aggregation.anomalies.stalePending.total).toBeCloseTo(0.5, 6)
+  })
+
+  test('the stale-pending boundary for generate_shots is its own route-length window, well inside the default', () => {
+    const now = new Date('2026-08-31T12:00:00.000Z')
+    const windowMs = getOperationPolicy('generate_shots').staleAfterMs
+    expect(windowMs).toBeLessThan(STALE_AFTER_MS)
     const staleRow = row({
       step: 'workbench',
       operation: 'generate_shots',
       status: 'pending',
       estimated_cost: 0.5,
-      created_at: new Date(now.getTime() - STALE_AFTER_MS - 1_000).toISOString(),
+      created_at: new Date(now.getTime() - windowMs - 1_000).toISOString(),
     })
     const freshRow = row({
       step: 'workbench',
       operation: 'generate_shots',
       status: 'pending',
       estimated_cost: 0.5,
-      created_at: new Date(now.getTime() - STALE_AFTER_MS + 1_000).toISOString(),
+      created_at: new Date(now.getTime() - windowMs + 1_000).toISOString(),
     })
 
     const aggregation = aggregateUsage([staleRow, freshRow], [], now)

@@ -409,15 +409,28 @@ test.describe('module hygiene', () => {
     // upload-url imports only mintAttemptId - it names the attempt an upload's alignment
     // is later charged under. The music routes make nineteen, the same shape: generate imports the
     // real writer (route.ts) with a type-only logic.ts, and upload-url imports only
-    // mintAttemptId (it names the stored file). Any importer beyond these means a second,
-    // unreviewed call site.
+    // mintAttemptId (it names the stored file). The shot-run rework moved shot billing to
+    // holds: shots/logic.ts no longer references this module, shots/route.ts imports only
+    // mintAttemptId, shots/schedule.ts injects the real placeHold/settleHold into the run,
+    // and lib/shots/runs.ts takes them type-only; workbench/page.tsx injects the same pair
+    // to release a dead run's hold. The image status read finishes an image or a linked
+    // voiceover and charges it once by attempt id: images/status/route.ts and
+    // storyboard/page.tsx inject the real recordFixedSpend, images/status/logic.ts and
+    // lib/voiceover/complete-linked.ts take it type-only. Any importer beyond these means a
+    // second, unreviewed call site.
     const srcDir = path.resolve(__dirname, '../src')
     const ownFile = path.resolve(__dirname, '../src/lib/credits/ledger.ts')
     const expectedImporters = [
       path.resolve(__dirname, '../src/app/api/projects/[id]/agent/logic.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/agent/route.ts'),
-      path.resolve(__dirname, '../src/app/api/projects/[id]/shots/logic.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/shots/route.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/shots/schedule.ts'),
+      path.resolve(__dirname, '../src/lib/shots/runs.ts'),
+      path.resolve(__dirname, '../src/app/(app)/projects/[id]/workbench/page.tsx'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/images/status/logic.ts'),
+      path.resolve(__dirname, '../src/app/api/projects/[id]/images/status/route.ts'),
+      path.resolve(__dirname, '../src/app/(app)/projects/[id]/storyboard/page.tsx'),
+      path.resolve(__dirname, '../src/lib/voiceover/complete-linked.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/shots/[shotId]/camera/logic.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/shots/[shotId]/camera/route.ts'),
       path.resolve(

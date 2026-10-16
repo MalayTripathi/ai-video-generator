@@ -107,11 +107,12 @@ async function seed(userId: string, opts: { furthestStep: number; shots: ShotSpe
       voiceover_generated_at: new Date().toISOString(),
       voiceover_spans: inFilm.map((id) => {
         const i = ids.indexOf(id)
+        const text = edited ? `An older line ${i + 1}.` : `Line ${i + 1}.`
         return {
           shotId: id,
           from: 0,
-          to: 0,
-          text: edited ? `An older line ${i + 1}.` : `Line ${i + 1}.`,
+          to: text.length,
+          text,
           startSec: (inFilm.indexOf(id) * totalSec) / inFilm.length,
           endSec: ((inFilm.indexOf(id) + 1) * totalSec) / inFilm.length,
         }
@@ -242,7 +243,7 @@ test.describe('Storyboard footer button', () => {
     await expect(notes).toHaveCount(4)
     await expect(notes.nth(0)).toHaveText('1 frame is stale — video prompts will be written from it as it is.')
     await expect(notes.nth(1)).toHaveText('The voiceover is stale — it no longer matches the shots in the film.')
-    await expect(notes.nth(2)).toHaveText('The voiceover is 0:20 and the picture is 0:10 — they differ in length.')
+    await expect(notes.nth(2)).toHaveText('The voiceover runs to 0:20 and the picture is 0:10 — the end of the narration is cut off.')
     await expect(notes.nth(3)).toContainText('shorter than the picture')
     await expect(page.getByRole('dialog').getByRole('button', { name: 'Generate' })).toBeEnabled()
   })
