@@ -1702,3 +1702,35 @@ entry must come before the `"**": false` catch-all. With `"**"` listed first, a 
 check passed on the broken order because it tested each pattern independently, ignoring
 order — so it cannot verify this config, and order has to be checked by reading the file.
 `**` rather than `*` is used so branch names containing `/` are blocked too.
+
+## Project deletion: plain spend ids, a deleted_projects record, replaced-file cleanup
+*Supports: the `usage` paragraph and the teardown bullet in CLAUDE.md.*
+
+**Why `credit_ledger` and `usage` hold plain ids.** A project's credit history and its real
+spend must outlive it. A foreign key could only cascade (losing history) or set null
+(losing which project it was, and which shot - the old `usage.shot_id` gap). Plain ids keep
+both, and a charge that lands after the delete still writes.
+
+**Why a `deleted_projects` table, not soft-deleting `projects`.** Every reader of `projects`
+would need a filter, and one missed filter shows a deleted project. The record is keyed by
+the project's own id, so a spend row resolves its name from `projects` or `deleted_projects`
+by the same id. A live `projects` row always wins, so a delete that fails after the record is
+written never reads as deleted. No spend snapshot is stored; spend is computed live.
+
+**Why deletion refuses while anything is live or held.** Its shot runs go with the project,
+and a hold settled at exactly its amount is closed only by its run's `charged_at` - nothing
+could settle a hold afterwards. Dead runs are settled first through the existing path, and
+`credit_balances` and `releaseStaleHolds` treat a deleted project's run-less hold as closed;
+without that, the next balance read would refund it in full.
+
+**Why replaced files are deleted at the commit, but queued during an export.** Nothing reads
+an older version of an image, voiceover, music file or reference image. The export worker
+downloads its inputs at render start, so while an export is queued or rendering a replaced
+path goes to `pending_storage_deletions` and the worker removes it when the export ends. A
+path any `generations.payload` holds is never removed: a resume may relink paid output.
+
+**Why `generations.element_id` is NO ACTION.** Cascading let an element delete silently take
+a reference claim that started in the same instant. NO ACTION makes that delete fail (23503)
+and the element is kept; it is checked at statement end, so a project delete that removes
+elements and generations together still succeeds. Cleanup deletes only finished rows with no
+payload first; a person's own element delete takes payload rows too.

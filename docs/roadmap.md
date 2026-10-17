@@ -52,12 +52,6 @@ are not lost.
   `visual-description-field.tsx`/`voiceover-field.tsx` now initialize their `touched`
   state from the persisted value's own validity, so a shot arriving from generation with
   an empty required field shows its error on load, with no click required first.
-- **`usage.shot_id` stores the shot's id, not `shot_key`, and goes `null` when the
-  shot is deleted** (e.g. a shot-list regeneration deletes and reinserts every shot
-  for the project). A `derive_camera` `usage` row therefore loses any link to which
-  shot it was for once that shot is gone - discovered backfilling the credit ledger,
-  where one such row's `shot_id` was already null with no way to recover which shot
-  it belonged to. Not fixed here.
 - **UI tests' fixed 5s/10s waits flake when concurrency is raised on this machine.**
   Tests that wait on a save, a server action or a `router.refresh()` (seen in
   `agent-chat-panel`, `shot-editing`, `shot-deletion`, `camera-derivation`) assume the
@@ -111,9 +105,6 @@ are not lost.
 
 ## Unbuilt product surface
 
-- **Launch blocker — Storage lifecycle.** Project delete (rows + storage) does not exist;
-  deleted/replaced shots leave images in storage. Remove superseded files of genuinely
-  deleted shots only; stale outputs are kept.
 - **Video-prompt generation (`write_video_prompts`, `step: 'video_prompts'`) has no
   route at all.** The old combined `/api/projects/[id]/prompts` route (which
   incorrectly generated both `image_prompt` and `video_prompt` in one call,

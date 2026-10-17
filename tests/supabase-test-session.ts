@@ -2,7 +2,7 @@ import './load-env'
 import { createClient } from '@supabase/supabase-js'
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { removeStorageUnder } from './storage-cleanup'
+import { removeStorageUnder } from '@/lib/storage/sweep'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
@@ -87,8 +87,8 @@ async function createTestUser() {
 
 /**
  * Wipes every row a pool user owns and returns it to the pool. usage and credit_ledger go
- * first: their project_id is ON DELETE SET NULL, so deleting projects first would orphan
- * them instead (the global-teardown order). The signup grant is lazy and dedupe-keyed, so the
+ * first, by user_id: their project_id is a plain id that a project delete never touches
+ * (the global-teardown order). The signup grant is lazy and dedupe-keyed, so the
  * next claim starts from a fresh grant. A failed wipe keeps the user claimed - global setup
  * retries it - rather than handing the next test a user with rows.
  */
@@ -103,7 +103,7 @@ export async function releaseTestUser(userId: string) {
 
 async function wipeUserRows(userId: string): Promise<boolean> {
   let ok = true
-  for (const table of ['usage', 'credit_ledger', 'exports', 'projects'] as const) {
+  for (const table of ['usage', 'credit_ledger', 'exports', 'projects', 'deleted_projects'] as const) {
     const { error } = await admin.from(table).delete().eq('user_id', userId)
     if (error) {
       console.error(`[test-session] ${table} cleanup for ${userId} failed:`, error.message)

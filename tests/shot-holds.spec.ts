@@ -280,7 +280,7 @@ test.describe('shot holds - dead runs are released per user', () => {
       // Scene A is written, then the chain dies (its hand-off is accepted but never runs).
       const slow = chainGateway({
         outline: fakeOutline([{ title: 'A', seconds: 20 }, { title: 'B', seconds: 25 }]),
-        delayMs: 4_500,
+        delayMs: 8_500,
         chunk: () => ({ shots: [1, 2, 3].map((i) => fakeShot(`d${i} spoken words here`)), scene_complete: true }),
       })
       const { request } = await runChain({
@@ -290,7 +290,7 @@ test.describe('shot holds - dead runs are released per user', () => {
         ledger: REAL_SHOT_LEDGER,
         topUp: false,
         concurrency: 1,
-        runBudgetMs: 4_000,
+        runBudgetMs: 8_000,
         handOff: () => 'drop',
       })
       const runId = (request as { runId: string }).runId

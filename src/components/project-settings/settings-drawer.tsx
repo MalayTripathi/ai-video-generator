@@ -10,6 +10,7 @@ import { QualityPicker } from '@/components/quality/quality-picker'
 import { maxShotSeconds, parseQualitySettings, type QualitySettings } from '@/lib/quality/estimate'
 import { isVideoSettingsLocked, type ShotLengthChange } from '@/lib/projects/settings'
 import { previewProjectSettingsTrims, saveProjectSettings } from '@/app/(app)/projects/[id]/actions'
+import { DeleteProjectModal } from '@/components/delete-project-modal'
 
 export type SettingsProject = {
   id: string
@@ -56,7 +57,7 @@ type Confirm = { trims: ShotLengthChange[]; modelChanged: boolean }
 // The header settings chip and the drawer it opens (canvas section 18). Changes are
 // staged: nothing is written until Apply, which confirms first when the change has
 // consequences - shots the new model cannot make at their length, or video prompts to mark stale.
-export function SettingsChip({ project, label }: { project: SettingsProject; label: string }) {
+export function SettingsChip({ project, title, label }: { project: SettingsProject; title: string; label: string }) {
   const router = useRouter()
   const saved = savedSettings(project)
   const [open, setOpen] = useState(false)
@@ -66,6 +67,7 @@ export function SettingsChip({ project, label }: { project: SettingsProject; lab
   const [confirm, setConfirm] = useState<Confirm | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const chipClass =
     'flex items-center gap-[5px] rounded-full border border-accent-faint px-[10px] py-1 text-chip text-accent'
@@ -204,6 +206,24 @@ export function SettingsChip({ project, label }: { project: SettingsProject; lab
                     {error}
                   </span>
                 )}
+                {/* Outside the staged changes (canvas 19 B1/B2): never makes Apply active, stays
+                    available when locked, and leaves staged settings as they were. */}
+                <div
+                  data-testid="project-settings-delete"
+                  className="mt-auto flex flex-col gap-rc-xs border-t border-border-subtle pt-[22px]"
+                >
+                  <span className="text-label tracking-label text-text-tertiary uppercase">Delete project</span>
+                  <span className="text-meta leading-[1.5] text-text-secondary text-pretty">
+                    Permanently delete this project and everything generated in it.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setDeleting(true)}
+                    className="h-[34px] cursor-pointer self-start rounded-control border border-status-failed-fg bg-transparent px-rc-md text-control font-medium text-status-failed-fg outline-none hover:bg-status-failed-bg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    Delete project
+                  </button>
+                </div>
               </div>
 
               <div className="flex flex-none justify-end gap-[10px] border-t border-border-subtle px-rc-lg py-[14px]">
@@ -226,6 +246,14 @@ export function SettingsChip({ project, label }: { project: SettingsProject; lab
                 </button>
               </div>
             </aside>
+            {deleting && (
+              <DeleteProjectModal
+                projectId={project.id}
+                title={title}
+                onClose={() => setDeleting(false)}
+                onDeleted={() => router.replace('/dashboard?deleted=1')}
+              />
+            )}
             {confirm && (
               <ApplyConfirm
                 confirm={confirm}

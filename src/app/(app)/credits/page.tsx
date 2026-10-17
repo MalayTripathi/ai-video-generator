@@ -7,7 +7,8 @@ import { parsePeriod } from '../usage/period'
 import { readBalance } from '@/lib/credits/balance'
 import { readSettledBalance } from '@/lib/credits/release-stale-holds'
 import { getLedgerGroups, readLedgerGroups } from './data'
-import { aggregateCreditsPeriod, type ProjectMeta } from './aggregate'
+import { aggregateCreditsPeriod } from './aggregate'
+import { readProjectMetas } from '@/lib/projects/project-meta'
 import { PeriodSelector } from './period-selector'
 import { CreditsSummary } from './credits-summary'
 import { CreditsByStep } from './credits-by-step'
@@ -46,15 +47,8 @@ export default async function CreditsPage({ searchParams }: { searchParams: Prom
 
   const projectIds = [...new Set(periodGroups.map((row) => row.project_id).filter((id): id is string => id !== null))]
 
-  let projects: ProjectMeta[] = []
-  if (projectIds.length > 0) {
-    const { data: projectRows } = await supabase
-      .from('projects')
-      .select('id, title, source_text, video_type, duration_target')
-      .in('id', projectIds)
-      .eq('user_id', user.id)
-    projects = projectRows ?? []
-  }
+  // Live and deleted projects, by id, in parallel (lib/projects/project-meta.ts).
+  const projects = await readProjectMetas(supabase, user.id, projectIds)
 
   const aggregation = aggregateCreditsPeriod(periodGroups, projects)
 

@@ -31,7 +31,20 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
  *   leaves the row 'pending'. A row stuck 'pending' is the deliberate signal for a call
  *   that died mid-flight: it over-counts against a future spend cap rather than
  *   under-counting, which is the safe direction to be wrong in.
+ *
+ * usage.project_id is a plain id (no foreign key, so a deleted project keeps its spend), and
+ * the workers reserve with the service-role client, past RLS. So reserveUsage itself checks,
+ * with one primary-key read, that the project row still exists: a project deleted mid-run
+ * starts no further paid call. It throws ProjectGoneError, before any row is written.
  */
+
+/** The project was deleted before this call reserved: no paid call may start. */
+export class ProjectGoneError extends Error {
+  constructor(projectId: string) {
+    super(`Project ${projectId} no longer exists`)
+    this.name = 'ProjectGoneError'
+  }
+}
 
 export async function reserveUsage(params: {
   supabase: SupabaseServerClient
@@ -39,8 +52,7 @@ export async function reserveUsage(params: {
   projectId: string
   // Nullable: derive_camera has no `generations` row to attach to (see pipeline.ts's
   // OPERATIONS comment) - every other call site keeps passing a real generation id.
-  // usage.generation_id is already ON DELETE SET NULL, so this is a pure
-  // application-layer typing change, no migration needed.
+  // usage.generation_id is a plain id, so this is a pure application-layer typing change.
   generationId: string | null
   shotId: string | null
   // Nullable and optional: only an agent-turn call groups its spend under a chat
@@ -53,6 +65,14 @@ export async function reserveUsage(params: {
   quotedCost: number
   quotedBreakdown: UsageBreakdown
 }): Promise<{ usageId: string }> {
+  const { data: project, error: projectError } = await params.supabase
+    .from('projects')
+    .select('id')
+    .eq('id', params.projectId)
+    .maybeSingle()
+  if (projectError) throw new Error(`reserveUsage project check failed: ${projectError.message}`)
+  if (!project) throw new ProjectGoneError(params.projectId)
+
   const now = new Date().toISOString()
 
   const { data, error } = await params.supabase

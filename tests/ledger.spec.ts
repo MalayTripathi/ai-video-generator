@@ -416,8 +416,11 @@ test.describe('module hygiene', () => {
     // to release a dead run's hold. The image status read finishes an image or a linked
     // voiceover and charges it once by attempt id: images/status/route.ts and
     // storyboard/page.tsx inject the real recordFixedSpend, images/status/logic.ts and
-    // lib/voiceover/complete-linked.ts take it type-only. Any importer beyond these means a
-    // second, unreviewed call site.
+    // lib/voiceover/complete-linked.ts take it type-only. Project deletion releases holds:
+    // lib/projects/deletion-guard.ts reads the hold and settle key prefixes to find a
+    // project's open holds, and lib/projects/delete-project.ts refunds a hold placed after
+    // the activity check through settleHold. Any importer beyond these means a second,
+    // unreviewed call site.
     const srcDir = path.resolve(__dirname, '../src')
     const ownFile = path.resolve(__dirname, '../src/lib/credits/ledger.ts')
     const expectedImporters = [
@@ -452,6 +455,8 @@ test.describe('module hygiene', () => {
       path.resolve(__dirname, '../src/app/api/projects/[id]/music/logic.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/music/route.ts'),
       path.resolve(__dirname, '../src/app/api/projects/[id]/music/upload-url/route.ts'),
+      path.resolve(__dirname, '../src/lib/projects/deletion-guard.ts'),
+      path.resolve(__dirname, '../src/lib/projects/delete-project.ts'),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []

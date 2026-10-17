@@ -4,7 +4,8 @@ import { getCurrentUser } from '@/lib/auth/current-user'
 import { TopBar } from '../dashboard/top-bar'
 import { parsePeriod } from './period'
 import { getUsageRows } from './data'
-import { aggregateUsage, type ProjectMeta } from './aggregate'
+import { aggregateUsage } from './aggregate'
+import { readProjectMetas } from '@/lib/projects/project-meta'
 import { PeriodSelector } from './period-selector'
 import { UsageSummary } from './usage-summary'
 import { UsageByStep } from './usage-by-step'
@@ -27,15 +28,8 @@ export default async function UsagePage({ searchParams }: { searchParams: Promis
 
   const projectIds = [...new Set(rows.map((row) => row.project_id).filter((id): id is string => id !== null))]
 
-  let projects: ProjectMeta[] = []
-  if (projectIds.length > 0) {
-    const { data: projectRows } = await supabase
-      .from('projects')
-      .select('id, title, source_text, video_type, duration_target')
-      .in('id', projectIds)
-      .eq('user_id', user.id)
-    projects = projectRows ?? []
-  }
+  // Live and deleted projects, by id, in parallel (lib/projects/project-meta.ts).
+  const projects = await readProjectMetas(supabase, user.id, projectIds)
 
   const aggregation = aggregateUsage(rows, projects)
 

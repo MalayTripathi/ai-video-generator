@@ -98,4 +98,10 @@ export const PROTECTED_SMOKE: Record<string, { file: string; title: string }[]> 
       title: 'saving is not advancing: current_step and furthest_step are untouched',
     },
   ],
+  'project deletion keeps spend history': [
+    {
+      file: 'project-deletion.spec.ts',
+      title: 'deletes the project and its files; every ledger and usage row survives unchanged and late charges still land',
+    },
+  ],
 }

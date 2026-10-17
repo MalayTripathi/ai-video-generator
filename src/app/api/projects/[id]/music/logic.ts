@@ -40,6 +40,7 @@ import {
   WRITE_MUSIC_STYLE_TOOL,
 } from '@/lib/prompts/music-style'
 import { errorMessage, gate, getObject, loadEditableProject, putObject, type Refusal } from '../voiceover/logic'
+import { discardReplacedFiles } from '@/lib/storage/replaced'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type GenerationRow = Tables<'generations'>
@@ -73,6 +74,8 @@ async function linkMusic(
   fields: { path: string; durationSec: number; source: 'generated' | 'uploaded' }
 ): Promise<string | null> {
   const now = new Date().toISOString()
+  // The piece being replaced, re-read at the commit (a generation can run for minutes).
+  const { data: previous } = await supabase.from('projects').select('user_id, music_path').eq('id', projectId).maybeSingle()
   const { error } = await supabase
     .from('projects')
     .update({
@@ -85,7 +88,17 @@ async function linkMusic(
       updated_at: now,
     })
     .eq('id', projectId)
-  return error?.message ?? null
+  if (error) return error.message
+  if (previous) {
+    // The replaced piece goes under the replaced-file rules (lib/storage/replaced.ts).
+    await discardReplacedFiles({
+      userId: previous.user_id,
+      projectId,
+      paths: [previous.music_path],
+      keep: [fields.path],
+    })
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------------------

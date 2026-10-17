@@ -1,4 +1,4 @@
-import { notFound, redirect } from 'next/navigation'
+import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getCurrentUser } from '@/lib/auth/current-user'
 import { storyboardImagePriceKey } from '@/lib/images/price-key'
@@ -19,6 +19,7 @@ import { getBalance } from '@/lib/credits/balance'
 import { ASPECT_RATIOS, type AspectRatio } from '@/lib/config/enums'
 import type { Tables } from '@/lib/database.types'
 import { signStoryboardImages, storyboardThumbUrl } from '@/app/api/projects/[id]/images/status/logic'
+import { missingProject } from '@/lib/projects/missing-project'
 
 type ElementRow = Pick<Tables<'elements'>, 'id' | 'name' | 'type' | 'status' | 'reference_image_path'>
 // Only the columns Step 3 renders, plus what the header (durations) and the agent panel
@@ -125,7 +126,7 @@ export default async function ImagePromptsPage({ params }: { params: Promise<{ i
     throw new Error(`Could not load project ${projectId}: ${projectError.message}`)
   }
   if (!project) {
-    notFound()
+    return missingProject(supabase, projectId)
   }
 
   // View-gate only: a user whose furthest_step hasn't reached this page yet must not see

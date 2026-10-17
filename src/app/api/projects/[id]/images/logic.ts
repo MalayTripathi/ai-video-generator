@@ -33,6 +33,7 @@ import {
 import { assertWithinAllowance, reserveUsage, settleUsage } from '@/lib/usage'
 import { liveAudioCommittedCredits } from '@/lib/voiceover/committed'
 import { estimateInputTokens, quoteOpenAiImageCall } from '@/lib/usage/quote'
+import { discardFolderExcept } from '@/lib/storage/replaced'
 import type { UsageBreakdown } from '@/lib/config/pricing'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
@@ -378,8 +379,13 @@ function readStoredPayload(payload: Json | null): StoredImagePayload | null {
   return { path: p.path, attemptId: p.attemptId, price: validPrice ? price : null }
 }
 
+/** Every image file of one shot lives here; deleting the shot sweeps it. */
+export function storyboardImageDir(userId: string, projectId: string, shotId: string): string {
+  return `${userId}/${projectId}/images/${shotId}`
+}
+
 export function storyboardImagePath(userId: string, projectId: string, shotId: string, attemptId: string): string {
-  return `${userId}/${projectId}/images/${shotId}/${attemptId}.webp`
+  return `${storyboardImageDir(userId, projectId, shotId)}/${attemptId}.webp`
 }
 
 // The lane thumbnail sits beside its full image: `{attemptId}.webp` -> `{attemptId}_thumb.webp`.
@@ -414,19 +420,27 @@ async function loadReferenceImages(supabase: SupabaseServerClient, shotId: strin
   return buffers
 }
 
-// The one write that stores a new image - and the only place image_stale is cleared.
+// The one write that stores a new image - and the only place image_stale is cleared. Once
+// it commits, the shot's other image files (the one it replaced, failed attempts' leftovers)
+// are removed under the replaced-file rules (lib/storage/replaced.ts).
 async function linkShotImage(
   supabase: SupabaseServerClient,
-  projectId: string,
-  shotId: string,
+  ids: { userId: string; projectId: string; shotId: string },
   path: string
 ): Promise<string | null> {
   const { error } = await supabase
     .from('shots')
     .update({ image_path: path, image_stale: false, updated_at: new Date().toISOString() })
-    .eq('id', shotId)
-    .eq('project_id', projectId)
-  return error?.message ?? null
+    .eq('id', ids.shotId)
+    .eq('project_id', ids.projectId)
+  if (error) return error.message
+  await discardFolderExcept({
+    userId: ids.userId,
+    projectId: ids.projectId,
+    folder: storyboardImageDir(ids.userId, ids.projectId, ids.shotId),
+    keep: [path, storyboardThumbPath(path)],
+  })
+  return null
 }
 
 async function processShot(
@@ -485,7 +499,7 @@ async function processShot(
     // double-charge nor leave a delivered image uncharged.
     const stored = readStoredPayload(generation.payload)
     if (stored) {
-      const linkError = await linkShotImage(supabase, projectId, shotId, stored.path)
+      const linkError = await linkShotImage(supabase, { userId, projectId, shotId }, stored.path)
       if (linkError) {
         outcome = { ok: false, error: linkError }
         return 'failed'
@@ -538,7 +552,7 @@ async function processShot(
     }
 
     const webp = await sharp(imageBuffer).webp({ quality: STORYBOARD_WEBP_QUALITY }).toBuffer()
-    // Every attempt gets its own object; nothing is ever overwritten or removed.
+    // Every attempt gets its own object; nothing is overwritten. The link below removes the one it replaces.
     const path = storyboardImagePath(userId, projectId, shotId, attemptId)
     const { error: uploadError } = await supabase.storage
       .from('artifacts')
@@ -582,7 +596,7 @@ async function processShot(
       return 'failed'
     }
 
-    const linkError = await linkShotImage(supabase, projectId, shotId, path)
+    const linkError = await linkShotImage(supabase, { userId, projectId, shotId }, path)
     if (linkError) {
       outcome = { ok: false, error: linkError }
       return 'failed'

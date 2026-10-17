@@ -74,7 +74,7 @@ async function seedShot(projectId: string, overrides: Record<string, unknown> = 
 }
 
 async function readElement(elementId: string) {
-  const { data } = await admin.from('elements').select('*').eq('id', elementId).single()
+  const { data } = await admin.from('elements').select('*').eq('id', elementId).maybeSingle()
   return data
 }
 
@@ -167,7 +167,8 @@ test.describe('Assets tab', () => {
     await confirmDialog.getByRole('button', { name: 'Delete element' }).click()
 
     await expect(elementCard(page, 'Unbound Prop')).toHaveCount(0)
-    await expect.poll(async () => (await readElement(elementId))?.deleted_at).not.toBeNull()
+    // A hard delete: the row is gone.
+    await expect.poll(async () => await readElement(elementId)).toBeNull()
   })
 
   test('deleting a bound element shows the blocked modal listing the real shots, with no force option', async ({
@@ -353,6 +354,7 @@ test.describe('Assets tab', () => {
     await elementCard(page, 'Renamed While Locked').getByTestId('delete-element-trigger').click()
     await page.getByRole('dialog').getByRole('button', { name: 'Delete element' }).click()
     await expect(elementCard(page, 'Renamed While Locked')).toHaveCount(0)
-    await expect.poll(async () => (await readElement(elementId))?.deleted_at).not.toBeNull()
+    // A hard delete: the row is gone.
+    await expect.poll(async () => await readElement(elementId)).toBeNull()
   })
 })

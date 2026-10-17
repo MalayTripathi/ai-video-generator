@@ -6,8 +6,9 @@ import {
   createElementForUser,
   updateElementNameForUser,
   updateElementDescriptionForUser,
-  deleteElementForUser,
+  REFERENCE_GENERATING_MESSAGE,
 } from '../src/lib/elements/write'
+import { deleteElementForUser } from '../src/lib/elements/delete-for-user'
 
 async function seedProject(overrides: Record<string, unknown> = {}) {
   const { data, error } = await admin
@@ -219,6 +220,65 @@ test.describe('elements write path', () => {
       if (!read.success) return
       const characterGroup = read.groups.find((g) => g.type === 'character')!
       expect(characterGroup.elements.map((e) => e.id)).not.toContain(elementId)
+    })
+
+    test('deleting is a hard delete: the row, its generations rows (paid output too) and its files are removed', async () => {
+      const projectId = await seedProject()
+      const elementId = await seedElement(projectId, { name: 'Hard Delete' })
+      const folder = `${primary.user.id}/${projectId}/elements/${elementId}`
+      const paid = `${folder}/paid.webp`
+      const upload = await admin.storage.from('artifacts').upload(paid, Buffer.from('x'), { contentType: 'image/webp' })
+      expect(upload.error).toBeNull()
+      const { error: genError } = await admin.from('generations').insert({
+        project_id: projectId,
+        step: 'workbench',
+        operation: 'generate_element_reference',
+        shot_id: null,
+        element_id: elementId,
+        state: 'failed',
+        payload: { path: paid },
+      })
+      expect(genError).toBeNull()
+
+      const result = await deleteElementForUser(admin, elementId, primary.user.id)
+
+      expect(result.success).toBe(true)
+      const [{ data: row }, { data: gens }, { data: files }] = await Promise.all([
+        admin.from('elements').select('id').eq('id', elementId).maybeSingle(),
+        admin.from('generations').select('id').eq('element_id', elementId),
+        admin.storage.from('artifacts').list(folder),
+      ])
+      expect(row).toBeNull()
+      expect(gens).toEqual([])
+      expect(files).toEqual([])
+    })
+
+    test('refuses while a reference image is generating for the element, and changes nothing', async () => {
+      const projectId = await seedProject()
+      const elementId = await seedElement(projectId, { name: 'In Flight' })
+      const { error: genError } = await admin.from('generations').insert({
+        project_id: projectId,
+        step: 'workbench',
+        operation: 'generate_element_reference',
+        shot_id: null,
+        element_id: elementId,
+        state: 'generating',
+        started_at: new Date().toISOString(),
+      })
+      expect(genError).toBeNull()
+
+      const result = await deleteElementForUser(admin, elementId, primary.user.id)
+
+      expect(result.success).toBe(false)
+      if (result.success) return
+      expect(result.reason).toBe('in_flight')
+      expect(result.error).toBe(REFERENCE_GENERATING_MESSAGE)
+      const [{ data: row }, { data: gens }] = await Promise.all([
+        admin.from('elements').select('id').eq('id', elementId).maybeSingle(),
+        admin.from('generations').select('id').eq('element_id', elementId),
+      ])
+      expect(row).not.toBeNull()
+      expect(gens).toHaveLength(1)
     })
 
     test('refuses to delete an element bound to shots via shot_elements, naming both shots', async () => {

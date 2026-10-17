@@ -19,7 +19,10 @@ export function UsageByProject({ aggregation }: { aggregation: UsageAggregation 
           >
             <summary className="flex cursor-pointer list-none items-center justify-between gap-rc-md [&::-webkit-details-marker]:hidden">
               <div className="flex flex-col gap-rc-3xs">
-                <span className="text-ui font-medium text-text-primary">{project.title}</span>
+                <span className="text-ui font-medium text-text-primary">
+                  {project.title}
+                  {project.deleted && <span className="font-normal text-text-tertiary"> · Deleted</span>}
+                </span>
                 <span className="text-meta text-text-tertiary">
                   {project.videoTypeLabel ?? '—'} · {project.durationLabel ?? '—'}
                 </span>

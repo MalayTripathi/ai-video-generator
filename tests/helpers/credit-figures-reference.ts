@@ -81,6 +81,7 @@ export type ProjectMeta = {
   source_text: string | null
   video_type: string | null
   duration_target: string | null
+  deleted?: boolean
 }
 
 export type OperationBreakdownRow = {
@@ -104,6 +105,7 @@ export type ProjectBreakdownRow = {
   title: string
   videoTypeLabel: string | null
   durationLabel: string | null
+  deleted: boolean
   total: number
   /** sharePct within each row is this project's own share, not the period's. */
   bySteps: OperationBreakdownRow[]
@@ -205,6 +207,7 @@ export function oldAggregateCreditsPeriod(rows: LedgerRow[], projects: ProjectMe
         title: meta ? displayTitle(meta) : 'Untitled project',
         videoTypeLabel: meta?.video_type ? videoTypeLabel(meta.video_type) : null,
         durationLabel,
+        deleted: meta?.deleted ?? false,
         total,
         bySteps: buildOperationBreakdown(projectRows, total),
       }

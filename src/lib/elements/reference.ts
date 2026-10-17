@@ -3,6 +3,7 @@ import sharp from 'sharp'
 import type { createClient } from '@/lib/supabase/server'
 import { loadOwnedElement } from '@/lib/elements/write'
 import { markImagePromptsStaleForElementReference } from '@/lib/elements/staleness'
+import { discardReplacedFiles } from '@/lib/storage/replaced'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -75,15 +76,11 @@ export async function uploadNormalizedReferenceObject(
   return { success: true, path }
 }
 
-// Best-effort old-object cleanup, shared by every replacement path (manual upload,
-// manual removal, AI generation/regeneration) - logs and swallows rather than failing
-// the caller, since by the time this runs the element row already points at something
-// valid (or nothing), and the orphaned object is a cleanup concern, not a correctness one.
-async function removeReferenceObject(supabase: SupabaseServerClient, path: string): Promise<void> {
-  const { error } = await supabase.storage.from('artifacts').remove([path])
-  if (error) {
-    console.error(`[elements] Failed to remove reference image ${path}:`, error.message)
-  }
+// Best-effort old-object cleanup for a manual upload or removal, under the replaced-file
+// rules (lib/storage/replaced.ts) - it never fails the caller, since by the time this runs
+// the element row already points at something valid (or nothing).
+async function removeReferenceObject(userId: string, projectId: string, path: string): Promise<void> {
+  await discardReplacedFiles({ userId, projectId, paths: [path] })
 }
 
 // Replacing an existing reference writes the new object and updates the element row
@@ -128,7 +125,7 @@ export async function uploadReferenceImageForUser(
   }
 
   if (element.reference_image_path) {
-    await removeReferenceObject(supabase, element.reference_image_path)
+    await removeReferenceObject(userId, projectId, element.reference_image_path)
   }
 
   return { success: true, path: uploaded.path, url: signed.signedUrl }
@@ -157,7 +154,7 @@ export async function removeReferenceImageForUser(
   if (dbError) return { success: false, error: dbError.message }
 
   await markImagePromptsStaleForElementReference(supabase, projectId, elementId, element.type)
-  await removeReferenceObject(supabase, element.reference_image_path)
+  await removeReferenceObject(userId, projectId, element.reference_image_path)
 
   return { success: true }
 }

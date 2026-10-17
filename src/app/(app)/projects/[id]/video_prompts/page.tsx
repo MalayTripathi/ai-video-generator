@@ -1,4 +1,4 @@
-import { notFound, redirect } from 'next/navigation'
+import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getCurrentUser } from '@/lib/auth/current-user'
 import { WorkbenchShell } from '@/components/workbench-shell'
@@ -8,6 +8,7 @@ import { stepIndex } from '@/lib/config/pipeline'
 import { ASPECT_RATIOS, type AspectRatio } from '@/lib/config/enums'
 import { VideoPromptsSkeleton } from './_components/video-prompts-skeleton'
 import { VideoPromptsFooter } from './_components/video-prompts-footer'
+import { missingProject } from '@/lib/projects/missing-project'
 
 // Step 5: the shared shell with a placeholder render area until video-prompt generation is
 // built. Reads only what the shell needs - the project (header, step indicator, view-gate),
@@ -48,7 +49,7 @@ export default async function VideoPromptsPage({ params }: { params: Promise<{ i
     throw new Error(`Could not load project ${projectId}: ${projectError.message}`)
   }
   if (!project) {
-    notFound()
+    return missingProject(supabase, projectId)
   }
 
   // View-gate only: a project that hasn't reached Video Prompts must not see it.

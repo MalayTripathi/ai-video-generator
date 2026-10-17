@@ -1,5 +1,6 @@
 import { EXPORT_STUCK_TIMEOUT_MS } from '@/lib/config/export'
 import type { Database } from '@/lib/database.types'
+import { processPendingDeletions } from '@/lib/storage/replaced'
 import type { WorkerDb } from './config'
 
 export type ExportRow = Database['public']['Tables']['exports']['Row']
@@ -53,7 +54,9 @@ export async function failStuck(
     .update({ status: 'failed', error: STUCK_ERROR, finished_at: now.toISOString() })
     .eq('status', 'rendering')
     .lt('started_at', cutoff)
-    .select('id')
+    .select('id, project_id')
   if (error) throw error
-  return (data ?? []).map((r) => r.id)
+  const rows = data ?? []
+  for (const projectId of new Set(rows.map((r) => r.project_id))) await processPendingDeletions(db, projectId)
+  return rows.map((r) => r.id)
 }

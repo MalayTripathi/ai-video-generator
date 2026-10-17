@@ -2,7 +2,8 @@
 // One-off: removes data test runs left behind. Dry run by default - prints every group with
 // counts and paths and deletes nothing. Scoped strictly to test identities: the fixed users
 // (pw-fixed-*@reelcraft.local) and minted users (pw-test-*@reelcraft.local). A non-test
-// user's rows and files are never touched, even when orphaned.
+// user's rows and files are never touched, even when orphaned - except group E, a project
+// that user deleted whose storage sweep never finished.
 //
 //   node scripts/cleanup-test-data.mjs                 dry run
 //   node scripts/cleanup-test-data.mjs --apply         delete groups A-C
@@ -14,6 +15,8 @@
 //   B  fixed-user storage folders with no matching project row
 //   C  live minted users' storage folders with no matching project row
 //   D  storage prefixes whose owner no longer exists in auth (identity unprovable: opt-in)
+//   E  deleted projects whose storage sweep failed (deleted_projects.storage_purged_at null,
+//      no live projects row) - any user: the owner asked for the deletion. Swept on --apply.
 //   kept: never-signed-in minted accounts (spare pool users), listed only
 //   other: non-test accounts, listed only
 //
@@ -31,7 +34,7 @@ import { requireEnv } from './require-env.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const jiti = createJiti(import.meta.url)
-const { listFolders, listObjectsUnder, removeStorageUnder } = await jiti.import(join(root, 'tests/storage-cleanup.ts'))
+const { listFolders, listObjectsUnder, removeStorageUnder } = await jiti.import(join(root, 'src/lib/storage/sweep.ts'))
 
 const TMP = join(root, 'tmp')
 mkdirSync(TMP, { recursive: true })
@@ -87,6 +90,15 @@ for (let from = 0; ; from += 1000) {
   if (data.length < 1000) break
 }
 const projectIds = new Set(projects.map((p) => p.id))
+
+// E - deletions whose sweep never finished. A row whose project is still live is a failed
+// delete, not a deleted project, and is never swept.
+const { data: unpurgedRows, error: unpurgedError } = await admin
+  .from('deleted_projects')
+  .select('id, user_id, title, deleted_at')
+  .is('storage_purged_at', null)
+if (unpurgedError) throw unpurgedError
+const groupE = (unpurgedRows ?? []).filter((d) => !projectIds.has(d.id))
 
 const range = (dates) => (dates.length ? `${dates.reduce((a, b) => (a < b ? a : b)).slice(0, 16)} → ${dates.reduce((a, b) => (a > b ? a : b)).slice(0, 16)}` : '-')
 
@@ -154,6 +166,8 @@ log(`C  minted-user files with no project row: ${groupC.length} objects in ${pre
 show(groupC)
 log(`D  files whose owner no longer exists (opt-in): ${groupD.length} objects under ${prefixes(groupD, 1).length} user prefixes`)
 show(groupD, 40)
+log(`E  deleted projects with an unfinished storage sweep: ${groupE.length}`)
+for (const d of groupE) log(`      ${d.user_id}/${d.id} "${d.title}" deleted ${d.deleted_at.slice(0, 16)}`)
 log(`kept  never-signed-in minted accounts: ${kept.length} (created ${range(kept.map((u) => u.created_at))})`)
 log(`other non-test accounts (never deleted unless named with --include-user):`)
 for (const u of others) {
@@ -188,6 +202,12 @@ for (const u of groupA) await deleteAccount(u)
 log(`B: removed ${await removePaths(groupB)} file(s)`)
 log(`C: removed ${await removePaths(groupC)} file(s)`)
 if (INCLUDE_DELETED_OWNERS) log(`D: removed ${await removePaths(groupD)} file(s)`)
+for (const d of groupE) {
+  const removed = await removeStorageUnder(admin, `${d.user_id}/${d.id}`)
+  const { error } = await admin.from('deleted_projects').update({ storage_purged_at: new Date().toISOString() }).eq('id', d.id)
+  if (error) throw error
+  log(`E: swept ${d.user_id}/${d.id}: ${removed} file(s)`)
+}
 for (const id of INCLUDE_USERS) {
   const u = others.find((o) => o.id === id)
   if (!u) throw new Error(`--include-user=${id} is not a listed non-test account`)

@@ -543,15 +543,14 @@ Read `src/lib/database.types.ts` for columns — never rely on this file for the
   is `fullyParallel`, so per-test cleanup of *shared* fixed-user data
   would delete rows an in-flight test is still asserting against. It
   deletes `usage` and `credit_ledger` rows first, explicitly, `WHERE user_id IN (...)`,
-  before `projects`: both `project_id` columns are `ON DELETE SET NULL`, not `CASCADE`,
-  so the reverse order orphans rather than removes them. It reads its ids
+  before `projects`: both `project_id` columns are plain ids a project delete never
+  touches, so nothing else removes them. It reads its ids
   from `tests/fixed-users.ts` — never by pattern, never a truncate. The
   two auth users themselves are never deleted. A teardown failure is
   logged and swallowed, never rethrown.
 
 ## Database
-Tables: `projects`, `shots`, `elements`, `shot_elements`, `messages`, `generations`,
-`usage`, `shot_dialogue`, `credit_ledger`, `exports`. All RLS-protected. Two tables
+Every table is RLS-protected; `database.types.ts` lists them. Two tables
 deviate from the single-level `exists`-on-`projects` subquery every other
 child table (including `generations`) uses for ownership: `shot_elements`
 resolves ownership through a two-level join (shots → projects); `usage`
@@ -768,8 +767,8 @@ neutral. `estimated_cost` is computed by `computeCost`
 rates: <rates applied> }`.
 
 `user_id` is denormalized directly onto the row on purpose: `project_id`
-is nullable `ON DELETE SET NULL` specifically so billing history survives
-project deletion, and `usage`'s RLS policy follows that — ownership is a
+is a plain id with no foreign key, so billing history survives project
+deletion intact, and `usage`'s RLS policy follows that — ownership is a
 direct `user_id = auth.uid()` check (SELECT/INSERT/UPDATE, `projects`-
 style), not the join-through-`projects` pattern every other child table
 uses, because a join-based policy would deny a user access to their own

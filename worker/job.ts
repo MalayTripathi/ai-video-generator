@@ -8,6 +8,7 @@ import { filmHash } from '@/lib/export/film-hash'
 import { FILM_PROJECT_COLUMNS, FILM_SHOT_COLUMNS, filmInputFromRows } from '@/lib/export/film-input'
 import { buildRenderPlan, type RenderPlan, type RenderSize } from '@/lib/export/render-plan'
 import { parseExportSettings, type ExportSettings } from '@/lib/export/settings'
+import { processPendingDeletions } from '@/lib/storage/replaced'
 import { buildFilmTimeline, type FilmTimeline } from '@/lib/storyboard/film'
 import type { ExportRow } from './claim'
 import type { WorkerDb } from './config'
@@ -200,5 +201,7 @@ export async function runJob(
     return 'failed'
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => {})
+    // Files replaced while this export rendered were queued, not removed; it has ended now.
+    await processPendingDeletions(db, row.project_id)
   }
 }

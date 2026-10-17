@@ -1,6 +1,7 @@
 import { getOperationPolicy } from '@/lib/generations/operation-policy'
 import { stepOperationLabel, type Step, type Operation } from '@/lib/config/pipeline'
 import { displayTitle } from '@/lib/display-title'
+import type { ProjectMeta } from '@/lib/projects/project-meta'
 import { videoTypeLabel } from '@/lib/video-type-labels'
 import { durationConfig, type DurationTarget } from '@/lib/config/duration'
 
@@ -18,13 +19,7 @@ export type UsageRow = {
   blocked: boolean
 }
 
-export type ProjectMeta = {
-  id: string
-  title: string | null
-  source_text: string | null
-  video_type: string | null
-  duration_target: string | null
-}
+export type { ProjectMeta }
 
 export type StepBreakdownRow = {
   step: Step
@@ -40,6 +35,8 @@ export type ProjectBreakdownRow = {
   title: string
   videoTypeLabel: string | null
   durationLabel: string | null
+  /** A deleted project: rendered as "{title} · Deleted", never a link. */
+  deleted: boolean
   total: number
   /** sharePct within each row is this project's own share, not the grand total's. */
   bySteps: StepBreakdownRow[]
@@ -179,6 +176,7 @@ export function aggregateUsage(rows: UsageRow[], projects: ProjectMeta[], now: D
         title: projectId ? (meta ? displayTitle(meta) : 'Untitled project') : 'Deleted project',
         videoTypeLabel: meta?.video_type ? videoTypeLabel(meta.video_type) : null,
         durationLabel,
+        deleted: meta?.deleted ?? false,
         total,
         bySteps: buildStepBreakdown(
           projectRows.filter((row) => !row.blocked),

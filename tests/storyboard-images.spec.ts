@@ -565,7 +565,7 @@ test.describe('storyboard images - worker', () => {
     expect(byId.get(withoutRef)).toBe(framePrice({ aspectRatio: '1:1' }))
   })
 
-  test('regenerating keeps every earlier image: each attempt writes a new object', async () => {
+  test('regenerating writes a new object and removes the one it replaced, with its thumbnail', async () => {
     const projectId = await seedProject(primary.user.id)
     const [shotId] = await seedShots(projectId, 1)
 
@@ -578,9 +578,10 @@ test.describe('storyboard images - worker', () => {
     const { data: objects } = await admin.storage
       .from('artifacts')
       .list(`${primary.user.id}/${projectId}/images/${shotId}`)
-    // Each attempt is its image plus its lane thumbnail.
+    // Only the current attempt is left: its image plus its lane thumbnail (no export was
+    // active, so the replaced pair was removed at the link - lib/storage/replaced.ts).
     expect((objects ?? []).map((o) => o.name).sort()).toEqual(
-      [firstPath!, secondPath!].flatMap((p) => [path.basename(p), path.basename(storyboardThumbPath(p))]).sort()
+      [secondPath!].flatMap((p) => [path.basename(p), path.basename(storyboardThumbPath(p))]).sort()
     )
     expect(await ledgerRows(projectId)).toHaveLength(2)
   })

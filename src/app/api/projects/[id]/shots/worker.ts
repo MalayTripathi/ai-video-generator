@@ -55,6 +55,7 @@ import {
 } from '@/lib/shots/runs'
 import { creditsFor, usdToCredits } from '@/lib/config/credits'
 import { removeUnusedElements } from '@/lib/elements/cleanup'
+import { discardFolderExcept, projectPrefix } from '@/lib/storage/replaced'
 
 // The shot-generation chain: one background run of it. Service-role client, so every read
 // and write below is scoped explicitly by project (and the project by user, at load).
@@ -212,6 +213,21 @@ type SceneState = {
 }
 
 export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContinuationPayload | (Omit<ShotsContinuationPayload, 'chainDepth'> & { chainDepth: 0 })): Promise<ShotsWorkerResult> {
+  // Best-effort work started off the chunk budget (the old shots' image cleanup) runs beside
+  // the chunks and is awaited here, so it always finishes before the invocation returns.
+  const background: Promise<void>[] = []
+  try {
+    return await runShotsWorkerBody(deps, payload, background)
+  } finally {
+    await Promise.all(background)
+  }
+}
+
+async function runShotsWorkerBody(
+  deps: ShotsWorkerDeps,
+  payload: ShotsContinuationPayload | (Omit<ShotsContinuationPayload, 'chainDepth'> & { chainDepth: 0 }),
+  background: Promise<void>[]
+): Promise<ShotsWorkerResult> {
   const { supabase, gateway, ledger } = deps
   const { userId, projectId, runId, chainDepth } = payload
   const budget =
@@ -245,7 +261,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
   let cleanup: (() => string[]) | null = null
   const finish = async (status: Exclude<ShotRunStatus, 'running'>, stopReason: ShotRunStopReason | null): Promise<ShotsWorkerResult> => {
     // Before the run reads as ended, so the end-of-run refresh sees Assets without them.
-    if (cleanup) await removeUnusedElements(supabase, projectId, cleanup())
+    if (cleanup) await removeUnusedElements(supabase, projectId, userId, cleanup())
     await finishShotRun(supabase, ledger, runId, { status, stopReason })
     return { outcome: 'finished', status, stopReason, chunks: chunksRun }
   }
@@ -286,7 +302,7 @@ export async function runShotsWorker(deps: ShotsWorkerDeps, payload: ShotsContin
       console.error(`[shots] run ${runId}: could not load the project's elements`, elements.message)
       return finish('failed', 'error')
     }
-    const outline = await writeOutline({ supabase, gateway, run, project, tier, model, usageBase, elements })
+    const outline = await writeOutline({ supabase, gateway, run, project, tier, model, usageBase, elements, background })
     if (!outline.ok) return finish('failed', outline.refused ? 'refused' : 'error')
     outlineElementNames = outline.elementNames
     outlineCostUsd = outline.costUsd
@@ -943,6 +959,8 @@ async function writeOutline(params: {
   usageBase: Omit<Parameters<typeof reserveUsage>[0], 'model' | 'quotedCost' | 'quotedBreakdown'>
   /** The project's elements: their names go to the outline, and its style is kept. */
   elements: ElementResolver
+  /** Where best-effort work off the chunk budget is registered; the worker awaits it before returning. */
+  background: Promise<void>[]
 }): Promise<{ ok: true; elementNames: Map<number, string[]>; costUsd: number } | { ok: false; refused?: boolean }> {
   const { supabase, gateway, run, project, tier, model, usageBase, elements } = params
   const projectId = usageBase.projectId
@@ -1061,6 +1079,16 @@ async function writeOutline(params: {
     console.error(`[shots] run ${run.id}: could not clear the previous shot list`)
     return { ok: false }
   }
+  // The old shots' image files went with them (their generations rows cascaded too). Not
+  // awaited here - it must not spend the run's chunk budget - but registered, so the worker
+  // awaits it before the invocation returns; it never throws. The folder holds only the old
+  // shots' images here: the new shots are not written yet.
+  params.background.push(discardFolderExcept({
+    userId: usageBase.userId,
+    projectId,
+    folder: `${projectPrefix(usageBase.userId, projectId)}images`,
+    keep: [],
+  }))
   const now = new Date().toISOString()
   const { error: scenesError } = await supabase.from('scenes').insert(
     kept.map((s, position) => ({

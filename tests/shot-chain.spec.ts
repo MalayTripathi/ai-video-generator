@@ -265,11 +265,12 @@ test.describe('shot chain - recovery and failure', () => {
     const projectId = await insertChainProject(owner.id, { duration_target: '30-60s' })
     // The first run writes scene A then hands off; the continuation is "accepted" but
     // never runs - the invocation died.
-    // Each chunk takes 4.5s against a 4s budget, so the first run writes scene A and hands
-    // the rest on.
+    // Each chunk takes 8.5s against an 8s budget: scene A starts well inside the budget (the
+    // outline and setup take ~3s) and ends past it, so the first run writes scene A and
+    // hands the rest on.
     const slow = chainGateway({
       outline: fakeOutline([{ title: 'A', seconds: 20 }, { title: 'B', seconds: 25 }]),
-      delayMs: 4_500,
+      delayMs: 8_500,
       chunk: () => ({ shots: [1, 2, 3].map((i) => fakeShot(fourWords(`d${i}`))), scene_complete: true }),
     })
     const { request } = await runChain({
@@ -278,7 +279,7 @@ test.describe('shot chain - recovery and failure', () => {
       gateway: slow,
       ledger: REAL_LEDGER,
       concurrency: 1,
-      runBudgetMs: 4_000,
+      runBudgetMs: 8_000,
       handOff: () => 'drop',
     })
     const runId = (request as { runId: string }).runId

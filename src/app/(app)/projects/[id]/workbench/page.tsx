@@ -1,4 +1,4 @@
-import { notFound, redirect } from 'next/navigation'
+import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getCurrentUser } from '@/lib/auth/current-user'
 import { WorkbenchShell } from '@/components/workbench-shell'
@@ -21,6 +21,7 @@ import { placeHold, settleHold } from '@/lib/credits/ledger'
 import { needsDeadRunSettlement, settleDeadShotRuns } from '@/lib/shots/runs'
 import { sceneProgress, shotRunView, type ShotRunView } from './_components/shot-run-view'
 import { WORKBENCH_SHOT_COLUMNS, toDisplayShot, type DisplayElementRow, type WorkbenchShotRow } from './_components/display-shots'
+import { missingProject } from '@/lib/projects/missing-project'
 
 type ElementRow = DisplayElementRow
 type ShotDialogueRow = Pick<
@@ -158,7 +159,7 @@ export default async function WorkbenchPage({
     throw new Error(`Could not load project ${projectId}: ${projectError.message}`)
   }
   if (!project) {
-    notFound()
+    return missingProject(supabase, projectId)
   }
 
   // A dead chain is settled on the first load after its stale window (and a terminal run

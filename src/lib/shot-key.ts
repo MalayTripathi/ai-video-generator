@@ -34,3 +34,15 @@ export function isUniqueViolation(error: unknown): boolean {
  * This bound exists for correctness, not because it's expected to fire.
  */
 export const MAX_SHOT_KEY_INSERT_ATTEMPTS = 5
+
+const FOREIGN_KEY_VIOLATION = '23503'
+
+/** A Postgres foreign-key violation (23503), by error code - e.g. a delete a new row now references. */
+export function isForeignKeyViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === FOREIGN_KEY_VIOLATION
+  )
+}

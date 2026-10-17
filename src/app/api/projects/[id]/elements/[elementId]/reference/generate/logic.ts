@@ -24,9 +24,10 @@ import {
   settleGeneration,
   type BlockedReason,
 } from '@/lib/generations/claim'
-import { loadOwnedElement } from '@/lib/elements/write'
+import { loadOwnedElement, REFERENCE_GENERATING_MESSAGE } from '@/lib/elements/write'
 import { uploadNormalizedReferenceObject } from '@/lib/elements/reference'
 import { markImagePromptsStaleForElementReference } from '@/lib/elements/staleness'
+import { discardReplacedFiles } from '@/lib/storage/replaced'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -45,7 +46,7 @@ export type ElementReferenceGenerationResult =
   | { ok: false; status: 500; error: string; code?: GenerationFailureCode }
 
 const BLOCKED_REASON_MESSAGES: Partial<Record<BlockedReason, string>> = {
-  already_generating: 'A reference image is already generating for this element.',
+  already_generating: REFERENCE_GENERATING_MESSAGE,
 }
 
 // Classification only - never a message. Anything provider/SDK-shaped (including
@@ -169,12 +170,7 @@ export async function runElementReferenceGeneration(params: {
 
     await markImagePromptsStaleForElementReference(supabase, projectId, elementId, element.type)
 
-    if (oldPath && oldPath !== path) {
-      const { error: removeError } = await supabase.storage.from('artifacts').remove([oldPath])
-      if (removeError) {
-        console.error(`[elements] Failed to remove old reference image ${oldPath}:`, removeError.message)
-      }
-    }
+    await discardReplacedFiles({ userId, projectId, paths: [oldPath], keep: [path] })
 
     const { data: signed, error: signError } = await supabase.storage
       .from('artifacts')
@@ -285,13 +281,12 @@ export async function runElementReferenceGeneration(params: {
 
     await markImagePromptsStaleForElementReference(supabase, projectId, elementId, element.type)
 
-    const oldPath = element.reference_image_path
-    if (oldPath && oldPath !== uploaded.path) {
-      const { error: removeError } = await supabase.storage.from('artifacts').remove([oldPath])
-      if (removeError) {
-        console.error(`[elements] Failed to remove old reference image ${oldPath}:`, removeError.message)
-      }
-    }
+    await discardReplacedFiles({
+      userId,
+      projectId,
+      paths: [element.reference_image_path],
+      keep: [uploaded.path],
+    })
 
     const { data: signed, error: signError } = await supabase.storage
       .from('artifacts')

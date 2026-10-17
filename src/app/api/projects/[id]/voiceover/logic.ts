@@ -44,6 +44,7 @@ import {
 import { liveImageCommittedCredits } from '../images/logic'
 import { autoFitAfterVoiceover } from '@/lib/storyboard/apply-fit'
 import { completeLinkedVoiceoverForProject } from '@/lib/voiceover/complete-linked'
+import { discardReplacedFiles } from '@/lib/storage/replaced'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 type GenerationRow = Tables<'generations'>
@@ -165,7 +166,11 @@ export async function linkVoiceover(
   }
 ): Promise<string | null> {
   // The new read's spans are fitted before it is linked (free; see autoFitAfterVoiceover).
-  const { fitted } = await autoFitAfterVoiceover(supabase, projectId, fields.spans)
+  const [{ fitted }, { data: previous }] = await Promise.all([
+    autoFitAfterVoiceover(supabase, projectId, fields.spans),
+    // The read being replaced, re-read at the commit (a generation can run for minutes).
+    supabase.from('projects').select('user_id, audio_path').eq('id', projectId).maybeSingle(),
+  ])
   const now = new Date().toISOString()
   const { error } = await supabase
     .from('projects')
@@ -186,7 +191,37 @@ export async function linkVoiceover(
     })
     .eq('id', projectId)
   if (error) return error.message
+  if (previous?.audio_path) await discardReplacedRead(supabase, previous.user_id, projectId, previous.audio_path, fields)
   return null
+}
+
+// A read's files all start with its attempt id (`{attemptId}.mp3`, `.alignment.json`, its
+// parts, an uploaded original). Once a new read is linked, the replaced read's files go,
+// under the replaced-file rules (lib/storage/replaced.ts).
+async function discardReplacedRead(
+  supabase: SupabaseServerClient,
+  userId: string,
+  projectId: string,
+  oldAudioPath: string,
+  current: { audioPath: string; alignmentPath: string }
+): Promise<void> {
+  const attemptOf = (path: string) => path.split('/').pop()!.split('.')[0]
+  const oldAttempt = attemptOf(oldAudioPath)
+  if (!oldAttempt || oldAttempt === attemptOf(current.audioPath)) return
+  const dir = voiceoverDir(userId, projectId)
+  // The caller's client: storage reads under the user's own prefix are allowed to it.
+  const { data, error } = await supabase.storage.from('artifacts').list(dir, { limit: 1000, search: `${oldAttempt}.` })
+  if (error) {
+    console.error(`[voiceover] could not list the replaced read's files for project ${projectId}`, error.message)
+    return
+  }
+  const paths = (data ?? []).filter((f) => f.id !== null && f.name.startsWith(`${oldAttempt}.`)).map((f) => `${dir}/${f.name}`)
+  await discardReplacedFiles({
+    userId,
+    projectId,
+    paths: [oldAudioPath, ...paths],
+    keep: [current.audioPath, current.alignmentPath],
+  })
 }
 
 // Storage writes never overwrite. A retry re-writing an object an earlier run already

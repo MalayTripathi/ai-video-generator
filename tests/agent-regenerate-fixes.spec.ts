@@ -288,7 +288,7 @@ test.describe('D3 - elements on a plan made from scratch', () => {
       { name: 'Unwritten Cast', type: 'character' },
     ].map((r) => ({ project_id: projectId, origin: 'model', user_edited_at: null, reference_image_path: null, status: 'pending', ...r }))
     expect((await admin.from('elements').insert(rows)).error).toBeNull()
-    const removed = await removeUnusedElements(admin, projectId, ['unwritten cast'])
+    const removed = await removeUnusedElements(admin, projectId, owner.id, ['unwritten cast'])
     const { data: all } = await admin.from('elements').select('name').eq('project_id', projectId)
     expect(removed).toHaveLength(1)
     expect((all ?? []).map((e) => e.name).sort()).toEqual(['Edited', 'Generating', 'Imaged', 'Styled', 'Unwritten Cast', 'Users'])
@@ -296,7 +296,7 @@ test.describe('D3 - elements on a plan made from scratch', () => {
     // The rule itself, over every protection.
     const base: CleanupCandidate = {
       id: 'x', name: 'X', type: 'prop', origin: 'model', user_edited_at: null, reference_image_path: null, status: 'pending',
-      shot_elements: [{ count: 0 }], shot_dialogue: [{ count: 0 }], generations: [{ count: 0 }],
+      shot_elements: [{ count: 0 }], shot_dialogue: [{ count: 0 }],
     }
     expect(isRemovableElement(base, new Set())).toBe(true)
     for (const patch of [
@@ -307,7 +307,6 @@ test.describe('D3 - elements on a plan made from scratch', () => {
       { status: 'generating' },
       { shot_elements: [{ count: 1 }] },
       { shot_dialogue: [{ count: 1 }] },
-      { generations: [{ count: 1 }] },
     ] as Partial<CleanupCandidate>[]) {
       expect(isRemovableElement({ ...base, ...patch }, new Set())).toBe(false)
     }
@@ -325,7 +324,7 @@ test.describe('D3 - elements on a plan made from scratch', () => {
     // The cleanup read it unused; a person attaches it; then the delete runs on that id.
     const bound = await bindElementToShotForUser(admin, shot!.id, el!.id, owner.id, 'workbench')
     expect(bound.success).toBe(true)
-    expect(await deleteUnprotectedElements(admin, projectId, [el!.id])).toEqual([])
+    expect(await deleteUnprotectedElements(admin, projectId, owner.id, [el!.id])).toEqual([])
     const [{ data: still }, { data: link }] = await Promise.all([
       admin.from('elements').select('id, user_edited_at').eq('id', el!.id).maybeSingle(),
       admin.from('shot_elements').select('element_id').eq('element_id', el!.id),
@@ -334,24 +333,71 @@ test.describe('D3 - elements on a plan made from scratch', () => {
     expect(link).toHaveLength(1)
   })
 
-  test('an unused element something else still points at is skipped and logged, never deleted with its references', async () => {
+  test('cleanup deletes an unused element with old failed generations rows, and keeps one whose row holds paid output', async () => {
     const projectId = await insertChainProject(owner.id)
-    const { data: el } = await admin.from('elements').insert({ project_id: projectId, name: 'Claimed', type: 'prop' }).select('id').single()
+    const { data: els } = await admin
+      .from('elements')
+      .insert([
+        { project_id: projectId, name: 'Old Failure', type: 'prop' },
+        { project_id: projectId, name: 'Paid Output', type: 'prop' },
+      ])
+      .select('id, name')
+    const id = (name: string) => els!.find((e) => e.name === name)!.id
+    const gen = (elementId: string, payload: { path: string } | null) => ({
+      project_id: projectId,
+      step: 'workbench',
+      operation: 'generate_element_reference',
+      shot_id: null,
+      element_id: elementId,
+      state: 'failed',
+      payload,
+    })
     const { error } = await admin
       .from('generations')
-      .insert({ project_id: projectId, step: 'workbench', operation: 'generate_element_reference', shot_id: null, element_id: el!.id, state: 'failed' })
+      .insert([gen(id('Old Failure'), null), gen(id('Paid Output'), { path: `${owner.id}/${projectId}/elements/x/paid.webp` })])
     expect(error).toBeNull()
     const warnings: string[] = []
     const warn = console.warn
     console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(' '))
+    let removed: string[]
     try {
-      expect(await removeUnusedElements(admin, projectId, [])).toEqual([])
+      removed = await removeUnusedElements(admin, projectId, owner.id, [])
     } finally {
       console.warn = warn
     }
-    expect(warnings.some((w) => w.includes(el!.id))).toBe(true)
-    const { data: gen } = await admin.from('generations').select('id').eq('element_id', el!.id)
-    expect(gen).toHaveLength(1)
+    expect(removed).toEqual([id('Old Failure')])
+    expect(warnings.some((w) => w.includes(id('Paid Output')))).toBe(true)
+    const [{ data: left }, { data: gens }] = await Promise.all([
+      admin.from('elements').select('id').eq('project_id', projectId),
+      admin.from('generations').select('element_id').eq('project_id', projectId),
+    ])
+    expect((left ?? []).map((e) => e.id)).toEqual([id('Paid Output')])
+    expect((gens ?? []).map((g) => g.element_id)).toEqual([id('Paid Output')])
+  })
+
+  test('a reference request at the moment of cleanup keeps the element, and the request still attaches', async () => {
+    const projectId = await insertChainProject(owner.id)
+    const { data: el } = await admin.from('elements').insert({ project_id: projectId, name: 'Racing Ref', type: 'prop' }).select('id').single()
+    // The request's claim lands as cleanup runs (the element still reads pending/unreferenced).
+    const { data: claim, error } = await admin
+      .from('generations')
+      .insert({
+        project_id: projectId, step: 'workbench', operation: 'generate_element_reference', shot_id: null, element_id: el!.id,
+        state: 'generating', started_at: new Date().toISOString(),
+      })
+      .select('id')
+      .single()
+    expect(error).toBeNull()
+    expect(await removeUnusedElements(admin, projectId, owner.id, [])).toEqual([])
+    // At the database too: a delete the claim now references is refused (23503), never cascaded.
+    const direct = await admin.from('elements').delete().eq('id', el!.id)
+    expect(direct.error?.code).toBe('23503')
+    // The request completes and attaches to the element that survived.
+    const path = `${owner.id}/${projectId}/elements/${el!.id}/ref.webp`
+    expect((await admin.from('elements').update({ reference_image_path: path, status: 'ready' }).eq('id', el!.id)).error).toBeNull()
+    expect((await admin.from('generations').update({ state: 'succeeded' }).eq('id', claim!.id)).error).toBeNull()
+    const { data: after } = await admin.from('elements').select('reference_image_path, status').eq('id', el!.id).single()
+    expect(after).toEqual({ reference_image_path: path, status: 'ready' })
   })
 })
 

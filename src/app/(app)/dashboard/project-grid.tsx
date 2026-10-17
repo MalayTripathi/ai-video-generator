@@ -1,9 +1,14 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { displayTitle } from '@/lib/display-title'
+import { DeleteProjectModal } from '@/components/delete-project-modal'
 import { EmptyState } from './empty-state'
 import { ProjectCard } from './project-card'
+import { ProjectCardMenu } from './project-card-menu'
 import type { Project } from './types'
+
+const TOAST_MS = 4000
 
 type FilterKey = 'all' | 'draft' | 'in_progress' | 'completed'
 
@@ -14,8 +19,21 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: 'completed', label: 'Completed' },
 ]
 
-export function ProjectGrid({ projects }: { projects: Project[] }) {
+export function ProjectGrid({ projects: initialProjects, justDeleted }: { projects: Project[]; justDeleted: boolean }) {
   const [filter, setFilter] = useState<FilterKey>('all')
+  // Deleting removes the card here - no refetch, and no per-card read for the menu.
+  const [projects, setProjects] = useState(initialProjects)
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null)
+  const [toast, setToast] = useState(justDeleted)
+
+  useEffect(() => {
+    if (!toast) return
+    // A delete from inside the project lands here with ?deleted=1; drop it from the URL
+    // without a navigation, so a reload doesn't show the toast again.
+    if (window.location.search.includes('deleted=')) window.history.replaceState(null, '', '/dashboard')
+    const timer = setTimeout(() => setToast(false), TOAST_MS)
+    return () => clearTimeout(timer)
+  }, [toast])
 
   const counts = useMemo(() => {
     const c: Record<FilterKey, number> = { all: projects.length, draft: 0, in_progress: 0, completed: 0 }
@@ -32,11 +50,30 @@ export function ProjectGrid({ projects }: { projects: Project[] }) {
     [projects, filter],
   )
 
+  const overlays = (
+    <>
+      {deleteTarget && (
+        <DeleteProjectModal
+          projectId={deleteTarget.id}
+          title={displayTitle(deleteTarget)}
+          onClose={() => setDeleteTarget(null)}
+          onDeleted={() => {
+            setProjects((list) => list.filter((p) => p.id !== deleteTarget.id))
+            setDeleteTarget(null)
+            setToast(true)
+          }}
+        />
+      )}
+      {toast && <ProjectDeletedToast />}
+    </>
+  )
+
   if (projects.length === 0) {
     return (
       <div className="flex flex-1 flex-col">
         <FilterRow filter={filter} onChange={setFilter} counts={counts} />
         <EmptyState />
+        {overlays}
       </div>
     )
   }
@@ -51,10 +88,29 @@ export function ProjectGrid({ projects }: { projects: Project[] }) {
       ) : (
         <div className="grid grid-cols-1 gap-rc-lg px-rc-lg py-rc-lg pb-rc-2xl md:grid-cols-2 lg:px-rc-xl xl:grid-cols-3 xl:px-rc-2xl">
           {visible.map((project) => (
-            <ProjectCard key={project.id} project={project} />
+            // `grid` so the card link still fills its cell; the menu sits beside it, not in it.
+            <div key={project.id} className="relative grid">
+              <ProjectCard project={project} />
+              <ProjectCardMenu title={displayTitle(project)} onDelete={() => setDeleteTarget(project)} />
+            </div>
           ))}
         </div>
       )}
+      {overlays}
+    </div>
+  )
+}
+
+function ProjectDeletedToast() {
+  return (
+    <div
+      role="status"
+      className="fixed bottom-[28px] left-1/2 z-40 flex -translate-x-1/2 items-center gap-[9px] rounded-control bg-rail-bg py-[10px] pr-rc-md pl-[13px] text-small font-medium whitespace-nowrap text-rail-fg shadow-card-hover"
+    >
+      <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+        <path d="M2 7.25 5.5 10.75 12 3.75" stroke="currentColor" strokeWidth="1.5" />
+      </svg>
+      Project deleted
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { admin, createTestSession, releaseTestUser } from './supabase-test-session'
 import { primary } from './fixed-users'
+import { deleteProject } from '../src/lib/projects/delete-project'
 import { stepIndex } from '../src/lib/config/pipeline'
 import { creditsFor } from '../src/lib/config/credits'
 import { VOICEOVER_VOICES } from '../src/lib/config/models'
@@ -266,6 +267,54 @@ test.describe('voiceover - generate', () => {
       expect(vo.total_duration_sec).toBeCloseTo(SAMPLE_SECONDS * 2, 3)
       const spans = vo.voiceover_spans as { startSec: number }[]
       expect(spans[1].startSec).toBeGreaterThanOrEqual(SAMPLE_SECONDS - 0.001)
+    } finally {
+      await releaseTestUser(user.id)
+    }
+  })
+
+  test('a project deleted mid-read starts no further provider call and writes no usage row after the delete', async () => {
+    const { user } = await createTestSession()
+    try {
+      const projectId = await seedProject(user.id)
+      const long = (word: string) => Array.from({ length: 450 }, () => word).join(' ') + '.'
+      // Three parts at a concurrency of two: the third starts only after one of the first two ends.
+      await seedShots(projectId, [long('alpha'), long('bravo'), long('delta')])
+      expect(VOICEOVER_CHUNK_CONCURRENCY).toBe(2)
+
+      const base = successVoiceoverGateway()
+      let deleted = false
+      let callsAfterDelete = 0
+      let usageAtDelete = -1
+      let releaseFirst!: () => void
+      const firstHeld = new Promise<void>((resolve) => (releaseFirst = resolve))
+      const gateway: typeof base = {
+        ...base,
+        async synthesize(params) {
+          if (deleted) callsAfterDelete++
+          const n = base.synthesizeCalls.length + 1
+          const result = await base.synthesize(params)
+          // Part one is held until part two - both reserved by now - deletes the project.
+          if (n === 1) await firstHeld
+          if (n === 2) {
+            // The read outlived its claim window (a dead-looking claim), so deletion is allowed.
+            await admin.from('generations').update({ started_at: new Date(Date.now() - 3_600_000).toISOString() }).eq('project_id', projectId)
+            const result = await deleteProject({ supabase: admin, service: admin, userId: user.id, projectId })
+            expect(result.ok).toBe(true)
+            usageAtDelete = (await admin.from('usage').select('id').eq('project_id', projectId)).data?.length ?? -1
+            deleted = true
+            releaseFirst()
+          }
+          return result
+        },
+      }
+      await generate(user.id, projectId, gateway).catch(() => null)
+
+      expect(deleted).toBe(true)
+      expect(callsAfterDelete).toBe(0)
+      expect(base.synthesizeCalls).toHaveLength(2)
+      const { data: usageAfter } = await admin.from('usage').select('id').eq('project_id', projectId)
+      expect(usageAfter).toHaveLength(usageAtDelete)
+      expect(usageAtDelete).toBe(2)
     } finally {
       await releaseTestUser(user.id)
     }

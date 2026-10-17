@@ -32,7 +32,10 @@ export type ElementDescriptionSaveResult =
 
 export type ElementDeleteResult =
   | { success: true }
-  | { success: false; error: string; reason?: 'style' | 'bound'; boundShots?: BoundShot[] }
+  | { success: false; error: string; reason?: 'style' | 'bound' | 'in_flight'; boundShots?: BoundShot[] }
+
+/** The one copy for "this element's reference image is being made" - generate and delete both refuse with it. */
+export const REFERENCE_GENERATING_MESSAGE = 'A reference image is already generating for this element.'
 
 type OwnedElement = {
   id: string
@@ -113,7 +116,7 @@ function shortLabel(visualDescription: string | null): string {
 // Covers both plain shot_elements bindings and shot_dialogue speakers in one check - a
 // dialogue line's element_id is a non-null FK, so a speaking character is always bound and
 // needs no separate check (see CLAUDE.md's delete-is-blocked-while-bound rule).
-async function findBoundShots(supabase: SupabaseServerClient, elementId: string): Promise<BoundShot[]> {
+export async function findBoundShots(supabase: SupabaseServerClient, elementId: string): Promise<BoundShot[]> {
   const [{ data: viaElements }, { data: viaDialogue }] = await Promise.all([
     supabase.from('shot_elements').select('shot_id').eq('element_id', elementId),
     supabase.from('shot_dialogue').select('shot_id').eq('element_id', elementId),
@@ -256,33 +259,3 @@ export async function updateElementDescriptionForUser(
   return { success: true }
 }
 
-export async function deleteElementForUser(
-  supabase: SupabaseServerClient,
-  elementId: string,
-  userId: string
-): Promise<ElementDeleteResult> {
-  const element = await loadOwnedElement(supabase, elementId, userId)
-  if (!element) return { success: false, error: 'Element not found' }
-
-  if (element.type === 'style') {
-    return { success: false, error: 'The style element cannot be deleted', reason: 'style' }
-  }
-
-  const boundShots = await findBoundShots(supabase, elementId)
-  if (boundShots.length > 0) {
-    return {
-      success: false,
-      error: 'This element is used in one or more shots and cannot be deleted',
-      reason: 'bound',
-      boundShots,
-    }
-  }
-
-  const { error } = await supabase
-    .from('elements')
-    .update({ deleted_at: new Date().toISOString() })
-    .eq('id', elementId)
-  if (error) return { success: false, error: error.message }
-
-  return { success: true }
-}

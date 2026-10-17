@@ -14,6 +14,7 @@ import { currentRead, FILM_PROJECT_COLUMNS, FILM_SHOT_COLUMNS, filmInputFromRows
 import { parseExportSettings, resolveExportSettings, type ExportSettings } from '@/lib/export/settings'
 import { buildFilmTimeline } from '@/lib/storyboard/film'
 import { isUniqueViolation } from '@/lib/shot-key'
+import { processPendingDeletions } from '@/lib/storage/replaced'
 import { createServiceRoleClient } from '@/lib/supabase/service-role'
 
 // Export jobs (Storyboard F). Reads go through the session client (RLS: owner SELECT);
@@ -276,7 +277,8 @@ export async function cancelExport(params: {
   if (refused) return refused
   const row = await ownedExport(params.supabase, params.projectId, params.exportId)
   if (!row) return { ok: false, status: 404, error: 'Export not found' }
-  const { data, error } = await (params.service ?? createServiceRoleClient())
+  const service = params.service ?? createServiceRoleClient()
+  const { data, error } = await service
     .from('exports')
     .update({ status: 'cancelled', finished_at: new Date().toISOString() })
     .eq('id', row.id)
@@ -285,6 +287,8 @@ export async function cancelExport(params: {
     .maybeSingle()
   if (error) return { ok: false, status: 500, error: error.message }
   if (!data) return { ok: false, status: 409, error: 'Only a queued export can be cancelled.' }
+  // Files replaced while it waited were queued behind it; it never rendered, so they go now.
+  await processPendingDeletions(service, params.projectId)
   return { ok: true, status: 200, data: { id: data.id } }
 }
 

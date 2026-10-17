@@ -1,10 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-// Storage cleanup for test identities only. Every artifact lives under
-// `{userId}/{projectId}/...` in the private `artifacts` bucket, and nothing in Postgres
-// cascades into Storage - deleting a project row or an auth user leaves its files behind.
-// Callers pass a prefix they have already proven belongs to a test identity; this module
-// never decides that itself.
+// Storage sweeps. Every artifact lives under `{userId}/{projectId}/...` in the private
+// `artifacts` bucket, and nothing in Postgres cascades into Storage - deleting a row leaves
+// its files behind. Used by project deletion, shot and element deletion, replaced-file
+// cleanup, the export worker, test teardown and the cleanup script. Callers pass a prefix or
+// paths they have already proven belong to the right owner; this module never decides that.
+// No 'server-only' import: the test teardown and the cleanup script load it too.
 
 const BUCKET = 'artifacts'
 // Storage's list() caps a page at 1,000 entries; anything past that needs an offset.
@@ -48,12 +49,16 @@ export async function listObjectsUnder(client: SupabaseClient, prefix: string): 
   return files
 }
 
-/** Removes every object under `prefix` in batches. Returns how many were removed. */
-export async function removeStorageUnder(client: SupabaseClient, prefix: string): Promise<number> {
-  const paths = await listObjectsUnder(client, prefix)
+/** Removes the given objects in batches. Throws on the first failed batch. */
+export async function removeObjects(client: SupabaseClient, paths: readonly string[]): Promise<number> {
   for (let i = 0; i < paths.length; i += REMOVE_BATCH) {
     const { error } = await client.storage.from(BUCKET).remove(paths.slice(i, i + REMOVE_BATCH))
-    if (error) throw new Error(`storage remove under ${prefix} failed: ${error.message}`)
+    if (error) throw new Error(`storage remove failed: ${error.message}`)
   }
   return paths.length
+}
+
+/** Removes every object under `prefix` in batches. Returns how many were removed. */
+export async function removeStorageUnder(client: SupabaseClient, prefix: string): Promise<number> {
+  return removeObjects(client, await listObjectsUnder(client, prefix))
 }

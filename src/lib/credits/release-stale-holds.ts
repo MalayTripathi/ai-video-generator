@@ -65,8 +65,22 @@ export async function releaseStaleHolds(supabase: SupabaseClient<Database>, user
 
   const withRun = new Set(runs.map((r) => r.attempt_id))
   const cutoff = Date.now() - SHOT_RUN_STALE_AFTER_MS
-  for (const hold of open) {
-    if (withRun.has(hold.attempt_id!) || new Date(hold.created_at).getTime() > cutoff) continue
+  const runless = open.filter((h) => !withRun.has(h.attempt_id!) && new Date(h.created_at).getTime() <= cutoff)
+  if (runless.length === 0) return
+  // A hold settled at exactly its amount is closed only by its run's charged_at; deleting the
+  // project removes that run. Deletion closes every hold first, so a deleted project's hold is
+  // never open - the same exclusion credit_balances makes.
+  const runlessProjects = [...new Set(runless.map((h) => h.project_id).filter((id): id is string => id !== null))]
+  const { data: deletedRows, error: deletedError } = runlessProjects.length
+    ? await supabase.from('deleted_projects').select('id').in('id', runlessProjects)
+    : { data: [], error: null }
+  if (deletedError) {
+    console.error('[credits] could not read deleted projects behind open holds', deletedError.message)
+    return
+  }
+  const deleted = new Set((deletedRows ?? []).map((r) => r.id))
+  for (const hold of runless) {
+    if (hold.project_id !== null && deleted.has(hold.project_id)) continue
     console.warn(`[credits] hold ${hold.id} has no run - refunding it in full`)
     await settleHold({
       userId,

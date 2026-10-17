@@ -17,6 +17,7 @@ import { StoryboardMain } from './_components/storyboard-main'
 import { InspectPanel } from './_components/inspect-panel'
 import { StoryboardFooter } from './_components/storyboard-footer'
 import { STORYBOARD_SHOT_COLUMNS, type StoryboardShot } from './_components/types'
+import { missingProject } from '@/lib/projects/missing-project'
 
 // Step 4: the timeline with live images (canvas 15). The picture lane and inspect panel
 // read real data; the audio lanes, preview and export are drawn static until built. The
@@ -47,7 +48,7 @@ export default async function StoryboardPage({ params }: { params: Promise<{ id:
     throw new Error(`Could not load project ${projectId}: ${projectError.message}`)
   }
   if (!project) {
-    notFound()
+    return missingProject(supabase, projectId)
   }
 
   // View-gate, not an edit-lock: a project whose furthest_step hasn't reached the

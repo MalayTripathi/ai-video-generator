@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { admin } from './supabase-test-session'
 import { primary, secondary } from './fixed-users'
 import { stepIndex } from '../src/lib/config/pipeline'
-import { deleteElementForUser } from '../src/lib/elements/write'
+import { deleteElementForUser } from '../src/lib/elements/delete-for-user'
 import {
   bindElementToShotForUser,
   unbindElementFromShotForUser,

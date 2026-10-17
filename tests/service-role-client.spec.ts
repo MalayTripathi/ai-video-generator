@@ -101,6 +101,15 @@ test.describe('service-role client isolation', () => {
       path.resolve(__dirname, '../src/app/api/projects/[id]/shots/route.ts'),
       // Runs the shot chain in after(), past the request and the user's session.
       path.resolve(__dirname, '../src/app/api/projects/[id]/shots/schedule.ts'),
+      // Project deletion: deleted_projects, the projects row (no client DELETE policy), the
+      // storage sweep and leftover-hold refunds - after the session client checked ownership.
+      path.resolve(__dirname, '../src/app/api/projects/[id]/route.ts'),
+      // Replaced-file cleanup: pending_storage_deletions has no client policies; every path is
+      // checked against the caller's own {userId}/{projectId}/ prefix before anything moves.
+      path.resolve(__dirname, '../src/lib/storage/replaced.ts'),
+      // User element delete after ownership check: removing the element's generations rows
+      // needs it, since generations has no client DELETE policy (a claim row is the only lock).
+      path.resolve(__dirname, '../src/lib/elements/delete-for-user.ts'),
     ].sort()
     function findImporters(dir: string): string[] {
       const hits: string[] = []

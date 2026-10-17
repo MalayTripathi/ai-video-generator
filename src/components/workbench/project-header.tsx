@@ -111,7 +111,7 @@ export function ProjectHeader({
         {videoTypeLabel(project.video_type) && <Chip>{videoTypeLabel(project.video_type)}</Chip>}
         {project.aspect_ratio && <Chip>{project.aspect_ratio} · Locked</Chip>}
         {languageLabel(project.language) && <Chip>{languageLabel(project.language)}</Chip>}
-        {modelChip && <SettingsChip project={project} label={modelChip} />}
+        {modelChip && <SettingsChip project={project} title={displayTitle(project)} label={modelChip} />}
       </div>
     </div>
   )

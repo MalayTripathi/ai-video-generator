@@ -5,7 +5,8 @@ import { ProjectGrid } from './project-grid'
 import { SearchButton, TopBar } from './top-bar'
 import type { Project } from './types'
 
-export default async function DashboardPage() {
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ deleted?: string }> }) {
+  const { deleted } = await searchParams
   const supabase = await createClient()
   const user = await getCurrentUser()
 
@@ -36,7 +37,7 @@ export default async function DashboardPage() {
         }
         right={<SearchButton />}
       />
-      <ProjectGrid projects={cards} />
+      <ProjectGrid projects={cards} justDeleted={deleted === '1'} />
     </>
   )
 }

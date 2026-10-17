@@ -9,16 +9,11 @@
  * global-setup.ts's identities) - never a truncate, never an unscoped delete, never a
  * pattern match. The auth users themselves are left in place; they're reused every run.
  *
- * usage.project_id is ON DELETE SET NULL, not CASCADE (confirmed against the applied
- * migration DDL, not assumed) - deleting projects first would orphan usage rows (null
- * out their project_id) rather than remove them, and they'd accumulate forever. usage
- * is deleted explicitly and first for exactly that reason. projects cascade cleanly to
- * shots/generations/elements/shot_elements (all ON DELETE CASCADE).
- *
- * credit_ledger is deleted the same way, for the same reason: its project_id is also
- * ON DELETE SET NULL, and unlike a throwaway createTestSession() user (whose auth row
- * deletion cascades credit_ledger away), the fixed users' auth rows are never deleted -
- * nothing else would ever clean these rows up.
+ * usage.project_id and credit_ledger.project_id are plain ids with no foreign key, so a
+ * project delete never touches them (that is what keeps a deleted project's spend). They
+ * are deleted explicitly and first, by user_id - otherwise they'd accumulate forever, since
+ * the fixed users' auth rows (whose deletion would cascade them) are never deleted. projects
+ * cascade to their child rows; deleted_projects rows are deleted by user_id after them.
  *
  * A cleanup failure must not turn a green suite red - every failure here is logged
  * loudly and swallowed, never rethrown.
@@ -27,7 +22,7 @@ export default async function globalTeardown() {
   try {
     const { admin, pruneClaimedUsers } = await import('./supabase-test-session')
     const { primary, secondary } = await import('./fixed-users')
-    const { removeStorageUnder } = await import('./storage-cleanup')
+    const { removeStorageUnder } = await import('@/lib/storage/sweep')
     const fixedUserIds = [primary.user.id, secondary.user.id]
 
     const { error: usageError, count: usageCount } = await admin
@@ -59,6 +54,9 @@ export default async function globalTeardown() {
     } else {
       console.log(`[global-teardown] deleted ${projectsCount ?? 0} project(s) for the fixed test users`)
     }
+
+    const { error: deletedProjectsError } = await admin.from('deleted_projects').delete().in('user_id', fixedUserIds)
+    if (deletedProjectsError) console.error('[global-teardown] deleted_projects delete failed:', deletedProjectsError.message)
 
     // Storage doesn't cascade from projects: every fixed-user project is gone now, so
     // everything under the fixed users' own prefixes is orphaned.

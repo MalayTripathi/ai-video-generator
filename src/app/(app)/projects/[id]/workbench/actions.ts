@@ -17,18 +17,20 @@ import {
   createElementForUser,
   updateElementNameForUser,
   updateElementDescriptionForUser,
-  deleteElementForUser,
   loadOwnedElement,
   type ElementCreateResult,
   type ElementNameSaveResult,
   type ElementDescriptionSaveResult,
   type ElementDeleteResult,
 } from '@/lib/elements/write'
+import { deleteElementForUser } from '@/lib/elements/delete-for-user'
 import type { ElementType } from '@/lib/config/enums'
 import type { DisplayElement } from './_components/types'
 import { isDurationAllowed } from '@/lib/config/models'
 import { effectiveVideoModel } from '@/lib/shots/effective-model'
 import { hasLiveShotRun } from '@/lib/shots/runs'
+import { discardFolderExcept } from '@/lib/storage/replaced'
+import { storyboardImageDir } from '@/app/api/projects/[id]/images/logic'
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
 
@@ -478,6 +480,12 @@ export async function deleteShotForUser(
 
   const { error: deleteError } = await supabase.from('shots').delete().eq('id', shotId)
   if (deleteError) return { success: false, error: deleteError.message }
+  await discardFolderExcept({
+    userId,
+    projectId: shot.project_id,
+    folder: storyboardImageDir(userId, shot.project_id, shotId),
+    keep: [],
+  })
 
   // Keep order_index contiguous. Unlike shot_dialogue's order_index, shots has a real
   // shots_project_id_order_index_key UNIQUE(project_id, order_index) constraint (see
@@ -649,7 +657,7 @@ export async function unbindElementFromShotForUser(
   if (error) return { success: false, error: error.message }
 
   // Never touches elements/reference_image_path/storage - only the binding. This is what
-  // keeps deleteElementForUser's findBoundShots delete-block rule (write.ts) working
+  // keeps deleteElementForUser's findBoundShots delete-block rule (delete-for-user.ts) working
   // unmodified: once the last shot_elements/shot_dialogue row is gone, the element
   // becomes deletable again.
   await markImagePromptStale(supabase, shotId)

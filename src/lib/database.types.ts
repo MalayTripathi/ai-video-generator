@@ -71,20 +71,6 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "credit_ledger_message_id_fkey"
-            columns: ["message_id"]
-            isOneToOne: false
-            referencedRelation: "messages"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "credit_ledger_project_id_fkey"
-            columns: ["project_id"]
-            isOneToOne: false
-            referencedRelation: "projects"
-            referencedColumns: ["id"]
-          },
-          {
             foreignKeyName: "credit_ledger_refunds_ledger_id_fkey"
             columns: ["refunds_ledger_id"]
             isOneToOne: false
@@ -92,6 +78,42 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      deleted_projects: {
+        Row: {
+          created_at: string
+          deleted_at: string
+          duration_tier: string | null
+          furthest_step: number
+          id: string
+          shot_count: number
+          storage_purged_at: string | null
+          title: string
+          user_id: string
+        }
+        Insert: {
+          created_at: string
+          deleted_at?: string
+          duration_tier?: string | null
+          furthest_step: number
+          id: string
+          shot_count: number
+          storage_purged_at?: string | null
+          title: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          deleted_at?: string
+          duration_tier?: string | null
+          furthest_step?: number
+          id?: string
+          shot_count?: number
+          storage_purged_at?: string | null
+          title?: string
+          user_id?: string
+        }
+        Relationships: []
       }
       elements: {
         Row: {
@@ -318,6 +340,38 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "messages_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pending_storage_deletions: {
+        Row: {
+          created_at: string
+          id: string
+          path: string
+          project_id: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          path: string
+          project_id: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          path?: string
+          project_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pending_storage_deletions_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
@@ -997,36 +1051,7 @@ export type Database = {
           updated_at?: string
           user_id?: string
         }
-        Relationships: [
-          {
-            foreignKeyName: "usage_generation_id_fkey"
-            columns: ["generation_id"]
-            isOneToOne: false
-            referencedRelation: "generations"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "usage_message_id_fkey"
-            columns: ["message_id"]
-            isOneToOne: false
-            referencedRelation: "messages"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "usage_project_id_fkey"
-            columns: ["project_id"]
-            isOneToOne: false
-            referencedRelation: "projects"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "usage_shot_id_fkey"
-            columns: ["shot_id"]
-            isOneToOne: false
-            referencedRelation: "shots"
-            referencedColumns: ["id"]
-          },
-        ]
+        Relationships: []
       }
     }
     Views: {
@@ -1051,15 +1076,7 @@ export type Database = {
           step: string | null
           user_id: string | null
         }
-        Relationships: [
-          {
-            foreignKeyName: "credit_ledger_project_id_fkey"
-            columns: ["project_id"]
-            isOneToOne: false
-            referencedRelation: "projects"
-            referencedColumns: ["id"]
-          },
-        ]
+        Relationships: []
       }
       usage_monthly_spend: {
         Row: {
